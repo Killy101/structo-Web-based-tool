@@ -1,0 +1,93 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider  = "postgresql"
+ 
+}
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER_QA
+  MANAGER_QC
+  USER
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+}
+
+enum TaskStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                 Int       @id @default(autoincrement())
+  email              String    @unique
+  password           String
+  firstName          String
+  lastName           String
+  role               Role      @default(USER)
+  status             Status    @default(ACTIVE)
+  mustChangePassword Boolean   @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  createdById  Int?
+  createdBy    User?  @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers User[] @relation("UserCreatedBy")
+
+  uploads     FileUpload[]
+  validations Validation[]
+}
+
+model FileUpload {
+  id            Int        @id @default(autoincrement())
+  originalName  String
+  fileType      String
+  fileSize      Int
+  storagePath   String
+  status        TaskStatus @default(PENDING)
+  uploadedAt    DateTime   @default(now())
+  processedAt   DateTime?
+  submittedAt   DateTime?
+
+  uploadedById  Int
+  uploadedBy    User       @relation(fields: [uploadedById], references: [id])
+
+  output        FileOutput?
+  validation    Validation?
+}
+
+model FileOutput {
+  id           Int        @id @default(autoincrement())
+  filename     String
+  storagePath  String
+  fileSize     Int
+  createdAt    DateTime   @default(now())
+
+  uploadId     Int        @unique
+  upload       FileUpload @relation(fields: [uploadId], references: [id])
+}
+
+model Validation {
+  id          Int      @id @default(autoincrement())
+  status      String
+  remarks     String?
+  validatedAt DateTime @default(now())
+
+  uploadId      Int        @unique
+  upload        FileUpload @relation(fields: [uploadId], references: [id])
+
+  validatedById Int
+  validatedBy   User @relation(fields: [validatedById], references: [id])
+}
