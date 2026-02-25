@@ -88,6 +88,7 @@ export default function LoginPage() {
           </Link>
 
           <div className={styles.brandBlock}>
+            <h1 className={styles.brandTitle}>STRUCTO</h1>
             <div className={styles.logoMark}>
               <svg width="48" height="48" viewBox="0 0 36 36" fill="none">
                 <rect
@@ -117,7 +118,7 @@ export default function LoginPage() {
             {[
               { icon: "⚡", label: "Intelligent document comparison" },
               { icon: "🔍", label: "Automated change detection" },
-              { icon: "📄", label: "Structured XML generation" },
+              { icon: "📄", label: "Structured INNOD.XML generation" },
               { icon: "🛡️", label: "Regulatory compliance validation" },
             ].map((f, i) => (
               <div key={i} className={styles.featureRow}>
@@ -135,7 +136,7 @@ export default function LoginPage() {
           <div className={styles.formHeader}>
             <h2 className={styles.formTitle}>Welcome back</h2>
             <p className={styles.formSubtitle}>
-              Sign in to your Innodex account
+              Sign in to your STRUCTO account
             </p>
           </div>
 
