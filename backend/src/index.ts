@@ -1,28 +1,29 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import authRoutes from './routes/auth';
+import authRoutes      from './routes/auth';
+import usersRoutes     from './routes/users';
+import dashboardRoutes from './routes/dashboard';
 
 dotenv.config();
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(
-  cors({
-    origin: "http://localhost:3000",
-    credentials: true,
-  })
-);
-
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true,
+}));
 app.use(express.json());
 
-// routes
-app.use('/auth', authRoutes);
+// ── Routes ────────────────────────────────────────────────────────────────────
+app.use('/auth',      authRoutes);
+app.use('/users',     usersRoutes);
+app.use('/dashboard', dashboardRoutes);
 
-// health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'Server is running' });
+// ── Health Check ──────────────────────────────────────────────────────────────
+app.get('/health', (_req, res) => {
+  res.json({ status: 'Server is running', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {

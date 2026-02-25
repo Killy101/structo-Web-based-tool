@@ -1,67 +1,3 @@
-// "use client";
-
-// import { useState } from "react";
-// import { useRouter } from "next/navigation";
-// import api from "@/app/lib/api";
-
-// export default function LoginPage() {
-//   const router = useRouter();
-//   const [email, setEmail] = useState("");
-//   const [password, setPassword] = useState("");
-
-//   const handleLogin = async () => {
-//     try {
-//       const response = await api.post("/auth/login", {
-//         email,
-//         password,
-//       });
-
-//       // assuming backend returns:
-//       // { token: "jwt-token", user: {...} }
-
-//       const { token } = response.data;
-
-//       localStorage.setItem("token", token);
-
-//       router.push("/dashboard");
-//     } catch (error: any) {
-//       console.log(error.response?.data);
-//       alert("Invalid credentials");
-//     }
-//   };
-
-//   return (
-//     <div className="flex min-h-screen items-center justify-center bg-gray-100">
-//       <div className="w-96 bg-white p-8 rounded-xl shadow-lg">
-//         <h2 className="text-2xl font-bold mb-6 text-center">Login</h2>
-
-//         <input
-//           type="email"
-//           placeholder="Email"
-//           className="w-full mb-4 p-2 border rounded"
-//           value={email}
-//           onChange={(e) => setEmail(e.target.value)}
-//         />
-
-//         <input
-//           type="password"
-//           placeholder="Password"
-//           className="w-full mb-4 p-2 border rounded"
-//           value={password}
-//           onChange={(e) => setPassword(e.target.value)}
-//         />
-
-//         <button
-//           onClick={handleLogin}
-//           className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700"
-//         >
-//           Login
-//         </button>
-//       </div>
-//     </div>
-//   );
-// }
-
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -171,7 +107,7 @@ export default function LoginPage() {
                 <rect x="22" y="22" width="4" height="4" fill="#42b4f5" />
               </svg>
             </div>
-            <h1 className={styles.brandTitle}>Innodex</h1>
+            <h1 className={styles.brandTitle}>Structo</h1>
             <p className={styles.brandSubtitle}>
               Legal Regulatory Delivery Unit
             </p>
@@ -354,7 +290,7 @@ export default function LoginPage() {
           </form>
 
           <p className={styles.footerNote}>
-            © 2025 Innodata — Legal Regulatory Delivery Unit
+            © 2026 Innodata — Legal Regulatory Delivery Unit
           </p>
         </div>
       </div>
