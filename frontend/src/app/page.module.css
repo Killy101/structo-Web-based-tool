@@ -47,7 +47,8 @@
 .navLinks {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 16px;
+  margin-left: auto;
 }
 
 .navLink {
@@ -74,6 +75,7 @@
   transition: all 0.2s;
   border: none;
   box-shadow: 0 2px 8px rgba(66,180,245,0.3);
+  margin-left: 16px;
 }
 
 .loginBtn:hover {
@@ -266,9 +268,190 @@
   white-space: nowrap;
 }
 
+/* ABOUT */
+.about {
+  background: white;
+  padding: 88px 48px;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+  overflow: hidden;
+}
+
+.aboutInner {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.aboutLayout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 72px;
+  align-items: center;
+}
+
+.aboutLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.aboutHeading {
+  font-family: 'Syne', sans-serif;
+  font-size: 36px;
+  font-weight: 800;
+  color: #0a2540;
+  letter-spacing: -0.6px;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.aboutAccent {
+  width: 48px;
+  height: 4px;
+  background: linear-gradient(90deg, #42b4f5, #1e40af);
+  border-radius: 4px;
+}
+
+.aboutText {
+  font-size: 15px;
+  color: #475569;
+  line-height: 1.85;
+  margin: 0;
+}
+
+.aboutPillRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.aboutPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 100px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0a2540;
+  transition: all 0.2s;
+}
+
+.aboutPill svg {
+  color: #42b4f5;
+  flex-shrink: 0;
+}
+
+.aboutPill:hover {
+  background: #e0f2fe;
+  border-color: #42b4f5;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(66, 180, 245, 0.15);
+}
+
+/* Decorative right panel */
+.aboutDecorPanel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 360px;
+}
+
+.decorOrb {
+  position: absolute;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(66,180,245,0.12) 0%, rgba(30,64,175,0.06) 60%, transparent 100%);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.decorGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 380px;
+}
+
+.decorCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px 20px;
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.decorCard:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 32px rgba(10, 37, 64, 0.1);
+}
+
+.decorCardDark {
+  background: #0a2540;
+  border-color: #0a2540;
+}
+
+.decorCardLight {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+}
+
+.decorCardLabel {
+  font-family: 'Syne', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: inherit;
+}
+
+.decorCardDark .decorCardLabel {
+  color: #e2e8f0;
+}
+
+.decorCardLight .decorCardLabel {
+  color: #0a2540;
+}
+
+.decorCardBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  background: rgba(66, 180, 245, 0.2);
+  color: #42b4f5;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 100px;
+  width: fit-content;
+  letter-spacing: 0.3px;
+}
+
+.decorCardBadgeBlue {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 100px;
+  width: fit-content;
+  letter-spacing: 0.3px;
+}
+
 /* FEATURES */
 .features {
-  background: white;
+  background: #f8fafc;
   padding: 80px 48px;
   border-top: 1px solid #e2e8f0;
 }
@@ -305,7 +488,7 @@
 
 .featureCard {
   padding: 28px;
-  background: #f8fafc;
+  background: white;
   border-radius: 16px;
   border: 1px solid #e2e8f0;
   transition: all 0.2s;
@@ -407,6 +590,10 @@
   .hero { grid-template-columns: 1fr; padding: 48px 24px; gap: 40px; }
   .heroTitle { font-size: 30px; }
   .heroVisual { display: none; }
+  .about { padding: 60px 24px; }
+  .aboutLayout { grid-template-columns: 1fr; gap: 40px; }
+  .aboutDecorPanel { min-height: 280px; }
+  .decorGrid { max-width: 100%; }
   .features { padding: 60px 24px; }
   .ctaBanner { padding: 48px 24px; }
   .footer { padding: 24px; }
