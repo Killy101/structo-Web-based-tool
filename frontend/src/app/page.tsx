@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import styles from "./page.module.css";
 
 export default function HomePage() {
@@ -10,18 +11,13 @@ export default function HomePage() {
       <nav className={styles.nav}>
         <div className={styles.navBrand}>
           <div className={styles.logoMark}>
-            <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-              <rect width="36" height="36" rx="8" fill="#0a2540" />
-              <rect x="10" y="10" width="4" height="4" fill="#42b4f5" />
-              <rect x="16" y="10" width="4" height="4" fill="#42b4f5" />
-              <rect x="22" y="10" width="4" height="4" fill="#42b4f5" />
-              <rect x="10" y="16" width="4" height="4" fill="#42b4f5" />
-              <rect x="16" y="16" width="4" height="4" fill="white" />
-              <rect x="22" y="16" width="4" height="4" fill="#42b4f5" />
-              <rect x="10" y="22" width="4" height="4" fill="#42b4f5" />
-              <rect x="16" y="22" width="4" height="4" fill="#42b4f5" />
-              <rect x="22" y="22" width="4" height="4" fill="#42b4f5" />
-            </svg>
+            <Image
+              src="/assets/innodata.png"
+              alt="Innodata Logo"
+              width={36}
+              height={36}
+              priority
+            />
           </div>
           <div>
             <div className={styles.brandName}>Innodata</div>
@@ -183,6 +179,70 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* About Us */}
+      <section className={styles.about} id="about">
+        <div className={styles.aboutInner}>
+          <div className={styles.aboutLayout}>
+
+            {/* Left: Text content */}
+            <div className={styles.aboutLeft}>
+              <div className={styles.sectionLabel}>About Us</div>
+              <h2 className={styles.aboutHeading}>
+                Where document complexity meets<br />structured clarity.
+              </h2>
+              <div className={styles.aboutAccent} />
+              <p className={styles.aboutText}>
+                At Innodata&apos;s Legal Regulatory Delivery Unit, we empower
+                organizations to manage complex documents
+                with clarity, accuracy, and speed. Through our platform{" "}
+                <strong>Structo</strong>, we transform traditional document
+                workflows into intelligent, automated processes that reduce
+                manual effort and improve compliance confidence.
+              </p>
+
+            </div>
+
+            {/* Right: Decorative panel */}
+            <div className={styles.aboutDecorPanel}>
+              <div className={styles.decorGrid}>
+                <div className={`${styles.decorCard} ${styles.decorCardDark}`}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#42b4f5" strokeWidth="1.8">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                  <span className={styles.decorCardLabel}>Compliance<br/>Validated</span>
+                  <div className={styles.decorCardBadge}>✓ Active</div>
+                </div>
+                <div className={`${styles.decorCard} ${styles.decorCardLight}`}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1e40af" strokeWidth="1.8">
+                    <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                  </svg>
+                  <span className={styles.decorCardLabel}>INNOD.XML<br/>Structured</span>
+                  <div className={styles.decorCardBadgeBlue}>100%</div>
+                </div>
+                <div className={`${styles.decorCard} ${styles.decorCardLight}`}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1e40af" strokeWidth="1.8">
+                    <path d="M9 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                    <path d="M15 17h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-4"/>
+                    <line x1="12" y1="3" x2="12" y2="21"/>
+                  </svg>
+                  <span className={styles.decorCardLabel}>Documents<br/>Compared</span>
+                  <div className={styles.decorCardBadgeBlue}>Live</div>
+                </div>
+                <div className={`${styles.decorCard} ${styles.decorCardDark}`}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#42b4f5" strokeWidth="1.8">
+                    <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                  </svg>
+                  <span className={styles.decorCardLabel}>Changes<br/>Detected</span>
+                  <div className={styles.decorCardBadge}>Real-time</div>
+                </div>
+              </div>
+              <div className={styles.decorOrb} />
+            </div>
+
+          </div>
+        </div>
+      </section>
+
       {/* Features */}
       <section className={styles.features} id="features">
         <div className={styles.featuresInner}>
@@ -241,8 +301,8 @@ export default function HomePage() {
                     <polyline points="8 6 2 12 8 18" />
                   </svg>
                 ),
-                title: "XML Structuring",
-                desc: "Generate well-formed XML outputs with validated structural elements from unstructured documents.",
+                title: "INNOD.XML Structuring",
+                desc: "Generate well-formed INNOD.XML outputs with validated structural elements from unstructured documents.",
               },
               {
                 icon: (
