@@ -22,8 +22,8 @@ export const removeToken = () => localStorage.removeItem('token');
 
 // ─── AUTH ──────────────────────────────────────────────────────────────────────
 export const authApi = {
-  login: (email: string, password: string) =>
-    api.post<AuthResponse>('/auth/login', { email, password }).then(r => r.data),
+  login: (identifier: string, password: string) =>
+    api.post<AuthResponse>('/auth/login', { identifier, password }).then(r => r.data),
 
   me: () =>
     api.get<{ user: User }>('/auth/me').then(r => r.data),

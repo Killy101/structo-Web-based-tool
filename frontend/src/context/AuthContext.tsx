@@ -16,7 +16,7 @@ interface AuthCtx {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (
-    email: string,
+    identifier: string,
     password: string,
   ) => Promise<{ mustChangePassword: boolean }>;
   logout: () => void;
@@ -58,8 +58,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     init();
   }, [refreshUser]);
 
-  const login = async (email: string, password: string) => {
-    const res = await authApi.login(email, password);
+  const login = async (identifier: string, password: string) => {
+    const res = await authApi.login(identifier, password);
     setToken(res.token);
     setUser(res.user as User);
     return { mustChangePassword: res.mustChangePassword };
@@ -68,6 +68,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => {
     removeToken();
     setUser(null);
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("signedOutNotice", "1");
+    }
     router.push("/login");
   };
 
