@@ -4,18 +4,12 @@ import prisma from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/authenticate';
 import { authorize } from '../middleware/authorize';
 import { Role } from '@prisma/client';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 const router = Router();
 
-// Gmail transporter
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+// Initialize Resend client
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Role creation permissions
 const CAN_CREATE: Partial<Record<Role, Role[]>> = {
@@ -116,7 +110,7 @@ router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async 
       },
     });
 
-    // Send email via Nodemailer (non-blocking)
+    // Send email via Resend (non-blocking)
     const loginUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
     const roleLabelMap: Record<string, string> = {
       SUPER_ADMIN: 'Super Admin',
@@ -127,8 +121,8 @@ router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async 
     };
     const roleLabel = roleLabelMap[role] ?? role;
 
-    transporter.sendMail({
-      from: `"STRUCTO" <${process.env.EMAIL_USER}>`,
+    resend.emails.send({
+      from: 'Structo <onboarding@resend.dev>',
       to: email,
       subject: 'Your Structo account has been created',
       html: `

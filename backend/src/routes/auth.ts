@@ -4,11 +4,14 @@ import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/authenticate';
 import { checkMustChangePassword } from '../middleware/mustChangePassword';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
 const router = Router();
+
+// Initialize Resend client
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ─── RATE LIMITERS ───────────────────────────────────────
 const loginLimiter = rateLimit({
@@ -178,15 +181,6 @@ router.get('/me', authenticate, checkMustChangePassword, async (req: AuthRequest
   }
 });
 
-// ─── EMAIL TRANSPORTER ───────────────────────────────────
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
 // ─── FORGOT PASSWORD ─────────────────────────────────────
 router.post('/forgot-password', forgotPasswordLimiter, async (req: Request, res: Response) => {
   try {
@@ -215,8 +209,8 @@ router.post('/forgot-password', forgotPasswordLimiter, async (req: Request, res:
 
     const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
 
-    await transporter.sendMail({
-      from: `"STRUCTO" <${process.env.EMAIL_USER}>`,
+    await resend.emails.send({
+      from: 'Structo <onboarding@resend.dev>',
       to: user.email,
       subject: 'Password Reset Request',
       html: `
