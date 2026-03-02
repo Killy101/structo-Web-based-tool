@@ -4,23 +4,49 @@ import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/authenticate';
 import { checkMustChangePassword } from '../middleware/mustChangePassword';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 
 const router = Router();
 
+// ─── RATE LIMITERS ───────────────────────────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: { error: 'Too many login attempts. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  message: { error: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ─── LOGIN ───────────────────────────────────────────────
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { identifier, password } = req.body;
 
     // 1. validate input
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'User ID or email and password are required' });
     }
 
-    // 2. find user
-    const user = await prisma.user.findUnique({ where: { email } });
+    // 2. find user by email OR userId
+    const trimmed = identifier.trim();
+    const isEmail = trimmed.includes('@');
+
+    const user = isEmail
+      ? await prisma.user.findUnique({ where: { email: trimmed } })
+      : await prisma.user.findUnique({ where: { userId: trimmed.toUpperCase() } });
+
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // 3. check if account is active
@@ -31,13 +57,13 @@ router.post('/login', async (req: Request, res: Response) => {
     // 4. check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // 5. update last login
     await prisma.user.update({
       where: { id: user.id },
-      data: { lastLoginAt: new Date() }
+      data: { lastLoginAt: new Date() },
     });
 
     // 6. generate token
@@ -46,7 +72,7 @@ router.post('/login', async (req: Request, res: Response) => {
         userId: user.id,
         role: user.role,
         email: user.email,
-        mustChangePassword: user.mustChangePassword
+        mustChangePassword: user.mustChangePassword,
       },
       process.env.JWT_SECRET!,
       { expiresIn: '7d' }
@@ -58,13 +84,13 @@ router.post('/login', async (req: Request, res: Response) => {
       mustChangePassword: user.mustChangePassword,
       user: {
         id: user.id,
+        userId: user.userId,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-      }
+      },
     });
-
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -88,7 +114,7 @@ router.post('/change-password', authenticate, async (req: AuthRequest, res: Resp
 
     // 3. get user from database
     const user = await prisma.user.findUnique({
-      where: { id: req.user!.userId }
+      where: { id: req.user!.userId },
     });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -112,12 +138,11 @@ router.post('/change-password', authenticate, async (req: AuthRequest, res: Resp
       where: { id: user.id },
       data: {
         password: hashedPassword,
-        mustChangePassword: false  // ← remove the forced change flag
-      }
+        mustChangePassword: false,
+      },
     });
 
     res.json({ message: 'Password changed successfully' });
-
   } catch (error) {
     console.error('Change password error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -131,6 +156,7 @@ router.get('/me', authenticate, checkMustChangePassword, async (req: AuthRequest
       where: { id: req.user!.userId },
       select: {
         id: true,
+        userId: true,
         email: true,
         firstName: true,
         lastName: true,
@@ -138,7 +164,7 @@ router.get('/me', authenticate, checkMustChangePassword, async (req: AuthRequest
         status: true,
         lastLoginAt: true,
         createdAt: true,
-      }
+      },
     });
 
     if (!user) {
@@ -146,9 +172,118 @@ router.get('/me', authenticate, checkMustChangePassword, async (req: AuthRequest
     }
 
     res.json({ user });
-
   } catch (error) {
     console.error('Get user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── EMAIL TRANSPORTER ───────────────────────────────────
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
+// ─── FORGOT PASSWORD ─────────────────────────────────────
+router.post('/forgot-password', forgotPasswordLimiter, async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    if (!user) {
+      return res.json({ message: 'If that email exists, a reset link has been sent.' });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetExpiry = new Date(Date.now() + 1000 * 60 * 60);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetToken: resetToken,
+        passwordResetExpiry: resetExpiry,
+      },
+    });
+
+    const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+
+    await transporter.sendMail({
+      from: `"STRUCTO" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: 'Password Reset Request',
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: auto; padding: 32px; border: 1px solid #e2e8f0; border-radius: 12px;">
+          <h2 style="color: #0f172a; margin-bottom: 8px;">Reset your password</h2>
+          <p style="color: #64748b; font-size: 14px;">
+            You requested a password reset for your STRUCTO account. Click the button below to set a new password.
+          </p>
+          <a href="${resetUrl}"
+            style="display: inline-block; margin: 24px 0; background: #0f172a; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 600;">
+            Reset Password →
+          </a>
+          <p style="color: #94a3b8; font-size: 12px;">
+            This link expires in <strong>1 hour</strong>. If you didn't request this, you can safely ignore this email.
+          </p>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+          <p style="color: #cbd5e1; font-size: 11px;">© 2026 Innodata — Legal Regulatory Delivery Unit</p>
+        </div>
+      `,
+    });
+
+    res.json({ message: 'If that email exists, a reset link has been sent.' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── RESET PASSWORD ──────────────────────────────────────
+router.post('/reset-password', async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: 'Token and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        passwordResetToken: token,
+        passwordResetExpiry: { gt: new Date() },
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordResetToken: null,
+        passwordResetExpiry: null,
+        mustChangePassword: false,
+      },
+    });
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -424,19 +424,22 @@
   margin-top: -6px;
 }
 
-.forgotLink {
-  font-size: 12px;
-  font-weight: 500;
-  color: #42b4f5;
-  text-decoration: none;
-  letter-spacing: 0.01em;
-  transition: color 0.2s, opacity 0.2s;
-  opacity: 0.85;
+.forgotPasswordSection {
+  margin-top: 12px;
+  text-align: right;
 }
 
-.forgotLink:hover {
-  color: #0ea5e9;
-  opacity: 1;
+.forgotPasswordLink {
+  font-size: 0.875rem;
+  color: #4a90a4;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.forgotPasswordLink:hover {
+  color: #2c6e85;
+  text-decoration: underline;
 }
 
 /* ─── SUBMIT BUTTON ──────────────────────────────────────────────── */

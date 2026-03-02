@@ -4,10 +4,18 @@ import prisma from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/authenticate';
 import { authorize } from '../middleware/authorize';
 import { Role } from '@prisma/client';
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 
 const router = Router();
-const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Gmail transporter
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 // Role creation permissions
 const CAN_CREATE: Partial<Record<Role, Role[]>> = {
@@ -23,12 +31,10 @@ const CAN_DEACTIVATE: Partial<Record<Role, Role[]>> = {
 function generatePassword(): string {
   const alpha   = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
   const nums    = '23456789';
-  const special = '!@#$%';
-  let p = '';
-  for (let i = 0; i < 9; i++) p += alpha[Math.floor(Math.random() * alpha.length)];
-  p += nums[Math.floor(Math.random() * nums.length)];
-  p += special[Math.floor(Math.random() * special.length)];
-  return p;
+  let suffix = '';
+  for (let i = 0; i < 5; i++) suffix += alpha[Math.floor(Math.random() * alpha.length)];
+  suffix += nums[Math.floor(Math.random() * nums.length)];
+  return `innod@${suffix}`;
 }
 
 // ── GET /users (ADMIN, SUPER_ADMIN) ───────────────────────────────────────────
@@ -37,7 +43,7 @@ router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: A
     const users = await prisma.user.findMany({
       orderBy: { createdAt: 'desc' },
       select: {
-        id: true, email: true, firstName: true, lastName: true,
+        id: true, userId: true, email: true, firstName: true, lastName: true,
         role: true, status: true, mustChangePassword: true,
         lastLoginAt: true, createdAt: true, updatedAt: true, createdById: true,
       },
@@ -52,17 +58,26 @@ router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: A
 // ── POST /users/create ────────────────────────────────────────────────────────
 router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const { firstName, lastName, email, role } = req.body;
+    const { userId, email, role, firstName, lastName } = req.body;
     const actorRole = req.user!.role as Role;
 
-    // Validate required fields
-    if (!firstName || !lastName || !email || !role) {
-      return res.status(400).json({ error: 'All fields are required' });
+    // Validate required fields (firstName and lastName are optional)
+    if (!userId || !email || !role) {
+      return res.status(400).json({ error: 'User ID, email, and role are required' });
     }
 
-    // Email domain check
-    if (!email.toLowerCase().endsWith('@innodata.com')) {
-      return res.status(400).json({ error: 'Only @innodata.com emails are allowed' });
+    // Validate userId format (min 6 alphanumeric characters)
+    const trimmedUserId = userId.trim().toUpperCase();
+    if (trimmedUserId.length < 6) {
+      return res.status(400).json({ error: 'User ID must be at least 6 characters' });
+    }
+    if (!/^[a-zA-Z0-9]+$/.test(trimmedUserId)) {
+      return res.status(400).json({ error: 'User ID must contain only letters and numbers' });
+    }
+
+    // Email format check
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
     }
 
     // Permission check
@@ -72,9 +87,15 @@ router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async 
     }
 
     // Check duplicate email
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
+    const existingEmail = await prisma.user.findUnique({ where: { email } });
+    if (existingEmail) {
       return res.status(409).json({ error: 'A user with this email already exists' });
+    }
+
+    // Check duplicate userId
+    const existingUserId = await prisma.user.findUnique({ where: { userId: trimmedUserId } });
+    if (existingUserId) {
+      return res.status(409).json({ error: 'A user with this User ID already exists' });
     }
 
     // Generate + hash password
@@ -84,26 +105,94 @@ router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async 
     // Create user
     const newUser = await prisma.user.create({
       data: {
-        firstName, lastName, email,
+        userId: trimmedUserId,
+        email,
         role: role as Role,
         password: hashedPassword,
         mustChangePassword: true,
         createdById: req.user!.userId,
+        firstName: firstName?.trim() || null,
+        lastName: lastName?.trim() || null,
       },
     });
 
-    // Send email via Resend (non-blocking)
-    resend.emails.send({
-      from:    'Structo <no-reply@innodata.com>',
-      to:      email,
+    // Send email via Nodemailer (non-blocking)
+    const loginUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+    const roleLabelMap: Record<string, string> = {
+      SUPER_ADMIN: 'Super Admin',
+      ADMIN: 'Admin',
+      MANAGER_QA: 'QA Manager',
+      MANAGER_QC: 'QC Manager',
+      USER: 'User',
+    };
+    const roleLabel = roleLabelMap[role] ?? role;
+
+    transporter.sendMail({
+      from: `"STRUCTO" <${process.env.EMAIL_USER}>`,
+      to: email,
       subject: 'Your Structo account has been created',
       html: `
-        <h2>Welcome to Structo, ${firstName}!</h2>
-        <p>Your account has been created by an administrator.</p>
-        <p><strong>Email:</strong> ${email}</p>
-        <p><strong>Temporary Password:</strong> <code>${generatedPassword}</code></p>
-        <p>Please log in and change your password immediately.</p>
-        <p>Login at: ${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/login</p>
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#f1f5f9;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;">
+  <div style="max-width:560px;margin:40px auto;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+    <div style="background:#1a56f0;padding:32px 40px;text-align:center;">
+      <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:0.5px;">STRUCTO</h1>
+      <p style="margin:6px 0 0;color:rgba(255,255,255,0.8);font-size:13px;font-weight:400;">Document Processing Platform</p>
+    </div>
+    <div style="padding:36px 40px 28px;">
+      <h2 style="margin:0 0 6px;color:#0f172a;font-size:18px;font-weight:600;">Your account has been created</h2>
+      <p style="margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.5;">
+        An administrator has created a Structo account for you. Below are your login credentials. Please change your password immediately after your first login.
+      </p>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:20px 24px;margin-bottom:24px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="padding:8px 0;color:#94a3b8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:120px;vertical-align:top;">User ID</td>
+            <td style="padding:8px 0;color:#0f172a;font-size:14px;font-weight:600;">${trimmedUserId}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 0;color:#94a3b8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;vertical-align:top;">Email</td>
+            <td style="padding:8px 0;color:#0f172a;font-size:14px;">${email}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 0;color:#94a3b8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;vertical-align:top;">Role</td>
+            <td style="padding:8px 0;color:#0f172a;font-size:14px;">${roleLabel}</td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding:12px 0 0;"><div style="border-top:1px solid #e2e8f0;"></div></td>
+          </tr>
+          <tr>
+            <td style="padding:12px 0 4px;color:#94a3b8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;vertical-align:top;">Password</td>
+            <td style="padding:10px 0 4px;">
+              <code style="display:inline-block;background:#1a56f0;color:#ffffff;padding:6px 14px;border-radius:6px;font-size:16px;font-weight:700;letter-spacing:2px;font-family:'Courier New',monospace;">${generatedPassword}</code>
+            </td>
+          </tr>
+        </table>
+      </div>
+      <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:28px;">
+        <p style="margin:0;color:#92400e;font-size:13px;line-height:1.5;">
+          ⚠️ This is a temporary password. You will be required to change it upon your first login. Do not share this password with anyone.
+        </p>
+      </div>
+      <div style="text-align:center;margin-bottom:8px;">
+        <a href="${loginUrl}/login" style="display:inline-block;background:#1a56f0;color:#ffffff;padding:14px 40px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;letter-spacing:0.3px;">Log in to Structo</a>
+      </div>
+      <p style="text-align:center;margin:12px 0 0;color:#94a3b8;font-size:12px;">${loginUrl}/login</p>
+    </div>
+    <div style="height:1px;background:#e2e8f0;margin:0 40px;"></div>
+    <div style="padding:24px 40px;text-align:center;">
+      <p style="margin:0 0 4px;color:#64748b;font-size:13px;">Need help? Contact your system administrator or reach out to</p>
+      <a href="mailto:support@innodata.com" style="color:#1a56f0;text-decoration:none;font-size:13px;font-weight:600;">support@innodata.com</a>
+    </div>
+    <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:20px 40px;text-align:center;">
+      <p style="margin:0;color:#94a3b8;font-size:11px;">&copy; 2025 Structo by Innodata. All rights reserved.</p>
+      <p style="margin:4px 0 0;color:#cbd5e1;font-size:11px;">This is an automated message. Please do not reply to this email.</p>
+    </div>
+  </div>
+</body>
+</html>
       `,
     }).catch(e => console.error('Email send error:', e));
 
@@ -122,8 +211,7 @@ router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async 
 // ── PATCH /users/:id/deactivate ───────────────────────────────────────────────
 router.patch('/:id/deactivate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-   
-const targetId = parseInt(req.params.id as string);
+    const targetId = parseInt(req.params.id as string);
     const actorRole = req.user!.role as Role;
 
     const target = await prisma.user.findUnique({ where: { id: targetId } });
@@ -150,8 +238,7 @@ const targetId = parseInt(req.params.id as string);
 // ── PATCH /users/:id/activate ─────────────────────────────────────────────────
 router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    
-const targetId = parseInt(req.params.id as string);
+    const targetId = parseInt(req.params.id as string);
     const actorRole = req.user!.role as Role;
 
     const target = await prisma.user.findUnique({ where: { id: targetId } });

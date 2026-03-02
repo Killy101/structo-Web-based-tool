@@ -22,7 +22,6 @@ import {
   CAN_CREATE_ROLES,
   canDeactivate,
   formatDate,
-  isInnodataEmail,
   copyToClipboard,
 } from "../../../utils/index";
 import { Role, User, CreateUserPayload } from "../../../types";
@@ -34,6 +33,12 @@ function getErrorMessage(e: unknown): string {
     return axiosErr.response?.data?.error ?? "An error occurred";
   }
   return "An error occurred";
+}
+
+/** Returns a display name: "firstName lastName" if available, otherwise userId */
+function getDisplayName(u: Partial<User>): string {
+  const full = [u.firstName, u.lastName].filter(Boolean).join(" ").trim();
+  return full || u.userId || "Unknown";
 }
 
 // ─── CREATE USER MODAL ────────────────────────────────────────────────────────
@@ -50,9 +55,10 @@ function CreateUserModal({
 }) {
   const { createUser } = useUsers();
   const [form, setForm] = useState({
+    userId: "",
+    email: "",
     firstName: "",
     lastName: "",
-    email: "",
     role: "USER" as Role,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -62,11 +68,23 @@ function CreateUserModal({
 
   const validate = () => {
     const e: Record<string, string> = {};
-    if (!form.firstName.trim()) e.firstName = "Required";
-    if (!form.lastName.trim()) e.lastName = "Required";
-    if (!form.email.trim()) e.email = "Required";
-    else if (!isInnodataEmail(form.email))
-      e.email = "Must be an @innodata.com email";
+
+    if (!form.userId.trim()) {
+      e.userId = "Required";
+    } else if (form.userId.trim().length < 6) {
+      e.userId = "User ID must be at least 6 characters";
+    } else if (!/^[a-zA-Z0-9]+$/.test(form.userId.trim())) {
+      e.userId = "User ID must contain only letters and numbers";
+    }
+
+    if (!form.email.trim()) {
+      e.email = "Required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+      e.email = "Must be a valid email address";
+    }
+
+    // firstName and lastName are NOT validated — they're optional
+
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -75,9 +93,25 @@ function CreateUserModal({
     if (!validate()) return;
     setLoading(true);
     try {
-      const result = await createUser(form as CreateUserPayload);
-      onSuccess(result.generatedPassword, { ...form });
-      setForm({ firstName: "", lastName: "", email: "", role: "USER" });
+      const payload: Record<string, string> = {
+        userId: form.userId.trim().toUpperCase(),
+        email: form.email.trim(),
+        role: form.role,
+      };
+
+      // Only include names if provided
+      if (form.firstName.trim()) payload.firstName = form.firstName.trim();
+      if (form.lastName.trim()) payload.lastName = form.lastName.trim();
+
+      const result = await createUser(payload as unknown as CreateUserPayload);
+      onSuccess(result.generatedPassword, { ...payload } as Partial<User>);
+      setForm({
+        userId: "",
+        email: "",
+        firstName: "",
+        lastName: "",
+        role: "USER",
+      });
       setErrors({});
       onClose();
     } catch (e: unknown) {
@@ -90,33 +124,52 @@ function CreateUserModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Add New User">
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <Input
-            label="First Name"
-            value={form.firstName}
-            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
-            placeholder="Juan"
-            error={errors.firstName}
-            required
-          />
-          <Input
-            label="Last Name"
-            value={form.lastName}
-            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
-            placeholder="Dela Cruz"
-            error={errors.lastName}
-            required
-          />
-        </div>
+        {/* User ID Field */}
         <Input
-          label="Innodata Email"
+          label="Employee ID"
+          type="text"
+          value={form.userId}
+          onChange={(e) =>
+            setForm({ ...form, userId: e.target.value.toUpperCase() })
+          }
+          placeholder="e.g. GDT97H"
+          error={errors.userId}
+          required
+        />
+        <p className="text-xs text-slate-400 -mt-2">
+          Minimum 6 alphanumeric characters (letters and numbers only)
+        </p>
+
+        {/* Email Field */}
+        <Input
+          label="Email Address"
           type="email"
           value={form.email}
           onChange={(e) => setForm({ ...form, email: e.target.value })}
-          placeholder="juan.delacruz@innodata.com"
+          placeholder="e.g. juan.delacruz@gmail.com"
           error={errors.email}
           required
         />
+
+        {/* First Name (Optional) */}
+        <Input
+          label="First Name"
+          type="text"
+          value={form.firstName}
+          onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+          placeholder="e.g. Juan (optional)"
+        />
+
+        {/* Last Name (Optional) */}
+        <Input
+          label="Last Name"
+          type="text"
+          value={form.lastName}
+          onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+          placeholder="e.g. Dela Cruz (optional)"
+        />
+
+        {/* Role Selector */}
         <Select
           label="Role"
           value={form.role}
@@ -130,13 +183,15 @@ function CreateUserModal({
           ))}
         </Select>
 
+        {/* Info Banner */}
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-xl p-3">
           <p className="text-xs text-amber-700 dark:text-amber-400">
             ⚡ A secure password will be auto-generated and sent to the
-            user&apos;s Innodata email. The user must change it on first login.
+            user&apos;s email. The user must change it on first login.
           </p>
         </div>
 
+        {/* Submit Error */}
         {errors.submit && (
           <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">
@@ -145,6 +200,7 @@ function CreateUserModal({
           </div>
         )}
 
+        {/* Actions */}
         <div className="flex gap-3 pt-2">
           <Button
             variant="secondary"
@@ -191,10 +247,18 @@ function PasswordModal({
         <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 dark:bg-emerald-900/30 rounded-full mx-auto">
           <span className="text-3xl">✅</span>
         </div>
+
         <div className="text-center">
           <p className="font-semibold text-slate-900 dark:text-white">
-            {userData?.firstName} {userData?.lastName}
+            {userData?.userId}
           </p>
+          {(userData?.firstName || userData?.lastName) && (
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              {[userData.firstName, userData.lastName]
+                .filter(Boolean)
+                .join(" ")}
+            </p>
+          )}
           <p className="text-sm text-slate-500">{userData?.email}</p>
           {userData?.role && (
             <Badge className={`mt-1.5 ${ROLE_BADGE_COLORS[userData.role]}`}>
@@ -202,7 +266,6 @@ function PasswordModal({
             </Badge>
           )}
         </div>
-
         <div>
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider text-center mb-2">
             Temporary Password
@@ -219,14 +282,12 @@ function PasswordModal({
             </button>
           </div>
         </div>
-
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-xl p-3 text-center">
           <p className="text-xs text-amber-700 dark:text-amber-400">
             ⚠️ This password is shown only once. An email has been sent to the
             user.
           </p>
         </div>
-
         <Button className="w-full justify-center" onClick={onClose}>
           Done
         </Button>
@@ -252,7 +313,8 @@ export default function UsersPage() {
   const actorRole = currentUser?.role ?? "USER";
 
   const filtered = users.filter((u) => {
-    const q = `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase();
+    const q =
+      `${u.userId ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.email}`.toLowerCase();
     return (
       q.includes(search.toLowerCase()) &&
       (roleFilter === "ALL" || u.role === roleFilter) &&
@@ -261,13 +323,14 @@ export default function UsersPage() {
   });
 
   const handleToggle = async (u: User) => {
+    const name = getDisplayName(u);
     try {
       if (u.status === "ACTIVE") {
         await deactivateUser(u.id);
-        show(`${u.firstName} ${u.lastName} deactivated`, "success");
+        show(`${name} deactivated`, "success");
       } else {
         await activateUser(u.id);
-        show(`${u.firstName} ${u.lastName} activated`, "success");
+        show(`${name} activated`, "success");
       }
     } catch (e: unknown) {
       show(getErrorMessage(e), "error");
@@ -285,17 +348,27 @@ export default function UsersPage() {
     {
       key: "user",
       header: "User",
-      render: (u: User) => (
-        <div className="flex items-center gap-3">
-          <Avatar firstName={u.firstName} lastName={u.lastName} />
-          <div>
-            <p className="text-sm font-medium text-slate-900 dark:text-white">
-              {u.firstName} {u.lastName}
-            </p>
-            <p className="text-xs text-slate-400">{u.email}</p>
+      render: (u: User) => {
+        const displayName = getDisplayName(u);
+        const hasName = u.firstName || u.lastName;
+        return (
+          <div className="flex items-center gap-3">
+            <Avatar
+              firstName={u.firstName ?? u.userId?.[0]}
+              lastName={u.lastName ?? u.userId?.[1]}
+            />
+            <div>
+              <p className="text-sm font-medium text-slate-900 dark:text-white">
+                {hasName ? displayName : u.userId}
+              </p>
+              {hasName && u.userId && (
+                <p className="text-xs text-slate-400">{u.userId}</p>
+              )}
+              <p className="text-xs text-slate-400">{u.email}</p>
+            </div>
           </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: "role",
@@ -380,7 +453,7 @@ export default function UsersPage() {
           <SearchInput
             value={search}
             onChange={setSearch}
-            placeholder="Search by name or email…"
+            placeholder="Search by ID, name, or email…"
             className="flex-1 min-w-48"
           />
           <select

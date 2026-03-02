@@ -7,18 +7,14 @@ import api from "@/app/lib/api";
 import axios from "axios";
 
 interface FormErrors {
-  email?: string;
+  identifier?: string;
   password?: string;
   general?: string;
 }
 
-function validateEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
@@ -27,10 +23,8 @@ export default function LoginPage() {
   function validate(): boolean {
     const newErrors: FormErrors = {};
 
-    if (!email) {
-      newErrors.email = "Email is required";
-    } else if (!validateEmail(email)) {
-      newErrors.email = "Please enter a valid email address";
+    if (!identifier.trim()) {
+      newErrors.identifier = "User ID or email is required";
     }
 
     if (!password) {
@@ -51,10 +45,19 @@ export default function LoginPage() {
     setErrors({});
 
     try {
-      const response = await api.post("/auth/login", { email, password });
-      const { token } = response.data;
+      const response = await api.post("/auth/login", {
+        identifier: identifier.trim(),
+        password,
+      });
+      const { token, mustChangePassword } = response.data;
+
       localStorage.setItem("token", token);
-      router.push("/dashboard");
+
+      if (mustChangePassword) {
+        router.push("/change-password");
+      } else {
+        router.push("/dashboard");
+      }
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
         setErrors({
@@ -159,8 +162,8 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className={styles.form} noValidate>
             <div className={styles.field}>
-              <label htmlFor="email" className={styles.label}>
-                Email Address
+              <label htmlFor="identifier" className={styles.label}>
+                User ID or Email
               </label>
               <div className={styles.inputWrapper}>
                 <svg
@@ -172,25 +175,25 @@ export default function LoginPage() {
                   stroke="currentColor"
                   strokeWidth="2"
                 >
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
                 </svg>
                 <input
-                  id="email"
-                  type="email"
-                  value={email}
+                  id="identifier"
+                  type="text"
+                  value={identifier}
                   onChange={(e) => {
-                    setEmail(e.target.value);
-                    if (errors.email)
-                      setErrors((prev) => ({ ...prev, email: undefined }));
+                    setIdentifier(e.target.value);
+                    if (errors.identifier)
+                      setErrors((prev) => ({ ...prev, identifier: undefined }));
                   }}
-                  placeholder="your@email.com"
-                  className={`${styles.input} ${errors.email ? styles.inputError : ""}`}
-                  autoComplete="email"
+                  placeholder="Employee ID or email address"
+                  className={`${styles.input} ${errors.identifier ? styles.inputError : ""}`}
+                  autoComplete="username"
                 />
               </div>
-              {errors.email && (
-                <p className={styles.fieldError}>{errors.email}</p>
+              {errors.identifier && (
+                <p className={styles.fieldError}>{errors.identifier}</p>
               )}
             </div>
 
@@ -289,7 +292,11 @@ export default function LoginPage() {
               )}
             </button>
           </form>
-
+          <div className={styles.forgotPasswordSection}>
+            <Link href="/forgot-password" className={styles.forgotPasswordLink}>
+              Forgot password?
+            </Link>
+          </div>
           <p className={styles.footerNote}>
             © 2026 Innodata — Legal Regulatory Delivery Unit
           </p>

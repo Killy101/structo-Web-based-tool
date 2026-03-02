@@ -92,20 +92,18 @@ export const formatTimeAgo = (date: string): string => {
   return `${Math.floor(hrs / 24)}d ago`;
 };
 
-export const getInitials = (firstName: string, lastName: string) =>
+export const getInitials = (firstName?: string | null, lastName?: string | null) =>
   `${firstName?.[0] ?? ''}${lastName?.[0] ?? ''}`.toUpperCase();
 
 export const isInnodataEmail = (email: string) => email.toLowerCase().endsWith('@innodata.com');
 
 export const generatePassword = (): string => {
-  const alpha   = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
-  const nums    = '23456789';
-  const special = '!@#$%';
-  let p = '';
-  for (let i = 0; i < 9; i++) p += alpha[Math.floor(Math.random() * alpha.length)];
-  p += nums[Math.floor(Math.random() * nums.length)];
-  p += special[Math.floor(Math.random() * special.length)];
-  return p;
+  const alpha = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
+  const nums  = '23456789';
+  let suffix = '';
+  for (let i = 0; i < 5; i++) suffix += alpha[Math.floor(Math.random() * alpha.length)];
+  suffix += nums[Math.floor(Math.random() * nums.length)];
+  return `innod@${suffix}`;
 };
 
 export const copyToClipboard = async (text: string): Promise<boolean> => {
