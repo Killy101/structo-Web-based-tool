@@ -493,7 +493,6 @@
   margin-top: 4px;
 }
 
-<<<<<<< HEAD
 .forgotLink {
   font-size: clamp(11px, 0.8vw, 13px);
   font-weight: 500;
@@ -504,25 +503,6 @@
 }
 
 .forgotLink:hover { color: #0ea5e9; opacity: 1; }
-=======
-.forgotPasswordSection {
-  margin-top: 12px;
-  text-align: right;
-}
-
-.forgotPasswordLink {
-  font-size: 0.875rem;
-  color: #4a90a4;
-  text-decoration: none;
-  font-weight: 500;
-  transition: color 0.2s ease;
-}
-
-.forgotPasswordLink:hover {
-  color: #2c6e85;
-  text-decoration: underline;
-}
->>>>>>> 25747ac81b0e4784f6425b31212875768b594248
 
 /* ─── SUBMIT BUTTON ──────────────────────────────────────────────── */
 .submitBtn {

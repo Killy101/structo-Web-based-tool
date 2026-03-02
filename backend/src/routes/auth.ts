@@ -33,7 +33,6 @@ const forgotPasswordLimiter = rateLimit({
 // ─── LOGIN ───────────────────────────────────────────────
 router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   try {
-<<<<<<< HEAD
     const { password } = req.body;
     const identifier = String(req.body.identifier ?? req.body.email ?? req.body.userId ?? '').trim();
 
@@ -71,25 +70,6 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid email/user ID or password' });
-=======
-    const { identifier, password } = req.body;
-
-    // 1. validate input
-    if (!identifier || !password) {
-      return res.status(400).json({ error: 'User ID or email and password are required' });
-    }
-
-    // 2. find user by email OR userId
-    const trimmed = identifier.trim();
-    const isEmail = trimmed.includes('@');
-
-    const user = isEmail
-      ? await prisma.user.findUnique({ where: { email: trimmed } })
-      : await prisma.user.findUnique({ where: { userId: trimmed.toUpperCase() } });
-
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
->>>>>>> 25747ac81b0e4784f6425b31212875768b594248
     }
 
     // 3. check if account is active
@@ -100,11 +80,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // 4. check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-<<<<<<< HEAD
       return res.status(401).json({ error: 'Invalid email/user ID or password' });
-=======
-      return res.status(401).json({ error: 'Invalid credentials' });
->>>>>>> 25747ac81b0e4784f6425b31212875768b594248
     }
 
     // 5. update last login
