@@ -11,7 +11,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 export const ROLE_BADGE_COLORS: Record<Role, string> = {
   SUPER_ADMIN: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
-  ADMIN: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+  ADMIN: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400', 
   MANAGER_QA: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
   MANAGER_QC: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400',
   USER: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',

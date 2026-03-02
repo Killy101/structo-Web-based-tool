@@ -43,141 +43,143 @@ export default function HomePage() {
       </nav>
 
       {/* Hero */}
-      <section className={styles.hero}>
-        <div className={styles.heroContent}>
-          <div className={styles.heroBadge}>
-            Powered by AI · Enterprise Grade
+      <div className={styles.heroWrapper}>
+        <section className={styles.hero}>
+          <div className={styles.heroContent}>
+            <div className={styles.heroBadge}>
+              Powered by LRDU · Enterprise Grade
+            </div>
+            <h1 className={styles.heroTitle}>
+              Structo: A Web-Based Platform for Intelligent Document Comparison,
+              Change Detection, and Structuring
+            </h1>
+            <p className={styles.heroDesc}>
+              The system provides an advanced web-based solution that compares
+              document versions, detects content changes, validates structural
+              elements, and generates structured outputs such as XML.
+            </p>
+            <div className={styles.heroCtas}>
+              <Link href="/login" className={styles.ctaPrimary}>
+                Get Started
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <path d="M5 12h14M12 5l7 7-7 7" />
+                </svg>
+              </Link>
+              <a href="#features" className={styles.ctaSecondary}>
+                Learn More
+              </a>
+            </div>
           </div>
-          <h1 className={styles.heroTitle}>
-            Structo: A Web-Based Platform for Intelligent Document Comparison,
-            Change Detection, and Structuring
-          </h1>
-          <p className={styles.heroDesc}>
-            The system provides an advanced web-based solution that compares
-            document versions, detects content changes, validates structural
-            elements, and generates structured outputs such as XML.
-          </p>
-          <div className={styles.heroCtas}>
-            <Link href="/login" className={styles.ctaPrimary}>
-              Get Started
+
+          <div className={styles.heroVisual}>
+            <div className={styles.heroCard}>
+              <div className={styles.cardHeader}>
+                <span
+                  className={styles.cardDot}
+                  style={{ background: "#ef4444" }}
+                />
+                <span
+                  className={styles.cardDot}
+                  style={{ background: "#f59e0b" }}
+                />
+                <span
+                  className={styles.cardDot}
+                  style={{ background: "#10b981" }}
+                />
+                <span
+                  style={{
+                    marginLeft: "auto",
+                    fontSize: "11px",
+                    color: "#94a3b8",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  document_v2.xml
+                </span>
+              </div>
+              <div className={styles.cardBody}>
+                <div className={styles.diffLine + " " + styles.diffRemoved}>
+                  &lt;section id=&quot;clause-4&quot;&gt;
+                </div>
+                <div className={styles.diffLine + " " + styles.diffAdded}>
+                  &lt;section id=&quot;clause-4&quot; rev=&quot;2024&quot;&gt;
+                </div>
+                <div className={styles.diffLine}>
+                  {" "}
+                  &lt;title&gt;Regulatory Compliance&lt;/title&gt;
+                </div>
+                <div className={styles.diffLine + " " + styles.diffRemoved}>
+                  {" "}
+                  &lt;status&gt;pending&lt;/status&gt;
+                </div>
+                <div className={styles.diffLine + " " + styles.diffAdded}>
+                  {" "}
+                  &lt;status&gt;approved&lt;/status&gt;
+                </div>
+                <div className={styles.diffLine}>
+                  {" "}
+                  &lt;effective&gt;2024-01-01&lt;/effective&gt;
+                </div>
+                <div className={styles.diffLine}>&lt;/section&gt;</div>
+              </div>
+              <div className={styles.cardFooter}>
+                <span
+                  className={styles.changeBadge}
+                  style={{ background: "#fef2f2", color: "#ef4444" }}
+                >
+                  2 removed
+                </span>
+                <span
+                  className={styles.changeBadge}
+                  style={{ background: "#f0fdf4", color: "#10b981" }}
+                >
+                  2 added
+                </span>
+              </div>
+            </div>
+            <div
+              className={styles.floatingChip}
+              style={{ top: "20px", right: "-20px" }}
+            >
               <svg
-                width="18"
-                height="18"
+                width="14"
+                height="14"
                 viewBox="0 0 24 24"
                 fill="none"
-                stroke="currentColor"
+                stroke="#10b981"
                 strokeWidth="2.5"
               >
-                <path d="M5 12h14M12 5l7 7-7 7" />
+                <path d="M20 6L9 17l-5-5" />
               </svg>
-            </Link>
-            <a href="#features" className={styles.ctaSecondary}>
-              Learn More
-            </a>
-          </div>
-        </div>
-
-        <div className={styles.heroVisual}>
-          <div className={styles.heroCard}>
-            <div className={styles.cardHeader}>
-              <span
-                className={styles.cardDot}
-                style={{ background: "#ef4444" }}
-              />
-              <span
-                className={styles.cardDot}
-                style={{ background: "#f59e0b" }}
-              />
-              <span
-                className={styles.cardDot}
-                style={{ background: "#10b981" }}
-              />
-              <span
-                style={{
-                  marginLeft: "auto",
-                  fontSize: "11px",
-                  color: "#94a3b8",
-                  fontFamily: "monospace",
-                }}
-              >
-                document_v2.xml
-              </span>
+              XML Validated
             </div>
-            <div className={styles.cardBody}>
-              <div className={styles.diffLine + " " + styles.diffRemoved}>
-                &lt;section id=&quot;clause-4&quot;&gt;
-              </div>
-              <div className={styles.diffLine + " " + styles.diffAdded}>
-                &lt;section id=&quot;clause-4&quot; rev=&quot;2024&quot;&gt;
-              </div>
-              <div className={styles.diffLine}>
-                {" "}
-                &lt;title&gt;Regulatory Compliance&lt;/title&gt;
-              </div>
-              <div className={styles.diffLine + " " + styles.diffRemoved}>
-                {" "}
-                &lt;status&gt;pending&lt;/status&gt;
-              </div>
-              <div className={styles.diffLine + " " + styles.diffAdded}>
-                {" "}
-                &lt;status&gt;approved&lt;/status&gt;
-              </div>
-              <div className={styles.diffLine}>
-                {" "}
-                &lt;effective&gt;2024-01-01&lt;/effective&gt;
-              </div>
-              <div className={styles.diffLine}>&lt;/section&gt;</div>
-            </div>
-            <div className={styles.cardFooter}>
-              <span
-                className={styles.changeBadge}
-                style={{ background: "#fef2f2", color: "#ef4444" }}
-              >
-                2 removed
-              </span>
-              <span
-                className={styles.changeBadge}
-                style={{ background: "#f0fdf4", color: "#10b981" }}
-              >
-                2 added
-              </span>
-            </div>
-          </div>
-          <div
-            className={styles.floatingChip}
-            style={{ top: "20px", right: "-20px" }}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#10b981"
-              strokeWidth="2.5"
+            <div
+              className={styles.floatingChip}
+              style={{ bottom: "40px", left: "-30px" }}
             >
-              <path d="M20 6L9 17l-5-5" />
-            </svg>
-            XML Validated
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#42b4f5"
+                strokeWidth="2.5"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 8v4l3 3" />
+              </svg>
+              Change Detected
+            </div>
           </div>
-          <div
-            className={styles.floatingChip}
-            style={{ bottom: "40px", left: "-30px" }}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#42b4f5"
-              strokeWidth="2.5"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 8v4l3 3" />
-            </svg>
-            Change Detected
-          </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
       {/* About Us */}
       <section className={styles.about} id="about">
@@ -199,7 +201,6 @@ export default function HomePage() {
                 workflows into intelligent, automated processes that reduce
                 manual effort and improve compliance confidence.
               </p>
-
             </div>
 
             {/* Right: Decorative panel */}
@@ -361,7 +362,7 @@ export default function HomePage() {
             </div>
           </div>
           <div style={{ color: "#64748b", fontSize: "13px" }}>
-            © 2026 Innodata. All rights reserved.
+            © 2026 Innodata. All rights reserved. A&M
           </div>
         </div>
       </footer>

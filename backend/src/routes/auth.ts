@@ -10,17 +10,43 @@ const router = Router();
 // ─── LOGIN ───────────────────────────────────────────────
 router.post('/login', async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const identifier = String(req.body.identifier ?? req.body.email ?? req.body.userId ?? '').trim();
 
     // 1. validate input
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'Email/User ID and password are required' });
     }
 
     // 2. find user
-    const user = await prisma.user.findUnique({ where: { email } });
+    const normalizedIdentifier = identifier.toLowerCase();
+    const superAdminUserId = (process.env.SUPERADMIN_USERID ?? 'SADMIN').toLowerCase();
+
+    let user = await prisma.user.findFirst({
+      where: {
+        email: { equals: identifier, mode: 'insensitive' }
+      }
+    });
+
+    if (!user && !identifier.includes('@')) {
+      if (normalizedIdentifier === superAdminUserId) {
+        user = await prisma.user.findFirst({
+          where: { role: 'SUPER_ADMIN' },
+          orderBy: { id: 'asc' }
+        });
+      }
+
+      if (!user) {
+        user = await prisma.user.findFirst({
+          where: {
+            email: { startsWith: `${identifier}@`, mode: 'insensitive' }
+          }
+        });
+      }
+    }
+
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid email/user ID or password' });
     }
 
     // 3. check if account is active
@@ -31,7 +57,7 @@ router.post('/login', async (req: Request, res: Response) => {
     // 4. check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid email/user ID or password' });
     }
 
     // 5. update last login

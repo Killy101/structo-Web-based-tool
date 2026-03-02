@@ -2,6 +2,20 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer utilities {
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -53,4 +67,8 @@ input {
 a {
   text-decoration: none;
   color: inherit;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
 }
