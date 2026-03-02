@@ -33,14 +33,16 @@ model User {
   id                 Int       @id @default(autoincrement())
   email              String    @unique
   password           String
-  firstName          String
-  lastName           String
+  firstName          String?
+  lastName           String?
   role               Role      @default(USER)
   status             Status    @default(ACTIVE)
   mustChangePassword Boolean   @default(true)
   lastLoginAt        DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
+  passwordResetToken   String?      
+  passwordResetExpiry  DateTime?
 
   createdById  Int?
   createdBy    User?  @relation("UserCreatedBy", fields: [createdById], references: [id])
@@ -48,6 +50,7 @@ model User {
 
   uploads     FileUpload[]
   validations Validation[]
+  userId  String  @unique
 }
 
 model FileUpload {
@@ -91,3 +94,4 @@ model Validation {
   validatedById Int
   validatedBy   User @relation(fields: [validatedById], references: [id])
 }
+

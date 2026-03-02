@@ -273,7 +273,11 @@ export default function LoginPage() {
               )}
             </button>
           </form>
-
+          <div className={styles.forgotPasswordSection}>
+            <Link href="/forgot-password" className={styles.forgotPasswordLink}>
+              Forgot password?
+            </Link>
+          </div>
           <p className={styles.footerNote}>
             © 2026 Innodata — Legal Regulatory Delivery Unit
           </p>

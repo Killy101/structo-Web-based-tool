@@ -12,9 +12,10 @@ export type TaskStatus =
 // ─── PRISMA MODELS ─────────────────────────────────────────────────────────────
 export interface User {
   id: number;
+  userId: string;
   email: string;
-  firstName: string;
-  lastName: string;
+  firstName?: string | null;
+  lastName?: string | null;
   role: Role;
   status: Status;
   mustChangePassword: boolean;
@@ -35,7 +36,7 @@ export interface FileUpload {
   processedAt: string | null;
   submittedAt: string | null;
   uploadedById: number;
-  uploadedBy?: Pick<User, 'id' | 'firstName' | 'lastName' | 'email' | 'role'>;
+  uploadedBy?: Pick<User, 'id' | 'userId' | 'firstName' | 'lastName' | 'email' | 'role'>;
   output?: FileOutput | null;
   validation?: Validation | null;
 }
@@ -56,14 +57,14 @@ export interface Validation {
   validatedAt: string;
   uploadId: number;
   validatedById: number;
-  validatedBy?: Pick<User, 'id' | 'firstName' | 'lastName'>;
+  validatedBy?: Pick<User, 'id' | 'userId' | 'firstName' | 'lastName'>;
 }
 
 // ─── API RESPONSE TYPES ────────────────────────────────────────────────────────
 export interface AuthResponse {
   token: string;
   mustChangePassword: boolean;
-  user: Pick<User, 'id' | 'email' | 'firstName' | 'lastName' | 'role' | 'status'>;
+  user: Pick<User, 'id' | 'userId' | 'email' | 'firstName' | 'lastName' | 'role' | 'status'>;
 }
 
 export interface DashboardStats {
@@ -86,8 +87,7 @@ export interface Toast {
 }
 
 export interface CreateUserPayload {
-  firstName: string;
-  lastName: string;
+  userId: string;
   email: string;
   role: Role;
 }

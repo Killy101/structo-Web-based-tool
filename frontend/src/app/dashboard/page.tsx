@@ -20,6 +20,7 @@ import {
   formatFileSize,
 } from "../../utils";
 import { Role, TaskStatus } from "../../types";
+import { useAutoLogout } from "../../hooks/useAutoLogout";
 
 // ─── BRD SOURCES (static until backend route exists) ──────────────────────────
 const BRD_SOURCES = [
@@ -55,7 +56,7 @@ const BRD_SOURCES = [
 
 export default function DashboardPage() {
   const { stats, isLoading, refetch } = useDashboard();
-
+  useAutoLogout(3);
   const statCards = stats
     ? [
         {
