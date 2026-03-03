@@ -61,10 +61,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
-    if (user?.mustChangePassword) {
-      redirectedRef.current = true;
-      router.replace("/change-password");
-    }
   }, [isAuthenticated, isLoading, user, router]);
 
   // ── Splash check (runs once when user is available) ──
@@ -76,7 +72,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     sessionStorage.removeItem("justLoggedIn");
     if (!justLoggedIn) return;
 
-    const userIdentity = user.id ?? user.email;
+    const userIdentity = user.id ?? user.userId;
     if (!userIdentity) return;
 
     const seenKey = `welcomeSplashSeen:${userIdentity}`;
