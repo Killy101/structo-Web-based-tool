@@ -5,8 +5,15 @@ import { usePathname } from "next/navigation";
 import { AuthProvider, useAuth } from "../../context/AuthContext";
 import { ThemeProvider } from "../../context/ThemContext";
 import Sidebar from "../../components/layout/Sidebar";
+import Unauthorized from "../../components/layout/Unauthorized";
 import { Spinner } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
+import type { Role } from "../../types";
+
+const RESTRICTED_ROUTES: Record<string, Role[]> = {
+  "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
+  "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
+};
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard": {
@@ -39,7 +46,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   },
   "/dashboard/settings": {
     title: "Settings",
-    subtitle: "System configuration",
+    subtitle: "Manage teams and system configuration",
   },
 };
 
@@ -61,10 +68,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
-    if (user?.mustChangePassword) {
-      redirectedRef.current = true;
-      router.replace("/change-password");
-    }
   }, [isAuthenticated, isLoading, user, router]);
 
   // ── Splash check (runs once when user is available) ──
@@ -76,7 +79,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     sessionStorage.removeItem("justLoggedIn");
     if (!justLoggedIn) return;
 
-    const userIdentity = user.id ?? user.email;
+    const userIdentity = user.id ?? user.userId;
     if (!userIdentity) return;
 
     const seenKey = `welcomeSplashSeen:${userIdentity}`;
@@ -126,6 +129,10 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
   const isBrdRoute = pathname.startsWith("/dashboard/brd");
 
+  const allowedRoles = RESTRICTED_ROUTES[pathname];
+  const isUnauthorized =
+    allowedRoles !== undefined && !allowedRoles.includes(user?.role as Role);
+
   return (
     <div
       className={`flex h-screen bg-slate-50 dark:bg-[#0a0f1e] overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
@@ -136,12 +143,26 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     >
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
       <div className="flex-1 flex flex-col overflow-hidden">
+        {!isBrdRoute && (
+          <header className="flex-shrink-0 flex items-center gap-4 px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+            <div>
+              <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-none">
+                {PAGE_META[pathname]?.title ?? "Dashboard"}
+              </h1>
+              {PAGE_META[pathname]?.subtitle && (
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {PAGE_META[pathname].subtitle}
+                </p>
+              )}
+            </div>
+          </header>
+        )}
         <main
           className={
             isBrdRoute ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"
           }
         >
-          {children}
+          {isUnauthorized ? <Unauthorized /> : children}
         </main>
       </div>
     </div>

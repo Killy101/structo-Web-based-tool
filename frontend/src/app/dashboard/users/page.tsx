@@ -961,6 +961,26 @@ export default function UsersPage() {
     return matchesSearch && matchesRole && matchesStatus && matchesTeam;
   });
 
+  const actorTeamName =
+    actorRole === "ADMIN" && currentUser?.teamId
+      ? (teams.find((team) => team.id === currentUser.teamId)?.name ??
+        "Your Team")
+      : null;
+
+  const headerTitle =
+    actorRole === "SUPER_ADMIN"
+      ? "Admin Management"
+      : actorRole === "ADMIN"
+        ? "Team User Management"
+        : "User Management";
+
+  const headerSubtitle =
+    actorRole === "SUPER_ADMIN"
+      ? `${filtered.length} of ${users.length} admins`
+      : actorRole === "ADMIN"
+        ? `${filtered.length} of ${users.length} team users${actorTeamName ? ` • ${actorTeamName}` : ""}`
+        : `${filtered.length} of ${users.length} users`;
+
   const handleToggle = async (u: User) => {
     const name = getDisplayName(u);
     try {
@@ -1107,18 +1127,9 @@ export default function UsersPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-            User Management
+            {headerTitle}
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            {filtered.length} of {users.length} users
-            {actorRole === "ADMIN" && currentUser?.teamId && (
-              <span className="ml-1">
-                •{" "}
-                {teams.find((t) => t.id === currentUser.teamId)?.name ??
-                  "Your Team"}
-              </span>
-            )}
-          </p>
+          <p className="text-sm text-slate-500 mt-0.5">{headerSubtitle}</p>
         </div>
         {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
           <Button onClick={() => setShowCreate(true)}>

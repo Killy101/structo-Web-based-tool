@@ -1,8 +1,10 @@
 "use client";
 import React, { useState, useRef } from "react";
+import Image from "next/image";
+import { User } from "../../types";
 
 interface ProfileModalProps {
-  user: any;
+  user: (User & { contact?: string; avatarUrl?: string }) | null;
   onClose: () => void;
   dark: boolean;
 }
@@ -225,9 +227,12 @@ export default function ProfileModal({
                 onClick={() => fileRef.current?.click()}
               >
                 {avatar ? (
-                  <img
+                  <Image
                     src={avatar}
                     alt="Profile"
+                    width={80}
+                    height={80}
+                    unoptimized
                     className="w-20 h-20 rounded-2xl object-cover shadow-lg ring-2 ring-slate-700"
                   />
                 ) : (
@@ -278,7 +283,7 @@ export default function ProfileModal({
                 User ID
               </label>
               <div className={`${readonlyCls} font-mono break-all`}>
-                {user?.id ?? "—"}
+                {user?.userId ?? "—"}
               </div>
             </div>
 
@@ -307,29 +312,6 @@ export default function ProfileModal({
                   placeholder="Last name"
                   className={inputCls}
                 />
-              </div>
-            </div>
-
-            {/* email */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
-                Email Address
-              </label>
-              <div className={`${readonlyCls} flex items-center gap-2 min-w-0`}>
-                <svg
-                  className="w-4 h-4 flex-shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.8}
-                    d="M16 12a4 4 0 10-8 0 4 4 0 008 0zm0 0v1.5a2.5 2.5 0 005 0V12a9 9 0 10-9 9m4.5-1.206a8.959 8.959 0 01-4.5 1.207"
-                  />
-                </svg>
-                <span className="break-all">{user?.email ?? "—"}</span>
               </div>
             </div>
 
