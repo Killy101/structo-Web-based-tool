@@ -7,6 +7,7 @@ import React, {
   useCallback,
 } from "react";
 import { useRouter } from "next/navigation";
+import axios from "axios";
 import { User } from "../types";
 import { authApi, getToken, setToken, removeToken } from "../services/api";
 import api from "@/app/lib/api";
@@ -40,9 +41,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { user } = await authApi.me();
       setUser(user);
-    } catch {
-      removeToken();
-      setUser(null);
+    } catch (error) {
+      // Only remove token for auth errors (401/403).
+      // Keep the token for transient network errors so the user
+      // isn't silently logged out and stuck in a redirect loop.
+      if (
+        axios.isAxiosError(error) &&
+        error.response &&
+        (error.response.status === 401 || error.response.status === 403)
+      ) {
+        removeToken();
+        setUser(null);
+      } else {
+        // Network error or server error — keep token, clear user
+        // so isAuthenticated becomes false but token stays for retry.
+        setUser(null);
+      }
     }
   }, []);
 
