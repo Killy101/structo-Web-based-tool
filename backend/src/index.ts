@@ -8,6 +8,7 @@ import teamsRoutes from "./routes/teams";
 import tasksRoutes from "./routes/task";
 import userLogsRoutes from "./routes/user-logs";
 import brdRouter from "./routes/brd/index";
+import uploadRoute from "./routes/brd/upload";
 
 dotenv.config();
 
@@ -30,6 +31,7 @@ app.use("/teams", teamsRoutes);
 app.use("/tasks", tasksRoutes);
 app.use("/user-logs", userLogsRoutes);
 app.use("/brd", brdRouter);
+app.use("/api/brd", uploadRoute);
 
 // ── Health Check ──────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {

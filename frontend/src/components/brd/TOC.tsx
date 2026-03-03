@@ -1,5 +1,5 @@
 // ── TOC.tsx ──────────────────────────────────────────────────────────────────
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 
 interface TocRow {
   id: string;
@@ -14,6 +14,36 @@ interface TocRow {
 }
 
 const INITIAL_ROWS: TocRow[] = [];
+
+interface Props {
+  initialData?: Record<string, unknown>;
+}
+
+function buildRowsFromToc(initialData?: Record<string, unknown>): TocRow[] {
+  const sections = Array.isArray(initialData?.sections) ? initialData.sections : [];
+  const timestamp = Date.now();
+
+  return sections
+    .filter((section): section is Record<string, unknown> => typeof section === "object" && section !== null)
+    .map((section, index) => {
+      const level = String(section.level ?? section.number ?? 1).replace(/[^0-9]/g, "") || "1";
+      const title = typeof section.title === "string" ? section.title : "";
+      const number = typeof section.number === "string" ? section.number : "";
+      const page = section.page ?? null;
+
+      return {
+        id: `${timestamp}-${index}`,
+        level: level.slice(0, 1),
+        name: title,
+        required: "",
+        definition: "",
+        example: "",
+        note: page !== null && page !== undefined ? `Page ${String(page)}` : "",
+        tocRequirements: number,
+        smeComments: "",
+      } as TocRow;
+    });
+}
 
 const REQUIRED_OPTIONS = ["Yes", "No", "Conditional"] as const;
 
@@ -57,10 +87,16 @@ function ValidateButton() {
   );
 }
 
-export default function TOC() {
+export default function TOC({ initialData }: Props) {
   const [rows, setRows] = useState<TocRow[]>(INITIAL_ROWS);
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setRows(buildRowsFromToc(initialData));
+    setEditingCell(null);
+    setSaved(false);
+  }, [initialData]);
 
   function updateCell(rowId: string, col: string, value: string) {
     setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, [col]: value } : r)));
