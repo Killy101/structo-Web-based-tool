@@ -1,13 +1,41 @@
-import { Router, Response } from 'express';
-import prisma from '../lib/prisma';
-import { authenticate, AuthRequest } from '../middleware/authenticate';
+import { Router, Response } from "express";
+import prisma from "../lib/prisma";
+import { authenticate, AuthRequest } from "../middleware/authenticate";
 
 const router = Router();
 
-// GET /dashboard/stats
-// Returns all stats the dashboard needs in a single call
-router.get('/stats', authenticate, async (req: AuthRequest, res: Response) => {
+router.get("/stats", authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    const actorId = req.user!.userId;
+    const actorRole = req.user!.role;
+
+    const currentUser = await prisma.user.findUnique({
+      where: { id: actorId },
+      select: {
+        id: true,
+        userId: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        teamId: true,
+        team: { select: { id: true, name: true } },
+      },
+    });
+
+    let teamFilter: any = {};
+    if (actorRole === "ADMIN" && currentUser?.teamId) {
+      const teamMemberIds = await prisma.user.findMany({
+        where: { teamId: currentUser.teamId },
+        select: { id: true },
+      });
+      teamFilter = { uploadedById: { in: teamMemberIds.map((m) => m.id) } };
+    }
+
+    const userCountFilter =
+      actorRole === "ADMIN" && currentUser?.teamId
+        ? { teamId: currentUser.teamId, status: "ACTIVE" as const }
+        : { status: "ACTIVE" as const };
+
     const [
       totalUsers,
       totalFiles,
@@ -16,64 +44,65 @@ router.get('/stats', authenticate, async (req: AuthRequest, res: Response) => {
       usersByRoleRaw,
       filesByStatusRaw,
       recentActivity,
+      totalTeams,
     ] = await Promise.all([
-      // Total users
-      prisma.user.count({ where: { status: 'ACTIVE' } }),
-
-      // Total files
-      prisma.fileUpload.count(),
-
-      // Files submitted but not yet reviewed
+      prisma.user.count({ where: userCountFilter }),
+      prisma.fileUpload.count({ where: teamFilter }),
       prisma.fileUpload.count({
-        where: { status: { in: ['SUBMITTED', 'PENDING'] } },
+        where: { status: { in: ["SUBMITTED", "PENDING"] }, ...teamFilter },
       }),
-
-      // Approved files
-      prisma.fileUpload.count({ where: { status: 'APPROVED' } }),
-
-      // Users grouped by role
+      prisma.fileUpload.count({
+        where: { status: "APPROVED", ...teamFilter },
+      }),
       prisma.user.groupBy({
-        by: ['role'],
+        by: ["role"],
+        where: userCountFilter,
         _count: { role: true },
       }),
-
-      // Files grouped by status
       prisma.fileUpload.groupBy({
-        by: ['status'],
+        by: ["status"],
+        where: teamFilter,
         _count: { status: true },
       }),
-
-      // Recent activity – last 10 uploads with uploader info
       prisma.fileUpload.findMany({
         take: 10,
-        orderBy: { uploadedAt: 'desc' },
+        where: teamFilter,
+        orderBy: { uploadedAt: "desc" },
         include: {
           uploadedBy: {
             select: {
               id: true,
               firstName: true,
               lastName: true,
-              email: true,
+              userId: true,
               role: true,
             },
           },
         },
       }),
+      prisma.team.count(),
     ]);
 
     res.json({
+      currentUser,
       totalUsers,
       totalFiles,
       pendingValidation,
       approvedTasks,
-      usersByRole: usersByRoleRaw.map(r => ({ role: r.role, count: r._count.role })),
-      filesByStatus: filesByStatusRaw.map(r => ({ status: r.status, count: r._count.status })),
+      totalTeams,
+      usersByRole: usersByRoleRaw.map((r) => ({
+        role: r.role,
+        count: r._count.role,
+      })),
+      filesByStatus: filesByStatusRaw.map((r) => ({
+        status: r.status,
+        count: r._count.status,
+      })),
       recentActivity,
     });
-
   } catch (error) {
-    console.error('Dashboard stats error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error("Dashboard stats error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 

@@ -1,119 +1,9 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["driverAdapters"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
-}
-
-model User {
-  id             Int              @id @default(autoincrement())
-  password       String
-  firstName      String?
-  lastName       String?
-  role           Role             @default(USER)
-  status         Status           @default(ACTIVE)
-  lastLoginAt    DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  createdById    Int?
-  userId         String           @unique
-  teamId         Int?
-  uploads        FileUpload[]
-  TaskAssignee   TaskAssignee[]
-  TaskAssignment TaskAssignment[]
-  createdBy      User?            @relation("UserCreatedBy", fields: [createdById], references: [id])
-  createdUsers   User[]           @relation("UserCreatedBy")
-  Team           Team?            @relation(fields: [teamId], references: [id]) 
-  UserLog        UserLog[]
-  validations    Validation[]
-}
-
-model FileUpload {
-  id             Int              @id @default(autoincrement())
-  originalName   String
-  fileType       String
-  fileSize       Int
-  storagePath    String
-  status         TaskStatus       @default(PENDING)
-  uploadedAt     DateTime         @default(now())
-  processedAt    DateTime?
-  submittedAt    DateTime?
-  uploadedById   Int
-  output         FileOutput?
-  uploadedBy     User             @relation(fields: [uploadedById], references: [id])
-  TaskAssignment TaskAssignment[]
-  validation     Validation?
-}
-
-model FileOutput {
-  id          Int        @id @default(autoincrement())
-  filename    String
-  storagePath String
-  fileSize    Int
-  createdAt   DateTime   @default(now())
-  uploadId    Int        @unique
-  upload      FileUpload @relation(fields: [uploadId], references: [id])
-}
-
-model Validation {
-  id            Int        @id @default(autoincrement())
-  status        String
-  remarks       String?
-  validatedAt   DateTime   @default(now())
-  uploadId      Int        @unique
-  validatedById Int
-  upload        FileUpload @relation(fields: [uploadId], references: [id])
-  validatedBy   User       @relation(fields: [validatedById], references: [id])
-}
-
-model TaskAssignee {
-  id             Int            @id @default(autoincrement())
-  assignmentId   Int
-  userId         Int
-  assignedAt     DateTime       @default(now())
-  TaskAssignment TaskAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  User           User           @relation(fields: [userId], references: [id])
-
-  @@unique([assignmentId, userId])
-}
-
-model TaskAssignment {
-  id           Int              @id @default(autoincrement())
-  title        String
-  description  String?
-  status       AssignmentStatus @default(PENDING)
-  percentage   Int              @default(0)
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime
-  dueDate      DateTime?
-  teamId       Int
-  createdById  Int
-  brdFileId    Int?
-  TaskAssignee TaskAssignee[]
-  FileUpload   FileUpload?      @relation(fields: [brdFileId], references: [id])
-  User         User             @relation(fields: [createdById], references: [id])
-  Team         Team             @relation(fields: [teamId], references: [id])
-}
-
-model Team {
-  id             Int              @id @default(autoincrement())
-  name           String           @unique
-  slug           String           @unique
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime
-  TaskAssignment TaskAssignment[]
-  User           User[]
-}
-
-model UserLog {
-  id        Int      @id @default(autoincrement())
-  action    String
-  details   String?
-  createdAt DateTime @default(now())
-  userId    Int
-  User      User     @relation(fields: [userId], references: [id])
 }
 
 enum Role {
@@ -142,4 +32,130 @@ enum AssignmentStatus {
   PENDING
   IN_PROGRESS
   COMPLETED
+}
+
+model Team {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members         User[]
+  taskAssignments TaskAssignment[]
+}
+
+model User {
+  id          Int       @id @default(autoincrement())
+  userId      String    @unique
+  password    String
+  firstName   String?
+  lastName    String?
+  role        Role      @default(USER)
+  status      Status    @default(ACTIVE)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  createdById  Int?
+  createdBy    User?  @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers User[] @relation("UserCreatedBy")
+
+  teamId Int?
+  team   Team? @relation(fields: [teamId], references: [id])
+
+  uploads     FileUpload[]
+  validations Validation[]
+
+  createdTasks TaskAssignment[] @relation("CreatedByUser")
+
+  taskAssignees TaskAssignee[]
+
+  userLogs UserLog[]
+}
+
+model TaskAssignment {
+  id          Int              @id @default(autoincrement())
+  title       String
+  description String?
+  status      AssignmentStatus @default(PENDING)
+  percentage  Int              @default(0)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  dueDate     DateTime?
+
+  teamId Int
+  team   Team @relation(fields: [teamId], references: [id])
+
+  createdById Int
+  createdBy   User @relation("CreatedByUser", fields: [createdById], references: [id])
+
+  assignees TaskAssignee[]
+
+  brdFileId Int?
+  brdFile   FileUpload? @relation(fields: [brdFileId], references: [id])
+}
+
+model TaskAssignee {
+  id           Int            @id @default(autoincrement())
+  assignmentId Int
+  assignment   TaskAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  userId       Int
+  user         User           @relation(fields: [userId], references: [id])
+  assignedAt   DateTime       @default(now())
+
+  @@unique([assignmentId, userId])
+}
+
+model UserLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+}
+
+model FileUpload {
+  id           Int        @id @default(autoincrement())
+  originalName String
+  fileType     String
+  fileSize     Int
+  storagePath  String
+  status       TaskStatus @default(PENDING)
+  uploadedAt   DateTime   @default(now())
+  processedAt  DateTime?
+  submittedAt  DateTime?
+
+  uploadedById Int
+  uploadedBy   User @relation(fields: [uploadedById], references: [id])
+
+  output     FileOutput?
+  validation Validation?
+  tasks      TaskAssignment[]
+}
+
+model FileOutput {
+  id          Int      @id @default(autoincrement())
+  filename    String
+  storagePath String
+  fileSize    Int
+  createdAt   DateTime @default(now())
+
+  uploadId Int        @unique
+  upload   FileUpload @relation(fields: [uploadId], references: [id])
+}
+
+model Validation {
+  id          Int      @id @default(autoincrement())
+  status      String
+  remarks     String?
+  validatedAt DateTime @default(now())
+
+  uploadId Int        @unique
+  upload   FileUpload @relation(fields: [uploadId], references: [id])
+
+  validatedById Int
+  validatedBy   User @relation(fields: [validatedById], references: [id])
 }

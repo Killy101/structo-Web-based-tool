@@ -1,29 +1,69 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import { useState, useEffect, useRef } from "react";
 import api from "@/app/lib/api";
 import axios from "axios";
 
-export default function ForgotPasswordPage() {
+interface ForgotPasswordModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export default function ForgotPasswordModal({
+  isOpen,
+  onClose,
+}: ForgotPasswordModalProps) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Reset state when modal opens/closes
+  useEffect(() => {
+    if (isOpen) {
+      setEmail("");
+      setError("");
+      setSuccess(false);
+      setLoading(false);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [isOpen]);
+
+  // Close on Escape key
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && isOpen) onClose();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
+  function validateEmail(): boolean {
+    if (!email.trim()) {
+      setError("Email address is required");
+      return false;
+    }
+
+    // Only allow @gmail.com and @innodata.com
+    if (!/^[^\s@]+@(gmail\.com|innodata\.com)$/i.test(email.trim())) {
+      setError("Only @gmail.com or @innodata.com emails are accepted");
+      return false;
+    }
+
+    return true;
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
 
-    if (!email) {
-      setError("Email address is required");
-      return;
-    }
+    if (!validateEmail()) return;
 
     setLoading(true);
 
     try {
-      await api.post("/auth/forgot-password", { email });
+      await api.post("/auth/forgot-password", { email: email.trim() });
       setSuccess(true);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
@@ -36,74 +76,166 @@ export default function ForgotPasswordPage() {
     }
   }
 
+  if (!isOpen) return null;
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-100 to-blue-50 px-4">
-      <div className="w-full max-w-md">
-        {/* Card */}
-        <div className="bg-white rounded-2xl shadow-lg p-8">
-          {/* Badge */}
-          <div className="mb-6">
-            <span className="text-xs font-semibold tracking-widest text-slate-400 border border-slate-200 rounded-full px-3 py-1 uppercase">
-              Secure Access
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+      />
+
+      {/* Modal */}
+      <div className="relative w-full max-w-md mx-4 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        {/* Header bar */}
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <svg
+              className="w-4 h-4 text-blue-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <rect
+                x="3"
+                y="11"
+                width="18"
+                height="11"
+                rx="2"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M7 11V7a5 5 0 0 1 10 0v4"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="text-sm font-semibold text-white tracking-wide">
+              Password Recovery
             </span>
           </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/10"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
 
+        <div className="p-6">
           {!success ? (
             <>
-              {/* Header */}
-              <h1 className="text-3xl font-bold text-slate-900 mb-1">
-                Forgot password?
-              </h1>
-              <div className="w-8 h-0.5 bg-blue-400 mb-3" />
-              <p className="text-sm text-slate-500 mb-6">
-                Enter your email and well send you a reset link.
+              {/* Icon */}
+              <div className="flex items-center justify-center w-14 h-14 bg-blue-50 dark:bg-blue-900/20 rounded-full mx-auto mb-4">
+                <svg
+                  className="w-7 h-7 text-[#1a56f0]"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
+                  />
+                </svg>
+              </div>
+
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white text-center mb-1">
+                Forgot your password?
+              </h2>
+              <p className="text-sm text-slate-500 text-center mb-6">
+                Enter your email and we&apos;ll send you a reset link.
               </p>
 
               {/* Error */}
               {error && (
-                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg">
-                  {error}
+                <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl flex items-start gap-2">
+                  <svg
+                    className="w-4 h-4 text-red-500 mt-0.5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle cx="12" cy="12" r="10" strokeWidth="2" />
+                    <path d="M12 8v4m0 4h.01" strokeWidth="2" />
+                  </svg>
+                  <p className="text-sm text-red-600 dark:text-red-400">
+                    {error}
+                  </p>
                 </div>
               )}
 
               {/* Form */}
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-4" noValidate>
                 <div>
-                  <label className="block text-xs font-semibold tracking-widest text-slate-500 uppercase mb-2">
+                  <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
                     Email Address
                   </label>
-                  <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 gap-3">
-                    <svg
-                      className="w-4 h-4 text-slate-400 shrink-0"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-                      />
-                    </svg>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <rect
+                          x="2"
+                          y="4"
+                          width="20"
+                          height="16"
+                          rx="2"
+                          strokeWidth="2"
+                        />
+                        <path
+                          d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"
+                          strokeWidth="2"
+                        />
+                      </svg>
+                    </span>
                     <input
+                      ref={inputRef}
                       type="email"
                       value={email}
                       onChange={(e) => {
                         setEmail(e.target.value);
-                        setError("");
+                        if (error) setError("");
                       }}
-                      placeholder="you@example.com"
-                      required
-                      className="bg-transparent flex-1 text-sm text-slate-700 outline-none placeholder:text-slate-400"
+                      placeholder="you@gmail.com or you@innodata.com"
+                      className={`w-full pl-10 pr-4 py-3 text-sm rounded-xl border bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none transition-all ${
+                        error
+                          ? "border-red-300 dark:border-red-700 focus:ring-2 focus:ring-red-200"
+                          : "border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-[#1a56f0]/30 focus:border-[#1a56f0]"
+                      }`}
                     />
                   </div>
+                  <p className="text-xs text-slate-400 mt-1.5">
+                    Only @gmail.com and @innodata.com emails are supported.
+                  </p>
                 </div>
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full bg-slate-900 hover:bg-slate-700 disabled:bg-slate-400 text-white font-semibold py-3 px-4 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
+                  className="w-full bg-[#1a56f0] hover:bg-[#1545d0] disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white font-semibold py-3 px-4 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
                 >
                   {loading ? (
                     <>
@@ -129,17 +261,32 @@ export default function ForgotPasswordPage() {
                       Sending...
                     </>
                   ) : (
-                    <>Send Reset Link →</>
+                    <>
+                      Send Reset Link
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2.5}
+                          d="M5 12h14M12 5l7 7-7 7"
+                        />
+                      </svg>
+                    </>
                   )}
                 </button>
               </form>
             </>
           ) : (
-            /* Success State */
+            /* ── Success State ── */
             <div className="text-center py-4">
-              <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <div className="w-16 h-16 bg-emerald-100 dark:bg-emerald-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg
-                  className="w-7 h-7 text-green-500"
+                  className="w-8 h-8 text-emerald-500"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -147,36 +294,30 @@ export default function ForgotPasswordPage() {
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    strokeWidth={2}
+                    strokeWidth={2.5}
                     d="M5 13l4 4L19 7"
                   />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-slate-900 mb-2">
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
                 Check your inbox
               </h2>
-              <p className="text-sm text-slate-500">
-                If <span className="font-medium text-slate-700">{email}</span>{" "}
-                is registered, youll receive a reset link shortly.
+              <p className="text-sm text-slate-500 mb-6">
+                If{" "}
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  {email}
+                </span>{" "}
+                is registered, you&apos;ll receive a reset link shortly.
               </p>
+              <button
+                onClick={onClose}
+                className="w-full bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white font-semibold py-3 px-4 rounded-xl text-sm transition-colors"
+              >
+                Done
+              </button>
             </div>
           )}
-
-          {/* Back to login */}
-          <div className="mt-6 text-center">
-            <Link
-              href="/login"
-              className="text-sm text-slate-400 hover:text-slate-600 transition-colors"
-            >
-              ← Back to Sign In
-            </Link>
-          </div>
         </div>
-
-        {/* Footer */}
-        <p className="text-center text-xs text-slate-400 mt-6">
-          © 2026 Innodata — Legal Regulatory Delivery Unit
-        </p>
       </div>
     </div>
   );

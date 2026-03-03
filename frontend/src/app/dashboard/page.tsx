@@ -56,7 +56,7 @@ const BRD_SOURCES = [
 
 export default function DashboardPage() {
   const { stats, isLoading, refetch } = useDashboard();
-  useAutoLogout(3);
+  useAutoLogout(30);
   const statCards = stats
     ? [
         {

@@ -1,39 +1,54 @@
-import bcrypt from 'bcrypt';
-import dotenv from 'dotenv';
-import prisma from './prisma';
-
-dotenv.config();
+import prisma from "./prisma";
+import bcrypt from "bcrypt";
 
 async function seed() {
-  const email = 'superadmin@innodata.com';
-  const password = 'Admin2026!';
+  console.log("🌱 Seeding database...");
 
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) {
-    console.log('Super admin already exists');
-    return;
+  const defaultTeams = [
+    { name: "Pre-Production", slug: "pre-production" },
+    { name: "Production", slug: "production" },
+    { name: "Updating", slug: "updating" },
+    { name: "Post-Production", slug: "post-production" },
+  ];
+
+  for (const team of defaultTeams) {
+    await prisma.team.upsert({
+      where: { slug: team.slug },
+      update: {},
+      create: team,
+    });
+    console.log(`  ✓ Team "${team.name}"`);
   }
 
-  const hashed = await bcrypt.hash(password, 10);
-
-  await prisma.user.create({
-    data: {
-      userId: 'SADMIN',
-      email,
-      password: hashed,
-      firstName: 'Super',
-      lastName: 'Admin',
-      role: 'SUPER_ADMIN',
-      mustChangePassword: false,  // super admin doesn't need to change
-      status: 'ACTIVE'
-    }
+  const superAdminUserId = process.env.SUPERADMIN_USERID ?? "SADMIN";
+  const existing = await prisma.user.findUnique({
+    where: { userId: superAdminUserId },
   });
 
-  console.log('✅ Super Admin created!');
-  console.log('Email:', email);
-  console.log('Password:', password);
+  if (!existing) {
+    const hashedPassword = await bcrypt.hash("Admin@123", 10);
+    await prisma.user.create({
+      data: {
+        userId: superAdminUserId,
+        firstName: "Super",
+        lastName: "Admin",
+        role: "SUPER_ADMIN",
+        password: hashedPassword,
+      },
+    });
+    console.log(
+      `  ✓ Super Admin created (userId: ${superAdminUserId}, password: Admin@123)`,
+    );
+  } else {
+    console.log(`  ⏭ Super Admin already exists`);
+  }
+
+  console.log("✅ Seed complete");
 }
 
 seed()
-  .catch(console.error)
+  .catch((e) => {
+    console.error("Seed error:", e);
+    process.exit(1);
+  })
   .finally(() => prisma.$disconnect());
