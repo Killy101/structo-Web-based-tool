@@ -5,8 +5,15 @@ import { usePathname } from "next/navigation";
 import { AuthProvider, useAuth } from "../../context/AuthContext";
 import { ThemeProvider } from "../../context/ThemContext";
 import Sidebar from "../../components/layout/Sidebar";
+import Unauthorized from "../../components/layout/Unauthorized";
 import { Spinner } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
+import type { Role } from "../../types";
+
+const RESTRICTED_ROUTES: Record<string, Role[]> = {
+  "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
+  "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
+};
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard": {
@@ -126,6 +133,10 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
   const isBrdRoute = pathname.startsWith("/dashboard/brd");
 
+  const allowedRoles = RESTRICTED_ROUTES[pathname];
+  const isUnauthorized =
+    allowedRoles !== undefined && !allowedRoles.includes(user?.role as Role);
+
   return (
     <div
       className={`flex h-screen bg-slate-50 dark:bg-[#0a0f1e] overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
@@ -155,7 +166,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             isBrdRoute ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"
           }
         >
-          {children}
+          {isUnauthorized ? <Unauthorized /> : children}
         </main>
       </div>
     </div>
