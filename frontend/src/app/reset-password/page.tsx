@@ -1,27 +1,29 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import api from "@/app/lib/api";
+import axios from "axios";
 
 interface FormErrors {
-  currentPassword?: string;
   newPassword?: string;
   confirmPassword?: string;
   general?: string;
 }
 
-export default function ChangePasswordPage() {
+export default function ResetPasswordPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token");
+
   const [formData, setFormData] = useState({
-    currentPassword: "",
     newPassword: "",
     confirmPassword: "",
   });
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -33,8 +35,11 @@ export default function ChangePasswordPage() {
   function validate(): boolean {
     const e: FormErrors = {};
 
-    if (!formData.currentPassword) {
-      e.currentPassword = "Current password is required";
+    if (!token) {
+      e.general =
+        "Invalid or missing reset token. Please request a new reset link.";
+      setErrors(e);
+      return false;
     }
 
     if (!formData.newPassword) {
@@ -47,8 +52,6 @@ export default function ChangePasswordPage() {
       e.newPassword = "Must include at least one lowercase letter";
     } else if (!/[0-9]/.test(formData.newPassword)) {
       e.newPassword = "Must include at least one number";
-    } else if (formData.newPassword === formData.currentPassword) {
-      e.newPassword = "New password must be different from current password";
     }
 
     if (!formData.confirmPassword) {
@@ -93,33 +96,21 @@ export default function ChangePasswordPage() {
     setLoading(true);
 
     try {
-      const token = localStorage.getItem("token");
-
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/auth/change-password`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            currentPassword: formData.currentPassword,
-            newPassword: formData.newPassword,
-          }),
-        },
-      );
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        setErrors({ general: data.error || "Something went wrong" });
-        return;
-      }
-
+      await api.post("/auth/reset-password", {
+        token,
+        newPassword: formData.newPassword,
+      });
       setSuccess(true);
-    } catch {
-      setErrors({ general: "Network error. Please try again." });
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        setErrors({
+          general:
+            err.response?.data?.error ||
+            "Something went wrong. The link may have expired.",
+        });
+      } else {
+        setErrors({ general: "Network error. Please try again." });
+      }
     } finally {
       setLoading(false);
     }
@@ -176,6 +167,62 @@ export default function ChangePasswordPage() {
     );
   }
 
+  // No token at all
+  if (!token) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50 flex items-center justify-center px-4">
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+            <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-6 py-4 flex items-center gap-2">
+              <svg
+                className="w-4 h-4 text-red-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <circle cx="12" cy="12" r="10" strokeWidth="2" />
+                <path d="M12 8v4m0 4h.01" strokeWidth="2" />
+              </svg>
+              <span className="text-sm font-semibold text-white tracking-wide">
+                Invalid Link
+              </span>
+            </div>
+            <div className="p-6 text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg
+                  className="w-8 h-8 text-red-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </div>
+              <h2 className="text-xl font-bold text-slate-900 mb-2">
+                Invalid Reset Link
+              </h2>
+              <p className="text-sm text-slate-500 mb-6">
+                This password reset link is invalid or has expired. Please
+                request a new one.
+              </p>
+              <Link
+                href="/login"
+                className="inline-block w-full bg-[#1a56f0] hover:bg-[#1545d0] text-white font-semibold py-3 px-4 rounded-xl text-sm transition-colors text-center"
+              >
+                Back to Login
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
@@ -206,7 +253,7 @@ export default function ChangePasswordPage() {
               />
             </svg>
             <span className="text-sm font-semibold text-white tracking-wide">
-              Change Password
+              Reset Password
             </span>
           </div>
 
@@ -225,16 +272,16 @@ export default function ChangePasswordPage() {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                      d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
                     />
                   </svg>
                 </div>
 
                 <h2 className="text-xl font-bold text-slate-900 text-center mb-1">
-                  Update your password
+                  Set a new password
                 </h2>
                 <p className="text-sm text-slate-500 text-center mb-6">
-                  You must change your password before continuing.
+                  Enter your new password below.
                 </p>
 
                 {/* General Error */}
@@ -254,76 +301,6 @@ export default function ChangePasswordPage() {
                 )}
 
                 <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-                  {/* Current Password */}
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                      Current Password
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <rect
-                            x="3"
-                            y="11"
-                            width="18"
-                            height="11"
-                            rx="2"
-                            strokeWidth="2"
-                          />
-                          <path d="M7 11V7a5 5 0 0 1 10 0v4" strokeWidth="2" />
-                        </svg>
-                      </span>
-                      <input
-                        ref={inputRef}
-                        type={showCurrentPassword ? "text" : "password"}
-                        value={formData.currentPassword}
-                        onChange={(e) => {
-                          setFormData({
-                            ...formData,
-                            currentPassword: e.target.value,
-                          });
-                          if (errors.currentPassword)
-                            setErrors((prev) => ({
-                              ...prev,
-                              currentPassword: undefined,
-                            }));
-                        }}
-                        placeholder="Enter current password"
-                        className={`w-full pl-10 pr-10 py-3 text-sm rounded-xl border bg-slate-50 text-slate-900 outline-none transition-all ${
-                          errors.currentPassword
-                            ? "border-red-300 focus:ring-2 focus:ring-red-200"
-                            : "border-slate-200 focus:ring-2 focus:ring-[#1a56f0]/30 focus:border-[#1a56f0]"
-                        }`}
-                        autoComplete="current-password"
-                      />
-                      <EyeToggle
-                        show={showCurrentPassword}
-                        onToggle={() =>
-                          setShowCurrentPassword(!showCurrentPassword)
-                        }
-                      />
-                    </div>
-                    {errors.currentPassword && (
-                      <p className="text-xs text-red-500 mt-1.5 flex items-center gap-1">
-                        <svg
-                          className="w-3 h-3"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <circle cx="12" cy="12" r="10" strokeWidth="2.5" />
-                          <path d="M12 8v4m0 4h.01" strokeWidth="2.5" />
-                        </svg>
-                        {errors.currentPassword}
-                      </p>
-                    )}
-                  </div>
-
                   {/* New Password */}
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
@@ -349,6 +326,7 @@ export default function ChangePasswordPage() {
                         </svg>
                       </span>
                       <input
+                        ref={inputRef}
                         type={showNewPassword ? "text" : "password"}
                         value={formData.newPassword}
                         onChange={(e) => {
@@ -604,11 +582,11 @@ export default function ChangePasswordPage() {
                             d="M4 12a8 8 0 018-8v8z"
                           />
                         </svg>
-                        Changing...
+                        Resetting...
                       </>
                     ) : (
                       <>
-                        Change Password
+                        Reset Password
                         <svg
                           className="w-4 h-4"
                           fill="none"
@@ -646,17 +624,18 @@ export default function ChangePasswordPage() {
                   </svg>
                 </div>
                 <h2 className="text-xl font-bold text-slate-900 mb-2">
-                  Password changed!
+                  Password reset!
                 </h2>
                 <p className="text-sm text-slate-500 mb-6">
-                  Your password has been updated successfully.
+                  Your password has been reset successfully. You can now sign in
+                  with your new password.
                 </p>
-                <button
-                  onClick={() => router.push("/dashboard")}
-                  className="w-full bg-[#1a56f0] hover:bg-[#1545d0] text-white font-semibold py-3 px-4 rounded-xl text-sm transition-colors"
+                <Link
+                  href="/login"
+                  className="inline-block w-full bg-[#1a56f0] hover:bg-[#1545d0] text-white font-semibold py-3 px-4 rounded-xl text-sm transition-colors text-center"
                 >
-                  Continue to Dashboard
-                </button>
+                  Go to Login
+                </Link>
               </div>
             )}
           </div>

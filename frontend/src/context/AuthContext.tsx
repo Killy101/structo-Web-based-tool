@@ -15,10 +15,7 @@ interface AuthCtx {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (
-    identifier: string,
-    password: string,
-  ) => Promise<{ mustChangePassword: boolean }>;
+  login: (userId: string, password: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -30,7 +27,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Attach bearer token to every axios request
   useEffect(() => {
     const interceptor = api.interceptors.request.use((cfg) => {
       const token = getToken();
@@ -58,11 +54,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     init();
   }, [refreshUser]);
 
-  const login = async (identifier: string, password: string) => {
-    const res = await authApi.login(identifier, password);
+  const login = async (userId: string, password: string) => {
+    const res = await authApi.login(userId, password);
     setToken(res.token);
-    setUser(res.user as User);
-    return { mustChangePassword: res.mustChangePassword };
+    setUser(res.user as unknown as User);
   };
 
   const logout = () => {

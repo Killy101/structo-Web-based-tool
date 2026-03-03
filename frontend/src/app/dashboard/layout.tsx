@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { usePathname } from "next/navigation";
 import { AuthProvider, useAuth } from "../../context/AuthContext";
@@ -9,14 +9,38 @@ import { Spinner } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
-  "/dashboard": { title: "Dashboard", subtitle: "Overview of your document processing system" },
-  "/dashboard/users": { title: "User Management", subtitle: "Manage team members and roles" },
-  "/dashboard/compare": { title: "Compare BRD Sources", subtitle: "Compare document processing sources" },
-  "/dashboard/files": { title: "File Upload", subtitle: "Upload and process PDF / XML files" },
-  "/dashboard/validate": { title: "Validation", subtitle: "QA/QC review and approval queue" },
-  "/dashboard/history": { title: "History", subtitle: "All file operations and activity" },
-  "/dashboard/brd": { title: "BRD Sources", subtitle: "Manage document processing sources" },
-  "/dashboard/settings": { title: "Settings", subtitle: "System configuration" },
+  "/dashboard": {
+    title: "Dashboard",
+    subtitle: "Overview of your document processing system",
+  },
+  "/dashboard/users": {
+    title: "User Management",
+    subtitle: "Manage team members and roles",
+  },
+  "/dashboard/compare": {
+    title: "Compare BRD Sources",
+    subtitle: "Compare document processing sources",
+  },
+  "/dashboard/files": {
+    title: "File Upload",
+    subtitle: "Upload and process PDF / XML files",
+  },
+  "/dashboard/validate": {
+    title: "Validation",
+    subtitle: "QA/QC review and approval queue",
+  },
+  "/dashboard/history": {
+    title: "History",
+    subtitle: "All file operations and activity",
+  },
+  "/dashboard/brd": {
+    title: "BRD Sources",
+    subtitle: "Manage document processing sources",
+  },
+  "/dashboard/settings": {
+    title: "Settings",
+    subtitle: "System configuration",
+  },
 };
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
@@ -24,60 +48,64 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { isAuthenticated, isLoading, user } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
-
   const [showSplash, setShowSplash] = useState(false);
-  const [pendingLoginSplash, setPendingLoginSplash] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return sessionStorage.getItem("justLoggedIn") === "1";
-  });
-  const [dashboardReady, setDashboardReady] = useState(() => !showSplash);
+  const [visible, setVisible] = useState(false);
+  const splashCheckedRef = useRef(false);
+  const redirectedRef = useRef(false);
 
+  // ── Auth redirects (no setState, only router calls) ──
   useEffect(() => {
-    if (!pendingLoginSplash || !user) return;
+    if (isLoading || redirectedRef.current) return;
+    if (!isAuthenticated) {
+      redirectedRef.current = true;
+      router.replace("/login");
+      return;
+    }
+    if (user?.mustChangePassword) {
+      redirectedRef.current = true;
+      router.replace("/change-password");
+    }
+  }, [isAuthenticated, isLoading, user, router]);
+
+  // ── Splash check (runs once when user is available) ──
+  useEffect(() => {
+    if (splashCheckedRef.current || !user || isLoading) return;
+    splashCheckedRef.current = true;
+
+    const justLoggedIn = sessionStorage.getItem("justLoggedIn") === "1";
+    sessionStorage.removeItem("justLoggedIn");
+    if (!justLoggedIn) return;
 
     const userIdentity = user.id ?? user.email;
-    if (!userIdentity) {
-      sessionStorage.removeItem("justLoggedIn");
-      setPendingLoginSplash(false);
-      return;
-    }
+    if (!userIdentity) return;
 
     const seenKey = `welcomeSplashSeen:${userIdentity}`;
-    const hasSeenSplash = localStorage.getItem(seenKey) === "1";
-
-    if (!hasSeenSplash) {
+    if (localStorage.getItem(seenKey) !== "1") {
       localStorage.setItem(seenKey, "1");
-      setShowSplash(true);
+      // Use setTimeout to avoid synchronous setState in effect
+      setTimeout(() => setShowSplash(true), 0);
     }
+  }, [user, isLoading]);
 
-    sessionStorage.removeItem("justLoggedIn");
-    setPendingLoginSplash(false);
-  }, [pendingLoginSplash, user]);
-
+  // ── Fade-in animation (only when not showing splash and authenticated) ──
   useEffect(() => {
-    if (showSplash) {
-      setDashboardReady(false);
-      return;
-    }
-    const raf = window.requestAnimationFrame(() => setDashboardReady(true));
-    return () => window.cancelAnimationFrame(raf);
-  }, [showSplash]);
+    if (showSplash || isLoading || !isAuthenticated) return;
+    const raf = requestAnimationFrame(() => setVisible(true));
+    return () => cancelAnimationFrame(raf);
+  }, [showSplash, isLoading, isAuthenticated]);
 
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) router.push("/login");
-  }, [isAuthenticated, isLoading, router]);
+  const handleSplashDone = useCallback(() => {
+    setShowSplash(false);
+    setVisible(false);
+    // Trigger fade-in after splash ends
+    requestAnimationFrame(() => setVisible(true));
+  }, []);
 
-  useEffect(() => {
-    if (!isLoading && user?.mustChangePassword) router.push("/change-password");
-  }, [isLoading, user, router]);
-
-  const handleSplashDone = useCallback(() => setShowSplash(false), []);
-
-  // Show splash before any loading check — it's highest priority
-  if (showSplash) {
+  // ── Render ──
+  if (showSplash && user) {
     return (
       <WelcomeSplash
-        firstName={user?.firstName ?? ""}
+        firstName={user.firstName ?? ""}
         onDone={handleSplashDone}
       />
     );
@@ -101,12 +129,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
     <div
       className={`flex h-screen bg-slate-50 dark:bg-[#0a0f1e] overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-        dashboardReady ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1 pointer-events-none"
+        visible
+          ? "opacity-100 translate-y-0"
+          : "opacity-0 translate-y-1 pointer-events-none"
       }`}
     >
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <main className={isBrdRoute ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"}>
+        <main
+          className={
+            isBrdRoute ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"
+          }
+        >
           {children}
         </main>
       </div>
@@ -114,7 +148,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <ThemeProvider>
       <AuthProvider>
