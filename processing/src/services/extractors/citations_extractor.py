@@ -32,6 +32,12 @@ def _normalise_level(raw: str) -> str:
     return m.group(1) if m else raw
 
 
+def _normalise_citation_rule(raw: str) -> str:
+    text = _clean(raw)
+    text = re.sub(r"(?i)(\S)(example\s*:)", r"\1 \2", text)
+    return text
+
+
 def _is_citable_table(table) -> bool:
     """3-column table: Level | Is Level Citable? | SME Comments"""
     if not table.rows:
@@ -109,7 +115,7 @@ def extract_citations(doc) -> dict:
                 return _clean(cells[idx].text) if idx < n else ""
 
             lvl_raw       = cell(col_level)
-            citation_rule = cell(col_rules)
+            citation_rule = _normalise_citation_rule(cell(col_rules))
             source_of_law = cell(col_source)
             sme_comments  = cell(col_sme)
 

@@ -4,6 +4,13 @@ interface Props {
   brdId?: string;
   title?: string;
   format?: "new" | "old";
+  initialData?: {
+    scope?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+    toc?: Record<string, unknown>;
+    citations?: Record<string, unknown>;
+    contentProfile?: Record<string, unknown>;
+  };
   onEdit?: (step: number) => void;
   onComplete?: () => void;
   canEdit?: boolean;
@@ -74,7 +81,7 @@ function MiniTable({ headers, rows }: { headers: string[]; rows: (string | React
           {rows.map((row, i) => (
             <tr key={i} className={i % 2 === 0 ? "bg-white dark:bg-transparent" : "bg-slate-50/60 dark:bg-[#1a1f35]/40"}>
               {row.map((cell, j) => (
-                <td key={j} className="px-4 py-2 text-slate-700 dark:text-slate-300 align-top">{cell}</td>
+                <td key={j} className="px-4 py-2 text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">{cell}</td>
               ))}
             </tr>
           ))}
@@ -98,9 +105,101 @@ function LevelBadge({ level }: { level: string }) {
 
 // ── Required badge ─────────────────────────────────────────────────────────────
 function RequiredBadge({ val }: { val: string }) {
-  if (val === "Yes")         return <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-700/40">Yes</span>;
+  if (val === "true" || val === "Yes") return <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-700/40">true</span>;
   if (val === "Conditional") return <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-400 dark:border-indigo-700/40">Cond.</span>;
-  return <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 dark:bg-[#252d45] dark:text-slate-500 dark:border-[#3a4460]">No</span>;
+  return <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 dark:bg-[#252d45] dark:text-slate-500 dark:border-[#3a4460]">false</span>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    : [];
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function getContentProfileView(contentProfile?: Record<string, unknown>) {
+  const data = contentProfile ?? {};
+  const documentType = asString(data.document_type).trim();
+  const complexity = asString(data.complexity).trim();
+  const primaryDomain = asString(data.primary_domain).trim();
+  const requirementsCount = asString(data.requirements_count).trim();
+  const completenessScore = asString(data.completeness_score).trim();
+  const keyThemes = Array.isArray(data.key_themes) ? data.key_themes.map((v) => asString(v).trim()).filter(Boolean) : [];
+  const functionalAreas = Array.isArray(data.functional_areas) ? data.functional_areas.map((v) => asString(v).trim()).filter(Boolean) : [];
+  const qualityNotes = Array.isArray(data.quality_notes) ? data.quality_notes.map((v) => asString(v).trim()).filter(Boolean) : [];
+
+  const levels: (string | React.ReactNode)[][] = [
+    [
+      "Level 1",
+      [documentType, primaryDomain].filter(Boolean).join(" · "),
+      "document_profile",
+      primaryDomain,
+      [
+        requirementsCount ? `Requirements: ${requirementsCount}` : "",
+        completenessScore ? `Completeness: ${completenessScore}` : "",
+      ].filter(Boolean).join(" | "),
+    ],
+    ...functionalAreas.map((area, idx) => [
+      `Level ${idx + 2}`,
+      area,
+      "functional_area",
+      area,
+      idx === 0 ? keyThemes.join(", ") : "",
+    ]),
+  ].filter((row) => row.some((cell) => asString(cell).trim()));
+
+  const whitespace: (string | React.ReactNode)[][] = [
+    ["key_themes", keyThemes.join(", ")],
+    ["has_diagrams", asString(Boolean(data.has_diagrams))],
+    ["has_tables", asString(Boolean(data.has_tables))],
+    ["quality_notes", qualityNotes.join(" | ")],
+  ].filter((row) => asString(row[1]).trim());
+
+  return {
+    rcFilename: documentType,
+    headingAnnotation: complexity ? `Complexity: ${complexity}` : "",
+    hardcodedPath: primaryDomain,
+    levels,
+    whitespace,
+  };
+}
+
+function withFallbackRows(rows: (string | React.ReactNode)[][], colCount: number) {
+  if (rows.length > 0) return rows;
+  return [Array.from({ length: colCount }, () => "—")];
+}
+
+function formatExampleNoteDisplay(value: string) {
+  const normalized = value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\s*(Example\s*:)/gi, "\n$1\n")
+    .replace(/\s*(Notes?\s*:)/gi, "\n$1\n");
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.map((line, index) => {
+    const match = line.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
+    if (!match) return <React.Fragment key={index}>{index > 0 ? "\n" : ""}{line}</React.Fragment>;
+
+    return (
+      <React.Fragment key={index}>
+        {index > 0 ? "\n" : ""}
+        <span className="font-semibold">{match[1]}</span>
+        {match[2] ?? ""}
+      </React.Fragment>
+    );
+  });
 }
 
 // ── Generate action card ───────────────────────────────────────────────────────
@@ -155,9 +254,78 @@ function GenerateBtn({ label, icon, description, color, onClick, loading, done }
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
-export default function Generate({ brdId, title, format, onEdit, onComplete, canEdit = true }: Props) {
+export default function Generate({ brdId, title, format, initialData, onEdit, onComplete, canEdit = true }: Props) {
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
+
+  const scopeData = asRecord(initialData?.scope);
+  const metadataData = asRecord(initialData?.metadata);
+  const tocData = asRecord(initialData?.toc);
+  const citationsData = asRecord(initialData?.citations);
+  const contentProfileData = asRecord(initialData?.contentProfile);
+
+  const inScopeRows = asRecordArray(scopeData?.in_scope);
+  const outOfScopeRows = asRecordArray(scopeData?.out_of_scope);
+  const allScopeRows = [...inScopeRows, ...outOfScopeRows];
+
+  const scopeRows = withFallbackRows(
+    allScopeRows.map((row) => {
+      const issuingAuthority = asString(row.issuing_authority).trim();
+      const issuingAuthorityCode = asString(row.issuing_authority_code).trim();
+      return [
+        asString(row.document_title),
+        asString(row.regulator_url),
+        asString(row.content_url),
+        issuingAuthority ? `${issuingAuthority}${issuingAuthorityCode ? ` (${issuingAuthorityCode})` : ""}` : "",
+        asString(row.asrb_id),
+      ];
+    }),
+    5,
+  );
+
+  const metadataValues = {
+    sourceType: asString(metadataData?.version || metadataData?.source_type),
+    issuingAgency: asString(metadataData?.issuing_agency),
+    geography: asString(metadataData?.geography),
+    language: asString(metadataData?.language),
+    publicationDate: asString(metadataData?.publication_date),
+    lastUpdatedDate: asString(metadataData?.last_updated_date),
+    status: asString(metadataData?.status),
+    payloadType: asString(metadataData?.payload_type || metadataData?.payload_subtype || metadataData?.version),
+    contentUrl: asString(metadataData?.content_uri || metadataData?.content_url || inScopeRows[0]?.content_url),
+  };
+
+  const tocSections = asRecordArray(tocData?.sections);
+  const tocRows = withFallbackRows(
+    tocSections.map((row) => {
+      const level = asString(row.level || row.id || "").trim();
+      const requiredRaw = asString(row.required).toLowerCase().trim();
+      const required = requiredRaw === "yes" ? "true" : requiredRaw === "no" ? "false" : asString(row.required);
+      return [
+        <LevelBadge level={level || "-"} key={`toc-lvl-${level}-${asString(row.id)}`} />,
+        asString(row.name),
+        <RequiredBadge val={required} key={`toc-req-${level}-${asString(row.id)}`} />,
+        asString(row.definition),
+        asString(row.tocRequirements),
+      ];
+    }),
+    5,
+  );
+
+  const citations = asRecordArray(citationsData?.references);
+  const citationRows = withFallbackRows(
+    citations.map((row) => [
+      <LevelBadge level={asString(row.level)} key={`cit-lvl-${asString(row.id)}`} />,
+      asString(row.citationRules),
+      asString(row.sourceOfLaw),
+      formatExampleNoteDisplay(asString(row.smeComments)),
+    ]),
+    4,
+  );
+
+  const contentProfileView = getContentProfileView(contentProfileData);
+  const contentLevelRows = withFallbackRows(contentProfileView.levels, 3);
+  const whitespaceRows = withFallbackRows(contentProfileView.whitespace, 2);
 
   function runGenerate(key: string) {
     setGenerating((p) => ({ ...p, [key]: true }));
@@ -192,22 +360,22 @@ export default function Generate({ brdId, title, format, onEdit, onComplete, can
       <SectionCard icon="◎" label="Scope" step={1} onEdit={onEdit ?? noop} canEdit={canEdit}>
         <MiniTable
           headers={["Document Title", "Reference Link", "Content URL", "Issuing Authority", "ASRB ID"]}
-          rows={[]}
+          rows={scopeRows}
         />
       </SectionCard>
 
       {/* ── 2. Metadata ── */}
       <SectionCard icon="≡" label="Metadata" step={2} onEdit={onEdit ?? noop} canEdit={canEdit}>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-8">
-          <Field label="Source Type"    value="" />
-          <Field label="Issuing Agency" value="" />
-          <Field label="Geography"      value="" />
-          <Field label="Language"       value="" />
-          <Field label="Pub. Date"      value="" />
-          <Field label="Last Updated"   value="" />
-          <Field label="Status"         value="" />
-          <Field label="Payload Type"   value="" />
-          <Field label="Content URL"    value="" />
+          <Field label="Source Type"    value={metadataValues.sourceType} />
+          <Field label="Issuing Agency" value={metadataValues.issuingAgency} />
+          <Field label="Geography"      value={metadataValues.geography} />
+          <Field label="Language"       value={metadataValues.language} />
+          <Field label="Pub. Date"      value={metadataValues.publicationDate} />
+          <Field label="Last Updated"   value={metadataValues.lastUpdatedDate} />
+          <Field label="Status"         value={metadataValues.status} />
+          <Field label="Payload Type"   value={metadataValues.payloadType} />
+          <Field label="Content URL"    value={metadataValues.contentUrl} />
         </div>
       </SectionCard>
 
@@ -215,7 +383,7 @@ export default function Generate({ brdId, title, format, onEdit, onComplete, can
       <SectionCard icon="✦" label="Table of Contents" step={3} onEdit={onEdit ?? noop} canEdit={canEdit}>
         <MiniTable
           headers={["Lvl", "Name", "Required", "Definition", "TOC Requirements"]}
-          rows={[]}
+          rows={tocRows}
         />
       </SectionCard>
 
@@ -223,7 +391,7 @@ export default function Generate({ brdId, title, format, onEdit, onComplete, can
       <SectionCard icon="§" label="Citation Rules" step={4} onEdit={onEdit ?? noop} canEdit={canEdit}>
         <MiniTable
           headers={["Lvl", "Citation Rules", "Source of Law", "SME Comments"]}
-          rows={[]}
+          rows={citationRows}
         />
       </SectionCard>
 
@@ -231,23 +399,23 @@ export default function Generate({ brdId, title, format, onEdit, onComplete, can
       <SectionCard icon="⬡" label="Content Profiling" step={5} onEdit={onEdit ?? noop} canEdit={canEdit}>
         <div className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 pb-3 border-b border-slate-100 dark:border-[#252d45]">
-            <Field label="RC Filename"      value="" />
-            <Field label="Heading Ann."     value="" />
-            <Field label="Hardcoded Path"   value="" />
+            <Field label="RC Filename"      value={contentProfileView.rcFilename} />
+            <Field label="Heading Ann."     value={contentProfileView.headingAnnotation} />
+            <Field label="Hardcoded Path"   value={contentProfileView.hardcodedPath} />
           </div>
 
            <p className="text-[10px] font-bold uppercase tracking-widest text-black dark:text-slate-300"
              style={{ fontFamily: "'DM Mono', monospace" }}>Level Numbers</p>
           <MiniTable
             headers={["Level", "REDJAy XML Tag", "Remarks"]}
-            rows={[]}
+            rows={contentLevelRows.map((row) => [row[0], row[2], row[4] ?? ""])}
           />
 
            <p className="text-[10px] font-bold uppercase tracking-widest text-black dark:text-slate-300 pt-1"
              style={{ fontFamily: "'DM Mono', monospace" }}>Whitespace Handling</p>
           <MiniTable
             headers={["Tags", "InnodReplace"]}
-            rows={[]}
+            rows={whitespaceRows}
           />
         </div>
       </SectionCard>

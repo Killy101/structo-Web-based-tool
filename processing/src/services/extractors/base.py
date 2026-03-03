@@ -49,15 +49,32 @@ def section_content(doc, heading_text: str) -> list[str]:
 
 
 def extract_url_from_cell(cell) -> str:
-    """Extract the first URL from a cell — checks XML hyperlinks first, then regex."""
-    for rel in cell.part.rels.values():
-        if "hyperlink" in rel.reltype:
-            url = rel._target
-            if url and url.startswith("http"):
-                return url.strip()
+    """Extract the most complete URL from a cell using hyperlink targets + text URLs."""
+    candidates: list[str] = []
+
+    rel_id_attr = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    for hyperlink in cell._tc.xpath('.//*[local-name()="hyperlink"]'):
+        rel_id = hyperlink.get(rel_id_attr)
+        if not rel_id:
+            continue
+        rel = cell.part.rels.get(rel_id)
+        if not rel:
+            continue
+        url = getattr(rel, "target_ref", None) or getattr(rel, "_target", None)
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            candidates.append(url.strip())
+
     url_re = re.compile(r"https?://[^\s\)\]」）]+")
     text = cell.text.strip()
-    m = url_re.search(text)
-    if m:
-        return m.group(0).rstrip(".,;")
-    return text.split("\n")[0].strip()
+    for match in url_re.finditer(text):
+        candidates.append(match.group(0).rstrip(".,;"))
+
+    if candidates:
+        def rank(url: str) -> tuple[int, int, int]:
+            path_depth = url.count("/")
+            has_query_or_fragment = int("?" in url or "#" in url)
+            return (path_depth, has_query_or_fragment, len(url))
+
+        return max(candidates, key=rank)
+
+    return text.strip()

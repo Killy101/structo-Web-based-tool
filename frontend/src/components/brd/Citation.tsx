@@ -35,7 +35,7 @@ function buildRowsFromCitations(initialData?: Record<string, unknown>): Citation
 const COLUMNS = [
   { key: "level",         label: "Level",          width: "w-16",   icon: "⬡" },
   { key: "isCitable",     label: "Citable",        width: "w-20",   icon: "✓" },
-  { key: "citationRules", label: "Citation Rules",  width: "flex-1", icon: "§" },
+  { key: "citationRules", label: "Citation Rules",  width: "w-72",   icon: "§" },
   { key: "sourceOfLaw",   label: "Source of Law",   width: "w-56",   icon: "⚖" },
   { key: "smeComments",   label: "SME Comments",    width: "w-52",   icon: "◈" },
 ];
@@ -71,6 +71,40 @@ function citableBadge(val: string) {
     );
   }
   return <span className="text-slate-400 dark:text-slate-600 text-[11px]">—</span>;
+}
+
+function formatCitationRulesForDisplay(value: string) {
+  const normalized = value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\s*(Example\s*:)/gi, "\n$1\n")
+    .replace(/\s*(Notes?\s*:)/gi, "\n$1\n");
+
+  return normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function renderCitationRulesDisplay(value: string) {
+  const lines = value.split("\n");
+  return lines.map((line, index) => {
+    const match = line.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
+    if (!match) {
+      return <React.Fragment key={index}>{index > 0 ? "\n" : ""}{line}</React.Fragment>;
+    }
+
+    const label = match[1];
+    const rest = match[2] ?? "";
+    return (
+      <React.Fragment key={index}>
+        {index > 0 ? "\n" : ""}
+        <span className="font-semibold">{label}</span>
+        {rest}
+      </React.Fragment>
+    );
+  });
 }
 
 function ValidateButton() {
@@ -124,7 +158,9 @@ export default function Citation({ initialData }: Props) {
 
   function renderCell(row: CitationRow, col: string) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
-    const value = row[col as keyof CitationRow] as string;
+    const rawValue = row[col as keyof CitationRow] as string;
+    const shouldFormatExampleNote = col === "citationRules" || col === "smeComments";
+    const value = shouldFormatExampleNote ? formatCitationRulesForDisplay(rawValue) : rawValue;
 
     // ── Level: select 1-15 ──────────────────────────────────────────────────
     if (col === "level") {
@@ -179,7 +215,7 @@ export default function Citation({ initialData }: Props) {
       return (
         <textarea
           autoFocus
-          value={value}
+          value={rawValue}
           rows={2}
           onChange={(e) => updateCell(row.id, col, e.target.value)}
           onBlur={() => setEditingCell(null)}
@@ -191,10 +227,14 @@ export default function Citation({ initialData }: Props) {
     return (
       <div
         onClick={() => setEditingCell({ rowId: row.id, col })}
-        className="cursor-pointer min-h-[24px] text-[11.5px] text-slate-700 dark:text-slate-300 leading-snug line-clamp-2 hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
-        title={value}
+        className="cursor-pointer min-h-[24px] text-[11.5px] text-slate-700 dark:text-slate-300 leading-snug whitespace-pre-wrap break-words hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
+        title={rawValue}
       >
-        {value || <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
+        {value
+          ? shouldFormatExampleNote
+            ? renderCitationRulesDisplay(value)
+            : value
+          : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
       </div>
     );
   }

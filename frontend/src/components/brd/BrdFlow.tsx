@@ -79,7 +79,20 @@ export default function BrdFlow({ onClose, initialStep = 0, initialMeta = null, 
       case 6:
         return finalStepMode === "view"
           ? <View brdId={uploadMeta?.brdId} title={uploadMeta?.title} format={uploadMeta?.format} onComplete={onClose} />
-          : <Generate brdId={uploadMeta?.brdId} title={uploadMeta?.title} format={uploadMeta?.format} onEdit={(s) => setStep(s)} onComplete={onClose} />;
+          : <Generate
+              brdId={uploadMeta?.brdId}
+              title={uploadMeta?.title}
+              format={uploadMeta?.format}
+              initialData={{
+                scope: uploadMeta?.scope,
+                metadata: uploadMeta?.metadata,
+                toc: uploadMeta?.toc,
+                citations: uploadMeta?.citations,
+                contentProfile: uploadMeta?.contentProfile,
+              }}
+              onEdit={(s) => setStep(s)}
+              onComplete={onClose}
+            />;
       default: return (
         <div className="flex flex-col items-center justify-center py-12 gap-4">
           <EmptyState title="Step not found" description="Please go back and try again" />

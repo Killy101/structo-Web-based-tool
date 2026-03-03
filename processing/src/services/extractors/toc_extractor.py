@@ -15,8 +15,11 @@ import re
 # Helpers
 
 def _clean(text: str) -> str:
-    """Strip whitespace and normalise non-breaking spaces."""
-    return text.replace("\xa0", " ").replace("\n", " ").strip()
+    """Normalise whitespace while preserving meaningful line breaks."""
+    normalized = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.split("\n")]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
 
 
 def _required_value(raw: str) -> str:
