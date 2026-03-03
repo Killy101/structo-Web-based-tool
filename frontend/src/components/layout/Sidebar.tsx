@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemContext";
 import { Role } from "../../types";
-import ProfileModal from "@/components/user/profile";
 
 interface NavItem {
   href: string;
@@ -252,7 +251,6 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { dark, toggle } = useTheme();
   const [showNotif, setShowNotif] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
   const role = user?.role ?? "USER";
 
   const filtered = NAV_ITEMS.filter(
@@ -277,14 +275,6 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             logout();
           }}
           onCancel={() => setShowLogoutModal(false)}
-          dark={dark}
-        />
-      )}
-
-      {showProfile && (
-        <ProfileModal
-          user={user}
-          onClose={() => setShowProfile(false)}
           dark={dark}
         />
       )}
@@ -565,14 +555,12 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           className={`p-3 border-t ${dark ? "border-slate-800/80" : "border-slate-200"} ${collapsed ? "flex justify-center" : ""}`}
         >
           {collapsed ? (
-            <button
-              onClick={() => setShowProfile(true)}
-              title="Profile"
-              className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${dark ? "bg-blue-950/50 text-[#42b4f5] hover:bg-slate-800 hover:text-white" : "bg-blue-100 text-[#1a56f0] hover:bg-blue-200"}`}
+            <div
+              className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold ${dark ? "bg-blue-950/50 text-[#42b4f5]" : "bg-blue-100 text-[#1a56f0]"}`}
             >
               {user?.firstName?.[0]}
               {user?.lastName?.[0]}
-            </button>
+            </div>
           ) : (
             <div
               className={`flex items-center gap-2.5 px-2 py-2 rounded-xl transition-colors group ${dark ? "hover:bg-slate-800" : "hover:bg-slate-100"}`}
@@ -581,17 +569,13 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 {user?.firstName?.[0]}
                 {user?.lastName?.[0]}
               </div>
-              <button
-                onClick={() => setShowProfile(true)}
-                title="Profile"
-                className="flex-1 min-w-0 text-left"
-              >
+              <div className="flex-1 min-w-0">
                 <p
                   className={`text-sm font-medium truncate leading-none ${dark ? "text-white" : "text-slate-900"}`}
                 >
                   {user?.firstName} {user?.lastName}
                 </p>
-              </button>
+              </div>
               <button
                 onClick={() => setShowLogoutModal(true)}
                 title="Logout"
