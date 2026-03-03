@@ -39,7 +39,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   },
   "/dashboard/settings": {
     title: "Settings",
-    subtitle: "System configuration",
+    subtitle: "Manage teams and system configuration",
   },
 };
 
