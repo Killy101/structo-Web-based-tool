@@ -327,7 +327,7 @@ export const Avatar = ({
   };
   return (
     <div
-      className={`${sizes[size]} rounded-full bg-linear-to-br from-[#1a56f0] to-purple-500 flex items-center justify-center text-white font-bold shrink-0 ${className}`}
+      className={`${sizes[size]} rounded-full bg-gradient-to-br from-[#1a56f0] to-purple-500 flex items-center justify-center text-white font-bold shrink-0 ${className}`}
     >
       {firstName?.[0]}
       {lastName?.[0]}
@@ -447,7 +447,7 @@ export const StatCard = ({
     <Card className="p-5 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between mb-4">
         <div
-          className={`w-11 h-11 rounded-xl bg-linear-to-br ${colorMap[color]} flex items-center justify-center text-xl`}
+          className={`w-11 h-11 rounded-xl bg-gradient-to-br ${colorMap[color]} flex items-center justify-center text-xl`}
         >
           {icon}
         </div>
