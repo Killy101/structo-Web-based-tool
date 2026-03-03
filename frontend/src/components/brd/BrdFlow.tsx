@@ -18,6 +18,17 @@ interface Props {
   finalStepMode?: "generate" | "view";
 }
 
+interface UploadFlowData {
+  format: "new" | "old";
+  brdId: string;
+  title: string;
+  scope?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  toc?: Record<string, unknown>;
+  citations?: Record<string, unknown>;
+  contentProfile?: Record<string, unknown>;
+}
+
 const STEPS = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
 
 const STEP_META = [
@@ -33,7 +44,7 @@ const STEP_META = [
 export default function BrdFlow({ onClose, initialStep = 0, initialMeta = null, finalStepMode = "generate" }: Props) {
   const [step, setStep] = useState(Math.max(0, Math.min(initialStep, STEPS.length - 1)));
   const [isProcessing, setIsProcessing] = useState(false);
-  const [uploadMeta, setUploadMeta] = useState<{ format: "new" | "old"; brdId: string; title: string } | null>(initialMeta);
+  const [uploadMeta, setUploadMeta] = useState<UploadFlowData | null>(initialMeta);
 
   const next = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
   const prev = () => setStep((s) => Math.max(s - 1, 0));
@@ -42,12 +53,29 @@ export default function BrdFlow({ onClose, initialStep = 0, initialMeta = null, 
 
   const renderStepContent = () => {
     switch (step) {
-      case 0: return <Upload onComplete={(meta) => { setUploadMeta(meta); next(); }} />;
-      case 1: return <Scope />;
-      case 2: return <Metadata format={uploadMeta?.format ?? "new"} brdId={uploadMeta?.brdId} title={uploadMeta?.title} />;
-      case 3: return <Toc />;
-      case 4: return <Citation />;
-      case 5: return <ContentProf />;
+      case 0:
+        return (
+          <Upload
+            onComplete={(meta) => {
+              setUploadMeta({
+                format: meta.format === "old" ? "old" : "new",
+                brdId: meta.brdId,
+                title: meta.title,
+                scope: meta.scope,
+                metadata: meta.metadata,
+                toc: meta.toc,
+                citations: meta.citations,
+                contentProfile: meta.contentProfile,
+              });
+              next();
+            }}
+          />
+        );
+      case 1: return <Scope initialData={uploadMeta?.scope} />;
+      case 2: return <Metadata format={uploadMeta?.format ?? "new"} brdId={uploadMeta?.brdId} title={uploadMeta?.title} initialData={uploadMeta?.metadata} />;
+      case 3: return <Toc initialData={uploadMeta?.toc} />;
+      case 4: return <Citation initialData={uploadMeta?.citations} />;
+      case 5: return <ContentProf initialData={uploadMeta?.contentProfile} />;
       case 6:
         return finalStepMode === "view"
           ? <View brdId={uploadMeta?.brdId} title={uploadMeta?.title} format={uploadMeta?.format} onComplete={onClose} />

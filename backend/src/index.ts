@@ -5,6 +5,7 @@ import authRoutes      from './routes/auth';
 import usersRoutes     from './routes/users';
 import dashboardRoutes from './routes/dashboard';
 import brdRouter from "./routes/brd/index";
+import uploadRoute from "./routes/brd/upload";
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ app.use('/auth',      authRoutes);
 app.use('/users',     usersRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use("/brd", brdRouter);
+app.use("/api/brd", uploadRoute);
 
 // ── Health Check ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {

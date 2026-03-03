@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 
 interface LevelRow {
   id: string;
@@ -18,6 +18,94 @@ interface WhitespaceRow {
 const INITIAL_LEVELS: LevelRow[] = [];
 
 const INITIAL_WHITESPACE: WhitespaceRow[] = [];
+
+interface Props {
+  initialData?: Record<string, unknown>;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function buildInitialContentProfile(initialData?: Record<string, unknown>) {
+  if (!initialData) {
+    return {
+      rcFilename: "",
+      hardcodedPath: "",
+      headingAnnotation: "Level 2",
+      levels: [] as LevelRow[],
+      whitespace: [] as WhitespaceRow[],
+    };
+  }
+
+  const now = Date.now().toString();
+  const documentType = typeof initialData.document_type === "string" ? initialData.document_type : "";
+  const complexity = typeof initialData.complexity === "string" ? initialData.complexity : "";
+  const primaryDomain = typeof initialData.primary_domain === "string" ? initialData.primary_domain : "";
+  const requirementsCount = String(initialData.requirements_count ?? "").trim();
+  const completenessScore = String(initialData.completeness_score ?? "").trim();
+  const keyThemes = asStringArray(initialData.key_themes);
+  const functionalAreas = asStringArray(initialData.functional_areas);
+  const qualityNotes = asStringArray(initialData.quality_notes);
+
+  const levels: LevelRow[] = [
+    {
+      id: `${now}-summary`,
+      levelNumber: "Level 1",
+      description: [documentType, primaryDomain].filter(Boolean).join(" · "),
+      redjayXmlTag: "document_profile",
+      path: primaryDomain,
+      remarksNotes: [
+        requirementsCount ? `Requirements: ${requirementsCount}` : "",
+        completenessScore ? `Completeness: ${completenessScore}` : "",
+      ].filter(Boolean).join(" | "),
+    },
+  ];
+
+  functionalAreas.forEach((area, idx) => {
+    levels.push({
+      id: `${now}-area-${idx}`,
+      levelNumber: `Level ${idx + 2}`,
+      description: area,
+      redjayXmlTag: "functional_area",
+      path: area,
+      remarksNotes: idx === 0 ? keyThemes.join(", ") : "",
+    });
+  });
+
+  const whitespace: WhitespaceRow[] = [
+    {
+      id: `${now}-ws-themes`,
+      tags: "key_themes",
+      innodReplace: keyThemes.join(", "),
+    },
+    {
+      id: `${now}-ws-diagrams`,
+      tags: "has_diagrams",
+      innodReplace: String(Boolean(initialData.has_diagrams)),
+    },
+    {
+      id: `${now}-ws-tables`,
+      tags: "has_tables",
+      innodReplace: String(Boolean(initialData.has_tables)),
+    },
+    {
+      id: `${now}-ws-notes`,
+      tags: "quality_notes",
+      innodReplace: qualityNotes.join(" | "),
+    },
+  ];
+
+  return {
+    rcFilename: documentType,
+    hardcodedPath: primaryDomain,
+    headingAnnotation: complexity ? `Complexity: ${complexity}` : "Level 2",
+    levels: levels.filter((row) => Object.values(row).some((value) => String(value).trim())),
+    whitespace: whitespace.filter((row) => row.innodReplace.trim().length > 0),
+  };
+}
 
 const LEVEL_COLUMNS = [
   { key: "levelNumber",  label: "Level Number",   width: "w-28",   icon: "⬡" },
@@ -72,7 +160,7 @@ function DeleteBtn({ onClick }: { onClick: () => void }) {
   );
 }
 
-export default function ContentProfile() {
+export default function ContentProfile({ initialData }: Props) {
   const [rcFilename, setRcFilename] = useState("");
   const [hardcodedPath, setHardcodedPath] = useState("");
   const [headingAnnotation, setHeadingAnnotation] = useState("Level 2");
@@ -84,6 +172,18 @@ export default function ContentProfile() {
   const [wsEditing, setWsEditing] = useState<{ rowId: string; col: string } | null>(null);
 
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const preset = buildInitialContentProfile(initialData);
+    setRcFilename(preset.rcFilename);
+    setHardcodedPath(preset.hardcodedPath);
+    setHeadingAnnotation(preset.headingAnnotation);
+    setLevels(preset.levels);
+    setWhitespace(preset.whitespace);
+    setLevelEditing(null);
+    setWsEditing(null);
+    setSaved(false);
+  }, [initialData]);
 
   function updateLevel(id: string, col: string, value: string) { setLevels((prev) => prev.map((r) => (r.id === id ? { ...r, [col]: value } : r))); }
   function addLevel() {
