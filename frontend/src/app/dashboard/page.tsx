@@ -100,7 +100,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-screen-2xl">
+    <div className="space-y-6 w-full max-w-screen-2xl">
       {/* ── Stat Cards ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {statCards.map((s, i) => (
