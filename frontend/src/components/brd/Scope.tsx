@@ -1,79 +1,145 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
+/* ─────────────── types ─────────────── */
 interface ScopeRow {
-  id: string;
-  title: string;
-  referenceLink: string;
-  contentUrl: string;
-  issuingAuth: string;
-  asrbId: string;
-  smeComments: string;
-  initialEvergreen: string;
-  dateOfIngestion: string;
-  isOutOfScope: boolean;
+  id: string; title: string; referenceLink: string; contentUrl: string;
+  issuingAuth: string; asrbId: string; smeComments: string;
+  initialEvergreen: string; dateOfIngestion: string; isOutOfScope: boolean;
 }
-
 interface ScopeEntry {
-  document_title?: string;
-  regulator_url?: string;
-  content_url?: string;
-  issuing_authority?: string;
-  issuing_authority_code?: string;
-  geography?: string;
-  asrb_id?: string;
-  sme_comments?: string;
-  initial_evergreen?: string;
-  date_of_ingestion?: string;
-  strikethrough?: boolean;
+  document_title?: string; regulator_url?: string; content_url?: string;
+  issuing_authority?: string; issuing_authority_code?: string;
+  geography?: string; asrb_id?: string; sme_comments?: string;
+  initial_evergreen?: string; date_of_ingestion?: string; strikethrough?: boolean;
+}
+interface Props { initialData?: Record<string, unknown>; }
+
+/* ─────────────── validation types ─────────────── */
+type Severity = "error" | "warning";
+interface ValidationIssue {
+  rowId: string; rowTitle: string;
+  field: "title" | "referenceLink" | "contentUrl";
+  kind: "duplicate_title" | "duplicate_url" | "broken_link" | "empty_link";
+  message: string; severity: Severity; duplicateWith?: string;
+}
+interface ValidationState {
+  phase: "idle" | "running" | "done";
+  progress: number; currentStep: string;
+  issues: ValidationIssue[]; checkedCount: number; totalLinks: number;
 }
 
-interface Props {
-  initialData?: Record<string, unknown>;
+/* ─────────────── helpers ─────────────── */
+function asScopeEntryArray(v: unknown): ScopeEntry[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((i) => i !== null && typeof i === "object") as ScopeEntry[];
 }
-
-function asScopeEntryArray(value: unknown): ScopeEntry[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item) => item !== null && typeof item === "object") as ScopeEntry[];
-}
-
-function toRow(entry: ScopeEntry, id: string, isOutOfScope: boolean): ScopeRow {
-  const authLabel = entry.issuing_authority
-    ? `${entry.issuing_authority}${entry.issuing_authority_code ? ` (${entry.issuing_authority_code})` : ""}`
-    : "";
+function toRow(e: ScopeEntry, id: string, oos: boolean): ScopeRow {
+  const authLabel = e.issuing_authority
+    ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
   return {
-    id,
-    title:            entry.document_title    ?? "",
-    referenceLink:    entry.regulator_url     ?? "",
-    contentUrl:       entry.content_url       ?? "",
-    issuingAuth:      authLabel,
-    asrbId:           entry.asrb_id           ?? "",
-    smeComments:      entry.sme_comments      ?? "",
-    initialEvergreen: entry.initial_evergreen ?? "",
-    dateOfIngestion:  entry.date_of_ingestion ?? "",
-    isOutOfScope,
+    id, isOutOfScope: oos,
+    title: e.document_title ?? "", referenceLink: e.regulator_url ?? "",
+    contentUrl: e.content_url ?? "", issuingAuth: authLabel,
+    asrbId: e.asrb_id ?? "", smeComments: e.sme_comments ?? "",
+    initialEvergreen: e.initial_evergreen ?? "", dateOfIngestion: e.date_of_ingestion ?? "",
   };
 }
-
-function buildRowsFromScope(initialData?: Record<string, unknown>): ScopeRow[] {
-  if (!initialData) return [];
-  const now = Date.now().toString();
-  const rows: ScopeRow[] = [];
-  asScopeEntryArray(initialData.in_scope).forEach((e, i) =>
-    rows.push(toRow(e, `${now}-in-${i}`, false))
-  );
-  asScopeEntryArray(initialData.out_of_scope).forEach((e, i) =>
-    rows.push(toRow(e, `${now}-out-${i}`, true))
-  );
+function buildRows(d?: Record<string, unknown>): ScopeRow[] {
+  if (!d) return [];
+  const now = Date.now().toString(); const rows: ScopeRow[] = [];
+  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toRow(e, `${now}-in-${i}`, false)));
+  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toRow(e, `${now}-out-${i}`, true)));
   return rows;
 }
-
 function hasExtraCols(rows: ScopeRow[]) {
-  return {
-    evergreen: rows.some((r) => r.initialEvergreen),
-    ingestion: rows.some((r) => r.dateOfIngestion),
-  };
+  return { evergreen: rows.some((r) => r.initialEvergreen), ingestion: rows.some((r) => r.dateOfIngestion) };
 }
 
+/* ─────────────── link checker ─────────────── */
+async function checkLink(url: string): Promise<"ok" | "broken"> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    await fetch(url, { method: "HEAD", mode: "no-cors", signal: ctrl.signal, redirect: "follow" });
+    clearTimeout(timer);
+    return "ok";
+  } catch {
+    return "broken";
+  }
+}
+
+/* ─────────────── validation engine ─────────────── */
+async function runValidation(
+  rows: ScopeRow[],
+  onProgress: (s: ValidationState) => void
+): Promise<ValidationIssue[]> {
+  const issues: ValidationIssue[] = [];
+
+  onProgress({ phase: "running", progress: 5, currentStep: "Checking duplicate titles…", issues: [], checkedCount: 0, totalLinks: 0 });
+  await new Promise(r => setTimeout(r, 300));
+  const titleMap = new Map<string, ScopeRow[]>();
+  rows.forEach(r => {
+    if (!r.title.trim()) return;
+    const key = r.title.trim().toLowerCase();
+    if (!titleMap.has(key)) titleMap.set(key, []);
+    titleMap.get(key)!.push(r);
+  });
+  titleMap.forEach((dupes) => {
+    if (dupes.length < 2) return;
+    dupes.forEach((r, i) => {
+      const others = dupes.filter((_, j) => j !== i).map(d => `"${d.title}"`).join(", ");
+      issues.push({ rowId: r.id, rowTitle: r.title, field: "title", kind: "duplicate_title", severity: "error", message: `Duplicate title — also in: ${others}`, duplicateWith: others });
+    });
+  });
+
+  onProgress({ phase: "running", progress: 15, currentStep: "Checking duplicate URLs…", issues: [...issues], checkedCount: 0, totalLinks: 0 });
+  await new Promise(r => setTimeout(r, 300));
+  const urlMap = new Map<string, ScopeRow[]>();
+  rows.forEach(r => {
+    if (!r.contentUrl.trim()) return;
+    const key = r.contentUrl.trim().toLowerCase();
+    if (!urlMap.has(key)) urlMap.set(key, []);
+    urlMap.get(key)!.push(r);
+  });
+  urlMap.forEach((dupes) => {
+    if (dupes.length < 2) return;
+    dupes.forEach((r, i) => {
+      const others = dupes.filter((_, j) => j !== i).map(d => `"${d.title || d.contentUrl}"`).join(", ");
+      issues.push({ rowId: r.id, rowTitle: r.title || r.contentUrl, field: "contentUrl", kind: "duplicate_url", severity: "error", message: `Duplicate content URL — same as: ${others}`, duplicateWith: others });
+    });
+  });
+
+  const linksToCheck: Array<{ row: ScopeRow; field: "referenceLink" | "contentUrl"; url: string }> = [];
+  rows.forEach(r => {
+    if (r.referenceLink.trim()) linksToCheck.push({ row: r, field: "referenceLink", url: r.referenceLink.trim() });
+    if (r.contentUrl.trim()) linksToCheck.push({ row: r, field: "contentUrl", url: r.contentUrl.trim() });
+  });
+
+  const totalLinks = linksToCheck.length;
+  let checkedCount = 0;
+  for (const item of linksToCheck) {
+    const progressPct = 20 + Math.round((checkedCount / Math.max(totalLinks, 1)) * 75);
+    onProgress({ phase: "running", progress: progressPct, currentStep: `Checking link ${checkedCount + 1} of ${totalLinks}…`, issues: [...issues], checkedCount, totalLinks });
+    try {
+      new URL(item.url);
+      const result = await checkLink(item.url);
+      if (result === "broken") {
+        issues.push({ rowId: item.row.id, rowTitle: item.row.title || item.url, field: item.field, kind: "broken_link", severity: "error", message: `Link unreachable or timed out: ${item.url}` });
+      }
+    } catch {
+      issues.push({ rowId: item.row.id, rowTitle: item.row.title || item.url, field: item.field, kind: "empty_link", severity: "warning", message: `Invalid URL format: "${item.url}"` });
+    }
+    checkedCount++;
+  }
+  return issues;
+}
+
+/* ─────────────── style constants ─────────────── */
+const MONO = { fontFamily: "'DM Mono', monospace" } as const;
+const TH = "px-3 py-2 text-left font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147]";
+const CELL = "px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] align-top";
+
+/* ─────────────── sub-components ─────────────── */
 function EmptyIcon() {
   return (
     <svg className="w-5 h-5 text-slate-400 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -81,30 +147,19 @@ function EmptyIcon() {
     </svg>
   );
 }
-
-const TH = "px-3 py-2 text-left font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147]";
-const MONO = { fontFamily: "'DM Mono', monospace" } as const;
-const CELL = "px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] align-top";
-
 function EditInput({ value, field, rowId, placeholder, onChange }: {
   value: string; field: string; rowId: string; placeholder: string;
   onChange: (id: string, field: string, val: string) => void;
 }) {
   return (
-    <input
-      value={value}
-      onChange={(e) => onChange(rowId, field, e.target.value)}
-      onClick={(e) => e.stopPropagation()}
+    <input value={value} onChange={(e) => onChange(rowId, field, e.target.value)} onClick={(e) => e.stopPropagation()}
       className="w-full bg-white dark:bg-[#1e2235] border border-blue-300 dark:border-blue-600 rounded-md px-2 py-1 text-[12px] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-400"
-      placeholder={placeholder}
-    />
+      placeholder={placeholder} />
   );
 }
-
 function Cell({ isEditing, value, field, rowId, placeholder, onChange, href }: {
   isEditing: boolean; value: string; field: string; rowId: string;
-  placeholder: string; onChange: (id: string, field: string, val: string) => void;
-  href?: boolean;
+  placeholder: string; onChange: (id: string, field: string, val: string) => void; href?: boolean;
 }) {
   if (isEditing) return <EditInput value={value} field={field} rowId={rowId} placeholder={placeholder} onChange={onChange} />;
   if (!value) return <span className="text-slate-400 dark:text-slate-600 italic">—</span>;
@@ -112,40 +167,416 @@ function Cell({ isEditing, value, field, rowId, placeholder, onChange, href }: {
   return <span className="text-slate-700 dark:text-slate-400 text-[11.5px]">{value}</span>;
 }
 
+/* ─────────────── kind metadata ─────────────── */
+const KIND_META = {
+  duplicate_title: { label: "Duplicate Title", icon: "M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" },
+  duplicate_url:   { label: "Duplicate URL",   icon: "M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" },
+  broken_link:     { label: "Broken Link",     icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" },
+  empty_link:      { label: "Invalid URL",     icon: "M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" },
+};
+function fieldLabel(f: ValidationIssue["field"]) {
+  return { title: "Document Title", referenceLink: "Reference Link", contentUrl: "Content URL" }[f];
+}
+
+/* ─────────────── validation modal ─────────────── */
+interface ModalProps {
+  validation: ValidationState; onClose: () => void;
+  highlightedRowId: string | null; onHighlight: (id: string | null) => void;
+  filterRowId?: string | null;
+}
+
+function ValidationModal({ validation, onClose, onHighlight, filterRowId }: ModalProps) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const [showErrors, setShowErrors] = useState(!!filterRowId);
+  const visibleIssues = filterRowId
+    ? validation.issues.filter(i => i.rowId === filterRowId)
+    : validation.issues;
+  const errors   = visibleIssues.filter(i => i.severity === "error");
+  const warnings = visibleIssues.filter(i => i.severity === "warning");
+  const allGood  = validation.phase === "done" && validation.issues.length === 0;
+  const isDone   = validation.phase === "done";
+  const isRun    = validation.phase === "running";
+
+  const stepIndex = validation.progress < 15 ? 0 : validation.progress < 20 ? 1 : 2;
+  const STEPS = ["Scanning for duplicate titles", "Checking for duplicate URLs", "Verifying link accessibility"];
+
+  function handleBackdrop(e: React.MouseEvent) {
+    if (e.target === backdropRef.current && isDone) onClose();
+  }
+
+  const iconBg = isRun ? "linear-gradient(135deg,#2563eb,#60a5fa)"
+    : allGood ? "linear-gradient(135deg,#059669,#34d399)"
+    : "linear-gradient(135deg,#dc2626,#f97316)";
+
+  const progressCls = isRun
+    ? "bg-gradient-to-r from-blue-500 to-blue-300 shadow-[0_0_10px_rgba(59,130,246,0.45)]"
+    : allGood ? "bg-gradient-to-r from-emerald-600 to-emerald-400"
+    : "bg-gradient-to-r from-red-600 to-orange-400";
+
+  const pctCls = isRun ? "text-blue-500"
+    : allGood ? "text-emerald-600 dark:text-emerald-400"
+    : "text-red-600 dark:text-red-400";
+
+  return (
+    <div
+      ref={backdropRef}
+      onClick={handleBackdrop}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-md animate-vm-fade"
+    >
+      {/* Card */}
+      <div className="flex flex-col w-[min(510px,93vw)] max-h-[82vh] rounded-[18px] overflow-hidden
+        bg-white dark:bg-[#131722]
+        border border-black/[0.09] dark:border-white/[0.07]
+        shadow-[0_32px_72px_rgba(0,0,0,0.22),0_4px_20px_rgba(0,0,0,0.1)]
+        animate-vm-slide">
+
+        {/* ── HEADER ── */}
+        <div className="flex-shrink-0 px-[22px] pt-5 pb-4
+          border-b border-black/[0.07] dark:border-white/[0.06]
+          bg-[#f8f9fb] dark:bg-white/[0.025]">
+
+          <div className="flex items-start justify-between gap-3">
+            {/* Icon + text */}
+            <div className="flex items-center gap-3">
+              <div
+                className="w-[42px] h-[42px] rounded-[13px] flex-shrink-0 flex items-center justify-center transition-all duration-[400ms]"
+                style={{ background: iconBg,
+                  boxShadow: isRun ? "0 0 0 7px rgba(59,130,246,0.1)"
+                    : allGood ? "0 0 0 7px rgba(5,150,105,0.1)"
+                    : "0 0 0 7px rgba(220,38,38,0.1)" }}
+              >
+                {isRun ? (
+                  <svg className="w-5 h-5 animate-vm-spin" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="9" stroke="rgba(255,255,255,0.22)" strokeWidth="2.5"/>
+                    <path d="M12 3a9 9 0 019 9" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                  </svg>
+                ) : allGood ? (
+                  <svg className="w-5 h-5 text-white animate-vm-pop" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/>
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                  </svg>
+                )}
+              </div>
+              <div>
+                <p className="m-0 text-[14px] font-bold tracking-[-0.022em] leading-tight text-gray-900 dark:text-[#e2e8f5]">
+                  {isRun ? "Validating Documents" : allGood ? "All Clear" : "Issues Found"}
+                </p>
+                <p className="mt-[3px] mb-0 text-[11px] leading-[1.35] text-gray-500 dark:text-[#8892a4]" style={MONO}>
+                  {isRun ? STEPS[stepIndex] + "…"
+                    : filterRowId
+                      ? `${visibleIssues.length} issue${visibleIssues.length !== 1 ? "s" : ""} for this row`
+                      : `${validation.issues.length} issue${validation.issues.length !== 1 ? "s" : ""} · ${validation.totalLinks} link${validation.totalLinks !== 1 ? "s" : ""} checked`}
+                </p>
+              </div>
+            </div>
+
+            {/* Close X */}
+            {isDone && (
+              <button
+                onClick={onClose}
+                className="flex-shrink-0 w-[30px] h-[30px] rounded-[9px] flex items-center justify-center
+                  border border-black/10 dark:border-white/10
+                  bg-gray-100 dark:bg-white/[0.07]
+                  text-gray-500 dark:text-[#8892a4]
+                  hover:bg-gray-200 dark:hover:bg-white/[0.12]
+                  transition-colors cursor-pointer"
+              >
+                <svg className="w-[13px] h-[13px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          <div className="mt-4 h-[5px] rounded-full overflow-hidden bg-black/[0.08] dark:bg-white/[0.07]">
+            <div
+              className={`h-full rounded-full ${progressCls} transition-[width] duration-[350ms] ease-linear`}
+              style={{ width: `${validation.progress}%` }}
+            />
+          </div>
+          <div className="flex justify-end mt-[5px]">
+            <span className={`text-[10px] font-semibold ${pctCls}`} style={MONO}>
+              {validation.progress}%
+            </span>
+          </div>
+        </div>
+
+        {/* ── BODY ── */}
+        <div className="overflow-y-auto flex-grow">
+
+          {/* Running: step tracker */}
+          {isRun && (
+            <div className="p-[22px] space-y-[7px]">
+              {STEPS.map((s, i) => {
+                const done   = i < stepIndex;
+                const active = i === stepIndex;
+                return (
+                  <div key={i} className={`relative flex items-center gap-[10px] px-[14px] py-[11px] rounded-[11px] border overflow-hidden transition-all duration-300
+                    ${active
+                      ? "bg-blue-500/[0.07] border-blue-500/[0.22]"
+                      : "bg-gray-100 dark:bg-white/[0.035] border-black/[0.07] dark:border-white/[0.055]"}`}>
+
+                    {/* shimmer on active — single bg-sweep div, no JS style injection */}
+                    {active && (
+                      <div className="absolute inset-0 pointer-events-none animate-vm-sweep
+                        bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.12)_50%,transparent_100%)]
+                        dark:bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.055)_50%,transparent_100%)]
+                        bg-[length:200%_100%]"/>
+                    )}
+
+                    {/* Circle */}
+                    <div className={`w-[22px] h-[22px] rounded-full flex-shrink-0 flex items-center justify-center border-2 transition-all duration-300
+                      ${done   ? "bg-emerald-600 border-emerald-600"
+                      : active ? "bg-blue-600 border-blue-500"
+                      :          "bg-transparent border-black/[0.07] dark:border-white/[0.055]"}`}>
+                      {done
+                        ? <svg className="w-[11px] h-[11px] text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/></svg>
+                        : active
+                        ? <div className="w-[7px] h-[7px] rounded-full bg-white animate-vm-pulse"/>
+                        : <div className="w-[5px] h-[5px] rounded-full bg-gray-400 dark:bg-slate-600"/>
+                      }
+                    </div>
+
+                    <span className={`relative text-[12px] transition-colors duration-300
+                      ${active ? "font-semibold text-gray-900 dark:text-[#e2e8f5]" : "font-normal text-gray-500 dark:text-[#8892a4]"}`}>
+                      {s}
+                    </span>
+
+                    <span className={`relative ml-auto text-[10px] font-medium
+                      ${done ? "text-emerald-600 dark:text-emerald-400" : active ? "text-blue-500" : "text-gray-400 dark:text-slate-600"}`}
+                      style={MONO}>
+                      {done ? "done" : active ? (i === 2 ? `${validation.checkedCount}/${validation.totalLinks}` : "running") : "waiting"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Done + all good */}
+          {isDone && allGood && (
+            <div className="px-[22px] py-[38px] text-center animate-vm-fade-row">
+              <div className="w-[66px] h-[66px] rounded-full mx-auto mb-[18px] flex items-center justify-center
+                bg-emerald-500/10 dark:bg-emerald-500/[0.12] border border-emerald-500/[0.22]">
+                <svg className="w-[30px] h-[30px] text-emerald-600 dark:text-emerald-400 animate-vm-pop" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+                </svg>
+              </div>
+              <p className="text-[17px] font-bold tracking-[-0.025em] text-gray-900 dark:text-[#e2e8f5] mb-[7px] mt-0">All documents passed!</p>
+              <p className="text-[12px] text-gray-500 dark:text-[#8892a4] m-0 leading-relaxed">
+                No duplicates found · All {validation.totalLinks} links are reachable
+              </p>
+            </div>
+          )}
+
+          {/* Done + issues: summary */}
+          {isDone && !allGood && !showErrors && (
+            <div className="px-[22px] py-[30px] text-center animate-vm-fade-row">
+              <div className="w-[58px] h-[58px] rounded-full mx-auto mb-[15px] flex items-center justify-center
+                bg-red-500/[0.07] dark:bg-red-500/[0.08] border border-red-500/[0.18]">
+                <svg className="w-[25px] h-[25px] text-red-500 animate-vm-pop" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                </svg>
+              </div>
+              <p className="text-[16px] font-bold tracking-[-0.022em] text-gray-900 dark:text-[#e2e8f5] m-0">
+                {visibleIssues.length} issue{visibleIssues.length !== 1 ? "s" : ""} detected
+              </p>
+            </div>
+          )}
+
+          {/* Done + issues: expanded list */}
+          {isDone && !allGood && showErrors && (
+            <div className="px-[22px] pt-[14px] pb-5 animate-vm-fade-row">
+              <div className="flex flex-wrap gap-[6px] mb-[14px]">
+                {errors.length > 0 && (
+                  <span className="text-[10.5px] font-semibold px-[10px] py-[3px] rounded-full
+                    bg-red-50 dark:bg-red-500/[0.12] border border-red-200 dark:border-red-500/25 text-red-600 dark:text-red-400"
+                    style={MONO}>
+                    {errors.length} error{errors.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+                {warnings.length > 0 && (
+                  <span className="text-[10.5px] font-semibold px-[10px] py-[3px] rounded-full
+                    bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/[0.22] text-amber-600 dark:text-amber-400"
+                    style={MONO}>
+                    {warnings.length} warning{warnings.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-col gap-[7px]">
+                {visibleIssues.map((issue, idx) => {
+                  const meta  = KIND_META[issue.kind];
+                  const isErr = issue.severity === "error";
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => { onHighlight(issue.rowId); onClose(); }}
+                      className={`rounded-[11px] border px-[13px] py-[10px] cursor-pointer transition-colors animate-vm-fade-row
+                        ${isErr
+                          ? "bg-red-50 dark:bg-red-500/[0.06] border-red-200 dark:border-red-500/[0.18] hover:bg-red-100 dark:hover:bg-red-500/10"
+                          : "bg-amber-50 dark:bg-amber-500/[0.05] border-amber-200 dark:border-amber-500/[0.16] hover:bg-amber-100 dark:hover:bg-amber-500/[0.09]"}`}
+                      style={{ animationDelay: `${idx * 35}ms` }}
+                    >
+                      <div className="flex items-start gap-[10px]">
+                        <svg className={`w-[14px] h-[14px] flex-shrink-0 mt-[2px] ${isErr ? "text-red-500 dark:text-red-400" : "text-amber-500 dark:text-amber-400"}`}
+                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={meta.icon}/>
+                        </svg>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center flex-wrap gap-[5px] mb-[3px]">
+                            <span className={`text-[9.5px] font-bold tracking-[0.07em] uppercase ${isErr ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-500"}`} style={MONO}>
+                              {meta.label}
+                            </span>
+                            <span className="text-[9.5px] text-gray-400 dark:text-slate-600">·</span>
+                            <span className="text-[9.5px] text-gray-500 dark:text-[#8892a4]" style={MONO}>
+                              {fieldLabel(issue.field)}
+                            </span>
+                          </div>
+                          <p className="text-[12px] font-semibold text-gray-900 dark:text-[#e2e8f5] m-0 mb-[2px] truncate">
+                            {issue.rowTitle || "(untitled)"}
+                          </p>
+                          <p className="text-[11px] text-gray-500 dark:text-[#8892a4] m-0 leading-[1.5]">{issue.message}</p>
+                        </div>
+                        <svg className="w-[12px] h-[12px] text-gray-400 dark:text-slate-600 flex-shrink-0 mt-[4px]"
+                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/>
+                        </svg>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── FOOTER ── */}
+        {isDone && (
+          <div className="flex-shrink-0 flex justify-end gap-2 px-[22px] py-3
+            border-t border-black/[0.07] dark:border-white/[0.06]
+            bg-gray-100 dark:bg-black/[0.28]">
+            {allGood ? (
+              <button
+                onClick={onClose}
+                className="px-[22px] py-2 rounded-[10px] text-[12.5px] font-semibold text-white
+                  bg-gradient-to-br from-emerald-600 to-emerald-400
+                  hover:opacity-90 transition-opacity
+                  shadow-[0_2px_8px_rgba(5,150,105,0.22)] cursor-pointer border-none"
+              >
+                Close
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 rounded-[10px] text-[12px] font-medium cursor-pointer
+                    bg-gray-100 dark:bg-white/[0.07]
+                    border border-black/10 dark:border-white/10
+                    text-gray-700 dark:text-[#c5cdd9]
+                    hover:bg-gray-200 dark:hover:bg-white/[0.12]
+                    transition-colors"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => setShowErrors(v => !v)}
+                  className="flex items-center gap-[6px] px-[18px] py-2 rounded-[10px] text-[12px] font-semibold text-white cursor-pointer border-none
+                    bg-gradient-to-br from-red-600 to-orange-500
+                    hover:opacity-90 transition-opacity
+                    shadow-[0_2px_8px_rgba(220,38,38,0.22)]"
+                >
+                  <svg className="w-[13px] h-[13px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    {showErrors
+                      ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7"/>
+                      : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/>}
+                  </svg>
+                  {showErrors ? "Hide errors" : `Show ${visibleIssues.length} issue${visibleIssues.length !== 1 ? "s" : ""}`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────── main component ─────────────── */
 export default function Scope({ initialData }: Props) {
-  const [rows, setRows] = useState<ScopeRow[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [rows, setRows]                   = useState<ScopeRow[]>([]);
+  const [editingId, setEditingId]         = useState<string | null>(null);
+  const [saved, setSaved]                 = useState(false);
+  const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
+  const [showModal, setShowModal]         = useState(false);
+  const [filterRowId, setFilterRowId]     = useState<string | null>(null);
+  const [validation, setValidation]       = useState<ValidationState>({
+    phase:"idle", progress:0, currentStep:"", issues:[], checkedCount:0, totalLinks:0,
+  });
+  const highlightRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
   useEffect(() => {
-    setRows(buildRowsFromScope(initialData));
+    setRows(buildRows(initialData));
     setEditingId(null);
     setSaved(false);
   }, [initialData]);
 
-  const extra = hasExtraCols(rows);
+  useEffect(() => {
+    if (!highlightedRowId) return;
+    const el = highlightRefs.current[highlightedRowId];
+    if (el) { el.scrollIntoView({ behavior:"smooth", block:"center" }); el.focus(); }
+    const t = setTimeout(() => setHighlightedRowId(null), 3200);
+    return () => clearTimeout(t);
+  }, [highlightedRowId]);
+
+  const extra    = hasExtraCols(rows);
   const colCount = 6 + (extra.evergreen ? 1 : 0) + (extra.ingestion ? 1 : 0) + 1;
 
   function addRow() {
     const r: ScopeRow = {
-      id: Date.now().toString(), title: "", referenceLink: "", contentUrl: "",
-      issuingAuth: "", asrbId: "", smeComments: "", initialEvergreen: "",
-      dateOfIngestion: "", isOutOfScope: false,
+      id:Date.now().toString(), title:"", referenceLink:"", contentUrl:"",
+      issuingAuth:"", asrbId:"", smeComments:"", initialEvergreen:"",
+      dateOfIngestion:"", isOutOfScope:false,
     };
-    setRows((p) => [...p, r]);
+    setRows(p => [...p, r]);
     setEditingId(r.id);
   }
-
   function updateRow(id: string, field: string, value: string) {
-    setRows((p) => p.map((r) => r.id === id ? { ...r, [field]: value } : r));
+    setRows(p => p.map(r => r.id === id ? { ...r, [field]: value } : r));
   }
-
   function removeRow(id: string) {
-    setRows((p) => p.filter((r) => r.id !== id));
+    setRows(p => p.filter(r => r.id !== id));
     if (editingId === id) setEditingId(null);
   }
-
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
+
+  function openModalForRow(rowId: string) {
+    setFilterRowId(rowId);
+    setShowModal(true);
+  }
+
+  async function handleValidate() {
+    setFilterRowId(null);
+    setValidation({ phase:"running", progress:0, currentStep:"Initializing…", issues:[], checkedCount:0, totalLinks:0 });
+    setShowModal(true);
+    try {
+      const issues = await runValidation(rows, (s) => setValidation(s));
+      setValidation(prev => ({ ...prev, phase:"done", progress:100, issues, currentStep:"Done" }));
+    } catch (err) {
+      setValidation(prev => ({
+        ...prev, phase:"done", progress:100, currentStep:"Error",
+        issues:[{ rowId:"", rowTitle:"System", field:"title", kind:"broken_link", severity:"error", message:String(err) }],
+      }));
+    }
+  }
+
+  const issuesByRow = validation.issues.reduce<Record<string, number>>((acc, i) => {
+    if (i.rowId) acc[i.rowId] = (acc[i.rowId] ?? 0) + 1;
+    return acc;
+  }, {});
 
   return (
     <div>
@@ -159,17 +590,27 @@ export default function Scope({ initialData }: Props) {
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-[#1e2235] text-slate-600 dark:text-slate-500 border border-slate-300 dark:border-[#2a3147]" style={MONO}>{rows.length}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-white dark:bg-[#1e2235] text-orange-600 dark:text-orange-400 border border-orange-300 dark:border-orange-700/40 hover:bg-orange-50 dark:hover:bg-orange-500/10 transition-all">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
+            <button onClick={handleValidate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium relative
+                bg-white dark:bg-[#1e2235] text-orange-600 dark:text-orange-400
+                border border-orange-300 dark:border-orange-700/40
+                hover:bg-orange-50 dark:hover:bg-orange-500/10 transition-all">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
               Validate
+              {validation.phase === "done" && validation.issues.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
+                  {validation.issues.length}
+                </span>
+              )}
             </button>
             <button onClick={handleSave} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${saved ? "bg-emerald-500 text-white" : "bg-white dark:bg-[#1e2235] text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45]"}`}>
               {saved
-                ? <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Saved!</>
-                : <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>Save</>}
+                ? <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/></svg>Saved!</>
+                : <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>Save</>}
             </button>
             <button onClick={addRow} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-600 text-white hover:bg-blue-700 dark:hover:bg-blue-500 transition-all">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>Add Row
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4"/></svg>
+              Add Row
             </button>
           </div>
         </div>
@@ -177,7 +618,7 @@ export default function Scope({ initialData }: Props) {
         {/* Table */}
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-[11.5px]" style={{ minWidth: 900 }}>
+            <table className="w-full text-[11.5px]" style={{ minWidth:900 }}>
               <thead>
                 <tr className="bg-slate-100 dark:bg-[#1e2235]">
                   <th rowSpan={2} className={`${TH} w-[180px]`} style={MONO}>Document Title</th>
@@ -194,91 +635,75 @@ export default function Scope({ initialData }: Props) {
                   <th className="px-3 py-1.5 text-left font-bold text-[10px] uppercase tracking-[0.08em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147] w-[100px] bg-slate-200/60 dark:bg-[#252d45]/70" style={MONO}>ASRB ID</th>
                 </tr>
               </thead>
-
-              <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight: 400 }}>
+              <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight:400 }}>
                 {rows.length === 0 ? (
                   <tr>
                     <td colSpan={colCount} className="px-4 py-10 text-center">
                       <div className="flex flex-col items-center gap-2">
-                        <EmptyIcon />
+                        <EmptyIcon/>
                         <p className="text-[12px] text-slate-500 dark:text-slate-500">No documents added yet</p>
                         <button onClick={addRow} className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-medium">+ Add first row</button>
                       </div>
                     </td>
                   </tr>
                 ) : rows.map((row, idx) => {
-                  const isEditing = editingId === row.id;
+                  const isEditing     = editingId === row.id;
+                  const isHighlighted = highlightedRowId === row.id;
+                  const rowIssues     = issuesByRow[row.id] ?? 0;
                   const rowCls = [
                     "transition-colors cursor-pointer",
-                    isEditing ? "bg-blue-50/40 dark:bg-blue-500/5"
+                    isHighlighted ? "bg-amber-50 dark:bg-amber-500/10 ring-2 ring-amber-400/40"
+                      : isEditing   ? "bg-blue-50/40 dark:bg-blue-500/5"
                       : idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]"
                       : "bg-slate-50/60 dark:bg-[#1a1f35]",
-                    "hover:bg-blue-50/30 dark:hover:bg-[#1e2235]/50",
+                    !isHighlighted && "hover:bg-blue-50/30 dark:hover:bg-[#1e2235]/50",
                     row.isOutOfScope ? "opacity-55" : "",
                   ].join(" ");
 
                   return (
-                    <tr key={row.id} className={rowCls} onClick={() => setEditingId(row.id)}>
+                    <tr key={row.id} className={rowCls} tabIndex={-1}
+                      ref={(el) => { highlightRefs.current[row.id] = el; }}
+                      onClick={() => setEditingId(row.id)}>
 
-                      {/* Document Title */}
+                      <td className={CELL}>
+                        <div className="flex items-start gap-1.5">
+                          {rowIssues > 0 && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openModalForRow(row.id); }}
+                              title="View issues for this row"
+                              className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center hover:bg-red-600 transition-colors cursor-pointer border-none p-0"
+                            >
+                              {rowIssues}
+                            </button>
+                          )}
+                          {isEditing
+                            ? <EditInput value={row.title} field="title" rowId={row.id} placeholder="Document title…" onChange={updateRow}/>
+                            : <span className={`font-medium text-slate-800 dark:text-slate-300 ${row.isOutOfScope ? "line-through text-slate-400 dark:text-slate-600" : ""}`}>
+                                {row.title || <span className="text-slate-400 dark:text-slate-600 italic" style={{ textDecoration:"none" }}>—</span>}
+                              </span>}
+                        </div>
+                      </td>
+
+                      <td className={CELL}><Cell isEditing={isEditing} value={row.referenceLink} field="referenceLink" rowId={row.id} placeholder="https://…" onChange={updateRow} href/></td>
+                      <td className={CELL}><Cell isEditing={isEditing} value={row.contentUrl} field="contentUrl" rowId={row.id} placeholder="https://…" onChange={updateRow} href/></td>
+                      <td className={CELL}><Cell isEditing={isEditing} value={row.issuingAuth} field="issuingAuth" rowId={row.id} placeholder="Authority…" onChange={updateRow}/></td>
+
                       <td className={CELL}>
                         {isEditing
-                          ? <EditInput value={row.title} field="title" rowId={row.id} placeholder="Document title…" onChange={updateRow} />
-                          : <span className={`font-medium text-slate-800 dark:text-slate-300 ${row.isOutOfScope ? "line-through text-slate-400 dark:text-slate-600" : ""}`}>
-                              {row.title || <span className="text-slate-400 dark:text-slate-600 italic" style={{ textDecoration: "none" }}>—</span>}
-                            </span>}
-                      </td>
-
-                      {/* Reference Link */}
-                      <td className={CELL}>
-                        <Cell isEditing={isEditing} value={row.referenceLink} field="referenceLink" rowId={row.id} placeholder="https://…" onChange={updateRow} href />
-                      </td>
-
-                      {/* Content URL */}
-                      <td className={CELL}>
-                        <Cell isEditing={isEditing} value={row.contentUrl} field="contentUrl" rowId={row.id} placeholder="https://…" onChange={updateRow} href />
-                      </td>
-
-                      {/* Issuing Authority */}
-                      <td className={CELL}>
-                        <Cell isEditing={isEditing} value={row.issuingAuth} field="issuingAuth" rowId={row.id} placeholder="Authority…" onChange={updateRow} />
-                      </td>
-
-                      {/* ASRB ID */}
-                      <td className={CELL}>
-                        {isEditing
-                          ? <EditInput value={row.asrbId} field="asrbId" rowId={row.id} placeholder="ASRB…" onChange={updateRow} />
+                          ? <EditInput value={row.asrbId} field="asrbId" rowId={row.id} placeholder="ASRB…" onChange={updateRow}/>
                           : row.asrbId
                             ? <span className="font-mono text-[11px] text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-[#1e2235] border border-slate-200 dark:border-[#2a3147] px-2 py-0.5 rounded">{row.asrbId}</span>
                             : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
                       </td>
 
-                      {/* SME Comments */}
-                      <td className={CELL}>
-                        <Cell isEditing={isEditing} value={row.smeComments} field="smeComments" rowId={row.id} placeholder="Comments…" onChange={updateRow} />
-                      </td>
+                      <td className={CELL}><Cell isEditing={isEditing} value={row.smeComments} field="smeComments" rowId={row.id} placeholder="Comments…" onChange={updateRow}/></td>
+                      {extra.evergreen && <td className={CELL}><Cell isEditing={isEditing} value={row.initialEvergreen} field="initialEvergreen" rowId={row.id} placeholder="Initial / Evergreen…" onChange={updateRow}/></td>}
+                      {extra.ingestion && <td className={CELL}><Cell isEditing={isEditing} value={row.dateOfIngestion} field="dateOfIngestion" rowId={row.id} placeholder="Date…" onChange={updateRow}/></td>}
 
-                      {/* Initial / Evergreen (dynamic) */}
-                      {extra.evergreen && (
-                        <td className={CELL}>
-                          <Cell isEditing={isEditing} value={row.initialEvergreen} field="initialEvergreen" rowId={row.id} placeholder="Initial / Evergreen…" onChange={updateRow} />
-                        </td>
-                      )}
-
-                      {/* Date of Ingestion (dynamic) */}
-                      {extra.ingestion && (
-                        <td className={CELL}>
-                          <Cell isEditing={isEditing} value={row.dateOfIngestion} field="dateOfIngestion" rowId={row.id} placeholder="Date…" onChange={updateRow} />
-                        </td>
-                      )}
-
-                      {/* Delete */}
                       <td className="px-3 py-2 text-center align-top">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removeRow(row.id); }}
-                          className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 dark:text-slate-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-all mx-auto"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        <button onClick={(e) => { e.stopPropagation(); removeRow(row.id); }}
+                          className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 dark:text-slate-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-all mx-auto">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         </button>
                       </td>
                     </tr>
@@ -287,7 +712,6 @@ export default function Scope({ initialData }: Props) {
               </tbody>
             </table>
           </div>
-
           {rows.length > 0 && (
             <div className="px-4 py-2 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147]">
               <p className="text-[10.5px] text-slate-500 dark:text-slate-600" style={MONO}>
@@ -297,6 +721,16 @@ export default function Scope({ initialData }: Props) {
           )}
         </div>
       </div>
+
+      {showModal && (
+        <ValidationModal
+          validation={validation}
+          onClose={() => { setShowModal(false); setFilterRowId(null); }}
+          highlightedRowId={highlightedRowId}
+          onHighlight={(id) => setHighlightedRowId(id)}
+          filterRowId={filterRowId}
+        />
+      )}
     </div>
   );
 }

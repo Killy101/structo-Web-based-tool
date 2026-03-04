@@ -1,8 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 interface LevelRow {
   id: string;
   levelNumber: string;
@@ -22,9 +19,6 @@ interface Props {
   initialData?: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
-// REDJAy XML Tag helpers — mirror Python _build_redjay_tag exactly
-// ---------------------------------------------------------------------------
 const HARDCODED_LEVELS = new Set(["0", "1"]);
 
 function splitExamples(example: string): string[] {
@@ -43,28 +37,20 @@ function splitExamples(example: string): string[] {
 }
 
 function buildRedjayTag(levelNumber: string, example: string): string {
-  // Extract the numeric part: "Level 0" → "0", "Level 9" → "9"
   const n = levelNumber.replace(/\D/g, "").trim();
-
   if (HARDCODED_LEVELS.has(n)) return "Hardcoded";
-
   const tokens = splitExamples(example);
   if (!tokens.length) return `<section level="${n}"><title></title></section>`;
-
   return tokens
     .map((t) => `<section level="${n}"><title>${t}</title></section>`)
     .join("\n");
 }
 
-/** Extract the Example value from a description string. */
 function extractExample(description: string): string {
   const match = description.match(/^Example:\s*(.+)$/m);
   return match ? match[1].trim() : "";
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 function stamp(prefix = "") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -82,7 +68,7 @@ function asExtractedLevels(initialData?: Record<string, unknown>): LevelRow[] {
     description:  String(row.description  ?? ""),
     redjayXmlTag: String(row.redjayXmlTag ?? ""),
     path:         String(row.path         ?? ""),
-    remarksNotes: String(row.remarksNotes ?? ""),
+    remarksNotes: "", // always blank — never populated from source data
   }));
 }
 
@@ -94,28 +80,20 @@ function asExtractedWhitespace(initialData?: Record<string, unknown>): Whitespac
   }));
 }
 
-/**
- * Hardcoded Path = Level 0 description + Level 1 description.
- * e.g. "/DE" + "/DEBaFinOrdinance" → "/DE/DEBaFinOrdinance"
- * Falls back to the top-level hardcoded_path field if levels absent.
- */
-function deriveHardcodedPath(initialData?: Record<string, unknown>): string {
-  const rows = asObjectArray(initialData?.levels);
+function deriveHardcodedPathFromLevels(levels: LevelRow[]): string {
   let l0 = "", l1 = "";
-  for (const row of rows) {
-    const lvNum = String(row.levelNumber ?? "").replace(/[^0-9]/g, "").trim();
-    // Level 0 and Level 1 are "Hardcoded" — their path field holds the clean
-    // path segment, e.g. "/DE" and "/DEBaFinOrdinance"
-    if (lvNum === "0") l0 = String(row.path ?? "").trim();
-    if (lvNum === "1") l1 = String(row.path ?? "").trim();
+  for (const row of levels) {
+    const n = row.levelNumber.replace(/[^0-9]/g, "").trim();
+    const pathVal = row.path.trim() || extractExample(row.description).trim();
+    if (n === "0") l0 = pathVal;
+    if (n === "1") l1 = pathVal;
   }
-  if (l0 || l1) return l0 + l1;
-  return String(initialData?.hardcoded_path ?? "");
+  if (!l0 && !l1) return "";
+  const clean0 = l0.replace(/\/$/, "");
+  const clean1 = l1.replace(/^\//, "");
+  return (clean0 + "/" + clean1).replace(/\/+/g, "/").toLowerCase();
 }
 
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <span
@@ -128,13 +106,13 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function FieldRow({
-  label, value, onChange, placeholder, mono,
+  label, value, onChange, placeholder, mono, readOnly,
 }: {
-  label: string; value: string; onChange: (v: string) => void;
-  placeholder?: string; mono?: boolean;
+  label: string; value: string; onChange?: (v: string) => void;
+  placeholder?: string; mono?: boolean; readOnly?: boolean;
 }) {
   return (
-    <div className="flex items-center border-b border-slate-100 dark:border-[#2a3147]">
+    <div className="flex items-center border-b border-slate-100 dark:border-[#2a3147] last:border-b-0">
       <div className="w-44 shrink-0 px-3 py-2 bg-slate-100 dark:bg-[#1e2235] border-r border-slate-200 dark:border-[#2a3147]">
         <span
           className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300"
@@ -143,13 +121,22 @@ function FieldRow({
           {label}
         </span>
       </div>
-      <div className="flex-1 px-3 py-1.5">
-        <input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className={`w-full bg-transparent text-[11.5px] text-slate-800 dark:text-slate-300 outline-none placeholder:text-slate-400 dark:placeholder:text-slate-600 ${mono ? "font-mono" : ""}`}
-        />
+      <div className={`flex-1 px-3 py-1.5 flex items-center gap-2 ${readOnly ? "bg-slate-50 dark:bg-[#181d30]" : ""}`}>
+        {readOnly ? (
+          <>
+            <span className={`text-[11.5px] ${mono ? "font-mono" : ""} ${value ? "text-sky-700 dark:text-sky-400 font-semibold" : "text-slate-400 dark:text-slate-600 italic"}`}>
+              {value || "—"}
+            </span>
+            <span className="text-[9px] text-sky-500 dark:text-sky-600">⚡ auto</span>
+          </>
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => onChange?.(e.target.value)}
+            placeholder={placeholder}
+            className={`w-full bg-transparent text-[11.5px] text-slate-800 dark:text-slate-300 outline-none placeholder:text-slate-400 dark:placeholder:text-slate-600 ${mono ? "font-mono" : ""}`}
+          />
+        )}
       </div>
     </div>
   );
@@ -170,7 +157,7 @@ function DeleteBtn({ onClick }: { onClick: () => void }) {
 
 const LEVEL_COLUMNS = [
   { key: "levelNumber",  label: "Level Number",    width: "w-24"   },
-  { key: "description",  label: "Description",     width: "w-64"   },
+  { key: "description",  label: "Description",     width: "w-72"   },
   { key: "redjayXmlTag", label: "REDJAy XML Tag",  width: "flex-1" },
   { key: "path",         label: "Path",            width: "w-52"   },
   { key: "remarksNotes", label: "Remarks / Notes", width: "w-52"   },
@@ -181,13 +168,9 @@ const WS_COLUMNS = [
   { key: "innodReplace", label: "InnodReplace", width: "flex-1" },
 ];
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
 export default function ContentProfile({ initialData }: Props) {
-  const [rcFilename,         setRcFilename]         = useState("");
-  const [hardcodedPath,      setHardcodedPath]      = useState("");
-  const [headingAnnotation,  setHeadingAnnotation]  = useState("Level 2");
+  const [rcFilename,        setRcFilename]        = useState("");
+  const [headingAnnotation, setHeadingAnnotation] = useState("Level 2");
 
   const [levels,       setLevels]       = useState<LevelRow[]>([]);
   const [levelEditing, setLevelEditing] = useState<{ rowId: string; col: string } | null>(null);
@@ -197,9 +180,10 @@ export default function ContentProfile({ initialData }: Props) {
 
   const [saved, setSaved] = useState(false);
 
+  const hardcodedPath = useMemo(() => deriveHardcodedPathFromLevels(levels), [levels]);
+
   useEffect(() => {
-    setRcFilename(String(initialData?.rc_filename        ?? ""));
-    setHardcodedPath(deriveHardcodedPath(initialData));
+    setRcFilename(String(initialData?.rc_filename ?? ""));
     setHeadingAnnotation(String(initialData?.heading_annotation ?? "Level 2"));
     setLevels(asExtractedLevels(initialData));
     setWhitespace(asExtractedWhitespace(initialData));
@@ -208,13 +192,11 @@ export default function ContentProfile({ initialData }: Props) {
     setSaved(false);
   }, [initialData]);
 
-  // ── When description changes, auto-regenerate the REDJAy XML Tag ──────────
   function updateLevel(id: string, col: string, value: string) {
     setLevels((prev) =>
       prev.map((row) => {
         if (row.id !== id) return row;
         const updated = { ...row, [col]: value };
-        // Regenerate tag whenever description or levelNumber changes
         if (col === "description" || col === "levelNumber") {
           const example = extractExample(
             col === "description" ? value : updated.description
@@ -257,12 +239,10 @@ export default function ContentProfile({ initialData }: Props) {
 
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
 
-  // ── Cell renderers ────────────────────────────────────────────────────────
   function renderLevelCell(row: LevelRow, col: string) {
     const isEditing = levelEditing?.rowId === row.id && levelEditing?.col === col;
     const value     = row[col as keyof LevelRow] as string;
 
-    // REDJAy XML Tag is read-only (auto-generated); show with subtle indicator
     if (col === "redjayXmlTag") {
       const isHardcoded = value === "Hardcoded";
       return (
@@ -338,7 +318,6 @@ export default function ContentProfile({ initialData }: Props) {
     );
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
 
@@ -378,8 +357,8 @@ export default function ContentProfile({ initialData }: Props) {
 
       {/* RC Filename + Hardcoded Path */}
       <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
-        <FieldRow label="RC Filename"    value={rcFilename}    onChange={setRcFilename}    placeholder="Enter filename…" mono />
-        <FieldRow label="Hardcoded Path" value={hardcodedPath} onChange={setHardcodedPath} placeholder="Level 0 + Level 1 e.g. /AU/AUDepLegInst" mono />
+        <FieldRow label="RC Filename" value={rcFilename} onChange={setRcFilename} placeholder="Enter filename…" mono />
+        <FieldRow label="Hardcoded Path" value={hardcodedPath} readOnly mono />
       </div>
 
       {/* Level Number Table */}
@@ -387,7 +366,6 @@ export default function ContentProfile({ initialData }: Props) {
         <div className="flex items-center justify-between">
           <SectionLabel>Level Numbers</SectionLabel>
           <div className="flex items-center gap-3">
-            {/* Legend */}
             <span className="text-[10px] text-slate-400 dark:text-slate-600 italic">
               REDJAy XML Tag is auto-generated from Example
             </span>
@@ -417,8 +395,7 @@ export default function ContentProfile({ initialData }: Props) {
                           {col.label}
                         </span>
                         {col.key === "redjayXmlTag" && (
-                          <span className="text-[9px] text-sky-500 dark:text-sky-600 font-normal normal-case tracking-normal"
-                                title="Auto-generated from Example in Description">
+                          <span className="text-[9px] text-sky-500 dark:text-sky-600 font-normal normal-case tracking-normal">
                             ⚡ auto
                           </span>
                         )}
