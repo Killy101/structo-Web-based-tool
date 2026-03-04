@@ -7,6 +7,7 @@ import {
   CreateUserPayload,
   CreateUserResponse,
   Team,
+  UserRole,
   TaskAssignment,
   UserLog,
 } from "../types";
@@ -70,6 +71,21 @@ export const teamsApi = {
       .then((r) => r.data),
   delete: (id: number) =>
     api.delete<{ message: string }>(`/teams/${id}`).then((r) => r.data),
+};
+
+export const rolesApi = {
+  getAll: () =>
+    api.get<{ roles: UserRole[] }>("/roles").then((r) => r.data),
+  create: (name: string, features: string[]) =>
+    api
+      .post<{ message: string; role: UserRole }>("/roles", { name, features })
+      .then((r) => r.data),
+  update: (id: number, data: { name?: string; features?: string[] }) =>
+    api
+      .patch<{ message: string; role: UserRole }>(`/roles/${id}`, data)
+      .then((r) => r.data),
+  delete: (id: number) =>
+    api.delete<{ message: string }>(`/roles/${id}`).then((r) => r.data),
 };
 
 export const tasksApi = {

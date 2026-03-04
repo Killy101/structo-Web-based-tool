@@ -14,6 +14,16 @@ export type TaskStatus =
   | "REJECTED";
 export type AssignmentStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED";
 
+export interface UserRole {
+  id: number;
+  name: string;
+  slug: string;
+  features: string[];
+  createdAt: string;
+  updatedAt: string;
+  _count?: { users: number };
+}
+
 export interface Team {
   id: number;
   name: string;
@@ -40,6 +50,13 @@ export interface User {
   createdById?: number | null;
   teamId?: number | null;
   team?: { id: number; name: string; slug: string } | null;
+  userRoleId?: number | null;
+  userRole?: {
+    id: number;
+    name: string;
+    slug: string;
+    features: string[];
+  } | null;
 }
 
 export interface TaskAssignment {
@@ -139,6 +156,7 @@ export interface CreateUserPayload {
   lastName: string;
   role: Role;
   teamId?: number;
+  userRoleId?: number;
 }
 
 export interface CreateUserResponse {
