@@ -6,8 +6,9 @@ import { AuthProvider, useAuth } from "../../context/AuthContext";
 import { ThemeProvider } from "../../context/ThemContext";
 import Sidebar from "../../components/layout/Sidebar";
 import Unauthorized from "../../components/layout/Unauthorized";
-import { Spinner } from "../../components/ui";
+import { Spinner, Button } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
+import { getToken } from "../../services/api";
 import type { Role } from "../../types";
 
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
@@ -53,7 +54,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -64,8 +65,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isLoading || redirectedRef.current) return;
     if (!isAuthenticated) {
-      redirectedRef.current = true;
-      router.replace("/login");
+      // Only redirect to login if there's no token at all.
+      // If token exists but /auth/me failed (network error), stay and allow retry.
+      if (!getToken()) {
+        redirectedRef.current = true;
+        router.replace("/login");
+      }
       return;
     }
   }, [isAuthenticated, isLoading, user, router]);
@@ -125,7 +130,31 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!isAuthenticated) return null;
+  if (!isAuthenticated) {
+    // Token exists but /auth/me failed (likely network/server error) — show retry
+    if (getToken()) {
+      return (
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
+          <div className="text-center space-y-4 max-w-sm px-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Unable to connect to the server. Please check your connection and
+              try again.
+            </p>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={async () => {
+                await refreshUser();
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const isBrdRoute = pathname.startsWith("/dashboard/brd");
 
