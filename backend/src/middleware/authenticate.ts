@@ -6,6 +6,7 @@ export interface AuthRequest extends Request {
     userId: number;
     role: string;
     teamId: number | null;
+    mustChangePassword?: boolean;
   };
 }
 
