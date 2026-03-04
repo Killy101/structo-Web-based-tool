@@ -21,6 +21,23 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showSignedOutToast, setShowSignedOutToast] = useState(false);
 
+  // Redirect to dashboard if already authenticated
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const token = localStorage.getItem("token");
+    if (token) {
+      api
+        .get("/auth/me")
+        .then(() => {
+          router.replace("/dashboard");
+        })
+        .catch(() => {
+          // Token is invalid/expired — remove it and stay on login
+          localStorage.removeItem("token");
+        });
+    }
+  }, [router]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const showNotice = sessionStorage.getItem("signedOutNotice") === "1";
@@ -64,9 +81,18 @@ export default function LoginPage() {
       router.push("/dashboard");
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
-        setErrors({
-          general: error.response?.data?.error || "Invalid credentials",
-        });
+        if (error.response) {
+          setErrors({
+            general: error.response.data?.error || "Invalid credentials",
+          });
+        } else if (error.request) {
+          setErrors({
+            general:
+              "Unable to reach the server. Please check your connection and try again.",
+          });
+        } else {
+          setErrors({ general: "Something went wrong" });
+        }
       } else {
         setErrors({ general: "Something went wrong" });
       }

@@ -5,8 +5,16 @@ import { usePathname } from "next/navigation";
 import { AuthProvider, useAuth } from "../../context/AuthContext";
 import { ThemeProvider } from "../../context/ThemContext";
 import Sidebar from "../../components/layout/Sidebar";
-import { Spinner } from "../../components/ui";
+import Unauthorized from "../../components/layout/Unauthorized";
+import { Spinner, Button } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
+import { getToken } from "../../services/api";
+import type { Role } from "../../types";
+
+const RESTRICTED_ROUTES: Record<string, Role[]> = {
+  "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
+  "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
+};
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard": {
@@ -39,14 +47,14 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   },
   "/dashboard/settings": {
     title: "Settings",
-    subtitle: "System configuration",
+    subtitle: "Manage teams and system configuration",
   },
 };
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -57,13 +65,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isLoading || redirectedRef.current) return;
     if (!isAuthenticated) {
-      redirectedRef.current = true;
-      router.replace("/login");
+      // Only redirect to login if there's no token at all.
+      // If token exists but /auth/me failed (network error), stay and allow retry.
+      if (!getToken()) {
+        redirectedRef.current = true;
+        router.replace("/login");
+      }
       return;
-    }
-    if (user?.mustChangePassword) {
-      redirectedRef.current = true;
-      router.replace("/change-password");
     }
   }, [isAuthenticated, isLoading, user, router]);
 
@@ -76,7 +84,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     sessionStorage.removeItem("justLoggedIn");
     if (!justLoggedIn) return;
 
-    const userIdentity = user.id ?? user.email;
+    const userIdentity = user.id ?? user.userId;
     if (!userIdentity) return;
 
     const seenKey = `welcomeSplashSeen:${userIdentity}`;
@@ -122,9 +130,37 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!isAuthenticated) return null;
+  if (!isAuthenticated) {
+    // Token exists but /auth/me failed (likely network/server error) — show retry
+    if (getToken()) {
+      return (
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
+          <div className="text-center space-y-4 max-w-sm px-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Unable to connect to the server. Please check your connection and
+              try again.
+            </p>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={async () => {
+                await refreshUser();
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const isBrdRoute = pathname.startsWith("/dashboard/brd");
+
+  const allowedRoles = RESTRICTED_ROUTES[pathname];
+  const isUnauthorized =
+    allowedRoles !== undefined && !allowedRoles.includes(user?.role as Role);
 
   return (
     <div
@@ -136,12 +172,26 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     >
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
       <div className="flex-1 flex flex-col overflow-hidden">
+        {!isBrdRoute && (
+          <header className="flex-shrink-0 flex items-center gap-4 px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+            <div>
+              <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-none">
+                {PAGE_META[pathname]?.title ?? "Dashboard"}
+              </h1>
+              {PAGE_META[pathname]?.subtitle && (
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {PAGE_META[pathname].subtitle}
+                </p>
+              )}
+            </div>
+          </header>
+        )}
         <main
           className={
             isBrdRoute ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"
           }
         >
-          {children}
+          {isUnauthorized ? <Unauthorized /> : children}
         </main>
       </div>
     </div>

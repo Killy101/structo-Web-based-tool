@@ -13,7 +13,7 @@ export default function ForgotPasswordModal({
   isOpen,
   onClose,
 }: ForgotPasswordModalProps) {
-  const [email, setEmail] = useState("");
+  const [userId, setUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
@@ -22,7 +22,7 @@ export default function ForgotPasswordModal({
   // Reset state when modal opens/closes
   useEffect(() => {
     if (isOpen) {
-      setEmail("");
+      setUserId("");
       setError("");
       setSuccess(false);
       setLoading(false);
@@ -39,15 +39,14 @@ export default function ForgotPasswordModal({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
-  function validateEmail(): boolean {
-    if (!email.trim()) {
-      setError("Email address is required");
+  function validateUserId(): boolean {
+    if (!userId.trim()) {
+      setError("User ID is required");
       return false;
     }
 
-    // Only allow @gmail.com and @innodata.com
-    if (!/^[^\s@]+@(gmail\.com|innodata\.com)$/i.test(email.trim())) {
-      setError("Only @gmail.com or @innodata.com emails are accepted");
+    if (!/^[a-zA-Z0-9]{3,6}$/.test(userId.trim())) {
+      setError("User ID must be 3 to 6 alphanumeric characters");
       return false;
     }
 
@@ -58,12 +57,12 @@ export default function ForgotPasswordModal({
     e.preventDefault();
     setError("");
 
-    if (!validateEmail()) return;
+    if (!validateUserId()) return;
 
     setLoading(true);
 
     try {
-      await api.post("/auth/forgot-password", { email: email.trim() });
+      await api.post("/auth/forgot-password", { userId: userId.trim() });
       setSuccess(true);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
@@ -162,7 +161,8 @@ export default function ForgotPasswordModal({
                 Forgot your password?
               </h2>
               <p className="text-sm text-slate-500 text-center mb-6">
-                Enter your email and we&apos;ll send you a reset link.
+                Enter your user ID and we&apos;ll send your password reset
+                request.
               </p>
 
               {/* Error */}
@@ -187,7 +187,7 @@ export default function ForgotPasswordModal({
               <form onSubmit={handleSubmit} className="space-y-4" noValidate>
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-                    Email Address
+                    User ID
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
@@ -213,13 +213,13 @@ export default function ForgotPasswordModal({
                     </span>
                     <input
                       ref={inputRef}
-                      type="email"
-                      value={email}
+                      type="text"
+                      value={userId}
                       onChange={(e) => {
-                        setEmail(e.target.value);
+                        setUserId(e.target.value.toUpperCase());
                         if (error) setError("");
                       }}
-                      placeholder="you@gmail.com or you@innodata.com"
+                      placeholder="e.g. GDT97H"
                       className={`w-full pl-10 pr-4 py-3 text-sm rounded-xl border bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none transition-all ${
                         error
                           ? "border-red-300 dark:border-red-700 focus:ring-2 focus:ring-red-200"
@@ -228,7 +228,7 @@ export default function ForgotPasswordModal({
                     />
                   </div>
                   <p className="text-xs text-slate-400 mt-1.5">
-                    Only @gmail.com and @innodata.com emails are supported.
+                    Use your 3 to 6 character alphanumeric user ID.
                   </p>
                 </div>
 
@@ -305,7 +305,7 @@ export default function ForgotPasswordModal({
               <p className="text-sm text-slate-500 mb-6">
                 If{" "}
                 <span className="font-semibold text-slate-700 dark:text-slate-300">
-                  {email}
+                  {userId}
                 </span>{" "}
                 is registered, you&apos;ll receive a reset link shortly.
               </p>
