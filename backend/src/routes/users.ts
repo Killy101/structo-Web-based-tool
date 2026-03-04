@@ -82,6 +82,10 @@ router.get(
           createdById: true,
           teamId: true,
           team: { select: { id: true, name: true, slug: true } },
+          userRoleId: true,
+          userRole: {
+            select: { id: true, name: true, slug: true, features: true },
+          },
         },
       });
 
@@ -100,7 +104,8 @@ router.post(
   authorize(["SUPER_ADMIN", "ADMIN"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { userId, role, firstName, lastName, teamId } = req.body;
+      const { userId, role, firstName, lastName, teamId, userRoleId } =
+        req.body;
       const actorRole = req.user!.role as Role;
 
       if (!userId || !role) {
@@ -160,6 +165,16 @@ router.post(
       const generatedPassword = generatePassword();
       const hashedPassword = await bcrypt.hash(generatedPassword, 10);
 
+      // Validate userRoleId if provided
+      if (userRoleId) {
+        const customRole = await prisma.userRole.findUnique({
+          where: { id: userRoleId },
+        });
+        if (!customRole) {
+          return res.status(400).json({ error: "User role not found" });
+        }
+      }
+
       const newUser = await prisma.user.create({
         data: {
           userId: trimmedUserId,
@@ -169,6 +184,7 @@ router.post(
           firstName: firstName.trim(),
           lastName: lastName.trim(),
           teamId: assignTeamId || null,
+          userRoleId: userRoleId || null,
         },
       });
 
