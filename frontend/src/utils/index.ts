@@ -1,4 +1,4 @@
-import { Role, Status, TaskStatus, AssignmentStatus } from "../types";
+import { Role, Status, TaskStatus, AssignmentStatus, User } from "../types";
 
 // ─── ROLE CONFIG ───────────────────────────────────────────
 export const ROLE_LABELS: Record<Role, string> = {
@@ -99,6 +99,24 @@ export const FEATURE_LABELS: Record<string, string> = {
   history: "History",
   "user-logs": "User Logs",
 };
+
+// ─── DYNAMIC ROLE DISPLAY ─────────────────────────────────
+// Returns the display label for a user, preferring custom role name
+export const getUserRoleLabel = (user: Partial<User>): string => {
+  if (user.userRole?.name) return user.userRole.name;
+  return ROLE_LABELS[user.role as Role] ?? user.role ?? "User";
+};
+
+// Returns the badge color for a user, using custom role color or base role color
+export const getUserRoleBadgeColor = (user: Partial<User>): string => {
+  if (user.userRole) {
+    return "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400";
+  }
+  return ROLE_BADGE_COLORS[user.role as Role] ?? ROLE_BADGE_COLORS.USER;
+};
+
+// ─── BASE ROLES FOR CREATE USER (simplified) ──────────────
+export const BASE_CREATE_ROLES: Role[] = ["ADMIN", "USER"];
 
 // ─── ROLE PERMISSIONS ──────────────────────────────────────
 // Who can create which roles

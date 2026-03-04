@@ -8,6 +8,7 @@ import {
   ToastType,
   CreateUserPayload,
   Team,
+  UserRole,
   TaskAssignment,
   UserLog,
 } from "../types";
@@ -16,6 +17,7 @@ import {
   filesApi,
   dashboardApi,
   teamsApi,
+  rolesApi,
   tasksApi,
   userLogsApi,
   authApi,
@@ -157,6 +159,61 @@ export function useTeams() {
     createTeam,
     updateTeam,
     deleteTeam,
+  };
+}
+
+// ─── useRoles ──────────────────────────────────────────────
+export function useRoles() {
+  const [roles, setRoles] = useState<UserRole[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { roles } = await rolesApi.getAll();
+      setRoles(roles);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  const createRole = async (name: string, features: string[]) => {
+    const result = await rolesApi.create(name, features);
+    await refetch();
+    return result;
+  };
+
+  const updateRole = async (
+    id: number,
+    data: { name?: string; features?: string[] },
+  ) => {
+    const result = await rolesApi.update(id, data);
+    await refetch();
+    return result;
+  };
+
+  const deleteRole = async (id: number) => {
+    const result = await rolesApi.delete(id);
+    await refetch();
+    return result;
+  };
+
+  return {
+    roles,
+    isLoading,
+    error,
+    refetch,
+    createRole,
+    updateRole,
+    deleteRole,
   };
 }
 

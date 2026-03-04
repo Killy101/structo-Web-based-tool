@@ -34,6 +34,17 @@ enum AssignmentStatus {
   COMPLETED
 }
 
+model UserRole {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  slug      String   @unique
+  features  String[] @default([])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users User[]
+}
+
 model Team {
   id        Int      @id @default(autoincrement())
   name      String   @unique
@@ -63,6 +74,9 @@ model User {
 
   teamId Int?
   team   Team? @relation(fields: [teamId], references: [id])
+
+  userRoleId Int?
+  userRole   UserRole? @relation(fields: [userRoleId], references: [id])
 
   uploads     FileUpload[]
   validations Validation[]

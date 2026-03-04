@@ -13,7 +13,7 @@ import {
   EmptyState,
   ToastContainer,
 } from "../../../components/ui";
-import { useUsers, useTeams, useToast } from "../../../hooks/index";
+import { useUsers, useTeams, useRoles, useToast } from "../../../hooks/index";
 import { useAuth } from "../../../context/AuthContext";
 import {
   ROLE_LABELS,
@@ -21,13 +21,16 @@ import {
   USER_STATUS_COLORS,
   CAN_CREATE_ROLES,
   ALLOWED_TARGET_ROLES,
+  FEATURE_LABELS,
   canDeactivate,
   canChangePassword,
   canChangeRoleTo,
+  getUserRoleLabel,
+  getUserRoleBadgeColor,
   formatDate,
   copyToClipboard,
 } from "../../../utils/index";
-import { Role, User, CreateUserPayload } from "../../../types";
+import { Role, User, UserRole, CreateUserPayload } from "../../../types";
 
 function getErrorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -53,6 +56,7 @@ function CreateUserModal({
   actorRole,
   teams,
   actorTeamId,
+  customRoles,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -60,6 +64,7 @@ function CreateUserModal({
   actorRole: Role;
   teams: { id: number; name: string }[];
   actorTeamId: number | null;
+  customRoles: UserRole[];
 }) {
   const { createUser } = useUsers();
   const [form, setForm] = useState({
@@ -68,11 +73,24 @@ function CreateUserModal({
     lastName: "",
     role: "USER" as Role,
     teamId: actorTeamId ?? 0,
+    userRoleId: 0,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
-  const allowed = CAN_CREATE_ROLES[actorRole] ?? [];
+  // Base roles: Admin & User only. SuperAdmin can assign Admin; Admin can only assign User
+  const baseRoles: { value: Role; label: string }[] =
+    actorRole === "SUPER_ADMIN"
+      ? [
+          { value: "ADMIN", label: "Admin" },
+          { value: "USER", label: "User" },
+        ]
+      : [{ value: "USER", label: "User" }];
+
+  // Find the selected custom role for feature preview
+  const selectedCustomRole = customRoles.find(
+    (r) => r.id === form.userRoleId,
+  );
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -80,7 +98,7 @@ function CreateUserModal({
     if (!form.userId.trim()) {
       e.userId = "Required";
     } else if (!/^[a-zA-Z0-9]{3,6}$/.test(form.userId.trim())) {
-      e.userId = "User ID must be 3–6 alphanumeric characters";
+      e.userId = "User ID must be 3-6 alphanumeric characters";
     }
 
     if (!form.firstName.trim()) {
@@ -105,6 +123,7 @@ function CreateUserModal({
         lastName: form.lastName.trim(),
         role: form.role,
         teamId: form.teamId || undefined,
+        userRoleId: form.userRoleId || undefined,
       };
 
       const result = await createUser(payload);
@@ -113,6 +132,14 @@ function CreateUserModal({
         firstName: payload.firstName,
         lastName: payload.lastName,
         role: payload.role,
+        userRole: selectedCustomRole
+          ? {
+              id: selectedCustomRole.id,
+              name: selectedCustomRole.name,
+              slug: selectedCustomRole.slug,
+              features: selectedCustomRole.features,
+            }
+          : undefined,
       });
       setForm({
         userId: "",
@@ -120,6 +147,7 @@ function CreateUserModal({
         lastName: "",
         role: "USER",
         teamId: actorTeamId ?? 0,
+        userRoleId: 0,
       });
       setErrors({});
       onClose();
@@ -171,19 +199,56 @@ function CreateUserModal({
           required
         />
 
-        {/* Role Selector */}
+        {/* Role Selector — Simplified to Admin & User + custom roles */}
         <Select
           label="Role"
           value={form.role}
           onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
           required
         >
-          {allowed.map((r) => (
-            <option key={r} value={r}>
-              {ROLE_LABELS[r]}
+          {baseRoles.map((r) => (
+            <option key={r.value} value={r.value}>
+              {r.label}
             </option>
           ))}
         </Select>
+
+        {/* Custom Role Selector (optional) */}
+        {customRoles.length > 0 && (
+          <Select
+            label="Custom Role (Optional)"
+            value={String(form.userRoleId)}
+            onChange={(e) =>
+              setForm({ ...form, userRoleId: parseInt(e.target.value) || 0 })
+            }
+          >
+            <option value="0">— No Custom Role —</option>
+            {customRoles.map((r) => (
+              <option key={r.id} value={String(r.id)}>
+                {r.name}
+              </option>
+            ))}
+          </Select>
+        )}
+
+        {/* Feature Access Preview */}
+        {selectedCustomRole && selectedCustomRole.features.length > 0 && (
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 rounded-xl p-3">
+            <p className="text-xs font-semibold text-blue-800 dark:text-blue-300 mb-2">
+              Feature Access for {selectedCustomRole.name}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {selectedCustomRole.features.map((f) => (
+                <span
+                  key={f}
+                  className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-300"
+                >
+                  {FEATURE_LABELS[f] ?? f}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Team Selector — SuperAdmin picks any team; Admin auto-assigns own team */}
         {actorRole === "SUPER_ADMIN" && (
@@ -215,7 +280,7 @@ function CreateUserModal({
         {/* Info Banner */}
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-xl p-3">
           <p className="text-xs text-amber-700 dark:text-amber-400">
-            ⚡ A secure password will be auto-generated. Copy it and share with
+            A secure password will be auto-generated. Copy it and share with
             the user directly.
           </p>
         </div>
@@ -287,8 +352,8 @@ function PasswordModal({
             </p>
           )}
           {userData?.role && (
-            <Badge className={`mt-2 ${ROLE_BADGE_COLORS[userData.role]}`}>
-              {ROLE_LABELS[userData.role]}
+            <Badge className={`mt-2 ${getUserRoleBadgeColor(userData)}`}>
+              {getUserRoleLabel(userData)}
             </Badge>
           )}
         </div>
@@ -578,8 +643,8 @@ function ChangeRoleModal({
               {getDisplayName(targetUser)}
             </span>
           </p>
-          <Badge className={`mt-2 ${ROLE_BADGE_COLORS[targetUser.role]}`}>
-            Current: {ROLE_LABELS[targetUser.role]}
+          <Badge className={`mt-2 ${getUserRoleBadgeColor(targetUser)}`}>
+            Current: {getUserRoleLabel(targetUser)}
           </Badge>
         </div>
 
@@ -925,6 +990,7 @@ export default function UsersPage() {
     refetch,
   } = useUsers();
   const { teams } = useTeams();
+  const { roles: customRoles } = useRoles();
   const { toasts, show, dismiss } = useToast();
 
   const [search, setSearch] = useState("");
@@ -953,7 +1019,11 @@ export default function UsersPage() {
     const q =
       `${u.userId ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
     const matchesSearch = q.includes(search.toLowerCase());
-    const matchesRole = roleFilter === "ALL" || u.role === roleFilter;
+    const matchesRole =
+      roleFilter === "ALL" ||
+      (roleFilter.startsWith("CUSTOM_")
+        ? u.userRoleId === parseInt(roleFilter.replace("CUSTOM_", ""))
+        : u.role === roleFilter);
     const matchesStatus = statusFilter === "ALL" || u.status === statusFilter;
     const matchesTeam =
       teamFilter === "ALL" ||
@@ -1082,8 +1152,8 @@ export default function UsersPage() {
       key: "role",
       header: "Role",
       render: (u: User) => (
-        <Badge className={ROLE_BADGE_COLORS[u.role]}>
-          {ROLE_LABELS[u.role]}
+        <Badge className={getUserRoleBadgeColor(u)}>
+          {getUserRoleLabel(u)}
         </Badge>
       ),
     },
@@ -1166,9 +1236,11 @@ export default function UsersPage() {
             className="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0]"
           >
             <option value="ALL">All Roles</option>
-            {Object.entries(ROLE_LABELS).map(([v, l]) => (
-              <option key={v} value={v}>
-                {l}
+            <option value="ADMIN">Admin</option>
+            <option value="USER">User</option>
+            {customRoles.map((r) => (
+              <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
+                {r.name}
               </option>
             ))}
           </select>
@@ -1227,6 +1299,7 @@ export default function UsersPage() {
         actorRole={actorRole}
         teams={teams}
         actorTeamId={actorTeamId}
+        customRoles={customRoles}
       />
       <PasswordModal
         isOpen={showPwd}
