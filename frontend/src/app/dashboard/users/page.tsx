@@ -32,6 +32,10 @@ import {
 } from "../../../utils/index";
 import { Role, User, UserRole, CreateUserPayload } from "../../../types";
 
+/* ──────────────────────────────────────────────────────────
+   HELPERS
+   ────────────────────────────────────────────────────────── */
+
 function getErrorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "object" && e !== null && "response" in e) {
@@ -46,9 +50,207 @@ function getDisplayName(u: Partial<User>): string {
   return full || u.userId || "Unknown";
 }
 
-// ═══════════════════════════════════════════════════════════
-// CREATE USER MODAL — No email, required firstName/lastName
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   ICON COMPONENTS
+   ────────────────────────────────────────────────────────── */
+
+function PlusIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+    </svg>
+  );
+}
+
+function DotsIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="5" r="1" fill="currentColor" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" />
+      <circle cx="12" cy="19" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function KeyIcon() {
+  return (
+    <svg
+      className="w-4 h-4 text-slate-400"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
+      />
+    </svg>
+  );
+}
+
+function ShieldIcon() {
+  return (
+    <svg
+      className="w-4 h-4 text-slate-400"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
+      />
+    </svg>
+  );
+}
+
+function UsersGroupIcon() {
+  return (
+    <svg
+      className="w-4 h-4 text-slate-400"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
+      />
+    </svg>
+  );
+}
+
+function ToggleIcon({ active }: { active: boolean }) {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      {active ? (
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+        />
+      ) : (
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+        />
+      )}
+    </svg>
+  );
+}
+
+function CheckCircleIcon() {
+  return (
+    <svg
+      className="w-14 h-14 text-emerald-500 dark:text-emerald-400"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+      />
+    </svg>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   ENHANCED AVATAR — Tailwind-only color palettes
+   ────────────────────────────────────────────────────────── */
+
+const AVATAR_PALETTES = [
+  "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  "bg-pink-100 dark:bg-pink-900/40 text-pink-700 dark:text-pink-300",
+  "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
+  "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300",
+  "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
+  "bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300",
+  "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300",
+];
+
+function getAvatarPalette(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < (name || "").length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_PALETTES[Math.abs(hash) % AVATAR_PALETTES.length];
+}
+
+function EnhancedAvatar({ user }: { user: Partial<User> }) {
+  const name = getDisplayName(user);
+  const initials =
+    [user.firstName, user.lastName]
+      .filter(Boolean)
+      .map((n) => n![0])
+      .join("")
+      .toUpperCase() || (user.userId || "?").slice(0, 2).toUpperCase();
+
+  return (
+    <div
+      className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold tracking-wide shrink-0 transition-transform group-hover:scale-105 ${getAvatarPalette(name)}`}
+    >
+      {initials}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   STATUS DOT
+   ────────────────────────────────────────────────────────── */
+
+function StatusDot({
+  active,
+  size = "normal",
+}: {
+  active: boolean;
+  size?: "small" | "normal";
+}) {
+  return (
+    <span
+      className={`rounded-full shrink-0 ${
+        size === "small" ? "w-1.5 h-1.5" : "w-2 h-2"
+      } ${
+        active
+          ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]"
+          : "bg-slate-400 dark:bg-slate-500"
+      }`}
+    />
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   CREATE USER MODAL
+   ────────────────────────────────────────────────────────── */
+
 function CreateUserModal({
   isOpen,
   onClose,
@@ -78,7 +280,6 @@ function CreateUserModal({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
-  // Base roles: Admin & User only. SuperAdmin can assign Admin; Admin can only assign User
   const baseRoles: { value: Role; label: string }[] =
     actorRole === "SUPER_ADMIN"
       ? [
@@ -87,28 +288,17 @@ function CreateUserModal({
         ]
       : [{ value: "USER", label: "User" }];
 
-  // Find the selected custom role for feature preview
-  const selectedCustomRole = customRoles.find(
-    (r) => r.id === form.userRoleId,
-  );
+  const selectedCustomRole = customRoles.find((r) => r.id === form.userRoleId);
 
   const validate = () => {
     const e: Record<string, string> = {};
-
     if (!form.userId.trim()) {
       e.userId = "Required";
     } else if (!/^[a-zA-Z0-9]{3,6}$/.test(form.userId.trim())) {
-      e.userId = "User ID must be 3-6 alphanumeric characters";
+      e.userId = "Must be 3–6 alphanumeric characters";
     }
-
-    if (!form.firstName.trim()) {
-      e.firstName = "First name is required";
-    }
-
-    if (!form.lastName.trim()) {
-      e.lastName = "Last name is required";
-    }
-
+    if (!form.firstName.trim()) e.firstName = "Required";
+    if (!form.lastName.trim()) e.lastName = "Required";
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -125,7 +315,6 @@ function CreateUserModal({
         teamId: form.teamId || undefined,
         userRoleId: form.userRoleId || undefined,
       };
-
       const result = await createUser(payload);
       onSuccess(result.generatedPassword, {
         userId: payload.userId,
@@ -161,45 +350,47 @@ function CreateUserModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Add New User">
       <div className="space-y-4">
-        {/* User ID */}
-        <Input
-          label="Employee ID"
-          type="text"
-          value={form.userId}
-          onChange={(e) =>
-            setForm({ ...form, userId: e.target.value.toUpperCase() })
-          }
-          placeholder="e.g. GDT97H"
-          error={errors.userId}
-          required
-        />
-        <p className="text-xs text-slate-400 -mt-2">
-          3 to 6 alphanumeric characters (letters and numbers only)
-        </p>
+        {/* Employee ID */}
+        <div>
+          <Input
+            label="Employee ID"
+            type="text"
+            value={form.userId}
+            onChange={(e) =>
+              setForm({ ...form, userId: e.target.value.toUpperCase() })
+            }
+            placeholder="e.g. GDT97H"
+            error={errors.userId}
+            required
+          />
+          <p className="text-[11px] text-slate-400 mt-1">
+            3–6 alphanumeric characters (letters &amp; numbers only)
+          </p>
+        </div>
 
-        {/* First Name — REQUIRED */}
-        <Input
-          label="First Name"
-          type="text"
-          value={form.firstName}
-          onChange={(e) => setForm({ ...form, firstName: e.target.value })}
-          placeholder="e.g. Juan"
-          error={errors.firstName}
-          required
-        />
+        {/* Names side by side */}
+        <div className="grid grid-cols-2 gap-3">
+          <Input
+            label="First Name"
+            type="text"
+            value={form.firstName}
+            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+            placeholder="e.g. Juan"
+            error={errors.firstName}
+            required
+          />
+          <Input
+            label="Last Name"
+            type="text"
+            value={form.lastName}
+            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+            placeholder="e.g. Dela Cruz"
+            error={errors.lastName}
+            required
+          />
+        </div>
 
-        {/* Last Name — REQUIRED */}
-        <Input
-          label="Last Name"
-          type="text"
-          value={form.lastName}
-          onChange={(e) => setForm({ ...form, lastName: e.target.value })}
-          placeholder="e.g. Dela Cruz"
-          error={errors.lastName}
-          required
-        />
-
-        {/* Role Selector — Simplified to Admin & User + custom roles */}
+        {/* Role */}
         <Select
           label="Role"
           value={form.role}
@@ -213,7 +404,7 @@ function CreateUserModal({
           ))}
         </Select>
 
-        {/* Custom Role Selector (optional) */}
+        {/* Custom Role */}
         {customRoles.length > 0 && (
           <Select
             label="Custom Role (Optional)"
@@ -231,17 +422,17 @@ function CreateUserModal({
           </Select>
         )}
 
-        {/* Feature Access Preview */}
+        {/* Feature chips preview */}
         {selectedCustomRole && selectedCustomRole.features.length > 0 && (
-          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 rounded-xl p-3">
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-3">
             <p className="text-xs font-semibold text-blue-800 dark:text-blue-300 mb-2">
-              Feature Access for {selectedCustomRole.name}
+              Feature Access — {selectedCustomRole.name}
             </p>
             <div className="flex flex-wrap gap-1.5">
               {selectedCustomRole.features.map((f) => (
                 <span
                   key={f}
-                  className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-300"
+                  className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-blue-100/80 text-blue-700 dark:bg-blue-800/30 dark:text-blue-300"
                 >
                   {FEATURE_LABELS[f] ?? f}
                 </span>
@@ -250,7 +441,7 @@ function CreateUserModal({
           </div>
         )}
 
-        {/* Team Selector — SuperAdmin picks any team; Admin auto-assigns own team */}
+        {/* Team */}
         {actorRole === "SUPER_ADMIN" && (
           <Select
             label="Assign to Team"
@@ -269,31 +460,32 @@ function CreateUserModal({
         )}
 
         {actorRole === "ADMIN" && actorTeamId && (
-          <div className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3">
-            <p className="text-xs text-slate-500 dark:text-slate-400">
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-3">
+            <p className="text-xs text-blue-700 dark:text-blue-300">
               <span className="font-semibold">Team:</span> User will be
               automatically assigned to your team.
             </p>
           </div>
         )}
 
-        {/* Info Banner */}
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-xl p-3">
+        {/* Password info banner */}
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-xl p-3 flex items-start gap-2.5">
+          <span className="text-base leading-none mt-px">🔑</span>
           <p className="text-xs text-amber-700 dark:text-amber-400">
-            A secure password will be auto-generated. Copy it and share with
-            the user directly.
+            A secure password will be auto-generated. Copy it and share with the
+            user directly.
           </p>
         </div>
 
         {errors.submit && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-3">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">
               {errors.submit}
             </p>
           </div>
         )}
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex gap-3 pt-1">
           <Button
             variant="secondary"
             className="flex-1 justify-center"
@@ -314,9 +506,10 @@ function CreateUserModal({
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// PASSWORD REVEAL MODAL (after creating user)
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   PASSWORD REVEAL MODAL
+   ────────────────────────────────────────────────────────── */
+
 function PasswordModal({
   isOpen,
   onClose,
@@ -338,12 +531,14 @@ function PasswordModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="User Created Successfully">
       <div className="space-y-5">
-        <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 dark:bg-emerald-900/30 rounded-full mx-auto">
-          <span className="text-3xl">✅</span>
+        {/* Success icon */}
+        <div className="flex justify-center py-1">
+          <CheckCircleIcon />
         </div>
 
+        {/* User info */}
         <div className="text-center">
-          <p className="font-semibold text-slate-900 dark:text-white">
+          <p className="font-bold text-base text-slate-900 dark:text-white">
             {userData?.userId}
           </p>
           {(userData?.firstName || userData?.lastName) && (
@@ -352,30 +547,34 @@ function PasswordModal({
             </p>
           )}
           {userData?.role && (
-            <Badge className={`mt-2 ${getUserRoleBadgeColor(userData)}`}>
-              {getUserRoleLabel(userData)}
-            </Badge>
+            <div className="mt-2">
+              <Badge className={getUserRoleBadgeColor(userData)}>
+                {getUserRoleLabel(userData)}
+              </Badge>
+            </div>
           )}
         </div>
 
+        {/* Password display */}
         <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider text-center mb-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-center mb-2 text-slate-400">
             Generated Password
           </p>
-          <div className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 flex items-center justify-between gap-3">
-            <code className="text-lg font-mono font-bold text-[#1a56f0] tracking-widest">
+          <div className="bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl px-5 py-4 flex items-center justify-between gap-4">
+            <code className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tracking-[0.15em]">
               {password}
             </code>
             <button
               onClick={handleCopy}
-              className="text-sm font-medium text-slate-500 hover:text-[#1a56f0] transition-colors px-3 py-1.5 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20"
+              className="text-xs font-semibold text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:border-blue-300 dark:hover:border-blue-500 px-3.5 py-1.5 rounded-lg transition-all whitespace-nowrap"
             >
-              {copied ? "✓ Copied!" : "Copy"}
+              {copied ? "✓ Copied" : "Copy"}
             </button>
           </div>
         </div>
 
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-xl p-3 text-center">
+        {/* Warning */}
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-xl p-3 text-center">
           <p className="text-xs text-amber-700 dark:text-amber-400">
             ⚠️ This password is shown only once. Please copy and share it with
             the user directly.
@@ -390,9 +589,10 @@ function PasswordModal({
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// CHANGE PASSWORD MODAL
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   CHANGE PASSWORD MODAL
+   ────────────────────────────────────────────────────────── */
+
 function ChangePasswordModal({
   isOpen,
   onClose,
@@ -475,32 +675,33 @@ function ChangePasswordModal({
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Manage Password">
       <div className="space-y-4">
-        <div className="text-center pb-2">
+        {/* Target user */}
+        <div className="text-center pb-1">
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Changing password for{" "}
             <span className="font-semibold text-slate-900 dark:text-white">
               {getDisplayName(targetUser)}
             </span>{" "}
-            ({targetUser.userId})
+            <span className="text-slate-400">({targetUser.userId})</span>
           </p>
         </div>
 
-        {/* Reset result display */}
+        {/* Reset result */}
         {resetResult && (
           <div className="space-y-3">
-            <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/50 rounded-xl p-3 text-center">
-              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium mb-2">
+            <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl p-4 flex flex-col items-center gap-3">
+              <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
                 Password reset successfully!
               </p>
-              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-3 flex items-center justify-between">
-                <code className="text-lg font-mono font-bold text-[#1a56f0] tracking-widest">
+              <div className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 flex items-center justify-between">
+                <code className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tracking-[0.15em]">
                   {resetResult}
                 </code>
                 <button
                   onClick={handleCopyReset}
-                  className="text-sm font-medium text-slate-500 hover:text-[#1a56f0] transition-colors px-2 py-1 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                  className="text-xs font-semibold text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 px-2.5 py-1 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
                 >
-                  {copied ? "✓ Copied!" : "Copy"}
+                  {copied ? "✓ Copied" : "Copy"}
                 </button>
               </div>
             </div>
@@ -512,12 +713,12 @@ function ChangePasswordModal({
 
         {!resetResult && (
           <>
-            {/* Auto-generate reset */}
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 rounded-xl p-4">
-              <p className="text-sm font-medium text-blue-800 dark:text-blue-300 mb-2">
+            {/* Auto-generate */}
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 space-y-2.5">
+              <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">
                 Auto-generate new password
               </p>
-              <p className="text-xs text-blue-600 dark:text-blue-400 mb-3">
+              <p className="text-xs text-blue-600/80 dark:text-blue-400/80">
                 Generates a secure random password. You&apos;ll be shown the new
                 password to share with the user.
               </p>
@@ -527,21 +728,22 @@ function ChangePasswordModal({
                 loading={loading}
                 className="w-full justify-center"
               >
-                Reset & Generate Password
+                Reset &amp; Generate Password
               </Button>
             </div>
 
-            <div className="flex items-center gap-3">
+            {/* Divider */}
+            <div className="flex items-center gap-3.5">
               <hr className="flex-1 border-slate-200 dark:border-slate-700" />
-              <span className="text-xs text-slate-400 uppercase tracking-wider">
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">
                 or
               </span>
               <hr className="flex-1 border-slate-200 dark:border-slate-700" />
             </div>
 
-            {/* Manual password change */}
+            {/* Manual */}
             <div className="space-y-3">
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
                 Set password manually
               </p>
               <Input
@@ -561,7 +763,7 @@ function ChangePasswordModal({
             </div>
 
             {error && (
-              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-3">
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
                 <p className="text-sm text-red-600 dark:text-red-400">
                   {error}
                 </p>
@@ -591,9 +793,10 @@ function ChangePasswordModal({
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// CHANGE ROLE MODAL
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   CHANGE ROLE MODAL
+   ────────────────────────────────────────────────────────── */
+
 function ChangeRoleModal({
   isOpen,
   onClose,
@@ -636,16 +839,18 @@ function ChangeRoleModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Change Role">
       <div className="space-y-4">
-        <div className="text-center pb-2">
+        <div className="text-center pb-1">
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Changing role for{" "}
             <span className="font-semibold text-slate-900 dark:text-white">
               {getDisplayName(targetUser)}
             </span>
           </p>
-          <Badge className={`mt-2 ${getUserRoleBadgeColor(targetUser)}`}>
-            Current: {getUserRoleLabel(targetUser)}
-          </Badge>
+          <div className="mt-2">
+            <Badge className={getUserRoleBadgeColor(targetUser)}>
+              Current: {getUserRoleLabel(targetUser)}
+            </Badge>
+          </div>
         </div>
 
         <Select
@@ -661,7 +866,7 @@ function ChangeRoleModal({
         </Select>
 
         {error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-3">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           </div>
         )}
@@ -687,9 +892,10 @@ function ChangeRoleModal({
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// ASSIGN TEAM MODAL
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   ASSIGN TEAM MODAL
+   ────────────────────────────────────────────────────────── */
+
 function AssignTeamModal({
   isOpen,
   onClose,
@@ -731,7 +937,7 @@ function AssignTeamModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Assign Team">
       <div className="space-y-4">
-        <div className="text-center pb-2">
+        <div className="text-center pb-1">
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Assigning team for{" "}
             <span className="font-semibold text-slate-900 dark:text-white">
@@ -759,7 +965,7 @@ function AssignTeamModal({
         </Select>
 
         {error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-3">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           </div>
         )}
@@ -785,9 +991,10 @@ function AssignTeamModal({
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// USER DETAIL / ACTION DROPDOWN
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   USER ACTIONS DROPDOWN
+   ────────────────────────────────────────────────────────── */
+
 function UserActionsDropdown({
   user,
   actorRole,
@@ -815,7 +1022,6 @@ function UserActionsDropdown({
   const canToggle =
     canDeactivate(actorRole, user.role) && user.id !== currentUserId;
 
-  // Admin cannot change role to ADMIN — only SuperAdmin can
   const showRoleChange =
     canManageRole && user.role !== "SUPER_ADMIN" && user.role !== "ADMIN"
       ? actorRole === "ADMIN"
@@ -830,52 +1036,26 @@ function UserActionsDropdown({
 
   return (
     <div className="relative">
-      <Button
-        size="sm"
-        variant="secondary"
+      <button
+        className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50 hover:border-slate-200 dark:hover:border-slate-600 transition-all"
         onClick={() => setOpen(!open)}
-        className="px-2"
       >
-        <svg
-          className="w-4 h-4"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M12 5v.01M12 12v.01M12 19v.01"
-          />
-        </svg>
-      </Button>
+        <DotsIcon />
+      </button>
 
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg z-20 py-1 overflow-hidden">
+          <div className="absolute right-0 top-full mt-1.5 w-52 bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-xl shadow-xl shadow-slate-900/5 dark:shadow-black/30 z-50 p-1.5">
             {canManagePassword && (
               <button
                 onClick={() => {
                   setOpen(false);
                   onChangePassword(user);
                 }}
-                className="w-full text-left px-4 py-2.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors flex items-center gap-2"
+                className="w-full text-left px-3 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors flex items-center gap-2.5"
               >
-                <svg
-                  className="w-4 h-4 text-slate-400"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
-                  />
-                </svg>
+                <KeyIcon />
                 Change Password
               </button>
             )}
@@ -886,21 +1066,9 @@ function UserActionsDropdown({
                   setOpen(false);
                   onChangeRole(user);
                 }}
-                className="w-full text-left px-4 py-2.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors flex items-center gap-2"
+                className="w-full text-left px-3 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors flex items-center gap-2.5"
               >
-                <svg
-                  className="w-4 h-4 text-slate-400"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                  />
-                </svg>
+                <ShieldIcon />
                 Change Role
               </button>
             )}
@@ -911,56 +1079,28 @@ function UserActionsDropdown({
                   setOpen(false);
                   onAssignTeam(user);
                 }}
-                className="w-full text-left px-4 py-2.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors flex items-center gap-2"
+                className="w-full text-left px-3 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors flex items-center gap-2.5"
               >
-                <svg
-                  className="w-4 h-4 text-slate-400"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"
-                  />
-                </svg>
+                <UsersGroupIcon />
                 Assign Team
               </button>
             )}
 
             {canToggle && (
               <>
-                <hr className="border-slate-200 dark:border-slate-700 my-1" />
+                <div className="mx-2 my-1 h-px bg-slate-100 dark:bg-slate-700" />
                 <button
                   onClick={() => {
                     setOpen(false);
                     onToggleStatus(user);
                   }}
-                  className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center gap-2 ${
+                  className={`w-full text-left px-3 py-2.5 text-sm font-medium rounded-lg transition-colors flex items-center gap-2.5 ${
                     user.status === "ACTIVE"
-                      ? "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      ? "text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                       : "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
                   }`}
                 >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d={
-                        user.status === "ACTIVE"
-                          ? "M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                          : "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                      }
-                    />
-                  </svg>
+                  <ToggleIcon active={user.status === "ACTIVE"} />
                   {user.status === "ACTIVE" ? "Deactivate" : "Activate"}
                 </button>
               </>
@@ -972,9 +1112,10 @@ function UserActionsDropdown({
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// MAIN PAGE
-// ═══════════════════════════════════════════════════════════
+/* ──────────────────────────────────────────────────────────
+   MAIN PAGE
+   ────────────────────────────────────────────────────────── */
+
 export default function UsersPage() {
   const { user: currentUser } = useAuth();
   const {
@@ -1012,9 +1153,7 @@ export default function UsersPage() {
   const actorRole = (currentUser?.role ?? "USER") as Role;
   const actorTeamId = currentUser?.teamId ?? null;
 
-  // Filter users:
-  // - Admin sees only their team's users
-  // - SuperAdmin sees all
+  // Filter
   const filtered = users.filter((u) => {
     const q =
       `${u.userId ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
@@ -1031,6 +1170,9 @@ export default function UsersPage() {
     return matchesSearch && matchesRole && matchesStatus && matchesTeam;
   });
 
+  const activeCount = users.filter((u) => u.status === "ACTIVE").length;
+  const inactiveCount = users.filter((u) => u.status === "INACTIVE").length;
+
   const actorTeamName =
     actorRole === "ADMIN" && currentUser?.teamId
       ? (teams.find((team) => team.id === currentUser.teamId)?.name ??
@@ -1039,18 +1181,18 @@ export default function UsersPage() {
 
   const headerTitle =
     actorRole === "SUPER_ADMIN"
-      ? "Admin Management"
+      ? "User Management"
       : actorRole === "ADMIN"
-        ? "Team User Management"
-        : "User Management";
+        ? "Team Members"
+        : "Users";
 
-  const headerSubtitle =
-    actorRole === "SUPER_ADMIN"
-      ? `${filtered.length} of ${users.length} admins`
-      : actorRole === "ADMIN"
-        ? `${filtered.length} of ${users.length} team users${actorTeamName ? ` • ${actorTeamName}` : ""}`
-        : `${filtered.length} of ${users.length} users`;
+  const isFiltering =
+    search ||
+    roleFilter !== "ALL" ||
+    statusFilter !== "ALL" ||
+    teamFilter !== "ALL";
 
+  // Handlers
   const handleToggle = async (u: User) => {
     const name = getDisplayName(u);
     try {
@@ -1112,6 +1254,11 @@ export default function UsersPage() {
     refetch();
   };
 
+  // Filter select shared classes
+  const filterSelectClasses =
+    "px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 hover:border-slate-300 dark:hover:border-slate-600 transition-all cursor-pointer";
+
+  // Table columns
   const columns = [
     {
       key: "user",
@@ -1120,17 +1267,16 @@ export default function UsersPage() {
         const displayName = getDisplayName(u);
         const hasName = u.firstName || u.lastName;
         return (
-          <div className="flex items-center gap-3">
-            <Avatar
-              firstName={u.firstName ?? u.userId?.[0]}
-              lastName={u.lastName ?? u.userId?.[1]}
-            />
-            <div>
-              <p className="text-sm font-medium text-slate-900 dark:text-white">
+          <div className="flex items-center gap-3 group">
+            <EnhancedAvatar user={u} />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white truncate leading-tight">
                 {hasName ? displayName : u.userId}
               </p>
               {hasName && u.userId && (
-                <p className="text-xs text-slate-400">{u.userId}</p>
+                <p className="text-[11px] font-medium text-slate-400 mt-0.5 tracking-wide">
+                  {u.userId}
+                </p>
               )}
             </div>
           </div>
@@ -1161,14 +1307,25 @@ export default function UsersPage() {
       key: "status",
       header: "Status",
       render: (u: User) => (
-        <Badge className={USER_STATUS_COLORS[u.status]}>{u.status}</Badge>
+        <div className="flex items-center gap-2">
+          <StatusDot active={u.status === "ACTIVE"} />
+          <span
+            className={`text-sm font-medium ${
+              u.status === "ACTIVE"
+                ? "text-slate-700 dark:text-slate-300"
+                : "text-slate-400"
+            }`}
+          >
+            {u.status === "ACTIVE" ? "Active" : "Inactive"}
+          </span>
+        </div>
       ),
     },
     {
       key: "created",
       header: "Created",
       render: (u: User) => (
-        <span className="text-sm text-slate-500">
+        <span className="text-xs font-medium text-slate-400">
           {formatDate(u.createdAt)}
         </span>
       ),
@@ -1192,38 +1349,55 @@ export default function UsersPage() {
   ];
 
   return (
-    <div className="space-y-6 max-w-screen-xl">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-5 max-w-screen-xl">
+      {/* ─── Header ─── */}
+      <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+          <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
             {headerTitle}
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">{headerSubtitle}</p>
+          <div className="flex flex-wrap items-center gap-2 mt-2.5">
+            {/* Total pill */}
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+              <span className="font-bold text-slate-700 dark:text-slate-200">
+                {users.length}
+              </span>
+              total
+            </span>
+            {/* Active pill */}
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+              <StatusDot active size="small" />
+              <span className="font-semibold">{activeCount}</span>
+              active
+            </span>
+            {/* Inactive pill */}
+            {inactiveCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                <StatusDot active={false} size="small" />
+                <span className="font-semibold">{inactiveCount}</span>
+                inactive
+              </span>
+            )}
+            {/* Team pill for admins */}
+            {actorTeamName && (
+              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
+                {actorTeamName}
+              </span>
+            )}
+          </div>
         </div>
+
         {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
           <Button onClick={() => setShowCreate(true)}>
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 4v16m8-8H4"
-              />
-            </svg>
+            <PlusIcon />
             Add User
           </Button>
         )}
       </div>
 
-      {/* Filters */}
-      <Card className="p-4">
-        <div className="flex flex-wrap gap-3">
+      {/* ─── Filters ─── */}
+      <Card className="p-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <SearchInput
             value={search}
             onChange={setSearch}
@@ -1233,7 +1407,7 @@ export default function UsersPage() {
           <select
             value={roleFilter}
             onChange={(e) => setRole(e.target.value)}
-            className="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0]"
+            className={filterSelectClasses}
           >
             <option value="ALL">All Roles</option>
             <option value="ADMIN">Admin</option>
@@ -1247,7 +1421,7 @@ export default function UsersPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatus(e.target.value)}
-            className="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0]"
+            className={filterSelectClasses}
           >
             <option value="ALL">All Status</option>
             <option value="ACTIVE">Active</option>
@@ -1257,7 +1431,7 @@ export default function UsersPage() {
             <select
               value={teamFilter}
               onChange={(e) => setTeamFilter(e.target.value)}
-              className="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0]"
+              className={filterSelectClasses}
             >
               <option value="ALL">All Teams</option>
               <option value="NONE">No Team</option>
@@ -1268,10 +1442,17 @@ export default function UsersPage() {
               ))}
             </select>
           )}
+
+          {/* Filter result count badge */}
+          {isFiltering && (
+            <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
+              {filtered.length} result{filtered.length !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
       </Card>
 
-      {/* Table */}
+      {/* ─── Table ─── */}
       <Card className="overflow-hidden">
         {error ? (
           <EmptyState
@@ -1291,7 +1472,7 @@ export default function UsersPage() {
         )}
       </Card>
 
-      {/* Modals */}
+      {/* ─── Modals ─── */}
       <CreateUserModal
         isOpen={showCreate}
         onClose={() => setShowCreate(false)}
