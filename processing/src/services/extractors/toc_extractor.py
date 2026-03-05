@@ -89,25 +89,15 @@ def _detect_col_positions(header_row) -> dict[str, int]:
 def extract_toc(doc) -> dict:
     """
     Find the Document Structure table and extract each level row.
-
-    Returns:
-        {
-            "sections": [
-                {
-                    "id":              "0",          # level number as string
-                    "level":           "0",
-                    "name":            "Part",
-                    "required":        "Yes",        # "Yes" | "No" | "Conditional" | ""
-                    "definition":      "Hardcoded – /AU",
-                    "example":         "Fair Work Regulations 2009",
-                    "note":            "...",
-                    "tocRequirements": "...",
-                    "smeComments":     "...",
-                },
-                ...
-            ]
-        }
+    Falls back to extract_toc_legacy() for paragraph-based legacy BRDs.
     """
+    # Legacy BRDs store levels as paragraphs, not a table
+    for table in doc.tables:
+        if _is_toc_structure_table(table):
+            break
+    else:
+        return extract_toc_legacy(doc)
+
     for table in doc.tables:
         if not _is_toc_structure_table(table):
             continue
@@ -154,3 +144,113 @@ def extract_toc(doc) -> dict:
             return {"sections": sections}
 
     return {"sections": []}
+
+
+# ─────────────────────────────────────────────
+# Legacy extractor (paragraph-based format)
+# ─────────────────────────────────────────────
+
+_LEGACY_LEVEL_RE = re.compile(r"^level\s+(\d+)", re.IGNORECASE)
+_LEGACY_FIELD_RE = re.compile(
+    r"^(name|required|definition|example|note|ex\.|ex:)\s*[:\-–]?\s*(.*)",
+    re.IGNORECASE,
+)
+
+
+def extract_toc_legacy(doc) -> dict:
+    """
+    Legacy BRDs store levels as paragraphs instead of a table:
+
+      Normal paragraph  → "Level N"
+      List Paragraph    → "Name: ..."
+                          "Required: True / False"
+                          "Definition: ..."
+                          "Example: ..."
+                          "Note: ..."
+
+    Collects from Heading 3 "Levels" through the next major section heading.
+    Output shape is identical to extract_toc().
+    """
+    sections = []
+    current: dict | None = None
+
+    _stop_lower = [
+        "example annotated",
+        "metadata",
+        "references to other",
+        "exceptions",
+        "assumptions",
+        "file delivery",
+    ]
+
+    def _flush():
+        if current and current.get("level"):
+            sections.append(current)
+
+    collecting = False
+
+    for p in doc.paragraphs:
+        style     = p.style.name if p.style else ""
+        text      = p.text.replace("\xa0", " ").strip()
+        text_lower = text.lower()
+        is_heading = style.startswith("Heading")
+
+        # Start collecting at the "Levels" heading
+        if is_heading and "levels" in text_lower and not collecting:
+            collecting = True
+            continue
+
+        if not collecting:
+            continue
+
+        # Stop at next major section
+        if is_heading and any(s in text_lower for s in _stop_lower):
+            break
+
+        # Detect "Level N" marker line
+        m_level = _LEGACY_LEVEL_RE.match(text)
+        if m_level:
+            _flush()
+            lvl = m_level.group(1)
+            current = {
+                "id":              lvl,
+                "level":           lvl,
+                "name":            "",
+                "required":        "",
+                "definition":      "",
+                "example":         "",
+                "note":            "",
+                "tocRequirements": "",
+                "smeComments":     "",
+            }
+            continue
+
+        if current is None:
+            continue
+
+        # Parse named bullet fields
+        m_field = _LEGACY_FIELD_RE.match(text)
+        if m_field:
+            key_raw = m_field.group(1).lower().rstrip(".")
+            value   = m_field.group(2).replace("\xa0", " ").strip()
+            if key_raw == "name":
+                current["name"] = value
+            elif key_raw == "required":
+                current["required"] = _required_value(value)
+            elif key_raw == "definition":
+                current["definition"] = value
+            elif key_raw in ("example", "ex.", "ex:"):
+                current["example"] = (current["example"] + "; " + value).lstrip("; ") if current["example"] else value
+            elif key_raw == "note":
+                current["note"] = value
+        else:
+            # Plain continuation — append to definition
+            if text:
+                if current["definition"]:
+                    current["definition"] += " " + text
+                else:
+                    current["definition"] = text
+
+    _flush()
+
+    return {"sections": sections}

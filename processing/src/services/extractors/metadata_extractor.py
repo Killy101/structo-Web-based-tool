@@ -11,7 +11,13 @@ def extract_metadata(doc) -> dict:
     """
     Extract metadata from the BRD Metadata table.
     Matches row labels against known field names and populates a metadata dict.
+    Falls back to extract_metadata_legacy() for legacy label names
+    (e.g. 'Authoritative Source', 'Source Name').
     """
+    # Detect legacy format: metadata table uses 'Metadata Element' header
+    for table in doc.tables:
+        if table.rows and "metadata element" in table.rows[0].cells[0].text.strip().lower():
+            return extract_metadata_legacy(doc)
     metadata = {
         # ── Core BRD fields ──────────────────────────────────────────
         "content_category_name":     "",
@@ -92,6 +98,109 @@ def extract_metadata(doc) -> dict:
                     elif field == "content_uri":
                         url_m = re.search(r"https?://[^\s\)\]」）,]+", value)
                         metadata["content_uri"] = url_m.group(0).rstrip(".,;") if url_m else value
+                    else:
+                        if not metadata[field]:
+                            metadata[field] = value
+                    break
+
+    return metadata
+
+
+# ─────────────────────────────────────────────
+# Legacy extractor (paragraph-based format)
+# ─────────────────────────────────────────────
+
+def extract_metadata_legacy(doc) -> dict:
+    """
+    Legacy BRDs use a 2-column table with headers
+    'Metadata Element' | 'Document Location'
+    and different label names (e.g. 'Authoritative Source' instead of
+    'Issuing Agency', 'Source Name' instead of content category name).
+    Output shape is identical to extract_metadata().
+    """
+    metadata = {
+        "content_category_name":     "",
+        "publication_date":          "",
+        "last_updated_date":         "",
+        "processing_date":           "",
+        "issuing_agency":            "",
+        "related_government_agency": "",
+        "content_uri":               "",
+        "geography":                 "",
+        "language":                  "",
+        "document_title":            "",
+        "status":                    "",
+        "product_owner":             "",
+        "sme":                       "",
+        "contributors":              [],
+        "region":                    "",
+        "country":                   "",
+        "version":                   "",
+        "author":                    "",
+    }
+
+    # Document title: first Heading 1 that is not a boilerplate section
+    _skip = {
+        "document history", "glossary", "file delivery", "system display",
+        "citation visualization", "legal", "copyright",
+    }
+    for p in doc.paragraphs:
+        if p.style and p.style.name == "Heading 1":
+            t = p.text.replace("\xa0", " ").strip()
+            if t and not any(s in t.lower() for s in _skip):
+                metadata["document_title"] = t
+                break
+
+    # Legacy label → standard field mapping
+    # (includes both legacy-specific names and the standard ones as a safety net)
+    key_map = {
+        "authoritative source":      "issuing_agency",
+        "source name":               "content_category_name",
+        "publication date":          "publication_date",
+        "last updated date":         "last_updated_date",
+        "processing date":           "processing_date",
+        "issuing agency":            "issuing_agency",
+        "related government agency": "related_government_agency",
+        "content uri":               "content_uri",
+        "content url":               "content_uri",
+        "geography":                 "geography",
+        "language":                  "language",
+        "product owner":             "product_owner",
+        "sme":                       "sme",
+        "status":                    "status",
+        "region":                    "region",
+        "country":                   "country",
+        "contributors":              "contributors",
+        "version":                   "version",
+        "author":                    "author",
+    }
+    sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
+    url_re = re.compile(r"https?://[^\s\)\]」）,]+")
+
+    for table in doc.tables:
+        for row in table.rows:
+            cells = row.cells
+            if len(cells) < 2:
+                continue
+            label = cells[0].text.strip().lower().strip("*: \xa0").replace("\n", " ")
+            value = cells[1].text.replace("\xa0", " ").strip()
+            if not value:
+                for cell in reversed(cells[1:]):
+                    v = cell.text.replace("\xa0", " ").strip()
+                    if v:
+                        value = v
+                        break
+            if len(value) > 300:
+                value = ""
+
+            for pattern, field in sorted_key_map:
+                if pattern in label:
+                    if field == "contributors":
+                        parts = re.split(r"[\n,]+", value)
+                        metadata["contributors"] = [p.strip() for p in parts if p.strip()]
+                    elif field == "content_uri":
+                        m = url_re.search(value)
+                        metadata["content_uri"] = m.group(0).rstrip(".,;") if m else value
                     else:
                         if not metadata[field]:
                             metadata[field] = value

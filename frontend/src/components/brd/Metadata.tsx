@@ -103,17 +103,47 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
+      <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-violet-50 dark:bg-violet-500/10 border-violet-200 dark:border-violet-700/40">
+        <div className="space-y-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-violet-800 dark:text-violet-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+            Metadata
+          </p>
+          <div className="flex items-center gap-2.5">
           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider border ${format === "new" ? "bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-700/40" : "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700/40"}`}>
             <span className="text-[9px]">{format === "new" ? "◉" : "◈"}</span>
             {format === "new" ? "New Format" : "Legacy Format"}
           </span>
-          <span className="text-[10px] text-slate-500 dark:text-slate-500 font-medium">
+          <span className="text-[10px] text-violet-600 dark:text-violet-400 font-medium">
             {format === "new" ? "2024+ schema" : "Pre-2024 schema"}
           </span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
+          <ValidateButton />
+          <button
+            onClick={handleSave}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${
+              saved
+                ? "bg-emerald-500 text-white"
+                : "bg-white dark:bg-[#1e2235] text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45]"
+            }`}
+          >
+            {saved ? (
+              <>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+                Saved!
+              </>
+            ) : (
+              <>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                </svg>
+                Save
+              </>
+            )}
+          </button>
           <div className="w-24 h-1.5 rounded-full bg-slate-200 dark:bg-[#252d45] overflow-hidden">
             <div className="h-full rounded-full bg-blue-500 dark:bg-blue-400 transition-all duration-500" style={{ width: `${progress}%` }} />
           </div>
@@ -177,24 +207,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       </div>
 
       {/* Actions */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <ValidateButton />
-          <button
-            onClick={handleSave}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-medium border transition-all ${
-              saved
-                ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700/40"
-                : "bg-slate-800 dark:bg-[#252d45] text-white dark:text-slate-200 border-transparent dark:border-[#3a4460] hover:bg-slate-700 dark:hover:bg-[#2e3a55]"
-            }`}
-          >
-            {saved ? (
-              <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Saved</>
-            ) : (
-              <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>Save Metadata</>
-            )}
-          </button>
-        </div>
+      <div className="flex items-center justify-end">
         {onComplete && (
           <button
             onClick={onComplete}

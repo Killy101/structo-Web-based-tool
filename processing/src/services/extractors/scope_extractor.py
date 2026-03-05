@@ -172,11 +172,34 @@ def _find_data_start_row(table, col_map: dict) -> int:
 # Public extractor
 # ─────────────────────────────────────────────
 
+def _is_legacy_format(doc) -> bool:
+    """
+    True when the document uses the old paragraph-based layout instead of
+    structured scope/TOC tables.  Heuristic: a Heading 2 "Scope" exists but
+    no table has 2+ URL-bearing rows (i.e. no real scope table).
+    """
+    has_scope_heading = any(
+        p.style and p.style.name.startswith("Heading") and "scope" in p.text.lower()
+        for p in doc.paragraphs
+    )
+    url_re_local = re.compile(r"https?://")
+    has_url_table = any(
+        sum(1 for row in t.rows
+            if url_re_local.search(" ".join(c.text for c in row.cells))) >= 2
+        for t in doc.tables
+    )
+    return has_scope_heading and not has_url_table
+
+
 def extract_scope(doc) -> dict:
     """
     Extract the scope table from the document.
     Returns in_scope entries, out_of_scope (struck-through), and a summary string.
+    Falls back to extract_scope_legacy() for paragraph-based legacy BRDs.
     """
+    if _is_legacy_format(doc):
+        return extract_scope_legacy(doc)
+
     scope_table = _detect_scope_table(doc)
     if scope_table is None:
         return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}
@@ -249,4 +272,81 @@ def extract_scope(doc) -> dict:
         "in_scope":     active,
         "out_of_scope": struck,
         "summary":      f"Scope covers {len(active)} active and {len(struck)} struck-through documents.",
+    }
+
+
+# ─────────────────────────────────────────────
+# Legacy extractor (paragraph-based format)
+# ─────────────────────────────────────────────
+
+def _legacy_paragraphs_in_section(doc, start_heading: str, stop_headings: list):
+    """Yield paragraphs under *start_heading* until the next heading in stop_headings."""
+    collecting = False
+    stop_lower = [s.lower() for s in stop_headings]
+    for p in doc.paragraphs:
+        style = p.style.name if p.style else ""
+        is_heading = style.startswith("Heading")
+        text_lower = p.text.strip().lower()
+        if is_heading and start_heading.lower() in text_lower:
+            collecting = True
+            continue
+        if collecting:
+            if is_heading and any(s in text_lower for s in stop_lower):
+                break
+            yield p
+
+
+def extract_scope_legacy(doc) -> dict:
+    """
+    Legacy BRDs list scope as plain paragraphs under Heading 2 "Scope"
+    instead of a structured table.  Each non-empty, non-intro line becomes
+    one in-scope entry.  The regulator URL is pulled from the "Source" section.
+    Output shape is identical to extract_scope().
+    """
+    url_re = re.compile(r"https?://\S+")
+
+    # Grab reference URL from the "Source" section
+    ref_url = ""
+    for p in _legacy_paragraphs_in_section(
+        doc, "Source", ["Scope", "How to Identify", "Document Structure"]
+    ):
+        m = url_re.search(p.text)
+        if m:
+            ref_url = m.group(0).rstrip(".,;")
+            break
+
+    intro_prefixes = ("the following codes",)
+
+    in_scope = []
+    seen: set = set()
+    for p in _legacy_paragraphs_in_section(
+        doc, "Scope", ["How to Identify", "Document Structure", "Metadata", "References"]
+    ):
+        title = p.text.replace("\xa0", " ").strip()
+        title_lower = title.lower()
+        if not title:
+            continue
+        if any(title_lower.startswith(pfx) for pfx in intro_prefixes):
+            continue
+        if title in seen:
+            continue
+        seen.add(title)
+        in_scope.append({
+            "document_title":         title,
+            "regulator_url":          ref_url,
+            "content_url":            "",
+            "issuing_authority":      "",
+            "issuing_authority_code": "",
+            "geography":              "",
+            "asrb_id":                "",
+            "sme_comments":           "",
+            "initial_evergreen":      "",
+            "date_of_ingestion":      "",
+            "strikethrough":          False,
+        })
+
+    return {
+        "in_scope":     in_scope,
+        "out_of_scope": [],
+        "summary":      f"Scope covers {len(in_scope)} active documents (legacy paragraph format).",
     }

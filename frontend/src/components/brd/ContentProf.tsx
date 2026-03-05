@@ -21,6 +21,17 @@ interface Props {
 
 const HARDCODED_LEVELS = new Set(["0", "1"]);
 
+// ── Default whitespace rows (mirrors _build_whitespace_rules in Python) ────────
+const DEFAULT_WHITESPACE_ROWS: WhitespaceRow[] = [
+  { id: "ws-def-0", tags: "</title>",         innodReplace: "2 hard returns after title with heading." },
+  { id: "ws-def-1", tags: "</title>",         innodReplace: "1 space after title with identifier." },
+  { id: "ws-def-2", tags: "</paragraph>",     innodReplace: "2 hard returns after closing para and before opening para" },
+  { id: "ws-def-3", tags: "</ul>",            innodReplace: "1 hard return after" },
+  { id: "ws-def-4", tags: "</li>",            innodReplace: "1 hard return after" },
+  { id: "ws-def-5", tags: "<p> within <li>",  innodReplace: `</innodReplace><ul><innodReplace>\n  </innodReplace><li><innodReplace></innodReplace><p>(text)</p><innodReplace text="&#10;&#10;">\n  </innodReplace><li><innodReplace>...\n</innodReplace></ul><innodReplace>` },
+  { id: "ws-def-6", tags: "table\n<td>\n<th>",innodReplace: `</innodReplace><innodTd><td><innodReplace></innodReplace><p>...</p><innodReplace>\n                   </innodReplace><p>...</p><innodReplace>\n                   </innodReplace><p>...</p><innodReplace>\n</innodReplace></td></innodTd>\n</innodReplace></tr><innodTr><innodReplace>` },
+];
+
 function splitExamples(example: string): string[] {
   let s = example.trim().replace(/^["\u201c\u201d']+|["\u201c\u201d']+$/g, "");
   for (const suffix of ["; etc.", ", etc.", " etc."]) {
@@ -51,6 +62,27 @@ function extractExample(description: string): string {
   return match ? match[1].trim() : "";
 }
 
+function extractDefinition(description: string): string {
+  const match = description.match(/^Definition:\s*(.+)$/m);
+  return match ? match[1].trim() : "";
+}
+
+function isPlaceholderLevelToken(value: string): boolean {
+  const cleaned = value.trim().replace(/^\/+/, "").replace(/[_\-]+/g, " ").toLowerCase();
+  return /^level\s*\d+$/.test(cleaned);
+}
+
+function pickHardcodedToken(raw: string): string {
+  if (!raw) return "";
+  const slashMatch = raw.match(/\/[A-Za-z][A-Za-z0-9-]*/);
+  if (slashMatch?.[0]) return slashMatch[0];
+  const tokenMatch = raw.match(/[A-Za-z][A-Za-z0-9-]*/);
+  if (!tokenMatch?.[0]) return "";
+  const token = tokenMatch[0];
+  if (isPlaceholderLevelToken(token)) return "";
+  return token;
+}
+
 function stamp(prefix = "") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -68,30 +100,38 @@ function asExtractedLevels(initialData?: Record<string, unknown>): LevelRow[] {
     description:  String(row.description  ?? ""),
     redjayXmlTag: String(row.redjayXmlTag ?? ""),
     path:         String(row.path         ?? ""),
-    remarksNotes: "", // always blank — never populated from source data
+    remarksNotes: "",
   }));
 }
 
 function asExtractedWhitespace(initialData?: Record<string, unknown>): WhitespaceRow[] {
-  return asObjectArray(initialData?.whitespace).map((row, i) => ({
+  const rows = asObjectArray(initialData?.whitespace).map((row, i) => ({
     id:           `ws-${i}`,
     tags:         String(row.tags         ?? ""),
     innodReplace: String(row.innodReplace ?? ""),
   }));
+  // Fall back to defaults when the extractor returned nothing
+  return rows.length > 0 ? rows : DEFAULT_WHITESPACE_ROWS;
 }
 
 function deriveHardcodedPathFromLevels(levels: LevelRow[]): string {
   let l0 = "", l1 = "";
   for (const row of levels) {
     const n = row.levelNumber.replace(/[^0-9]/g, "").trim();
-    const pathVal = row.path.trim() || extractExample(row.description).trim();
-    if (n === "0") l0 = pathVal;
-    if (n === "1") l1 = pathVal;
+    const pathVal       = row.path.trim();
+    const definitionVal = extractDefinition(row.description).trim();
+    const exampleVal    = extractExample(row.description).trim();
+    const picked =
+      pickHardcodedToken(pathVal) ||
+      pickHardcodedToken(definitionVal) ||
+      pickHardcodedToken(exampleVal);
+    if (n === "0") l0 = picked;
+    if (n === "1") l1 = picked;
   }
   if (!l0 && !l1) return "";
   const clean0 = l0.replace(/\/$/, "");
   const clean1 = l1.replace(/^\//, "");
-  return (clean0 + "/" + clean1).replace(/\/+/g, "/").toLowerCase();
+  return (clean0 + "/" + clean1).replace(/\/+/g, "/");
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -123,12 +163,9 @@ function FieldRow({
       </div>
       <div className={`flex-1 px-3 py-1.5 flex items-center gap-2 ${readOnly ? "bg-slate-50 dark:bg-[#181d30]" : ""}`}>
         {readOnly ? (
-          <>
-            <span className={`text-[11.5px] ${mono ? "font-mono" : ""} ${value ? "text-sky-700 dark:text-sky-400 font-semibold" : "text-slate-400 dark:text-slate-600 italic"}`}>
-              {value || "—"}
-            </span>
-            <span className="text-[9px] text-sky-500 dark:text-sky-600">⚡ auto</span>
-          </>
+          <span className={`text-[11.5px] ${mono ? "font-mono" : ""} ${value ? "text-sky-700 dark:text-sky-400 font-semibold" : "text-slate-400 dark:text-slate-600 italic"}`}>
+            {value || "—"}
+          </span>
         ) : (
           <input
             value={value}
@@ -175,7 +212,7 @@ export default function ContentProfile({ initialData }: Props) {
   const [levels,       setLevels]       = useState<LevelRow[]>([]);
   const [levelEditing, setLevelEditing] = useState<{ rowId: string; col: string } | null>(null);
 
-  const [whitespace, setWhitespace] = useState<WhitespaceRow[]>([]);
+  const [whitespace, setWhitespace] = useState<WhitespaceRow[]>(() => DEFAULT_WHITESPACE_ROWS);
   const [wsEditing,  setWsEditing]  = useState<{ rowId: string; col: string } | null>(null);
 
   const [saved, setSaved] = useState(false);
@@ -186,6 +223,7 @@ export default function ContentProfile({ initialData }: Props) {
     setRcFilename(String(initialData?.rc_filename ?? ""));
     setHeadingAnnotation(String(initialData?.heading_annotation ?? "Level 2"));
     setLevels(asExtractedLevels(initialData));
+    // asExtractedWhitespace now falls back to DEFAULT_WHITESPACE_ROWS when empty
     setWhitespace(asExtractedWhitespace(initialData));
     setLevelEditing(null);
     setWsEditing(null);
@@ -322,9 +360,9 @@ export default function ContentProfile({ initialData }: Props) {
     <div className="space-y-6">
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-700/40">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-black dark:text-slate-300"
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-800 dark:text-emerald-300"
              style={{ fontFamily: "'DM Mono', monospace" }}>
             Content Profile
           </p>
@@ -357,7 +395,7 @@ export default function ContentProfile({ initialData }: Props) {
 
       {/* RC Filename + Hardcoded Path */}
       <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
-        <FieldRow label="RC Filename" value={rcFilename} onChange={setRcFilename} placeholder="Enter filename…" mono />
+        <FieldRow label="RC Filename"    value={rcFilename}    onChange={setRcFilename}    placeholder="Enter filename…" mono />
         <FieldRow label="Hardcoded Path" value={hardcodedPath} readOnly mono />
       </div>
 
@@ -365,20 +403,15 @@ export default function ContentProfile({ initialData }: Props) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <SectionLabel>Level Numbers</SectionLabel>
-          <div className="flex items-center gap-3">
-            <span className="text-[10px] text-slate-400 dark:text-slate-600 italic">
-              REDJAy XML Tag is auto-generated from Example
-            </span>
-            <button
-              onClick={addLevel}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-800 dark:bg-[#252d45] text-white dark:text-slate-200 border border-transparent dark:border-[#3a4460] hover:bg-slate-700 dark:hover:bg-[#2e3a55] transition-all"
-            >
-              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-              </svg>
-              Add Level
-            </button>
-          </div>
+          <button
+            onClick={addLevel}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-800 dark:bg-[#252d45] text-white dark:text-slate-200 border border-transparent dark:border-[#3a4460] hover:bg-slate-700 dark:hover:bg-[#2e3a55] transition-all"
+          >
+            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+            </svg>
+            Add Level
+          </button>
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
@@ -387,19 +420,10 @@ export default function ContentProfile({ initialData }: Props) {
               <thead>
                 <tr className="bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
                   {LEVEL_COLUMNS.map((col) => (
-                    <th key={col.key}
-                        className={`${col.width} text-left px-3 py-2.5 border-r border-slate-200 dark:border-[#2a3147] last:border-r-0`}>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300 whitespace-nowrap"
-                              style={{ fontFamily: "'DM Mono', monospace" }}>
-                          {col.label}
-                        </span>
-                        {col.key === "redjayXmlTag" && (
-                          <span className="text-[9px] text-sky-500 dark:text-sky-600 font-normal normal-case tracking-normal">
-                            ⚡ auto
-                          </span>
-                        )}
-                      </div>
+                    <th key={col.key} className={`${col.width} text-left px-3 py-2.5 border-r border-slate-200 dark:border-[#2a3147] last:border-r-0`}>
+                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>
+                        {col.label}
+                      </span>
                     </th>
                   ))}
                   <th className="w-8 px-2 py-2.5" />
@@ -408,29 +432,20 @@ export default function ContentProfile({ initialData }: Props) {
               <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]">
                 {levels.map((row, idx) => (
                   <tr key={row.id}
-                      className={`group transition-colors ${
-                        idx % 2 === 0
-                          ? "bg-white dark:bg-[#161b2e]"
-                          : "bg-slate-50/60 dark:bg-[#1a1f35]"
-                      } hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
+                      className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
                     {LEVEL_COLUMNS.map((col) => (
-                      <td key={col.key}
-                          className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                      <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                         {renderLevelCell(row, col.key)}
                       </td>
                     ))}
-                    <td className="w-8 px-2 py-2 align-top">
-                      <DeleteBtn onClick={() => deleteLevel(row.id)} />
-                    </td>
+                    <td className="w-8 px-2 py-2 align-top"><DeleteBtn onClick={() => deleteLevel(row.id)} /></td>
                   </tr>
                 ))}
                 {levels.length === 0 && (
                   <tr>
                     <td colSpan={LEVEL_COLUMNS.length + 1} className="py-10 text-center">
                       <p className="text-[12px] text-slate-500 dark:text-slate-500">No levels defined</p>
-                      <button onClick={addLevel} className="mt-2 text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline">
-                        + Add first level
-                      </button>
+                      <button onClick={addLevel} className="mt-2 text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline">+ Add first level</button>
                     </td>
                   </tr>
                 )}
@@ -468,10 +483,8 @@ export default function ContentProfile({ initialData }: Props) {
               <thead>
                 <tr className="bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
                   {WS_COLUMNS.map((col) => (
-                    <th key={col.key}
-                        className={`${col.width} text-left px-3 py-2.5 border-r border-slate-200 dark:border-[#2a3147] last:border-r-0`}>
-                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300 whitespace-nowrap"
-                            style={{ fontFamily: "'DM Mono', monospace" }}>
+                    <th key={col.key} className={`${col.width} text-left px-3 py-2.5 border-r border-slate-200 dark:border-[#2a3147] last:border-r-0`}>
+                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>
                         {col.label}
                       </span>
                     </th>
@@ -482,29 +495,20 @@ export default function ContentProfile({ initialData }: Props) {
               <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]">
                 {whitespace.map((row, idx) => (
                   <tr key={row.id}
-                      className={`group transition-colors ${
-                        idx % 2 === 0
-                          ? "bg-white dark:bg-[#161b2e]"
-                          : "bg-slate-50/60 dark:bg-[#1a1f35]"
-                      } hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
+                      className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
                     {WS_COLUMNS.map((col) => (
-                      <td key={col.key}
-                          className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                      <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                         {renderWsCell(row, col.key)}
                       </td>
                     ))}
-                    <td className="w-8 px-2 py-2 align-top">
-                      <DeleteBtn onClick={() => deleteWs(row.id)} />
-                    </td>
+                    <td className="w-8 px-2 py-2 align-top"><DeleteBtn onClick={() => deleteWs(row.id)} /></td>
                   </tr>
                 ))}
                 {whitespace.length === 0 && (
                   <tr>
                     <td colSpan={WS_COLUMNS.length + 1} className="py-10 text-center">
                       <p className="text-[12px] text-slate-500 dark:text-slate-500">No whitespace rules</p>
-                      <button onClick={addWs} className="mt-2 text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline">
-                        + Add first rule
-                      </button>
+                      <button onClick={addWs} className="mt-2 text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline">+ Add first rule</button>
                     </td>
                   </tr>
                 )}
