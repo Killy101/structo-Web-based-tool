@@ -334,9 +334,9 @@ export default function TOC({ initialData }: Props) {
 
   return (
     <div className="space-y-4 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-700/40">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-black dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-indigo-800 dark:text-indigo-300" style={{ fontFamily: "'DM Mono', monospace" }}>
             Table of Contents
           </p>
           <p className="text-[11.5px] text-slate-500 dark:text-slate-500 mt-0.5">

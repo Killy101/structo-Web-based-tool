@@ -37,7 +37,7 @@ function toRow(e: ScopeEntry, id: string, oos: boolean): ScopeRow {
   const authLabel = e.issuing_authority
     ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
   return {
-    id, isOutOfScope: oos,
+    id, isOutOfScope: oos || !!e.strikethrough,
     title: e.document_title ?? "", referenceLink: e.regulator_url ?? "",
     contentUrl: e.content_url ?? "", issuingAuth: authLabel,
     asrbId: e.asrb_id ?? "", smeComments: e.sme_comments ?? "",
@@ -74,7 +74,6 @@ async function runValidation(
   onProgress: (s: ValidationState) => void
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
-
   onProgress({ phase: "running", progress: 5, currentStep: "Checking duplicate titles…", issues: [], checkedCount: 0, totalLinks: 0 });
   await new Promise(r => setTimeout(r, 300));
   const titleMap = new Map<string, ScopeRow[]>();
@@ -91,7 +90,6 @@ async function runValidation(
       issues.push({ rowId: r.id, rowTitle: r.title, field: "title", kind: "duplicate_title", severity: "error", message: `Duplicate title — also in: ${others}`, duplicateWith: others });
     });
   });
-
   onProgress({ phase: "running", progress: 15, currentStep: "Checking duplicate URLs…", issues: [...issues], checkedCount: 0, totalLinks: 0 });
   await new Promise(r => setTimeout(r, 300));
   const urlMap = new Map<string, ScopeRow[]>();
@@ -108,13 +106,11 @@ async function runValidation(
       issues.push({ rowId: r.id, rowTitle: r.title || r.contentUrl, field: "contentUrl", kind: "duplicate_url", severity: "error", message: `Duplicate content URL — same as: ${others}`, duplicateWith: others });
     });
   });
-
   const linksToCheck: Array<{ row: ScopeRow; field: "referenceLink" | "contentUrl"; url: string }> = [];
   rows.forEach(r => {
     if (r.referenceLink.trim()) linksToCheck.push({ row: r, field: "referenceLink", url: r.referenceLink.trim() });
     if (r.contentUrl.trim()) linksToCheck.push({ row: r, field: "contentUrl", url: r.contentUrl.trim() });
   });
-
   const totalLinks = linksToCheck.length;
   let checkedCount = 0;
   for (const item of linksToCheck) {
@@ -139,32 +135,99 @@ const MONO = { fontFamily: "'DM Mono', monospace" } as const;
 const TH = "px-3 py-2 text-left font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147]";
 const CELL = "px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] align-top";
 
-/* ─────────────── sub-components ─────────────── */
-function EmptyIcon() {
+/* ─────────────── inline editable cell ─────────────── */
+function InlineCell({ value, placeholder, onChange, href, strikethrough }: {
+  value: string; placeholder: string; strikethrough?: boolean;
+  onChange: (val: string) => void; href?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onBlur={() => setEditing(false)}
+        onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") setEditing(false); }}
+        onClick={e => e.stopPropagation()}
+        className="w-full min-w-[80px] bg-white dark:bg-[#1e2235] border border-blue-400 dark:border-blue-500 rounded-md px-2 py-1 text-[11.5px] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-400"
+        placeholder={placeholder}
+      />
+    );
+  }
+
+  const baseText = strikethrough ? "line-through text-slate-400 dark:text-slate-600" : "";
+
+  if (!value) return (
+    <span
+      onClick={e => { e.stopPropagation(); setEditing(true); }}
+      className="text-slate-300 dark:text-slate-700 italic cursor-text hover:text-slate-400 select-none text-[11px]"
+    >—</span>
+  );
+
+  if (href) return (
+    <div className="flex items-center gap-1 group/link">
+      <a
+        href={value} target="_blank" rel="noreferrer"
+        onClick={e => e.stopPropagation()}
+        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] break-all ${baseText}`}
+      >{value}</a>
+      <button
+        onClick={e => { e.stopPropagation(); setEditing(true); }}
+        className="opacity-0 group-hover/link:opacity-100 flex-shrink-0 w-4 h-4 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all"
+      >
+        <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+        </svg>
+      </button>
+    </div>
+  );
+
   return (
-    <svg className="w-5 h-5 text-slate-400 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    </svg>
+    <span
+      onClick={e => { e.stopPropagation(); setEditing(true); }}
+      className={`cursor-text text-[11.5px] text-slate-700 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors block ${baseText}`}
+      title="Click to edit"
+    >{value}</span>
   );
 }
-function EditInput({ value, field, rowId, placeholder, onChange }: {
-  value: string; field: string; rowId: string; placeholder: string;
-  onChange: (id: string, field: string, val: string) => void;
+
+/* ─────────────── row action toolbar ─────────────── */
+function RowToolbar({ row, onUpdate, onRemove }: {
+  row: ScopeRow;
+  onUpdate: (id: string, field: string, value: string | boolean) => void;
+  onRemove: (id: string) => void;
 }) {
   return (
-    <input value={value} onChange={(e) => onChange(rowId, field, e.target.value)} onClick={(e) => e.stopPropagation()}
-      className="w-full bg-white dark:bg-[#1e2235] border border-blue-300 dark:border-blue-600 rounded-md px-2 py-1 text-[12px] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-400"
-      placeholder={placeholder} />
+    <div className="flex items-center gap-0.5">
+      {/* Strikethrough toggle */}
+      <button
+        onClick={e => { e.stopPropagation(); onUpdate(row.id, "isOutOfScope", !row.isOutOfScope); }}
+        title={row.isOutOfScope ? "Remove strikethrough" : "Mark as out of scope (strikethrough)"}
+        className={`w-6 h-6 flex items-center justify-center rounded transition-all text-[10px] font-bold
+          ${row.isOutOfScope
+            ? "bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-500/40"
+            : "text-slate-400 dark:text-slate-600 hover:bg-slate-100 dark:hover:bg-[#252d45] hover:text-slate-600 dark:hover:text-slate-400"
+          }`}
+        style={{ fontFamily: "serif", textDecoration: "line-through" }}
+      >S</button>
+
+      {/* Delete */}
+      <button
+        onClick={e => { e.stopPropagation(); onRemove(row.id); }}
+        title="Delete row"
+        className="w-6 h-6 flex items-center justify-center rounded text-slate-400 dark:text-slate-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-all"
+      >
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+      </button>
+    </div>
   );
-}
-function Cell({ isEditing, value, field, rowId, placeholder, onChange, href }: {
-  isEditing: boolean; value: string; field: string; rowId: string;
-  placeholder: string; onChange: (id: string, field: string, val: string) => void; href?: boolean;
-}) {
-  if (isEditing) return <EditInput value={value} field={field} rowId={rowId} placeholder={placeholder} onChange={onChange} />;
-  if (!value) return <span className="text-slate-400 dark:text-slate-600 italic">—</span>;
-  if (href) return <a href={value} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 dark:text-blue-400 hover:underline block whitespace-normal break-all">{value}</a>;
-  return <span className="text-slate-700 dark:text-slate-400 text-[11.5px]">{value}</span>;
 }
 
 /* ─────────────── kind metadata ─────────────── */
@@ -184,7 +247,6 @@ interface ModalProps {
   highlightedRowId: string | null; onHighlight: (id: string | null) => void;
   filterRowId?: string | null;
 }
-
 function ValidationModal({ validation, onClose, onHighlight, filterRowId }: ModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const [showErrors, setShowErrors] = useState(!!filterRowId);
@@ -196,7 +258,6 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
   const allGood  = validation.phase === "done" && validation.issues.length === 0;
   const isDone   = validation.phase === "done";
   const isRun    = validation.phase === "running";
-
   const stepIndex = validation.progress < 15 ? 0 : validation.progress < 20 ? 1 : 2;
   const STEPS = ["Scanning for duplicate titles", "Checking for duplicate URLs", "Verifying link accessibility"];
 
@@ -207,51 +268,34 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
   const iconBg = isRun ? "linear-gradient(135deg,#2563eb,#60a5fa)"
     : allGood ? "linear-gradient(135deg,#059669,#34d399)"
     : "linear-gradient(135deg,#dc2626,#f97316)";
-
   const progressCls = isRun
     ? "bg-gradient-to-r from-blue-500 to-blue-300 shadow-[0_0_10px_rgba(59,130,246,0.45)]"
     : allGood ? "bg-gradient-to-r from-emerald-600 to-emerald-400"
     : "bg-gradient-to-r from-red-600 to-orange-400";
-
   const pctCls = isRun ? "text-blue-500"
     : allGood ? "text-emerald-600 dark:text-emerald-400"
     : "text-red-600 dark:text-red-400";
 
   return (
-    <div
-      ref={backdropRef}
-      onClick={handleBackdrop}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-md animate-vm-fade"
-    >
-      {/* Card */}
+    <div ref={backdropRef} onClick={handleBackdrop}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-md">
       <div className="flex flex-col w-[min(510px,93vw)] max-h-[82vh] rounded-[18px] overflow-hidden
-        bg-white dark:bg-[#131722]
-        border border-black/[0.09] dark:border-white/[0.07]
-        shadow-[0_32px_72px_rgba(0,0,0,0.22),0_4px_20px_rgba(0,0,0,0.1)]
-        animate-vm-slide">
+        bg-white dark:bg-[#131722] border border-black/[0.09] dark:border-white/[0.07]
+        shadow-[0_32px_72px_rgba(0,0,0,0.22),0_4px_20px_rgba(0,0,0,0.1)]">
 
-        {/* ── HEADER ── */}
-        <div className="flex-shrink-0 px-[22px] pt-5 pb-4
-          border-b border-black/[0.07] dark:border-white/[0.06]
-          bg-[#f8f9fb] dark:bg-white/[0.025]">
-
+        {/* Header */}
+        <div className="flex-shrink-0 px-[22px] pt-5 pb-4 border-b border-black/[0.07] dark:border-white/[0.06] bg-[#f8f9fb] dark:bg-white/[0.025]">
           <div className="flex items-start justify-between gap-3">
-            {/* Icon + text */}
             <div className="flex items-center gap-3">
-              <div
-                className="w-[42px] h-[42px] rounded-[13px] flex-shrink-0 flex items-center justify-center transition-all duration-[400ms]"
-                style={{ background: iconBg,
-                  boxShadow: isRun ? "0 0 0 7px rgba(59,130,246,0.1)"
-                    : allGood ? "0 0 0 7px rgba(5,150,105,0.1)"
-                    : "0 0 0 7px rgba(220,38,38,0.1)" }}
-              >
+              <div className="w-[42px] h-[42px] rounded-[13px] flex-shrink-0 flex items-center justify-center transition-all duration-[400ms]"
+                style={{ background: iconBg }}>
                 {isRun ? (
-                  <svg className="w-5 h-5 animate-vm-spin" viewBox="0 0 24 24" fill="none">
+                  <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle cx="12" cy="12" r="9" stroke="rgba(255,255,255,0.22)" strokeWidth="2.5"/>
                     <path d="M12 3a9 9 0 019 9" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
                   </svg>
                 ) : allGood ? (
-                  <svg className="w-5 h-5 text-white animate-vm-pop" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/>
                   </svg>
                 ) : (
@@ -272,83 +316,41 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
                 </p>
               </div>
             </div>
-
-            {/* Close X */}
             {isDone && (
-              <button
-                onClick={onClose}
-                className="flex-shrink-0 w-[30px] h-[30px] rounded-[9px] flex items-center justify-center
-                  border border-black/10 dark:border-white/10
-                  bg-gray-100 dark:bg-white/[0.07]
-                  text-gray-500 dark:text-[#8892a4]
-                  hover:bg-gray-200 dark:hover:bg-white/[0.12]
-                  transition-colors cursor-pointer"
-              >
+              <button onClick={onClose}
+                className="flex-shrink-0 w-[30px] h-[30px] rounded-[9px] flex items-center justify-center border border-black/10 dark:border-white/10 bg-gray-100 dark:bg-white/[0.07] text-gray-500 dark:text-[#8892a4] hover:bg-gray-200 dark:hover:bg-white/[0.12] transition-colors cursor-pointer">
                 <svg className="w-[13px] h-[13px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
                 </svg>
               </button>
             )}
           </div>
-
-          {/* Progress bar */}
           <div className="mt-4 h-[5px] rounded-full overflow-hidden bg-black/[0.08] dark:bg-white/[0.07]">
-            <div
-              className={`h-full rounded-full ${progressCls} transition-[width] duration-[350ms] ease-linear`}
-              style={{ width: `${validation.progress}%` }}
-            />
+            <div className={`h-full rounded-full ${progressCls} transition-[width] duration-[350ms] ease-linear`} style={{ width: `${validation.progress}%` }}/>
           </div>
           <div className="flex justify-end mt-[5px]">
-            <span className={`text-[10px] font-semibold ${pctCls}`} style={MONO}>
-              {validation.progress}%
-            </span>
+            <span className={`text-[10px] font-semibold ${pctCls}`} style={MONO}>{validation.progress}%</span>
           </div>
         </div>
 
-        {/* ── BODY ── */}
+        {/* Body */}
         <div className="overflow-y-auto flex-grow">
-
-          {/* Running: step tracker */}
           {isRun && (
             <div className="p-[22px] space-y-[7px]">
               {STEPS.map((s, i) => {
-                const done   = i < stepIndex;
-                const active = i === stepIndex;
+                const done = i < stepIndex; const active = i === stepIndex;
                 return (
-                  <div key={i} className={`relative flex items-center gap-[10px] px-[14px] py-[11px] rounded-[11px] border overflow-hidden transition-all duration-300
-                    ${active
-                      ? "bg-blue-500/[0.07] border-blue-500/[0.22]"
-                      : "bg-gray-100 dark:bg-white/[0.035] border-black/[0.07] dark:border-white/[0.055]"}`}>
-
-                    {/* shimmer on active — single bg-sweep div, no JS style injection */}
-                    {active && (
-                      <div className="absolute inset-0 pointer-events-none animate-vm-sweep
-                        bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.12)_50%,transparent_100%)]
-                        dark:bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.055)_50%,transparent_100%)]
-                        bg-[length:200%_100%]"/>
-                    )}
-
-                    {/* Circle */}
+                  <div key={i} className={`flex items-center gap-[10px] px-[14px] py-[11px] rounded-[11px] border transition-all duration-300
+                    ${active ? "bg-blue-500/[0.07] border-blue-500/[0.22]" : "bg-gray-100 dark:bg-white/[0.035] border-black/[0.07] dark:border-white/[0.055]"}`}>
                     <div className={`w-[22px] h-[22px] rounded-full flex-shrink-0 flex items-center justify-center border-2 transition-all duration-300
-                      ${done   ? "bg-emerald-600 border-emerald-600"
-                      : active ? "bg-blue-600 border-blue-500"
-                      :          "bg-transparent border-black/[0.07] dark:border-white/[0.055]"}`}>
+                      ${done ? "bg-emerald-600 border-emerald-600" : active ? "bg-blue-600 border-blue-500" : "bg-transparent border-black/[0.07] dark:border-white/[0.055]"}`}>
                       {done
                         ? <svg className="w-[11px] h-[11px] text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/></svg>
-                        : active
-                        ? <div className="w-[7px] h-[7px] rounded-full bg-white animate-vm-pulse"/>
-                        : <div className="w-[5px] h-[5px] rounded-full bg-gray-400 dark:bg-slate-600"/>
-                      }
+                        : active ? <div className="w-[7px] h-[7px] rounded-full bg-white animate-pulse"/>
+                        : <div className="w-[5px] h-[5px] rounded-full bg-gray-400 dark:bg-slate-600"/>}
                     </div>
-
-                    <span className={`relative text-[12px] transition-colors duration-300
-                      ${active ? "font-semibold text-gray-900 dark:text-[#e2e8f5]" : "font-normal text-gray-500 dark:text-[#8892a4]"}`}>
-                      {s}
-                    </span>
-
-                    <span className={`relative ml-auto text-[10px] font-medium
-                      ${done ? "text-emerald-600 dark:text-emerald-400" : active ? "text-blue-500" : "text-gray-400 dark:text-slate-600"}`}
-                      style={MONO}>
+                    <span className={`text-[12px] transition-colors duration-300 ${active ? "font-semibold text-gray-900 dark:text-[#e2e8f5]" : "font-normal text-gray-500 dark:text-[#8892a4]"}`}>{s}</span>
+                    <span className={`ml-auto text-[10px] font-medium ${done ? "text-emerald-600 dark:text-emerald-400" : active ? "text-blue-500" : "text-gray-400 dark:text-slate-600"}`} style={MONO}>
                       {done ? "done" : active ? (i === 2 ? `${validation.checkedCount}/${validation.totalLinks}` : "running") : "waiting"}
                     </span>
                   </div>
@@ -356,93 +358,55 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
               })}
             </div>
           )}
-
-          {/* Done + all good */}
           {isDone && allGood && (
-            <div className="px-[22px] py-[38px] text-center animate-vm-fade-row">
-              <div className="w-[66px] h-[66px] rounded-full mx-auto mb-[18px] flex items-center justify-center
-                bg-emerald-500/10 dark:bg-emerald-500/[0.12] border border-emerald-500/[0.22]">
-                <svg className="w-[30px] h-[30px] text-emerald-600 dark:text-emerald-400 animate-vm-pop" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="px-[22px] py-[38px] text-center">
+              <div className="w-[66px] h-[66px] rounded-full mx-auto mb-[18px] flex items-center justify-center bg-emerald-500/10 border border-emerald-500/[0.22]">
+                <svg className="w-[30px] h-[30px] text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
                 </svg>
               </div>
-              <p className="text-[17px] font-bold tracking-[-0.025em] text-gray-900 dark:text-[#e2e8f5] mb-[7px] mt-0">All documents passed!</p>
-              <p className="text-[12px] text-gray-500 dark:text-[#8892a4] m-0 leading-relaxed">
-                No duplicates found · All {validation.totalLinks} links are reachable
-              </p>
+              <p className="text-[17px] font-bold text-gray-900 dark:text-[#e2e8f5] mb-[7px] mt-0">All documents passed!</p>
+              <p className="text-[12px] text-gray-500 dark:text-[#8892a4] m-0">No duplicates · All {validation.totalLinks} links reachable</p>
             </div>
           )}
-
-          {/* Done + issues: summary */}
           {isDone && !allGood && !showErrors && (
-            <div className="px-[22px] py-[30px] text-center animate-vm-fade-row">
-              <div className="w-[58px] h-[58px] rounded-full mx-auto mb-[15px] flex items-center justify-center
-                bg-red-500/[0.07] dark:bg-red-500/[0.08] border border-red-500/[0.18]">
-                <svg className="w-[25px] h-[25px] text-red-500 animate-vm-pop" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="px-[22px] py-[30px] text-center">
+              <div className="w-[58px] h-[58px] rounded-full mx-auto mb-[15px] flex items-center justify-center bg-red-500/[0.07] border border-red-500/[0.18]">
+                <svg className="w-[25px] h-[25px] text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
                 </svg>
               </div>
-              <p className="text-[16px] font-bold tracking-[-0.022em] text-gray-900 dark:text-[#e2e8f5] m-0">
-                {visibleIssues.length} issue{visibleIssues.length !== 1 ? "s" : ""} detected
-              </p>
+              <p className="text-[16px] font-bold text-gray-900 dark:text-[#e2e8f5] m-0">{visibleIssues.length} issue{visibleIssues.length !== 1 ? "s" : ""} detected</p>
             </div>
           )}
-
-          {/* Done + issues: expanded list */}
           {isDone && !allGood && showErrors && (
-            <div className="px-[22px] pt-[14px] pb-5 animate-vm-fade-row">
+            <div className="px-[22px] pt-[14px] pb-5">
               <div className="flex flex-wrap gap-[6px] mb-[14px]">
-                {errors.length > 0 && (
-                  <span className="text-[10.5px] font-semibold px-[10px] py-[3px] rounded-full
-                    bg-red-50 dark:bg-red-500/[0.12] border border-red-200 dark:border-red-500/25 text-red-600 dark:text-red-400"
-                    style={MONO}>
-                    {errors.length} error{errors.length !== 1 ? "s" : ""}
-                  </span>
-                )}
-                {warnings.length > 0 && (
-                  <span className="text-[10.5px] font-semibold px-[10px] py-[3px] rounded-full
-                    bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/[0.22] text-amber-600 dark:text-amber-400"
-                    style={MONO}>
-                    {warnings.length} warning{warnings.length !== 1 ? "s" : ""}
-                  </span>
-                )}
+                {errors.length > 0 && <span className="text-[10.5px] font-semibold px-[10px] py-[3px] rounded-full bg-red-50 dark:bg-red-500/[0.12] border border-red-200 dark:border-red-500/25 text-red-600 dark:text-red-400" style={MONO}>{errors.length} error{errors.length !== 1 ? "s" : ""}</span>}
+                {warnings.length > 0 && <span className="text-[10.5px] font-semibold px-[10px] py-[3px] rounded-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/[0.22] text-amber-600 dark:text-amber-400" style={MONO}>{warnings.length} warning{warnings.length !== 1 ? "s" : ""}</span>}
               </div>
               <div className="flex flex-col gap-[7px]">
                 {visibleIssues.map((issue, idx) => {
-                  const meta  = KIND_META[issue.kind];
-                  const isErr = issue.severity === "error";
+                  const meta = KIND_META[issue.kind]; const isErr = issue.severity === "error";
                   return (
-                    <div
-                      key={idx}
-                      onClick={() => { onHighlight(issue.rowId); onClose(); }}
-                      className={`rounded-[11px] border px-[13px] py-[10px] cursor-pointer transition-colors animate-vm-fade-row
-                        ${isErr
-                          ? "bg-red-50 dark:bg-red-500/[0.06] border-red-200 dark:border-red-500/[0.18] hover:bg-red-100 dark:hover:bg-red-500/10"
-                          : "bg-amber-50 dark:bg-amber-500/[0.05] border-amber-200 dark:border-amber-500/[0.16] hover:bg-amber-100 dark:hover:bg-amber-500/[0.09]"}`}
-                      style={{ animationDelay: `${idx * 35}ms` }}
-                    >
+                    <div key={idx} onClick={() => { onHighlight(issue.rowId); onClose(); }}
+                      className={`rounded-[11px] border px-[13px] py-[10px] cursor-pointer transition-colors
+                        ${isErr ? "bg-red-50 dark:bg-red-500/[0.06] border-red-200 dark:border-red-500/[0.18] hover:bg-red-100 dark:hover:bg-red-500/10"
+                          : "bg-amber-50 dark:bg-amber-500/[0.05] border-amber-200 dark:border-amber-500/[0.16] hover:bg-amber-100 dark:hover:bg-amber-500/[0.09]"}`}>
                       <div className="flex items-start gap-[10px]">
-                        <svg className={`w-[14px] h-[14px] flex-shrink-0 mt-[2px] ${isErr ? "text-red-500 dark:text-red-400" : "text-amber-500 dark:text-amber-400"}`}
-                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className={`w-[14px] h-[14px] flex-shrink-0 mt-[2px] ${isErr ? "text-red-500" : "text-amber-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={meta.icon}/>
                         </svg>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center flex-wrap gap-[5px] mb-[3px]">
-                            <span className={`text-[9.5px] font-bold tracking-[0.07em] uppercase ${isErr ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-500"}`} style={MONO}>
-                              {meta.label}
-                            </span>
-                            <span className="text-[9.5px] text-gray-400 dark:text-slate-600">·</span>
-                            <span className="text-[9.5px] text-gray-500 dark:text-[#8892a4]" style={MONO}>
-                              {fieldLabel(issue.field)}
-                            </span>
+                            <span className={`text-[9.5px] font-bold tracking-[0.07em] uppercase ${isErr ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-500"}`} style={MONO}>{meta.label}</span>
+                            <span className="text-[9.5px] text-gray-400">·</span>
+                            <span className="text-[9.5px] text-gray-500 dark:text-[#8892a4]" style={MONO}>{fieldLabel(issue.field)}</span>
                           </div>
-                          <p className="text-[12px] font-semibold text-gray-900 dark:text-[#e2e8f5] m-0 mb-[2px] truncate">
-                            {issue.rowTitle || "(untitled)"}
-                          </p>
+                          <p className="text-[12px] font-semibold text-gray-900 dark:text-[#e2e8f5] m-0 mb-[2px] truncate">{issue.rowTitle || "(untitled)"}</p>
                           <p className="text-[11px] text-gray-500 dark:text-[#8892a4] m-0 leading-[1.5]">{issue.message}</p>
                         </div>
-                        <svg className="w-[12px] h-[12px] text-gray-400 dark:text-slate-600 flex-shrink-0 mt-[4px]"
-                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className="w-[12px] h-[12px] text-gray-400 flex-shrink-0 mt-[4px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/>
                         </svg>
                       </div>
@@ -454,45 +418,18 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
           )}
         </div>
 
-        {/* ── FOOTER ── */}
+        {/* Footer */}
         {isDone && (
-          <div className="flex-shrink-0 flex justify-end gap-2 px-[22px] py-3
-            border-t border-black/[0.07] dark:border-white/[0.06]
-            bg-gray-100 dark:bg-black/[0.28]">
+          <div className="flex-shrink-0 flex justify-end gap-2 px-[22px] py-3 border-t border-black/[0.07] dark:border-white/[0.06] bg-gray-100 dark:bg-black/[0.28]">
             {allGood ? (
-              <button
-                onClick={onClose}
-                className="px-[22px] py-2 rounded-[10px] text-[12.5px] font-semibold text-white
-                  bg-gradient-to-br from-emerald-600 to-emerald-400
-                  hover:opacity-90 transition-opacity
-                  shadow-[0_2px_8px_rgba(5,150,105,0.22)] cursor-pointer border-none"
-              >
-                Close
-              </button>
+              <button onClick={onClose} className="px-[22px] py-2 rounded-[10px] text-[12.5px] font-semibold text-white bg-gradient-to-br from-emerald-600 to-emerald-400 hover:opacity-90 transition-opacity shadow-[0_2px_8px_rgba(5,150,105,0.22)] cursor-pointer border-none">Close</button>
             ) : (
               <>
-                <button
-                  onClick={onClose}
-                  className="px-4 py-2 rounded-[10px] text-[12px] font-medium cursor-pointer
-                    bg-gray-100 dark:bg-white/[0.07]
-                    border border-black/10 dark:border-white/10
-                    text-gray-700 dark:text-[#c5cdd9]
-                    hover:bg-gray-200 dark:hover:bg-white/[0.12]
-                    transition-colors"
-                >
-                  Close
-                </button>
-                <button
-                  onClick={() => setShowErrors(v => !v)}
-                  className="flex items-center gap-[6px] px-[18px] py-2 rounded-[10px] text-[12px] font-semibold text-white cursor-pointer border-none
-                    bg-gradient-to-br from-red-600 to-orange-500
-                    hover:opacity-90 transition-opacity
-                    shadow-[0_2px_8px_rgba(220,38,38,0.22)]"
-                >
+                <button onClick={onClose} className="px-4 py-2 rounded-[10px] text-[12px] font-medium cursor-pointer bg-gray-100 dark:bg-white/[0.07] border border-black/10 dark:border-white/10 text-gray-700 dark:text-[#c5cdd9] hover:bg-gray-200 dark:hover:bg-white/[0.12] transition-colors">Close</button>
+                <button onClick={() => setShowErrors(v => !v)}
+                  className="flex items-center gap-[6px] px-[18px] py-2 rounded-[10px] text-[12px] font-semibold text-white cursor-pointer border-none bg-gradient-to-br from-red-600 to-orange-500 hover:opacity-90 transition-opacity shadow-[0_2px_8px_rgba(220,38,38,0.22)]">
                   <svg className="w-[13px] h-[13px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    {showErrors
-                      ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7"/>
-                      : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/>}
+                    {showErrors ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7"/> : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/>}
                   </svg>
                   {showErrors ? "Hide errors" : `Show ${visibleIssues.length} issue${visibleIssues.length !== 1 ? "s" : ""}`}
                 </button>
@@ -507,27 +444,22 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
 
 /* ─────────────── main component ─────────────── */
 export default function Scope({ initialData }: Props) {
-  const [rows, setRows]                   = useState<ScopeRow[]>([]);
-  const [editingId, setEditingId]         = useState<string | null>(null);
-  const [saved, setSaved]                 = useState(false);
+  const [rows, setRows]                         = useState<ScopeRow[]>([]);
+  const [saved, setSaved]                       = useState(false);
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
-  const [showModal, setShowModal]         = useState(false);
-  const [filterRowId, setFilterRowId]     = useState<string | null>(null);
-  const [validation, setValidation]       = useState<ValidationState>({
-    phase:"idle", progress:0, currentStep:"", issues:[], checkedCount:0, totalLinks:0,
+  const [showModal, setShowModal]               = useState(false);
+  const [filterRowId, setFilterRowId]           = useState<string | null>(null);
+  const [validation, setValidation]             = useState<ValidationState>({
+    phase: "idle", progress: 0, currentStep: "", issues: [], checkedCount: 0, totalLinks: 0,
   });
   const highlightRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
-  useEffect(() => {
-    setRows(buildRows(initialData));
-    setEditingId(null);
-    setSaved(false);
-  }, [initialData]);
+  useEffect(() => { setRows(buildRows(initialData)); setSaved(false); }, [initialData]);
 
   useEffect(() => {
     if (!highlightedRowId) return;
     const el = highlightRefs.current[highlightedRowId];
-    if (el) { el.scrollIntoView({ behavior:"smooth", block:"center" }); el.focus(); }
+    if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus(); }
     const t = setTimeout(() => setHighlightedRowId(null), 3200);
     return () => clearTimeout(t);
   }, [highlightedRowId]);
@@ -537,38 +469,36 @@ export default function Scope({ initialData }: Props) {
 
   function addRow() {
     const r: ScopeRow = {
-      id:Date.now().toString(), title:"", referenceLink:"", contentUrl:"",
-      issuingAuth:"", asrbId:"", smeComments:"", initialEvergreen:"",
-      dateOfIngestion:"", isOutOfScope:false,
+      id: Date.now().toString(), title: "", referenceLink: "", contentUrl: "",
+      issuingAuth: "", asrbId: "", smeComments: "", initialEvergreen: "",
+      dateOfIngestion: "", isOutOfScope: false,
     };
     setRows(p => [...p, r]);
-    setEditingId(r.id);
   }
-  function updateRow(id: string, field: string, value: string) {
+
+  function updateRow(id: string, field: string, value: string | boolean) {
     setRows(p => p.map(r => r.id === id ? { ...r, [field]: value } : r));
   }
+
   function removeRow(id: string) {
     setRows(p => p.filter(r => r.id !== id));
-    if (editingId === id) setEditingId(null);
   }
+
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
 
-  function openModalForRow(rowId: string) {
-    setFilterRowId(rowId);
-    setShowModal(true);
-  }
+  function openModalForRow(rowId: string) { setFilterRowId(rowId); setShowModal(true); }
 
   async function handleValidate() {
     setFilterRowId(null);
-    setValidation({ phase:"running", progress:0, currentStep:"Initializing…", issues:[], checkedCount:0, totalLinks:0 });
+    setValidation({ phase: "running", progress: 0, currentStep: "Initializing…", issues: [], checkedCount: 0, totalLinks: 0 });
     setShowModal(true);
     try {
-      const issues = await runValidation(rows, (s) => setValidation(s));
-      setValidation(prev => ({ ...prev, phase:"done", progress:100, issues, currentStep:"Done" }));
+      const issues = await runValidation(rows, s => setValidation(s));
+      setValidation(prev => ({ ...prev, phase: "done", progress: 100, issues, currentStep: "Done" }));
     } catch (err) {
       setValidation(prev => ({
-        ...prev, phase:"done", progress:100, currentStep:"Error",
-        issues:[{ rowId:"", rowTitle:"System", field:"title", kind:"broken_link", severity:"error", message:String(err) }],
+        ...prev, phase: "done", progress: 100, currentStep: "Error",
+        issues: [{ rowId: "", rowTitle: "System", field: "title", kind: "broken_link", severity: "error", message: String(err) }],
       }));
     }
   }
@@ -583,42 +513,44 @@ export default function Scope({ initialData }: Props) {
       <div className="rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
 
         {/* Toolbar */}
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-lg border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-700/40">
           <div className="flex items-center gap-2">
-            <span className="text-base text-slate-500 dark:text-slate-500">≡</span>
-            <h3 className="text-[13px] font-semibold text-slate-800 dark:text-slate-300 tracking-tight">Scope Documents</h3>
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-[#1e2235] text-slate-600 dark:text-slate-500 border border-slate-300 dark:border-[#2a3147]" style={MONO}>{rows.length}</span>
+            <span className="text-base text-blue-600 dark:text-blue-400">≡</span>
+            <h3 className="text-[13px] font-semibold text-blue-800 dark:text-blue-300 tracking-tight">Scope Documents</h3>
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-600/40" style={MONO}>{rows.length}</span>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={handleValidate}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium relative
-                bg-white dark:bg-[#1e2235] text-orange-600 dark:text-orange-400
-                border border-orange-300 dark:border-orange-700/40
-                hover:bg-orange-50 dark:hover:bg-orange-500/10 transition-all">
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium relative bg-white dark:bg-[#1e2235] text-orange-600 dark:text-orange-400 border border-orange-300 dark:border-orange-700/40 hover:bg-orange-50 dark:hover:bg-orange-500/10 transition-all">
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
               Validate
               {validation.phase === "done" && validation.issues.length > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
-                  {validation.issues.length}
-                </span>
+                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">{validation.issues.length}</span>
               )}
             </button>
-            <button onClick={handleSave} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${saved ? "bg-emerald-500 text-white" : "bg-white dark:bg-[#1e2235] text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45]"}`}>
+            <button onClick={handleSave}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${saved ? "bg-emerald-500 text-white" : "bg-white dark:bg-[#1e2235] text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45]"}`}>
               {saved
                 ? <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/></svg>Saved!</>
                 : <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>Save</>}
             </button>
-            <button onClick={addRow} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-600 text-white hover:bg-blue-700 dark:hover:bg-blue-500 transition-all">
+            <button onClick={addRow}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-600 text-white hover:bg-blue-700 dark:hover:bg-blue-500 transition-all">
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4"/></svg>
               Add Row
             </button>
           </div>
         </div>
 
+        {/* Hint */}
+        <p className="text-[10.5px] text-slate-400 dark:text-slate-600 mb-2 ml-0.5" style={MONO}>
+          Click any cell to edit · <span style={{ textDecoration: "line-through" }}>S</span> = strikethrough toggle · hover row for actions
+        </p>
+
         {/* Table */}
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-[11.5px]" style={{ minWidth:900 }}>
+            <table className="w-full text-[11.5px]" style={{ minWidth: 900 }}>
               <thead>
                 <tr className="bg-slate-100 dark:bg-[#1e2235]">
                   <th rowSpan={2} className={`${TH} w-[180px]`} style={MONO}>Document Title</th>
@@ -628,83 +560,99 @@ export default function Scope({ initialData }: Props) {
                   <th rowSpan={2} className={`${TH} w-[130px]`} style={MONO}>SME Comments</th>
                   {extra.evergreen && <th rowSpan={2} className={`${TH} w-[90px]`} style={MONO}>Initial / Evergreen</th>}
                   {extra.ingestion && <th rowSpan={2} className={`${TH} w-[110px]`} style={MONO}>Date of Ingestion</th>}
-                  <th rowSpan={2} className="px-3 py-2 text-center font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-slate-200 dark:border-[#2a3147] w-[50px]" style={MONO}>···</th>
+                  <th rowSpan={2} className="px-3 py-2 text-center font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-slate-200 dark:border-[#2a3147] w-[60px]" style={MONO}>···</th>
                 </tr>
                 <tr className="bg-slate-100 dark:bg-[#1e2235]">
                   <th className="px-3 py-1.5 text-left font-bold text-[10px] uppercase tracking-[0.08em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147] w-[140px] bg-slate-200/60 dark:bg-[#252d45]/70" style={MONO}>Issuing Authority</th>
                   <th className="px-3 py-1.5 text-left font-bold text-[10px] uppercase tracking-[0.08em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147] w-[100px] bg-slate-200/60 dark:bg-[#252d45]/70" style={MONO}>ASRB ID</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight:400 }}>
+              <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]">
                 {rows.length === 0 ? (
                   <tr>
                     <td colSpan={colCount} className="px-4 py-10 text-center">
                       <div className="flex flex-col items-center gap-2">
-                        <EmptyIcon/>
+                        <svg className="w-5 h-5 text-slate-400 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
                         <p className="text-[12px] text-slate-500 dark:text-slate-500">No documents added yet</p>
                         <button onClick={addRow} className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-medium">+ Add first row</button>
                       </div>
                     </td>
                   </tr>
                 ) : rows.map((row, idx) => {
-                  const isEditing     = editingId === row.id;
                   const isHighlighted = highlightedRowId === row.id;
                   const rowIssues     = issuesByRow[row.id] ?? 0;
+                  const oos           = row.isOutOfScope;
+
                   const rowCls = [
-                    "transition-colors cursor-pointer",
-                    isHighlighted ? "bg-amber-50 dark:bg-amber-500/10 ring-2 ring-amber-400/40"
-                      : isEditing   ? "bg-blue-50/40 dark:bg-blue-500/5"
-                      : idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]"
-                      : "bg-slate-50/60 dark:bg-[#1a1f35]",
-                    !isHighlighted && "hover:bg-blue-50/30 dark:hover:bg-[#1e2235]/50",
-                    row.isOutOfScope ? "opacity-55" : "",
+                    "group/row transition-colors",
+                    isHighlighted
+                      ? "bg-amber-50 dark:bg-amber-500/10 ring-2 ring-amber-400/40"
+                      : idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]",
+                    !isHighlighted && "hover:bg-blue-50/20 dark:hover:bg-[#1e2235]/50",
+                    oos ? "opacity-60" : "",
                   ].join(" ");
 
                   return (
                     <tr key={row.id} className={rowCls} tabIndex={-1}
-                      ref={(el) => { highlightRefs.current[row.id] = el; }}
-                      onClick={() => setEditingId(row.id)}>
+                      ref={el => { highlightRefs.current[row.id] = el; }}>
 
+                      {/* Document Title */}
                       <td className={CELL}>
                         <div className="flex items-start gap-1.5">
                           {rowIssues > 0 && (
                             <button
-                              onClick={(e) => { e.stopPropagation(); openModalForRow(row.id); }}
-                              title="View issues for this row"
-                              className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center hover:bg-red-600 transition-colors cursor-pointer border-none p-0"
-                            >
-                              {rowIssues}
-                            </button>
+                              onClick={e => { e.stopPropagation(); openModalForRow(row.id); }}
+                              title="View issues"
+                              className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center hover:bg-red-600 transition-colors border-none p-0 cursor-pointer"
+                            >{rowIssues}</button>
                           )}
-                          {isEditing
-                            ? <EditInput value={row.title} field="title" rowId={row.id} placeholder="Document title…" onChange={updateRow}/>
-                            : <span className={`font-medium text-slate-800 dark:text-slate-300 ${row.isOutOfScope ? "line-through text-slate-400 dark:text-slate-600" : ""}`}>
-                                {row.title || <span className="text-slate-400 dark:text-slate-600 italic" style={{ textDecoration:"none" }}>—</span>}
-                              </span>}
+                          <InlineCell
+                            value={row.title}
+                            placeholder="Document title…"
+                            strikethrough={oos}
+                            onChange={val => updateRow(row.id, "title", val)}
+                          />
                         </div>
                       </td>
 
-                      <td className={CELL}><Cell isEditing={isEditing} value={row.referenceLink} field="referenceLink" rowId={row.id} placeholder="https://…" onChange={updateRow} href/></td>
-                      <td className={CELL}><Cell isEditing={isEditing} value={row.contentUrl} field="contentUrl" rowId={row.id} placeholder="https://…" onChange={updateRow} href/></td>
-                      <td className={CELL}><Cell isEditing={isEditing} value={row.issuingAuth} field="issuingAuth" rowId={row.id} placeholder="Authority…" onChange={updateRow}/></td>
-
                       <td className={CELL}>
-                        {isEditing
-                          ? <EditInput value={row.asrbId} field="asrbId" rowId={row.id} placeholder="ASRB…" onChange={updateRow}/>
-                          : row.asrbId
-                            ? <span className="font-mono text-[11px] text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-[#1e2235] border border-slate-200 dark:border-[#2a3147] px-2 py-0.5 rounded">{row.asrbId}</span>
-                            : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
+                        <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "referenceLink", val)}/>
+                      </td>
+                      <td className={CELL}>
+                        <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "contentUrl", val)}/>
+                      </td>
+                      <td className={CELL}>
+                        <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
                       </td>
 
-                      <td className={CELL}><Cell isEditing={isEditing} value={row.smeComments} field="smeComments" rowId={row.id} placeholder="Comments…" onChange={updateRow}/></td>
-                      {extra.evergreen && <td className={CELL}><Cell isEditing={isEditing} value={row.initialEvergreen} field="initialEvergreen" rowId={row.id} placeholder="Initial / Evergreen…" onChange={updateRow}/></td>}
-                      {extra.ingestion && <td className={CELL}><Cell isEditing={isEditing} value={row.dateOfIngestion} field="dateOfIngestion" rowId={row.id} placeholder="Date…" onChange={updateRow}/></td>}
+                      {/* ASRB ID */}
+                      <td className={CELL}>
+                        <div onClick={e => e.stopPropagation()}>
+                          <InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} onChange={val => updateRow(row.id, "asrbId", val)}/>
+                        </div>
+                      </td>
 
-                      <td className="px-3 py-2 text-center align-top">
-                        <button onClick={(e) => { e.stopPropagation(); removeRow(row.id); }}
-                          className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 dark:text-slate-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-all mx-auto">
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                        </button>
+                      <td className={CELL}>
+                        <InlineCell value={row.smeComments} placeholder="Comments…" strikethrough={oos} onChange={val => updateRow(row.id, "smeComments", val)}/>
+                      </td>
+                      {extra.evergreen && (
+                        <td className={CELL}>
+                          <InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} onChange={val => updateRow(row.id, "initialEvergreen", val)}/>
+                        </td>
+                      )}
+                      {extra.ingestion && (
+                        <td className={CELL}>
+                          <InlineCell value={row.dateOfIngestion} placeholder="Date…" strikethrough={oos} onChange={val => updateRow(row.id, "dateOfIngestion", val)}/>
+                        </td>
+                      )}
+
+                      {/* Actions */}
+                      <td className="px-2 py-2 text-center align-top">
+                        <div className="flex items-center justify-center">
+                          <RowToolbar row={row} onUpdate={updateRow} onRemove={removeRow}/>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -713,10 +661,17 @@ export default function Scope({ initialData }: Props) {
             </table>
           </div>
           {rows.length > 0 && (
-            <div className="px-4 py-2 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147]">
-              <p className="text-[10.5px] text-slate-500 dark:text-slate-600" style={MONO}>
-                Click any row to edit · {rows.length} {rows.length === 1 ? "document" : "documents"} in scope
+            <div className="px-4 py-2 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147] flex items-center justify-between">
+              <p className="text-[10.5px] text-slate-500 dark:text-slate-600 m-0" style={MONO}>
+                {rows.length} {rows.length === 1 ? "document" : "documents"} · {rows.filter(r => r.isOutOfScope).length} struck through
               </p>
+              {rows.some(r => r.isOutOfScope) && (
+                <button
+                  onClick={() => setRows(p => p.map(r => ({ ...r, isOutOfScope: false })))}
+                  className="text-[10.5px] text-slate-400 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-400 underline transition-colors"
+                  style={MONO}
+                >clear all strikethroughs</button>
+              )}
             </div>
           )}
         </div>
@@ -727,7 +682,7 @@ export default function Scope({ initialData }: Props) {
           validation={validation}
           onClose={() => { setShowModal(false); setFilterRowId(null); }}
           highlightedRowId={highlightedRowId}
-          onHighlight={(id) => setHighlightedRowId(id)}
+          onHighlight={id => setHighlightedRowId(id)}
           filterRowId={filterRowId}
         />
       )}
