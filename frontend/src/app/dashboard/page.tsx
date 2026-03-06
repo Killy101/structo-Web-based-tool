@@ -147,34 +147,41 @@ export default function DashboardPage() {
               description="File uploads and validations will appear here."
             />
           ) : (
-            <div className="divide-y divide-slate-50 dark:divide-slate-800">
+            <div className="divide-y divide-[rgba(26,143,209,0.06)]">
               {stats.recentActivity.slice(0, 7).map((item) => (
                 <div
                   key={item.id}
-                  className="flex items-center gap-4 px-6 py-3.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
+                  className="flex items-center gap-4 px-6 py-3.5 hover:bg-[rgba(26,143,209,0.04)] transition-colors"
                 >
-                  <div className="w-8 h-8 rounded-full bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center text-[#1a56f0] text-xs font-bold flex-shrink-0">
+                  <div
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                    style={{
+                      background: "rgba(26, 143, 209, 0.1)",
+                      color: "#42b4f5",
+                    }}
+                  >
                     {item.uploadedBy?.firstName?.[0]}
                     {item.uploadedBy?.lastName?.[0]}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-700 dark:text-slate-300 truncate">
-                      <span className="font-semibold text-[#1a56f0]">
+                    <p className="text-sm text-slate-300 truncate">
+                      <span
+                        className="font-semibold"
+                        style={{ color: "#42b4f5" }}
+                      >
                         {item.uploadedBy?.firstName} {item.uploadedBy?.lastName}
                       </span>
                       {" uploaded "}
-                      <span className="text-slate-500 dark:text-slate-400">
+                      <span className="text-slate-500">
                         {item.originalName}
                       </span>
                     </p>
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-slate-400">
+                      <span className="text-xs text-slate-500">
                         {formatTimeAgo(item.uploadedAt)}
                       </span>
-                      <span className="text-slate-300 dark:text-slate-600">
-                        ·
-                      </span>
-                      <span className="text-xs text-slate-400">
+                      <span className="text-slate-600">·</span>
+                      <span className="text-xs text-slate-500">
                         {formatFileSize(item.fileSize)}
                       </span>
                     </div>
@@ -198,14 +205,17 @@ export default function DashboardPage() {
               stats.usersByRole.map((item, i) => (
                 <div key={i}>
                   <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-sm text-slate-600 dark:text-slate-400">
+                    <span className="text-sm text-slate-400">
                       {ROLE_LABELS[item.role as Role]}
                     </span>
-                    <span className="text-sm font-semibold text-slate-900 dark:text-white">
+                    <span className="text-sm font-semibold text-white">
                       {item.count}
                     </span>
                   </div>
-                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="w-full rounded-full h-2 overflow-hidden"
+                    style={{ background: "rgba(26, 143, 209, 0.08)" }}
+                  >
                     <div
                       className="h-2 rounded-full transition-all duration-700"
                       style={{
@@ -217,10 +227,13 @@ export default function DashboardPage() {
                 </div>
               ))
             )}
-            <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
+            <div
+              className="pt-3 border-t"
+              style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
+            >
               <div className="flex justify-between">
                 <span className="text-sm text-slate-500">Total Users</span>
-                <span className="text-sm font-bold text-slate-900 dark:text-white">
+                <span className="text-sm font-bold text-white">
                   {totalUsers}
                 </span>
               </div>
@@ -241,7 +254,11 @@ export default function DashboardPage() {
             {stats?.filesByStatus.map((item, i) => (
               <div
                 key={i}
-                className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 hover:border-slate-200 dark:hover:border-slate-600 transition-colors"
+                className="flex items-center gap-3 p-3.5 rounded-xl border transition-colors"
+                style={{
+                  background: "rgba(6, 13, 26, 0.5)",
+                  borderColor: "rgba(26, 143, 209, 0.08)",
+                }}
               >
                 <div
                   className="w-3 h-3 rounded-full flex-shrink-0"
@@ -253,9 +270,7 @@ export default function DashboardPage() {
                   <p className="text-xs text-slate-500 truncate">
                     {item.status}
                   </p>
-                  <p className="text-xl font-bold text-slate-900 dark:text-white">
-                    {item.count}
-                  </p>
+                  <p className="text-xl font-bold text-white">{item.count}</p>
                 </div>
               </div>
             ))}
@@ -273,14 +288,20 @@ export default function DashboardPage() {
               </Button>
             }
           />
-          <div className="divide-y divide-slate-50 dark:divide-slate-800">
+          <div className="divide-y divide-[rgba(26,143,209,0.06)]">
             {BRD_SOURCES.map((src) => (
               <div
                 key={src.id}
-                className="flex items-center justify-between px-6 py-3.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
+                className="flex items-center justify-between px-6 py-3.5 hover:bg-[rgba(26,143,209,0.04)] transition-colors"
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center text-[#1a56f0]">
+                  <div
+                    className="w-8 h-8 rounded-lg flex items-center justify-center"
+                    style={{
+                      background: "rgba(26, 143, 209, 0.1)",
+                      color: "#42b4f5",
+                    }}
+                  >
                     <svg
                       className="w-4 h-4"
                       fill="none"
@@ -296,10 +317,8 @@ export default function DashboardPage() {
                     </svg>
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-900 dark:text-white">
-                      {src.name}
-                    </p>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-sm font-medium text-white">{src.name}</p>
+                    <p className="text-xs text-slate-500">
                       {src.files} files · {src.lastSync}
                     </p>
                   </div>

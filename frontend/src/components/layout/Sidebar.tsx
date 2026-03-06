@@ -174,7 +174,7 @@ const notifications = [
   {
     msg: "New user has been registered",
     time: "1h ago",
-    color: "bg-[#1a56f0]",
+    color: "bg-[#1a8fd1]",
   },
   { msg: "Batch export approved", time: "2h ago", color: "bg-emerald-500" },
 ];
@@ -187,7 +187,6 @@ interface SidebarProps {
 function LogoutModal({
   onConfirm,
   onCancel,
-  dark,
 }: {
   onConfirm: () => void;
   onCancel: () => void;
@@ -196,15 +195,24 @@ function LogoutModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
-        className={`absolute inset-0 backdrop-blur-sm ${dark ? "bg-black/60" : "bg-slate-900/30"}`}
+        className="absolute inset-0 backdrop-blur-sm bg-black/70"
         onClick={onCancel}
       />
       <div
-        className={`relative z-10 w-80 rounded-2xl overflow-hidden border ${dark ? "bg-[#1e293b] border-slate-700/80 shadow-2xl shadow-black/50" : "bg-white border-slate-200 shadow-2xl shadow-slate-900/10"}`}
+        className="relative z-10 w-80 rounded-2xl overflow-hidden border"
+        style={{
+          background: "#0b1a2e",
+          borderColor: "rgba(26, 143, 209, 0.15)",
+          boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
+        }}
       >
         <div className="px-6 py-5">
           <div
-            className={`w-12 h-12 border rounded-xl flex items-center justify-center mb-4 mx-auto ${dark ? "bg-red-500/10 border-red-500/20" : "bg-red-50 border-red-200"}`}
+            className="w-12 h-12 border rounded-xl flex items-center justify-center mb-4 mx-auto"
+            style={{
+              background: "rgba(239, 68, 68, 0.1)",
+              borderColor: "rgba(239, 68, 68, 0.2)",
+            }}
           >
             <svg
               className="w-6 h-6 text-red-400"
@@ -220,16 +228,19 @@ function LogoutModal({
               />
             </svg>
           </div>
-          <h2
-            className={`font-semibold text-base text-center leading-snug ${dark ? "text-white" : "text-slate-900"}`}
-          >
+          <h2 className="font-semibold text-base text-center leading-snug text-white">
             Signing out of Structo?
           </h2>
         </div>
         <div className="px-6 pb-5 flex gap-3">
           <button
             onClick={onCancel}
-            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all duration-150 ${dark ? "bg-slate-700/60 text-slate-300 border-slate-600/60 hover:bg-slate-700 hover:text-white" : "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200 hover:text-slate-900"}`}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all duration-150"
+            style={{
+              background: "rgba(26, 143, 209, 0.08)",
+              color: "#94a3b8",
+              borderColor: "rgba(26, 143, 209, 0.15)",
+            }}
           >
             Cancel
           </button>
@@ -260,9 +271,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       ? pathname === "/dashboard"
       : pathname.startsWith(href);
 
-  const inactiveItemClass = dark
-    ? "text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900";
+  const inactiveItemClass =
+    "text-slate-400 hover:bg-[rgba(26,143,209,0.08)] hover:text-slate-100";
 
   return (
     <>
@@ -280,13 +290,19 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <aside
         className={`
           ${collapsed ? "w-[68px]" : "w-60"} flex-shrink-0 h-screen
-          ${dark ? "bg-[#0f172a] border-slate-800/80" : "bg-white border-slate-200"} flex flex-col border-r
+          flex flex-col border-r
           transition-all duration-300 ease-in-out relative z-20
         `}
+        style={{
+          background: "rgba(6, 13, 26, 0.92)",
+          backdropFilter: "blur(16px)",
+          borderColor: "rgba(26, 143, 209, 0.1)",
+        }}
       >
         {/* logo */}
         <div
-          className={`flex items-center h-16 border-b px-4 gap-3 overflow-hidden ${dark ? "border-slate-800/80" : "border-slate-200"}`}
+          className={`flex items-center h-16 border-b px-4 gap-3 overflow-hidden`}
+          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
         >
           <div
             className={`w-8 h-8 flex-shrink-0 relative transition-transform duration-300 ease-in-out ${collapsed ? "translate-x-[2px]" : "translate-x-0"}`}
@@ -302,14 +318,10 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             className={`overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${collapsed ? "max-w-0 opacity-0 -translate-x-1" : "max-w-[220px] opacity-100 translate-x-0"}`}
           >
             <div>
-              <p
-                className={`font-bold text-sm leading-none tracking-wide ${dark ? "text-white" : "text-slate-900"}`}
-              >
+              <p className="font-bold text-sm leading-none tracking-wide text-white">
                 Structo
               </p>
-              <p
-                className={`text-[11px] mt-0.5 ${dark ? "text-slate-500" : "text-slate-500"}`}
-              >
+              <p className="text-[11px] mt-0.5 text-slate-500">
                 Legal Regulatory Delivery Unit
               </p>
             </div>
@@ -328,9 +340,17 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 className={`
                   flex items-center gap-3 px-3 py-2.5 rounded-xl
                   transition-all duration-150 group
-                  ${active ? "bg-[#1a56f0] text-white shadow-lg shadow-blue-900/30" : inactiveItemClass}
+                  ${active ? "text-white shadow-lg" : inactiveItemClass}
                   ${collapsed ? "justify-center" : ""}
                 `}
+                style={
+                  active
+                    ? {
+                        background: "linear-gradient(135deg, #1a8fd1, #146da3)",
+                        boxShadow: "0 4px 16px rgba(26, 143, 209, 0.3)",
+                      }
+                    : undefined
+                }
               >
                 <span className="flex-shrink-0">{item.icon}</span>
                 {!collapsed && (
@@ -348,7 +368,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
         {/* bottom utilities */}
         <div
-          className={`px-2 pb-2 space-y-0.5 border-t pt-2 ${dark ? "border-slate-800/80" : "border-slate-200"}`}
+          className="px-2 pb-2 space-y-0.5 border-t pt-2"
+          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
         >
           {/* notifications */}
           <div className="relative">
@@ -372,7 +393,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   />
                 </svg>
                 <span
-                  className={`absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full ring-2 ${dark ? "ring-[#0f172a]" : "ring-white"}`}
+                  className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full"
+                  style={{ boxShadow: "0 0 0 2px #060d1a" }}
                 />
               </span>
               {!collapsed && (
@@ -392,42 +414,46 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   onClick={() => setShowNotif(false)}
                 />
                 <div
-                  className={`absolute left-full bottom-0 ml-2 z-40 w-72 rounded-xl shadow-xl border ${dark ? "bg-[#1e293b] border-slate-700" : "bg-white border-slate-200"}`}
+                  className="absolute left-full bottom-0 ml-2 z-40 w-72 rounded-xl shadow-xl border"
+                  style={{
+                    background: "#0b1a2e",
+                    borderColor: "rgba(26, 143, 209, 0.15)",
+                    boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
+                  }}
                 >
                   <div
-                    className={`px-4 py-3 border-b flex items-center justify-between ${dark ? "border-slate-700" : "border-slate-200"}`}
+                    className="px-4 py-3 border-b flex items-center justify-between"
+                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
                   >
-                    <p
-                      className={`font-semibold text-sm ${dark ? "text-white" : "text-slate-900"}`}
-                    >
+                    <p className="font-semibold text-sm text-white">
                       Notifications
                     </p>
                     <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${dark ? "text-[#42b4f5] bg-blue-950/60" : "text-[#1a56f0] bg-blue-50"}`}
+                      className="text-xs px-2 py-0.5 rounded-full"
+                      style={{
+                        color: "#d4862e",
+                        background: "rgba(212, 134, 46, 0.12)",
+                      }}
                     >
                       {notifications.length} new
                     </span>
                   </div>
                   <div
-                    className={`divide-y ${dark ? "divide-slate-700/60" : "divide-slate-200"}`}
+                    className="divide-y"
+                    style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
                   >
                     {notifications.map((n, i) => (
                       <div
                         key={i}
-                        className={`flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer ${dark ? "hover:bg-slate-700/40" : "hover:bg-slate-50"}`}
+                        className="flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer"
+                        style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
                       >
                         <div
                           className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.color}`}
                         />
                         <div>
-                          <p
-                            className={`text-sm ${dark ? "text-slate-300" : "text-slate-700"}`}
-                          >
-                            {n.msg}
-                          </p>
-                          <p
-                            className={`text-xs mt-0.5 ${dark ? "text-slate-500" : "text-slate-500"}`}
-                          >
+                          <p className="text-sm text-slate-300">{n.msg}</p>
+                          <p className="text-xs mt-0.5 text-slate-500">
                             {n.time}
                           </p>
                         </div>
@@ -435,10 +461,12 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     ))}
                   </div>
                   <div
-                    className={`px-4 py-3 border-t text-center ${dark ? "border-slate-700" : "border-slate-200"}`}
+                    className="px-4 py-3 border-t text-center"
+                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
                   >
                     <button
-                      className={`text-xs hover:underline ${dark ? "text-[#42b4f5]" : "text-[#1a56f0]"}`}
+                      className="text-xs hover:underline"
+                      style={{ color: "#d4862e" }}
                     >
                       View all notifications
                     </button>
@@ -496,7 +524,15 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Link
             href="/dashboard/settings"
             title={collapsed ? "Settings" : undefined}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${isActive("/dashboard/settings") ? "bg-[#1a56f0] text-white shadow-lg shadow-blue-900/30" : inactiveItemClass} ${collapsed ? "justify-center" : ""}`}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${isActive("/dashboard/settings") ? "text-white shadow-lg" : inactiveItemClass} ${collapsed ? "justify-center" : ""}`}
+            style={
+              isActive("/dashboard/settings")
+                ? {
+                    background: "linear-gradient(135deg, #1a8fd1, #146da3)",
+                    boxShadow: "0 4px 16px rgba(26, 143, 209, 0.3)",
+                  }
+                : undefined
+            }
           >
             <span className="flex-shrink-0">
               <svg
@@ -528,8 +564,13 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* collapse toggle */}
         <button
           onClick={onToggle}
-          className={`absolute -right-3 top-[4.5rem] border rounded-full p-1 transition-all shadow-md hover:bg-[#1a56f0] hover:border-[#1a56f0] hover:text-white ${dark ? "bg-slate-800 border-slate-700 text-slate-400" : "bg-white border-slate-300 text-slate-600"}`}
+          className="absolute -right-3 top-[4.5rem] border rounded-full p-1 transition-all shadow-md"
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          style={{
+            background: "#0b1a2e",
+            borderColor: "rgba(26, 143, 209, 0.2)",
+            color: "#64748b",
+          }}
         >
           <svg
             className="w-3 h-3"
@@ -548,34 +589,43 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
         {/* user info */}
         <div
-          className={`p-3 border-t ${dark ? "border-slate-800/80" : "border-slate-200"} ${collapsed ? "flex justify-center" : ""}`}
+          className={`p-3 border-t ${collapsed ? "flex justify-center" : ""}`}
+          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
         >
           {collapsed ? (
             <div
-              className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold ${dark ? "bg-blue-950/50 text-[#42b4f5]" : "bg-blue-100 text-[#1a56f0]"}`}
+              className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold"
+              style={{
+                background: "rgba(26, 143, 209, 0.12)",
+                color: "#42b4f5",
+              }}
             >
               {user?.firstName?.[0]}
               {user?.lastName?.[0]}
             </div>
           ) : (
             <div
-              className={`flex items-center gap-2.5 px-2 py-2 rounded-xl transition-colors group ${dark ? "hover:bg-slate-800" : "hover:bg-slate-100"}`}
+              className="flex items-center gap-2.5 px-2 py-2 rounded-xl transition-colors group"
+              style={{ cursor: "default" }}
             >
-              <div className="w-8 h-8 bg-gradient-to-br from-[#1a56f0] to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                style={{
+                  background: "linear-gradient(135deg, #1a8fd1, #d4862e)",
+                }}
+              >
                 {user?.firstName?.[0]}
                 {user?.lastName?.[0]}
               </div>
               <div className="flex-1 min-w-0">
-                <p
-                  className={`text-sm font-medium truncate leading-none ${dark ? "text-white" : "text-slate-900"}`}
-                >
+                <p className="text-sm font-medium truncate leading-none text-white">
                   {user?.firstName} {user?.lastName}
                 </p>
               </div>
               <button
                 onClick={() => setShowLogoutModal(true)}
                 title="Logout"
-                className={`p-1 rounded transition-all ${dark ? "text-slate-500 hover:text-red-400 hover:bg-red-400/10" : "text-slate-500 hover:text-red-500 hover:bg-red-50"}`}
+                className="p-1 rounded transition-all text-slate-500 hover:text-red-400 hover:bg-red-400/10"
               >
                 <svg
                   className="w-4 h-4"

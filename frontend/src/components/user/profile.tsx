@@ -49,7 +49,6 @@ export default function ProfileModal({
     setSaveError("");
     setSaving(true);
     try {
-      // PATCH /api/user/profile — send { firstName, lastName, contact, avatar }
       await new Promise((r) => setTimeout(r, 600));
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -76,7 +75,6 @@ export default function ProfileModal({
     }
     setPwSaving(true);
     try {
-      // POST /api/user/change-password — send { currentPw, newPw }
       await new Promise((r) => setTimeout(r, 600));
       setPwSuccess(true);
       setCurrentPw("");
@@ -108,12 +106,10 @@ export default function ProfileModal({
     "bg-emerald-500",
   ][pwStrength];
 
-  const inputCls = dark
-    ? "w-full px-3.5 py-2.5 rounded-xl text-sm text-white bg-slate-800/70 border border-slate-700/60 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#1a56f0]/60 focus:border-[#1a56f0] transition-all"
-    : "w-full px-3.5 py-2.5 rounded-xl text-sm text-slate-900 bg-white border border-slate-300/90 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1a56f0]/30 focus:border-[#1a56f0] transition-all";
-  const readonlyCls = dark
-    ? "px-3.5 py-2.5 rounded-xl bg-slate-800/40 border border-slate-700/40 text-slate-500 text-sm"
-    : "px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 text-sm";
+  const inputCls =
+    "w-full px-3.5 py-2.5 rounded-xl text-sm text-white bg-[#060d1a] border border-[rgba(26,143,209,0.15)] placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#1a8fd1]/50 focus:border-[#1a8fd1] transition-all";
+  const readonlyCls =
+    "px-3.5 py-2.5 rounded-xl bg-[#060d1a] border border-[rgba(26,143,209,0.08)] text-slate-500 text-sm";
 
   const EyeIcon = ({ show }: { show: boolean }) =>
     show ? (
@@ -155,32 +151,30 @@ export default function ProfileModal({
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-center sm:items-center sm:p-4">
       <div
-        className={`absolute inset-0 backdrop-blur-sm ${dark ? "bg-black/60" : "bg-slate-900/30"}`}
+        className="absolute inset-0 backdrop-blur-sm bg-black/70"
         onClick={onClose}
       />
 
       <div
-        className={`relative z-10 w-full h-[100dvh] sm:h-auto sm:max-w-md max-h-[100dvh] sm:max-h-[90vh] flex flex-col rounded-none sm:rounded-2xl overflow-hidden border-0 sm:border ${dark ? "bg-[#1e293b] sm:border-slate-700/80 sm:shadow-2xl sm:shadow-black/60" : "bg-white sm:border-slate-200 sm:shadow-2xl sm:shadow-slate-900/10"}`}
+        className="relative z-10 w-full h-[100dvh] sm:h-auto sm:max-w-md max-h-[100dvh] sm:max-h-[90vh] flex flex-col rounded-none sm:rounded-2xl overflow-hidden border-0 sm:border"
+        style={{
+          background: "#0b1a2e",
+          borderColor: "rgba(26, 143, 209, 0.15)",
+          boxShadow: "0 25px 50px rgba(0,0,0,0.6)",
+        }}
       >
         {/* header */}
         <div
-          className={`flex items-center justify-between px-4 py-3 sm:px-6 sm:py-4 border-b flex-shrink-0 ${dark ? "border-slate-700/60" : "border-slate-200"}`}
+          className="flex items-center justify-between px-4 py-3 sm:px-6 sm:py-4 border-b flex-shrink-0"
+          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
         >
           <div>
-            <h2
-              className={`font-semibold text-base ${dark ? "text-white" : "text-slate-900"}`}
-            >
-              My Profile
-            </h2>
-            <p
-              className={`text-xs mt-0.5 ${dark ? "text-slate-400" : "text-slate-500"}`}
-            >
-              Manage your account
-            </p>
+            <h2 className="font-semibold text-base text-white">My Profile</h2>
+            <p className="text-xs mt-0.5 text-slate-500">Manage your account</p>
           </div>
           <button
             onClick={onClose}
-            className={`rounded-lg p-1.5 transition-all ${dark ? "text-slate-500 hover:text-slate-200 hover:bg-slate-700/60" : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"}`}
+            className="rounded-lg p-1.5 transition-all text-slate-500 hover:text-slate-200 hover:bg-[rgba(26,143,209,0.1)]"
           >
             <svg
               className="w-4 h-4"
@@ -200,49 +194,55 @@ export default function ProfileModal({
 
         {/* tabs */}
         <div
-          className={`flex flex-shrink-0 border-b ${dark ? "border-slate-700/60" : "border-slate-200"}`}
+          className="flex flex-shrink-0 border-b"
+          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
         >
           {(["info", "password"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`flex-1 py-3 text-xs sm:text-sm font-medium transition-all border-b-2 ${
+              className={`flex-1 py-3 text-sm font-medium transition-all border-b-2 ${
                 tab === t
-                  ? `${dark ? "text-white" : "text-slate-900"} border-[#1a56f0]`
-                  : `${dark ? "text-slate-400 hover:text-slate-200" : "text-slate-500 hover:text-slate-700"} border-transparent`
+                  ? "text-[#d4862e] border-[#d4862e]"
+                  : "text-slate-500 border-transparent hover:text-slate-300"
               }`}
             >
-              {t === "info" ? "Personal Info" : "Change Password"}
+              {t === "info" ? "Profile Info" : "Change Password"}
             </button>
           ))}
         </div>
 
-        {/* personal info tab */}
+        {/* profile info tab */}
         {tab === "info" && (
-          <div className="overflow-y-auto scrollbar-none flex-1 p-4 sm:p-6 space-y-4">
+          <div className="overflow-y-auto scrollbar-none flex-1 p-4 sm:p-6 space-y-5">
             {/* avatar */}
-            <div className="flex flex-col items-center gap-2">
-              <div
-                className="relative group cursor-pointer"
-                onClick={() => fileRef.current?.click()}
-              >
+            <div className="flex flex-col items-center gap-3">
+              <div className="relative group">
                 {avatar ? (
                   <Image
                     src={avatar}
-                    alt="Profile"
+                    alt="Avatar"
                     width={80}
                     height={80}
-                    unoptimized
-                    className="w-20 h-20 rounded-2xl object-cover shadow-lg ring-2 ring-slate-700"
+                    className="w-20 h-20 rounded-full object-cover border-2"
+                    style={{ borderColor: "rgba(26, 143, 209, 0.2)" }}
                   />
                 ) : (
-                  <div className="w-20 h-20 bg-gradient-to-br from-[#1a56f0] to-purple-600 rounded-2xl flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-blue-900/30">
+                  <div
+                    className="w-20 h-20 rounded-full flex items-center justify-center text-2xl font-bold text-white"
+                    style={{
+                      background: "linear-gradient(135deg, #1a8fd1, #d4862e)",
+                    }}
+                  >
                     {initials}
                   </div>
                 )}
-                <div className="absolute inset-0 rounded-2xl bg-black/50 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center gap-1 transition-opacity duration-200">
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="absolute inset-0 rounded-full flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
                   <svg
-                    className="w-4 h-4 text-white"
+                    className="w-5 h-5 text-white"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -260,41 +260,24 @@ export default function ProfileModal({
                       d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
                     />
                   </svg>
-                  <span className="text-white text-[10px] font-medium">
-                    Change
-                  </span>
-                </div>
-              </div>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleImageChange}
-              />
-              <p className="text-slate-500 text-[11px]">
-                Click to change photo
-              </p>
-            </div>
-
-            {/* user id */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
-                User ID
-              </label>
-              <div className={`${readonlyCls} font-mono break-all`}>
-                {user?.userId ?? "—"}
+                </button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImageChange}
+                />
               </div>
             </div>
 
-            {/* name */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* name fields */}
+            <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
                   First Name
                 </label>
                 <input
-                  type="text"
                   value={firstName}
                   onChange={(e) => setFirstName(e.target.value)}
                   placeholder="First name"
@@ -306,7 +289,6 @@ export default function ProfileModal({
                   Last Name
                 </label>
                 <input
-                  type="text"
                   value={lastName}
                   onChange={(e) => setLastName(e.target.value)}
                   placeholder="Last name"
@@ -321,12 +303,19 @@ export default function ProfileModal({
                 Contact Number
               </label>
               <input
-                type="tel"
                 value={contact}
                 onChange={(e) => setContact(e.target.value)}
-                placeholder="+1 (555) 000-0000"
+                placeholder="+63 XXX XXX XXXX"
                 className={inputCls}
               />
+            </div>
+
+            {/* role (readonly) */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
+                Role
+              </label>
+              <div className={readonlyCls}>{user?.role ?? "—"}</div>
             </div>
 
             {saveError && (
@@ -352,7 +341,11 @@ export default function ProfileModal({
               <button
                 onClick={handleSaveInfo}
                 disabled={saving}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#1a56f0] text-white hover:bg-[#1a56f0]/90 hover:shadow-lg hover:shadow-blue-900/30 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                style={{
+                  background: "linear-gradient(135deg, #1a8fd1, #146da3)",
+                  boxShadow: "0 4px 16px rgba(26, 143, 209, 0.25)",
+                }}
               >
                 {saving ? (
                   <>
@@ -400,7 +393,11 @@ export default function ProfileModal({
               </button>
               <button
                 onClick={onClose}
-                className="px-4 py-2.5 rounded-xl text-sm font-medium bg-slate-700/60 text-slate-300 border border-slate-600/60 hover:bg-slate-700 hover:text-white transition-all"
+                className="px-4 py-2.5 rounded-xl text-sm font-medium text-slate-300 border transition-all"
+                style={{
+                  background: "rgba(26, 143, 209, 0.08)",
+                  borderColor: "rgba(26, 143, 209, 0.15)",
+                }}
               >
                 Cancel
               </button>
@@ -411,7 +408,6 @@ export default function ProfileModal({
         {/* change password tab */}
         {tab === "password" && (
           <div className="overflow-y-auto scrollbar-none flex-1 p-4 sm:p-6 space-y-4">
-            {/* current password */}
             <div className="flex flex-col gap-1.5">
               <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
                 Current Password
@@ -434,7 +430,6 @@ export default function ProfileModal({
               </div>
             </div>
 
-            {/* new password */}
             <div className="flex flex-col gap-1.5">
               <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
                 New Password
@@ -472,7 +467,6 @@ export default function ProfileModal({
               )}
             </div>
 
-            {/* confirm password */}
             <div className="flex flex-col gap-1.5">
               <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
                 Confirm New Password
@@ -542,7 +536,11 @@ export default function ProfileModal({
               <button
                 onClick={handleChangePassword}
                 disabled={pwSaving}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#1a56f0] text-white hover:bg-[#1a56f0]/90 hover:shadow-lg hover:shadow-blue-900/30 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                style={{
+                  background: "linear-gradient(135deg, #1a8fd1, #146da3)",
+                  boxShadow: "0 4px 16px rgba(26, 143, 209, 0.25)",
+                }}
               >
                 {pwSaving ? (
                   <>
@@ -573,7 +571,11 @@ export default function ProfileModal({
               </button>
               <button
                 onClick={onClose}
-                className="px-4 py-2.5 rounded-xl text-sm font-medium bg-slate-700/60 text-slate-300 border border-slate-600/60 hover:bg-slate-700 hover:text-white transition-all"
+                className="px-4 py-2.5 rounded-xl text-sm font-medium text-slate-300 border transition-all"
+                style={{
+                  background: "rgba(26, 143, 209, 0.08)",
+                  borderColor: "rgba(26, 143, 209, 0.15)",
+                }}
               >
                 Cancel
               </button>

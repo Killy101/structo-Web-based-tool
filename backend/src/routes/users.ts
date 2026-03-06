@@ -4,6 +4,7 @@ import prisma from "../lib/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { authorize } from "../middleware/authorize";
 import { Role } from "@prisma/client";
+import { generateCompliantPassword } from "../lib/password-policy";
 
 const router = Router();
 
@@ -28,13 +29,7 @@ const ALLOWED_TARGET_ROLES: Partial<Record<Role, Role[]>> = {
 };
 
 function generatePassword(): string {
-  const alpha = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz";
-  const nums = "23456789";
-  let suffix = "";
-  for (let i = 0; i < 5; i++)
-    suffix += alpha[Math.floor(Math.random() * alpha.length)];
-  suffix += nums[Math.floor(Math.random() * nums.length)];
-  return `innod@${suffix}`;
+  return generateCompliantPassword();
 }
 
 // ── GET /users ────────────────────────────────────────────
@@ -175,17 +170,26 @@ router.post(
         }
       }
 
-      const newUser = await prisma.user.create({
-        data: {
-          userId: trimmedUserId,
-          role: role as Role,
-          password: hashedPassword,
-          createdById: req.user!.userId,
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          teamId: assignTeamId || null,
-          userRoleId: userRoleId || null,
-        },
+      const newUser = await prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            userId: trimmedUserId,
+            role: role as Role,
+            password: hashedPassword,
+            passwordChangedAt: new Date(),
+            createdById: req.user!.userId,
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            teamId: assignTeamId || null,
+            userRoleId: userRoleId || null,
+          },
+        });
+
+        await tx.passwordHistory.create({
+          data: { userId: created.id, hash: hashedPassword },
+        });
+
+        return created;
       });
 
       await prisma.userLog.create({
