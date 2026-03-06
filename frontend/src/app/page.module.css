@@ -2,7 +2,8 @@
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #f0f9ff;
+  background: #060d1a;
+  color: #e2e8f0;
 }
 
 /* ── NAV ── */
@@ -11,12 +12,13 @@
   align-items: center;
   justify-content: space-between;
   padding: clamp(14px, 1.4vh, 22px) clamp(24px, 5vw, 96px);
-  background: white;
-  border-bottom: 1px solid #e2e8f0;
+  background: rgba(6, 13, 26, 0.85);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(26, 143, 209, 0.12);
   position: sticky;
   top: 0;
   z-index: 100;
-  box-shadow: 0 1px 12px rgba(0,0,0,0.04);
+  box-shadow: 0 1px 20px rgba(0, 0, 0, 0.3);
 }
 
 .navBrand {
@@ -25,13 +27,15 @@
   gap: clamp(10px, 1vw, 16px);
 }
 
-.logoMark { flex-shrink: 0; }
+.logoMark {
+  flex-shrink: 0;
+}
 
 .brandName {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-weight: 800;
   font-size: clamp(14px, 1.15vw, 20px);
-  color: #0a2540;
+  color: #ffffff;
   letter-spacing: -0.3px;
 }
 
@@ -52,35 +56,35 @@
 .navLink {
   padding: clamp(6px, 0.6vh, 10px) clamp(10px, 1.2vw, 20px);
   font-size: clamp(12px, 0.9vw, 15px);
-  color: #475569;
+  color: #94a3b8;
   font-weight: 500;
   border-radius: 8px;
   transition: all 0.15s;
 }
 
 .navLink:hover {
-  background: #f1f5f9;
-  color: #0a2540;
+  background: rgba(26, 143, 209, 0.1);
+  color: #ffffff;
 }
 
 .loginBtn {
   padding: clamp(8px, 0.8vh, 12px) clamp(16px, 1.8vw, 32px);
-  background: #42b4f5;
+  background: linear-gradient(135deg, #1a8fd1, #146da3);
   color: white;
   font-size: clamp(12px, 0.9vw, 15px);
   font-weight: 600;
   border-radius: 10px;
   transition: all 0.2s;
-  border: none;
-  box-shadow: 0 2px 8px rgba(66,180,245,0.3);
+  border: 1px solid rgba(26, 143, 209, 0.3);
+  box-shadow: 0 2px 12px rgba(26, 143, 209, 0.25);
   margin-left: clamp(10px, 1.2vw, 20px);
   white-space: nowrap;
 }
 
 .loginBtn:hover {
-  background: #1a9de0;
+  background: linear-gradient(135deg, #42b4f5, #1a8fd1);
   transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(66,180,245,0.4);
+  box-shadow: 0 4px 20px rgba(26, 143, 209, 0.4);
 }
 
 /* ── HERO ── */
@@ -88,9 +92,23 @@
   display: flex;
   justify-content: center;
   min-height: calc(100vh - 68px);
-  background: #f0f9ff;
+  background: url("/assets/Homepage.jpg") center center / cover no-repeat;
+  position: relative;
   box-sizing: border-box;
   padding: 0 clamp(24px, 5vw, 96px);
+}
+
+.heroWrapper::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(6, 13, 26, 0.75) 0%,
+    rgba(11, 26, 46, 0.6) 40%,
+    rgba(13, 34, 64, 0.55) 100%
+  );
+  z-index: 1;
 }
 
 .hero {
@@ -102,6 +120,8 @@
   max-width: 1600px;
   padding: clamp(32px, 5vh, 64px) 0;
   box-sizing: border-box;
+  position: relative;
+  z-index: 2;
 }
 
 .heroContent {
@@ -116,28 +136,29 @@
   align-items: center;
   gap: 6px;
   padding: clamp(5px, 0.5vh, 8px) clamp(12px, 1.2vw, 18px);
-  background: #dbeafe;
-  color: #1e40af;
+  background: rgba(26, 143, 209, 0.15);
+  color: #42b4f5;
   font-size: clamp(9px, 0.68vw, 12px);
   font-weight: 600;
   border-radius: 100px;
   width: fit-content;
   letter-spacing: 0.4px;
   text-transform: uppercase;
+  border: 1px solid rgba(26, 143, 209, 0.2);
 }
 
 .heroTitle {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: clamp(22px, 2.9vw, 50px);
   font-weight: 800;
-  color: #0a2540;
+  color: #ffffff;
   line-height: 1.13;
   letter-spacing: -1.5px;
 }
 
 .heroDesc {
   font-size: clamp(13px, 1.02vw, 18px);
-  color: #475569;
+  color: #94a3b8;
   line-height: 1.7;
   max-width: 55ch;
 }
@@ -154,19 +175,20 @@
   align-items: center;
   gap: 8px;
   padding: clamp(11px, 1.2vh, 18px) clamp(20px, 2.2vw, 36px);
-  background: #0a2540;
+  background: linear-gradient(135deg, #d4862e, #b06e1f);
   color: white;
   font-size: clamp(12px, 0.9vw, 16px);
   font-weight: 600;
   border-radius: 12px;
   transition: all 0.2s;
-  box-shadow: 0 4px 16px rgba(10,37,64,0.25);
+  box-shadow: 0 4px 20px rgba(212, 134, 46, 0.3);
+  border: 1px solid rgba(232, 150, 58, 0.3);
 }
 
 .ctaPrimary:hover {
-  background: #1a3a5c;
+  background: linear-gradient(135deg, #e8963a, #d4862e);
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(10,37,64,0.3);
+  box-shadow: 0 8px 28px rgba(212, 134, 46, 0.4);
 }
 
 .ctaSecondary {
@@ -179,8 +201,8 @@
 }
 
 .ctaSecondary:hover {
-  color: #1a9de0;
-  background: #e0f2fe;
+  color: #7dd3fc;
+  background: rgba(26, 143, 209, 0.1);
 }
 
 /* Hero Visual */
@@ -193,18 +215,26 @@
 }
 
 @keyframes float {
-  0%, 100% { transform: translateY(0px); }
-  50%       { transform: translateY(-14px); }
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-14px);
+  }
 }
 
 .heroCard {
-  background: white;
+  background: rgba(11, 26, 46, 0.9);
+  backdrop-filter: blur(12px);
   border-radius: clamp(14px, 1.2vw, 20px);
-  box-shadow: 0 20px 60px rgba(10,37,64,0.12), 0 4px 16px rgba(10,37,64,0.06);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.4),
+    0 0 40px rgba(26, 143, 209, 0.06);
   overflow: hidden;
   width: 100%;
   max-width: clamp(300px, 38vw, 560px);
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(26, 143, 209, 0.15);
 }
 
 .cardHeader {
@@ -212,8 +242,8 @@
   align-items: center;
   gap: 6px;
   padding: clamp(10px, 1vh, 16px) clamp(14px, 1.4vw, 22px);
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
+  background: rgba(13, 34, 64, 0.7);
+  border-bottom: 1px solid rgba(26, 143, 209, 0.1);
 }
 
 .cardDot {
@@ -225,11 +255,11 @@
 
 .cardBody {
   padding: clamp(14px, 1.5vw, 24px);
-  font-family: 'Courier New', monospace;
+  font-family: "Courier New", monospace;
   font-size: clamp(9px, 0.78vw, 13px);
   line-height: 1.9;
-  background: #1e293b;
-  color: #94a3b8;
+  background: #060d1a;
+  color: #64748b;
 }
 
 .diffLine {
@@ -238,12 +268,12 @@
 }
 
 .diffRemoved {
-  background: rgba(239, 68, 68, 0.15);
+  background: rgba(239, 68, 68, 0.12);
   color: #fca5a5;
 }
 
 .diffAdded {
-  background: rgba(16, 185, 129, 0.15);
+  background: rgba(16, 185, 129, 0.12);
   color: #6ee7b7;
 }
 
@@ -251,8 +281,8 @@
   display: flex;
   gap: 8px;
   padding: clamp(10px, 1vh, 16px) clamp(14px, 1.4vw, 22px);
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
+  background: rgba(13, 34, 64, 0.7);
+  border-top: 1px solid rgba(26, 143, 209, 0.1);
 }
 
 .changeBadge {
@@ -268,21 +298,22 @@
   align-items: center;
   gap: 6px;
   padding: clamp(6px, 0.7vh, 10px) clamp(10px, 1vw, 18px);
-  background: white;
+  background: rgba(11, 26, 46, 0.95);
+  backdrop-filter: blur(8px);
   border-radius: 100px;
   font-size: clamp(9px, 0.72vw, 12px);
   font-weight: 600;
-  color: #0a2540;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-  border: 1px solid #e2e8f0;
+  color: #e2e8f0;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(26, 143, 209, 0.15);
   white-space: nowrap;
 }
 
 /* ── ABOUT ── */
 .about {
-  background: white;
-  border-top: 1px solid #e2e8f0;
-  border-bottom: 1px solid #e2e8f0;
+  background: #0b1a2e;
+  border-top: 1px solid rgba(26, 143, 209, 0.08);
+  border-bottom: 1px solid rgba(26, 143, 209, 0.08);
   overflow: hidden;
   min-height: 100vh;
   display: flex;
@@ -314,17 +345,17 @@
 .sectionLabel {
   font-size: clamp(9px, 0.68vw, 12px);
   font-weight: 700;
-  color: #42b4f5;
+  color: #d4862e;
   text-transform: uppercase;
   letter-spacing: 1.8px;
   margin-bottom: 4px;
 }
 
 .aboutHeading {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: clamp(24px, 2.5vw, 44px);
   font-weight: 800;
-  color: #0a2540;
+  color: #ffffff;
   letter-spacing: -0.8px;
   line-height: 1.18;
   margin: 0;
@@ -333,13 +364,13 @@
 .aboutAccent {
   width: clamp(40px, 3.5vw, 60px);
   height: clamp(3px, 0.3vw, 5px);
-  background: linear-gradient(90deg, #42b4f5, #1e40af);
+  background: linear-gradient(90deg, #d4862e, #1a8fd1);
   border-radius: 4px;
 }
 
 .aboutText {
   font-size: clamp(13px, 1vw, 17px);
-  color: #475569;
+  color: #94a3b8;
   line-height: 1.85;
   margin: 0;
 }
@@ -358,7 +389,12 @@
   width: clamp(280px, 30vw, 480px);
   height: clamp(280px, 30vw, 480px);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(66,180,245,0.13) 0%, rgba(30,64,175,0.06) 60%, transparent 100%);
+  background: radial-gradient(
+    circle,
+    rgba(26, 143, 209, 0.1) 0%,
+    rgba(212, 134, 46, 0.05) 60%,
+    transparent 100%
+  );
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
@@ -381,34 +417,46 @@
   gap: clamp(10px, 1vh, 16px);
   padding: clamp(18px, 2vw, 32px) clamp(16px, 1.8vw, 28px);
   border-radius: clamp(12px, 1.2vw, 20px);
-  border: 1px solid #e2e8f0;
-  transition: transform 0.2s, box-shadow 0.2s;
+  border: 1px solid rgba(26, 143, 209, 0.12);
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
 }
 
 .decorCard:hover {
   transform: translateY(-4px);
-  box-shadow: 0 12px 32px rgba(10, 37, 64, 0.1);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
 }
 
-.decorCardDark  { background: #0a2540; border-color: #0a2540; }
-.decorCardLight { background: #f0f9ff; border-color: #bae6fd; }
+.decorCardDark {
+  background: #060d1a;
+  border-color: rgba(212, 134, 46, 0.2);
+}
+.decorCardLight {
+  background: rgba(26, 143, 209, 0.06);
+  border-color: rgba(26, 143, 209, 0.15);
+}
 
 .decorCardLabel {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: clamp(10px, 0.82vw, 14px);
   font-weight: 700;
   line-height: 1.4;
 }
 
-.decorCardDark  .decorCardLabel { color: #e2e8f0; }
-.decorCardLight .decorCardLabel { color: #0a2540; }
+.decorCardDark .decorCardLabel {
+  color: #e2e8f0;
+}
+.decorCardLight .decorCardLabel {
+  color: #e2e8f0;
+}
 
 .decorCardBadge {
   display: inline-flex;
   align-items: center;
   padding: clamp(2px, 0.3vh, 5px) clamp(8px, 0.8vw, 14px);
-  background: rgba(66, 180, 245, 0.2);
-  color: #42b4f5;
+  background: rgba(212, 134, 46, 0.15);
+  color: #e8963a;
   font-size: clamp(8px, 0.62vw, 11px);
   font-weight: 700;
   border-radius: 100px;
@@ -420,8 +468,8 @@
   display: inline-flex;
   align-items: center;
   padding: clamp(2px, 0.3vh, 5px) clamp(8px, 0.8vw, 14px);
-  background: #dbeafe;
-  color: #1e40af;
+  background: rgba(26, 143, 209, 0.15);
+  color: #42b4f5;
   font-size: clamp(8px, 0.62vw, 11px);
   font-weight: 700;
   border-radius: 100px;
@@ -431,8 +479,8 @@
 
 /* ── FEATURES ── */
 .features {
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
+  background: #060d1a;
+  border-top: 1px solid rgba(26, 143, 209, 0.08);
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -448,10 +496,10 @@
 }
 
 .sectionTitle {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: clamp(24px, 2.5vw, 42px);
   font-weight: 800;
-  color: #0a2540;
+  color: #ffffff;
   letter-spacing: -0.6px;
   margin-bottom: clamp(32px, 4vh, 56px);
   max-width: 22ch;
@@ -465,24 +513,24 @@
 
 .featureCard {
   padding: clamp(22px, 2.4vw, 40px);
-  background: white;
+  background: rgba(11, 26, 46, 0.6);
   border-radius: clamp(12px, 1.2vw, 20px);
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(26, 143, 209, 0.1);
   transition: all 0.2s;
 }
 
 .featureCard:hover {
-  box-shadow: 0 8px 24px rgba(10,37,64,0.08);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
   transform: translateY(-3px);
-  border-color: #bae6fd;
+  border-color: rgba(212, 134, 46, 0.25);
 }
 
 .featureIcon {
   width: clamp(40px, 3.5vw, 60px);
   height: clamp(40px, 3.5vw, 60px);
   border-radius: clamp(10px, 1vw, 16px);
-  background: #dbeafe;
-  color: #1e40af;
+  background: rgba(26, 143, 209, 0.12);
+  color: #42b4f5;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -491,10 +539,10 @@
 }
 
 .featureTitle {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: clamp(13px, 1.05vw, 18px);
   font-weight: 700;
-  color: #0a2540;
+  color: #ffffff;
   margin-bottom: clamp(6px, 0.8vh, 12px);
 }
 
@@ -506,8 +554,14 @@
 
 /* ── CTA BANNER ── */
 .ctaBanner {
-  background: linear-gradient(135deg, #0a2540 0%, #1a3a5c 50%, #0f5a7a 100%);
+  background: linear-gradient(
+    135deg,
+    #0b1a2e 0%,
+    #0d2240 40%,
+    rgba(212, 134, 46, 0.12) 100%
+  );
   padding: clamp(44px, 6vh, 80px) clamp(24px, 5vw, 96px);
+  border-top: 1px solid rgba(212, 134, 46, 0.1);
 }
 
 .ctaBannerInner {
@@ -517,7 +571,7 @@
 }
 
 .ctaBannerTitle {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: clamp(22px, 2.5vw, 40px);
   font-weight: 800;
   color: white;
@@ -535,23 +589,27 @@
 .ctaBannerBtn {
   display: inline-block;
   padding: clamp(12px, 1.4vh, 18px) clamp(24px, 2.8vw, 44px);
-  background: #42b4f5;
+  background: linear-gradient(135deg, #d4862e, #b06e1f);
   color: white;
   font-size: clamp(13px, 1vw, 16px);
   font-weight: 600;
   border-radius: 12px;
   transition: all 0.2s;
+  box-shadow: 0 4px 16px rgba(212, 134, 46, 0.25);
+  border: 1px solid rgba(232, 150, 58, 0.3);
 }
 
 .ctaBannerBtn:hover {
-  background: #1a9de0;
+  background: linear-gradient(135deg, #e8963a, #d4862e);
   transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(212, 134, 46, 0.35);
 }
 
 /* ── FOOTER ── */
 .footer {
-  background: #0a2540;
+  background: #040a14;
   padding: clamp(20px, 3vh, 40px) clamp(24px, 5vw, 96px);
+  border-top: 1px solid rgba(26, 143, 209, 0.08);
 }
 
 .footerInner {
@@ -565,11 +623,21 @@
 /* ── RESPONSIVE BREAKPOINTS ── */
 
 @media (min-width: 1600px) {
-  .heroTitle    { font-size: clamp(44px, 3.2vw, 58px); }
-  .heroDesc     { font-size: clamp(16px, 1.15vw, 20px); }
-  .aboutHeading { font-size: clamp(36px, 2.7vw, 48px); }
-  .aboutText    { font-size: clamp(15px, 1.1vw, 18px); }
-  .sectionTitle { font-size: clamp(34px, 2.7vw, 46px); }
+  .heroTitle {
+    font-size: clamp(44px, 3.2vw, 58px);
+  }
+  .heroDesc {
+    font-size: clamp(16px, 1.15vw, 20px);
+  }
+  .aboutHeading {
+    font-size: clamp(36px, 2.7vw, 48px);
+  }
+  .aboutText {
+    font-size: clamp(15px, 1.1vw, 18px);
+  }
+  .sectionTitle {
+    font-size: clamp(34px, 2.7vw, 46px);
+  }
 }
 
 @media (max-width: 1024px) {
@@ -587,7 +655,9 @@
     align-items: center;
   }
 
-  .heroDesc { max-width: 560px; }
+  .heroDesc {
+    max-width: 560px;
+  }
 
   .heroVisual {
     max-width: 480px;
@@ -595,7 +665,9 @@
     margin: 0 auto;
   }
 
-  .featureGrid { grid-template-columns: repeat(2, 1fr); }
+  .featureGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 
   .aboutLayout {
     grid-template-columns: 1fr;
@@ -604,10 +676,16 @@
 }
 
 @media (max-width: 768px) {
-  .nav { padding: 14px 20px; }
-  .navLinks { display: none; }
+  .nav {
+    padding: 14px 20px;
+  }
+  .navLinks {
+    display: none;
+  }
 
-  .heroWrapper { padding: 0 20px; }
+  .heroWrapper {
+    padding: 0 20px;
+  }
 
   .hero {
     grid-template-columns: 1fr;
@@ -615,26 +693,66 @@
     gap: 32px;
   }
 
-  .heroContent { text-align: center; align-items: center; }
+  .heroContent {
+    text-align: center;
+    align-items: center;
+  }
 
-  .heroVisual { max-width: 360px; width: 100%; margin: 0 auto; }
+  .heroVisual {
+    max-width: 360px;
+    width: 100%;
+    margin: 0 auto;
+  }
 
-  .about { padding: 60px 20px; }
-  .aboutLayout { grid-template-columns: 1fr; gap: 40px; }
-  .aboutDecorPanel { min-height: 280px; }
-  .decorGrid { max-width: 100%; }
+  .about {
+    padding: 60px 20px;
+  }
+  .aboutLayout {
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+  .aboutDecorPanel {
+    min-height: 280px;
+  }
+  .decorGrid {
+    max-width: 100%;
+  }
 
-  .features { padding: 60px 20px; }
-  .featureGrid { grid-template-columns: repeat(2, 1fr); }
+  .features {
+    padding: 60px 20px;
+  }
+  .featureGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 
-  .ctaBanner { padding: 48px 20px; }
-  .footer    { padding: 24px 20px; }
-  .footerInner { flex-direction: column; gap: 12px; text-align: center; }
+  .ctaBanner {
+    padding: 48px 20px;
+  }
+  .footer {
+    padding: 24px 20px;
+  }
+  .footerInner {
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+  }
 }
 
 @media (max-width: 480px) {
-  .heroVisual { display: none; }
-  .featureGrid { grid-template-columns: 1fr; }
-  .heroCtas { flex-direction: column; width: 100%; }
-  .ctaPrimary, .ctaSecondary { width: 100%; justify-content: center; text-align: center; }
+  .heroVisual {
+    display: none;
+  }
+  .featureGrid {
+    grid-template-columns: 1fr;
+  }
+  .heroCtas {
+    flex-direction: column;
+    width: 100%;
+  }
+  .ctaPrimary,
+  .ctaSecondary {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
 }

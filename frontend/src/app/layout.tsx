@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Innodex | Legal Regulatory Delivery Unit",
+  title: "Structo | Legal Regulatory Delivery Unit",
   description:
     "A Web-Based Platform for Intelligent Document Comparison, Change Detection, and Structuring",
 };
@@ -13,7 +13,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark">
       <body>{children}</body>
     </html>
   );

@@ -10,13 +10,12 @@ const ThemeContext = createContext<ThemeCtx | null>(null);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [dark, setDark] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined") return true;
     const saved = localStorage.getItem("theme");
-    const sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    return saved ? saved === "dark" : sysDark;
+    // Default to dark since the app is dark-themed
+    return saved ? saved === "dark" : true;
   });
 
-  // Only syncs the DOM class — no setState here
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);

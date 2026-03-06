@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import styles from "./page.module.css";
 import api from "@/app/lib/api";
 import axios from "axios";
@@ -20,8 +21,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showSignedOutToast, setShowSignedOutToast] = useState(false);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  // Redirect to dashboard if already authenticated
   useEffect(() => {
     if (typeof window === "undefined") return;
     const token = localStorage.getItem("token");
@@ -32,7 +33,6 @@ export default function LoginPage() {
           router.replace("/dashboard");
         })
         .catch(() => {
-          // Token is invalid/expired — remove it and stay on login
           localStorage.removeItem("token");
         });
     }
@@ -58,8 +58,8 @@ export default function LoginPage() {
     }
     if (!password) {
       newErrors.password = "Password is required";
-    } else if (password.length < 6) {
-      newErrors.password = "Password must be at least 6 characters";
+    } else if (password.length < 15) {
+      newErrors.password = "Password must be at least 15 characters";
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -103,6 +103,7 @@ export default function LoginPage() {
 
   return (
     <div className={styles.page}>
+      {/* Signed out toast */}
       {showSignedOutToast && (
         <div className={styles.signOutToast} role="status" aria-live="polite">
           <span className={styles.toastIcon}>
@@ -127,7 +128,10 @@ export default function LoginPage() {
           </span>
         </div>
       )}
+
+      {/* Left Panel — brand showcase with background image */}
       <div className={styles.leftPanel}>
+        <div className={styles.leftOverlay} />
         <div className={styles.leftContent}>
           <Link href="/" className={styles.backLink}>
             <svg
@@ -144,30 +148,119 @@ export default function LoginPage() {
             </svg>
             Back to Home
           </Link>
+
           <div className={styles.brandBlock}>
+            <div className={styles.logoRow}>
+              <div className={styles.logoIcon}>
+                <Image
+                  src="/assets/innodata.png"
+                  alt="Innodata Logo"
+                  width={32}
+                  height={32}
+                  priority
+                />
+              </div>
+            </div>
             <h1 className={styles.brandTitle}>
-              STRUCT<span>O</span>
+              STRUCT<span className={styles.brandO}>O</span>
             </h1>
             <p className={styles.brandSubtitle}>
               Legal Regulatory Delivery Unit
             </p>
           </div>
+
+          <div className={styles.dividerLine} />
+
           <div className={styles.featuresBlock}>
             {[
-              { icon: "⚡", label: "Intelligent document comparison" },
-              { icon: "🔍", label: "Automated change detection" },
-              { icon: "📄", label: "Structured INNOD.XML generation" },
-              { icon: "🛡️", label: "Regulatory compliance validation" },
+              {
+                icon: (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                  </svg>
+                ),
+                label: "Intelligent document comparison",
+              },
+              {
+                icon: (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="M21 21l-4.35-4.35" />
+                  </svg>
+                ),
+                label: "Automated change detection",
+              },
+              {
+                icon: (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="16 18 22 12 16 6" />
+                    <polyline points="8 6 2 12 8 18" />
+                  </svg>
+                ),
+                label: "Structured INNOD.XML generation",
+              },
+              {
+                icon: (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                ),
+                label: "Regulatory compliance validation",
+              },
             ].map((f, i) => (
               <div key={i} className={styles.featureRow}>
-                <span className={styles.featureEmoji}>{f.icon}</span>
+                <span className={styles.featureIcon}>{f.icon}</span>
                 <span className={styles.featureLabel}>{f.label}</span>
               </div>
             ))}
           </div>
+
+          <div className={styles.leftFooter}>
+            <span className={styles.statusDot} />
+            <span>System operational</span>
+          </div>
         </div>
       </div>
+
+      {/* Right Panel — login form */}
       <div className={styles.rightPanel}>
+        <div className={styles.rightBg} />
         <div className={styles.formContainer}>
           <div className={styles.formHeader}>
             <span className={styles.secureLabel}>
@@ -186,14 +279,13 @@ export default function LoginPage() {
               </svg>
               Secure Access
             </span>
-            <h2 className={styles.formTitle}>
-              Welcome back!
-              <span className={styles.accentBar} />
-            </h2>
+            <h2 className={styles.formTitle}>Welcome back!</h2>
+            <div className={styles.accentBar} />
             <p className={styles.formSubtitle}>
               Sign in to your STRUCTO account to continue.
             </p>
           </div>
+
           {errors.general && (
             <div className={styles.errorAlert} role="alert">
               <svg
@@ -213,12 +305,15 @@ export default function LoginPage() {
               {errors.general}
             </div>
           )}
+
           <form onSubmit={handleSubmit} className={styles.form} noValidate>
             <div className={styles.field}>
               <label htmlFor="userId" className={styles.label}>
                 User ID
               </label>
-              <div className={styles.inputWrapper}>
+              <div
+                className={`${styles.inputWrapper} ${focusedField === "userId" ? styles.inputWrapperFocused : ""} ${errors.userId ? styles.inputWrapperError : ""}`}
+              >
                 <span className={styles.inputIcon}>
                   <svg
                     width="15"
@@ -243,8 +338,10 @@ export default function LoginPage() {
                     if (errors.userId)
                       setErrors((p) => ({ ...p, userId: undefined }));
                   }}
+                  onFocus={() => setFocusedField("userId")}
+                  onBlur={() => setFocusedField(null)}
                   placeholder="Enter your User ID"
-                  className={`${styles.input} ${errors.userId ? styles.inputError : ""}`}
+                  className={styles.input}
                   autoComplete="username"
                 />
               </div>
@@ -267,11 +364,14 @@ export default function LoginPage() {
                 </p>
               )}
             </div>
+
             <div className={styles.field}>
               <label htmlFor="password" className={styles.label}>
                 Password
               </label>
-              <div className={styles.inputWrapper}>
+              <div
+                className={`${styles.inputWrapper} ${focusedField === "password" ? styles.inputWrapperFocused : ""} ${errors.password ? styles.inputWrapperError : ""}`}
+              >
                 <span className={styles.inputIcon}>
                   <svg
                     width="15"
@@ -296,8 +396,10 @@ export default function LoginPage() {
                     if (errors.password)
                       setErrors((p) => ({ ...p, password: undefined }));
                   }}
+                  onFocus={() => setFocusedField("password")}
+                  onBlur={() => setFocusedField(null)}
                   placeholder="••••••••"
-                  className={`${styles.input} ${errors.password ? styles.inputError : ""}`}
+                  className={styles.input}
                   autoComplete="current-password"
                 />
                 <button
@@ -357,6 +459,7 @@ export default function LoginPage() {
                 </p>
               )}
             </div>
+
             <button
               type="submit"
               className={styles.submitBtn}
@@ -386,6 +489,7 @@ export default function LoginPage() {
               )}
             </button>
           </form>
+
           <p className={styles.footerNote}>
             © 2026 Innodata — Legal Regulatory Delivery Unit
           </p>
