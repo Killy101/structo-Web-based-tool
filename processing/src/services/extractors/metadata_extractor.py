@@ -98,6 +98,8 @@ def extract_metadata(doc) -> dict:
                     elif field == "content_uri":
                         url_m = re.search(r"https?://[^\s\)\]」）,]+", value)
                         metadata["content_uri"] = url_m.group(0).rstrip(".,;") if url_m else value
+                    elif field == "status":
+                        metadata["status"] = value.strip("\"'\u201c\u201d\u2018\u2019")
                     else:
                         if not metadata[field]:
                             metadata[field] = value
@@ -135,6 +137,8 @@ def extract_metadata_legacy(doc) -> dict:
         "contributors":              [],
         "region":                    "",
         "country":                   "",
+        "source_type":               "",   # separate field — not shared with payload_subtype
+        "payload_subtype":           "",   # separate field — not shared with source_type
         "version":                   "",
         "author":                    "",
     }
@@ -151,8 +155,6 @@ def extract_metadata_legacy(doc) -> dict:
                 metadata["document_title"] = t
                 break
 
-    # Legacy label → standard field mapping
-    # (includes both legacy-specific names and the standard ones as a safety net)
     key_map = {
         "authoritative source":      "issuing_agency",
         "source name":               "content_category_name",
@@ -171,11 +173,16 @@ def extract_metadata_legacy(doc) -> dict:
         "region":                    "region",
         "country":                   "country",
         "contributors":              "contributors",
+        "payload subtype":           "payload_subtype",  # own field, matched before "source type"
+        "source type":               "source_type",      # own field
         "version":                   "version",
         "author":                    "author",
     }
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     url_re = re.compile(r"https?://[^\s\)\]」）,]+")
+
+    # Fields whose raw values should have surrounding quotes stripped
+    _strip_quotes = {"status", "source_type", "payload_subtype"}
 
     for table in doc.tables:
         for row in table.rows:
@@ -183,15 +190,26 @@ def extract_metadata_legacy(doc) -> dict:
             if len(cells) < 2:
                 continue
             label = cells[0].text.strip().lower().strip("*: \xa0").replace("\n", " ")
-            value = cells[1].text.replace("\xa0", " ").strip()
-            if not value:
-                for cell in reversed(cells[1:]):
-                    v = cell.text.replace("\xa0", " ").strip()
-                    if v:
-                        value = v
-                        break
-            if len(value) > 300:
-                value = ""
+
+            # Deduplicate cells — python-docx repeats the same cell object for
+            # every column a merged cell spans, so we must de-dupe by XML node id.
+            seen_ids: set = set()
+            unique_cells = []
+            for c in cells[1:]:
+                cid = id(c._tc)
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    unique_cells.append(c)
+
+            # Take the first non-empty cell whose text is ≤ 300 chars (concise value).
+            # Rows with long instructional text (e.g. Publication Date guidance) are
+            # intentionally skipped so they don't pollute the extracted value.
+            value = ""
+            for c in unique_cells:
+                v = c.text.replace("\xa0", " ").strip()
+                if v and len(v) <= 300:
+                    value = v
+                    break
 
             for pattern, field in sorted_key_map:
                 if pattern in label:
@@ -201,6 +219,9 @@ def extract_metadata_legacy(doc) -> dict:
                     elif field == "content_uri":
                         m = url_re.search(value)
                         metadata["content_uri"] = m.group(0).rstrip(".,;") if m else value
+                    elif field in _strip_quotes:
+                        if not metadata[field]:
+                            metadata[field] = value.strip("\"'\u201c\u201d\u2018\u2019")
                     else:
                         if not metadata[field]:
                             metadata[field] = value

@@ -17,10 +17,17 @@ interface Props { initialData?: Record<string, unknown>; }
 /* ─────────────── validation types ─────────────── */
 type Severity = "error" | "warning";
 interface ValidationIssue {
-  rowId: string; rowTitle: string;
+  rowId: string;
+  rowTitle: string;
+  rowNumber: number;           // 1-based position in the table
+  rowData: ScopeRow;           // full snapshot of the row at validation time
+  affectedValue: string;       // exact cell value that triggered the issue
   field: "title" | "referenceLink" | "contentUrl";
   kind: "duplicate_title" | "duplicate_url" | "broken_link" | "empty_link";
-  message: string; severity: Severity; duplicateWith?: string;
+  message: string;
+  severity: Severity;
+  duplicateWith?: string;
+  duplicateRowNumbers?: number[];
 }
 interface ValidationState {
   phase: "idle" | "running" | "done";
@@ -73,9 +80,15 @@ async function runValidation(
   rows: ScopeRow[],
   onProgress: (s: ValidationState) => void
 ): Promise<ValidationIssue[]> {
+  // Build a rowNumber lookup: rowId -> 1-based index
+  const rowIndex = new Map<string, number>();
+  rows.forEach((r, i) => rowIndex.set(r.id, i + 1));
+
   const issues: ValidationIssue[] = [];
   onProgress({ phase: "running", progress: 5, currentStep: "Checking duplicate titles…", issues: [], checkedCount: 0, totalLinks: 0 });
   await new Promise(r => setTimeout(r, 300));
+
+  // Duplicate titles
   const titleMap = new Map<string, ScopeRow[]>();
   rows.forEach(r => {
     if (!r.title.trim()) return;
@@ -86,12 +99,23 @@ async function runValidation(
   titleMap.forEach((dupes) => {
     if (dupes.length < 2) return;
     dupes.forEach((r, i) => {
-      const others = dupes.filter((_, j) => j !== i).map(d => `"${d.title}"`).join(", ");
-      issues.push({ rowId: r.id, rowTitle: r.title, field: "title", kind: "duplicate_title", severity: "error", message: `Duplicate title — also in: ${others}`, duplicateWith: others });
+      const others = dupes.filter((_, j) => j !== i);
+      const othersLabel = others.map(d => `Row ${rowIndex.get(d.id)} "${d.title}"`).join(", ");
+      issues.push({
+        rowId: r.id, rowTitle: r.title, rowNumber: rowIndex.get(r.id)!,
+        rowData: { ...r }, affectedValue: r.title,
+        field: "title", kind: "duplicate_title", severity: "error",
+        message: `Duplicate title — also found in: ${othersLabel}`,
+        duplicateWith: othersLabel,
+        duplicateRowNumbers: others.map(d => rowIndex.get(d.id)!),
+      });
     });
   });
+
   onProgress({ phase: "running", progress: 15, currentStep: "Checking duplicate URLs…", issues: [...issues], checkedCount: 0, totalLinks: 0 });
   await new Promise(r => setTimeout(r, 300));
+
+  // Duplicate content URLs
   const urlMap = new Map<string, ScopeRow[]>();
   rows.forEach(r => {
     if (!r.contentUrl.trim()) return;
@@ -102,10 +126,20 @@ async function runValidation(
   urlMap.forEach((dupes) => {
     if (dupes.length < 2) return;
     dupes.forEach((r, i) => {
-      const others = dupes.filter((_, j) => j !== i).map(d => `"${d.title || d.contentUrl}"`).join(", ");
-      issues.push({ rowId: r.id, rowTitle: r.title || r.contentUrl, field: "contentUrl", kind: "duplicate_url", severity: "error", message: `Duplicate content URL — same as: ${others}`, duplicateWith: others });
+      const others = dupes.filter((_, j) => j !== i);
+      const othersLabel = others.map(d => `Row ${rowIndex.get(d.id)} "${d.title || d.contentUrl}"`).join(", ");
+      issues.push({
+        rowId: r.id, rowTitle: r.title || r.contentUrl, rowNumber: rowIndex.get(r.id)!,
+        rowData: { ...r }, affectedValue: r.contentUrl,
+        field: "contentUrl", kind: "duplicate_url", severity: "error",
+        message: `Duplicate content URL — same as: ${othersLabel}`,
+        duplicateWith: othersLabel,
+        duplicateRowNumbers: others.map(d => rowIndex.get(d.id)!),
+      });
     });
   });
+
+  // Link checks
   const linksToCheck: Array<{ row: ScopeRow; field: "referenceLink" | "contentUrl"; url: string }> = [];
   rows.forEach(r => {
     if (r.referenceLink.trim()) linksToCheck.push({ row: r, field: "referenceLink", url: r.referenceLink.trim() });
@@ -120,14 +154,359 @@ async function runValidation(
       new URL(item.url);
       const result = await checkLink(item.url);
       if (result === "broken") {
-        issues.push({ rowId: item.row.id, rowTitle: item.row.title || item.url, field: item.field, kind: "broken_link", severity: "error", message: `Link unreachable or timed out: ${item.url}` });
+        issues.push({
+          rowId: item.row.id, rowTitle: item.row.title || item.url,
+          rowNumber: rowIndex.get(item.row.id)!, rowData: { ...item.row },
+          affectedValue: item.url,
+          field: item.field, kind: "broken_link", severity: "error",
+          message: `Link unreachable or timed out: ${item.url}`,
+        });
       }
     } catch {
-      issues.push({ rowId: item.row.id, rowTitle: item.row.title || item.url, field: item.field, kind: "empty_link", severity: "warning", message: `Invalid URL format: "${item.url}"` });
+      issues.push({
+        rowId: item.row.id, rowTitle: item.row.title || item.url,
+        rowNumber: rowIndex.get(item.row.id)!, rowData: { ...item.row },
+        affectedValue: item.url,
+        field: item.field, kind: "empty_link", severity: "warning",
+        message: `Invalid URL format: "${item.url}"`,
+      });
     }
     checkedCount++;
   }
   return issues;
+}
+
+/* ─────────────── Excel report generator ─────────────── */
+const KIND_LABEL: Record<string, string> = {
+  duplicate_title: "Duplicate Title",
+  duplicate_url:   "Duplicate URL",
+  broken_link:     "Broken Link",
+  empty_link:      "Invalid URL",
+};
+const FIELD_LABEL: Record<string, string> = {
+  title: "Document Title",
+  referenceLink: "Reference Link",
+  contentUrl: "Content URL",
+};
+
+/* ─────────────── pure-JS xlsx builder ─────────────── */
+function escXml(s: unknown): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// styleIndex: 0=normal, 1=bold, 2=bold+red bg (error), 3=bold+amber bg (warning), 4=red text, 5=amber text
+function buildSheetXml(rows: (string | number)[][], styleMap?: Map<string, number>): string {
+  if (!rows.length) return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>`;
+
+  const colWidths = rows[0].map((_, ci) =>
+    Math.min(80, Math.max(10, ...rows.map(r => String(r[ci] ?? "").length)))
+  );
+  const colsXml = colWidths.map((w, i) =>
+    `<col min="${i+1}" max="${i+1}" width="${w * 1.15}" customWidth="1"/>`
+  ).join("");
+
+  const rowsXml = rows.map((row, ri) => {
+    const cells = row.map((cell, ci) => {
+      const col = ci < 26 ? String.fromCharCode(65 + ci) : String.fromCharCode(64 + Math.floor(ci/26)) + String.fromCharCode(65 + (ci%26));
+      const addr = `${col}${ri + 1}`;
+      const sIdx = styleMap?.get(addr) ?? (ri === 0 ? 1 : 0);
+      const style = sIdx > 0 ? ` s="${sIdx}"` : "";
+      const isNum = typeof cell === "number";
+      return isNum
+        ? `<c r="${addr}"${style}><v>${cell}</v></c>`
+        : `<c r="${addr}" t="inlineStr"${style}><is><t>${escXml(cell)}</t></is></c>`;
+    }).join("");
+    return `<row r="${ri + 1}">${cells}</row>`;
+  }).join("");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cols>${colsXml}</cols>
+  <sheetData>${rowsXml}</sheetData>
+</worksheet>`;
+}
+
+function buildXlsx(sheets: { name: string; rows: (string | number)[][]; styleMap?: Map<string, number> }[]): Blob {
+  const sheetXmls = sheets.map(s => buildSheetXml(s.rows, s.styleMap));
+
+  // styles: 0=normal, 1=bold, 2=bold+red fill, 3=bold+amber fill, 4=red text normal, 5=amber text normal
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts>
+    <font><sz val="11"/><name val="Arial"/></font>
+    <font><b/><sz val="11"/><name val="Arial"/></font>
+    <font><b/><sz val="11"/><color rgb="FF721C1C"/><name val="Arial"/></font>
+    <font><b/><sz val="11"/><color rgb="FF78350F"/><name val="Arial"/></font>
+    <font><sz val="11"/><color rgb="FF991B1B"/><name val="Arial"/></font>
+    <font><sz val="11"/><color rgb="FF92400E"/><name val="Arial"/></font>
+  </fonts>
+  <fills>
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFEE2E2"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFEF3C7"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF1E3A5F"/></patternFill></fill>
+  </fills>
+  <borders><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="3" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="4" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="5" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+  </cellXfs>
+</styleSheet>`;
+
+  const sheetRels = sheets.map((_, i) =>
+    `<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+  ).join("\n");
+  const workbookSheets = sheets.map((s, i) =>
+    `<sheet name="${escXml(s.name)}" sheetId="${i+1}" r:id="rId${i+2}"/>`
+  ).join("\n");
+  const workbookRels = sheets.map((_, i) =>
+    `<Relationship Id="rId${i+2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`
+  ).join("\n");
+
+  const files: Record<string, string> = {
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  ${sheetRels}
+</Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>${workbookSheets}</sheets>
+</workbook>`,
+    "xl/styles.xml": stylesXml,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  ${workbookRels}
+</Relationships>`,
+    ...Object.fromEntries(sheetXmls.map((xml, i) => [`xl/worksheets/sheet${i+1}.xml`, xml])),
+  };
+
+  function toBytes(str: string): Uint8Array { return new TextEncoder().encode(str); }
+  function u32le(n: number): number[] { return [n&0xff,(n>>8)&0xff,(n>>16)&0xff,(n>>24)&0xff]; }
+  function u16le(n: number): number[] { return [n&0xff,(n>>8)&0xff]; }
+  function crc32(data: Uint8Array): number {
+    let crc = 0xffffffff;
+    const table = (crc32 as any)._t ?? (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c&1)?(0xedb88320^(c>>>1)):(c>>>1); t[i]=c; }
+      return ((crc32 as any)._t = t);
+    })();
+    for (const b of data) crc = table[(crc^b)&0xff]^(crc>>>8);
+    return (crc^0xffffffff)>>>0;
+  }
+
+  const localHeaders: number[] = [];
+  const centralDir: number[] = [];
+  let offset = 0;
+  for (const [path, content] of Object.entries(files)) {
+    const nameBytes = new TextEncoder().encode(path);
+    const dataBytes = toBytes(content);
+    const crc = crc32(dataBytes);
+    const size = dataBytes.length;
+    const local = [0x50,0x4b,0x03,0x04,...u16le(20),...u16le(0),...u16le(0),...u16le(0),...u16le(0),...u32le(crc),...u32le(size),...u32le(size),...u16le(nameBytes.length),...u16le(0),...Array.from(nameBytes),...Array.from(dataBytes)];
+    const central = [0x50,0x4b,0x01,0x02,...u16le(20),...u16le(20),...u16le(0),...u16le(0),...u16le(0),...u16le(0),...u32le(crc),...u32le(size),...u32le(size),...u16le(nameBytes.length),...u16le(0),...u16le(0),...u16le(0),...u16le(0),...u32le(0),...u32le(offset),...Array.from(nameBytes)];
+    localHeaders.push(...local);
+    centralDir.push(...central);
+    offset += local.length;
+  }
+  const numFiles = Object.keys(files).length;
+  const eocd = [0x50,0x4b,0x05,0x06,...u16le(0),...u16le(0),...u16le(numFiles),...u16le(numFiles),...u32le(centralDir.length),...u32le(offset),...u16le(0)];
+  return new Blob([new Uint8Array([...localHeaders,...centralDir,...eocd])], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
+/* ─── column letter helper for >26 cols ─── */
+function colLetter(ci: number): string {
+  return ci < 26
+    ? String.fromCharCode(65 + ci)
+    : String.fromCharCode(64 + Math.floor(ci / 26)) + String.fromCharCode(65 + (ci % 26));
+}
+
+function downloadExcelReport(issues: ValidationIssue[], totalLinks: number, allRows: ScopeRow[]) {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+  const errors   = issues.filter(i => i.severity === "error");
+  const warnings = issues.filter(i => i.severity === "warning");
+
+  /* ══════════════════════════════════════════════
+     SHEET 1 — Summary
+  ══════════════════════════════════════════════ */
+
+  // Build per-kind detail blocks: each kind gets a header + one row per issue of that kind
+  const KINDS = ["duplicate_title","duplicate_url","broken_link","empty_link"] as const;
+
+  const summaryRows: (string | number)[][] = [
+    ["Scope Validation Report", "", ""],
+    ["", "", ""],
+    ["Generated",       now.toLocaleString(), ""],
+    ["Total Documents", allRows.length,        ""],
+    ["In Scope",        allRows.filter(r => !r.isOutOfScope).length, ""],
+    ["Out of Scope",    allRows.filter(r => r.isOutOfScope).length,  ""],
+    ["Links Checked",   totalLinks,            ""],
+    ["", "", ""],
+    ["Errors",          errors.length,         ""],
+    ["Warnings",        warnings.length,       ""],
+    ["Status",          errors.length === 0 ? "✓ PASSED" : "✗ FAILED", ""],
+    ["", "", ""],
+    ["Issue Breakdown", "Count", ""],
+    ...KINDS.map(k => [KIND_LABEL[k], issues.filter(i => i.kind === k).length, ""] as (string|number)[]),
+    ["", "", ""],
+  ];
+
+  // Append a details block for every kind that has issues
+  const summaryStyleMap = new Map<string, number>();
+  // Fixed row styles (1-indexed in Excel = summaryRows index + 1)
+  summaryStyleMap.set("A1", 1); summaryStyleMap.set("B1", 1); summaryStyleMap.set("C1", 1);
+  summaryStyleMap.set("A9", 4); summaryStyleMap.set("B9", 4);
+  summaryStyleMap.set("A10", 5); summaryStyleMap.set("B10", 5);
+  const statusStyle = errors.length === 0 ? 1 : 2;
+  summaryStyleMap.set("A11", statusStyle); summaryStyleMap.set("B11", statusStyle); summaryStyleMap.set("C11", statusStyle);
+  summaryStyleMap.set("A13", 1); summaryStyleMap.set("B13", 1); summaryStyleMap.set("C13", 1);
+
+  KINDS.forEach(k => {
+    const kindIssues = issues.filter(i => i.kind === k);
+    if (!kindIssues.length) return;
+
+    // Section header row
+    const headerRowIdx = summaryRows.length; // 0-based
+    summaryRows.push([KIND_LABEL[k], "Row #", "Affected Value / Document Title"]);
+    ["A","B","C"].forEach(col => summaryStyleMap.set(`${col}${headerRowIdx + 1}`, 1));
+
+    kindIssues.forEach(issue => {
+      const dataRowIdx = summaryRows.length;
+      const affectedDisplay = issue.affectedValue || issue.rowData?.title || issue.rowTitle || "(untitled)";
+      summaryRows.push([
+        issue.rowData?.title || issue.rowTitle || "(untitled)",
+        issue.rowNumber ?? "",
+        affectedDisplay,
+      ]);
+      // Color error rows red, warning rows amber
+      const sty = issue.severity === "error" ? 4 : 5;
+      ["A","B","C"].forEach(col => summaryStyleMap.set(`${col}${dataRowIdx + 1}`, sty));
+    });
+
+    summaryRows.push(["", "", ""]);
+  });
+
+  /* ══════════════════════════════════════════════
+     SHEET 2 — Issues
+     Mirrors the modal: Error Type | Location | Row # | Document Title | Affected Value | Detail
+  ══════════════════════════════════════════════ */
+  const issueHeaders = [
+    "Issue #",
+    "Severity",
+    "Error Type",
+    "Location (Field)",
+    "Row #",
+    "Document Title",
+    "Affected Value",
+    "Conflicting Row(s)",
+    "Detail / Message",
+  ];
+  const issueDataRows: (string | number)[][] = issues.map((issue, i) => [
+    i + 1,
+    issue.severity === "error" ? "ERROR" : "WARNING",
+    KIND_LABEL[issue.kind] ?? issue.kind,
+    FIELD_LABEL[issue.field] ?? issue.field,
+    issue.rowNumber ?? "",
+    issue.rowData?.title || issue.rowTitle || "(untitled)",
+    issue.affectedValue ?? "",
+    issue.duplicateRowNumbers?.length
+      ? `Row(s) ${issue.duplicateRowNumbers.join(", ")}`
+      : "",
+    issue.message,
+  ]);
+
+  // Style map: header row = style 1 (bold dark), error rows = style 4 (red), warning rows = style 5 (amber)
+  const issueStyleMap = new Map<string, number>();
+  issueHeaders.forEach((_, ci) => issueStyleMap.set(`${colLetter(ci)}1`, 1));
+  issues.forEach((issue, ri) => {
+    const excelRow = ri + 2;
+    const sty = issue.severity === "error" ? 4 : 5;
+    issueHeaders.forEach((_, ci) => issueStyleMap.set(`${colLetter(ci)}${excelRow}`, sty));
+  });
+
+  /* ══════════════════════════════════════════════
+     SHEET 3 — All Documents snapshot
+     Full table of every document with their row #
+  ══════════════════════════════════════════════ */
+  const docHeaders = [
+    "Row #", "Document Title", "Reference Link", "Content URL",
+    "Issuing Authority", "ASRB ID", "Scope Status",
+    "SME Comments", "Initial / Evergreen", "Date of Ingestion",
+    "Issues Found", "Issue Detail",
+  ];
+  const issueCountByRowId = issues.reduce<Record<string, number>>((acc, iss) => {
+    acc[iss.rowId] = (acc[iss.rowId] ?? 0) + 1;
+    return acc;
+  }, {});
+  // Build a readable summary of issues per row: "Broken Link (Reference Link); Duplicate Title"
+  const issueDetailByRowId = issues.reduce<Record<string, string[]>>((acc, iss) => {
+    if (!iss.rowId) return acc;
+    if (!acc[iss.rowId]) acc[iss.rowId] = [];
+    const label = `${KIND_LABEL[iss.kind]} (${FIELD_LABEL[iss.field] ?? iss.field})`;
+    if (!acc[iss.rowId].includes(label)) acc[iss.rowId].push(label);
+    return acc;
+  }, {});
+  // allRows is already in original table order — never sort or reorder
+  const docDataRows: (string | number)[][] = allRows.map((row, i) => [
+    i + 1,
+    row.title,
+    row.referenceLink,
+    row.contentUrl,
+    row.issuingAuth,
+    row.asrbId,
+    row.isOutOfScope ? "Out of Scope" : "In Scope",
+    row.smeComments,
+    row.initialEvergreen,
+    row.dateOfIngestion,
+    issueCountByRowId[row.id] ?? 0,
+    issueDetailByRowId[row.id]?.join("; ") ?? "",
+  ]);
+
+  const docStyleMap = new Map<string, number>();
+  docHeaders.forEach((_, ci) => docStyleMap.set(`${colLetter(ci)}1`, 1));
+  allRows.forEach((row, ri) => {
+    const excelRow = ri + 2;
+    const rowIssues = issues.filter(i => i.rowId === row.id);
+    if (!rowIssues.length) return;
+    // Use amber if only warnings, red if any error
+    const hasError = rowIssues.some(i => i.severity === "error");
+    const sty = hasError ? 4 : 5;
+    docHeaders.forEach((_, ci) => docStyleMap.set(`${colLetter(ci)}${excelRow}`, sty));
+  });
+
+  const blob = buildXlsx([
+    { name: "Summary",   rows: summaryRows,  styleMap: summaryStyleMap },
+    { name: "Issues",    rows: [issueHeaders, ...issueDataRows], styleMap: issueStyleMap },
+    { name: "Documents", rows: [docHeaders,   ...docDataRows],   styleMap: docStyleMap },
+  ]);
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `scope-validation-report-${stamp}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ─────────────── style constants ─────────────── */
@@ -142,14 +521,11 @@ function InlineCell({ value, placeholder, onChange, href, strikethrough }: {
 }) {
   const [editing, setEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   if (editing) {
     return (
-      <input
-        ref={inputRef}
-        value={value}
+      <input ref={inputRef} value={value}
         onChange={e => onChange(e.target.value)}
         onBlur={() => setEditing(false)}
         onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") setEditing(false); }}
@@ -159,40 +535,27 @@ function InlineCell({ value, placeholder, onChange, href, strikethrough }: {
       />
     );
   }
-
   const baseText = strikethrough ? "line-through text-slate-400 dark:text-slate-600" : "";
-
   if (!value) return (
-    <span
-      onClick={e => { e.stopPropagation(); setEditing(true); }}
-      className="text-slate-300 dark:text-slate-700 italic cursor-text hover:text-slate-400 select-none text-[11px]"
-    >—</span>
+    <span onClick={e => { e.stopPropagation(); setEditing(true); }}
+      className="text-slate-300 dark:text-slate-700 italic cursor-text hover:text-slate-400 select-none text-[11px]">—</span>
   );
-
   if (href) return (
     <div className="flex items-center gap-1 group/link">
-      <a
-        href={value} target="_blank" rel="noreferrer"
-        onClick={e => e.stopPropagation()}
-        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] break-all ${baseText}`}
-      >{value}</a>
-      <button
-        onClick={e => { e.stopPropagation(); setEditing(true); }}
-        className="opacity-0 group-hover/link:opacity-100 flex-shrink-0 w-4 h-4 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all"
-      >
+      <a href={value} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] break-all ${baseText}`}>{value}</a>
+      <button onClick={e => { e.stopPropagation(); setEditing(true); }}
+        className="opacity-0 group-hover/link:opacity-100 flex-shrink-0 w-4 h-4 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all">
         <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
         </svg>
       </button>
     </div>
   );
-
   return (
-    <span
-      onClick={e => { e.stopPropagation(); setEditing(true); }}
+    <span onClick={e => { e.stopPropagation(); setEditing(true); }}
       className={`cursor-text text-[11.5px] text-slate-700 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors block ${baseText}`}
-      title="Click to edit"
-    >{value}</span>
+      title="Click to edit">{value}</span>
   );
 }
 
@@ -204,24 +567,15 @@ function RowToolbar({ row, onUpdate, onRemove }: {
 }) {
   return (
     <div className="flex items-center gap-0.5">
-      {/* Strikethrough toggle */}
-      <button
-        onClick={e => { e.stopPropagation(); onUpdate(row.id, "isOutOfScope", !row.isOutOfScope); }}
+      <button onClick={e => { e.stopPropagation(); onUpdate(row.id, "isOutOfScope", !row.isOutOfScope); }}
         title={row.isOutOfScope ? "Remove strikethrough" : "Mark as out of scope (strikethrough)"}
         className={`w-6 h-6 flex items-center justify-center rounded transition-all text-[10px] font-bold
-          ${row.isOutOfScope
-            ? "bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-500/40"
-            : "text-slate-400 dark:text-slate-600 hover:bg-slate-100 dark:hover:bg-[#252d45] hover:text-slate-600 dark:hover:text-slate-400"
-          }`}
-        style={{ fontFamily: "serif", textDecoration: "line-through" }}
-      >S</button>
-
-      {/* Delete */}
-      <button
-        onClick={e => { e.stopPropagation(); onRemove(row.id); }}
+          ${row.isOutOfScope ? "bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-500/40"
+            : "text-slate-400 dark:text-slate-600 hover:bg-slate-100 dark:hover:bg-[#252d45] hover:text-slate-600 dark:hover:text-slate-400"}`}
+        style={{ fontFamily: "serif", textDecoration: "line-through" }}>S</button>
+      <button onClick={e => { e.stopPropagation(); onRemove(row.id); }}
         title="Delete row"
-        className="w-6 h-6 flex items-center justify-center rounded text-slate-400 dark:text-slate-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-all"
-      >
+        className="w-6 h-6 flex items-center justify-center rounded text-slate-400 dark:text-slate-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-all">
         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
         </svg>
@@ -237,9 +591,6 @@ const KIND_META = {
   broken_link:     { label: "Broken Link",     icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" },
   empty_link:      { label: "Invalid URL",     icon: "M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" },
 };
-function fieldLabel(f: ValidationIssue["field"]) {
-  return { title: "Document Title", referenceLink: "Reference Link", contentUrl: "Content URL" }[f];
-}
 
 /* ─────────────── validation modal ─────────────── */
 interface ModalProps {
@@ -282,13 +633,11 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
       <div className="flex flex-col w-[min(510px,93vw)] max-h-[82vh] rounded-[18px] overflow-hidden
         bg-white dark:bg-[#131722] border border-black/[0.09] dark:border-white/[0.07]
         shadow-[0_32px_72px_rgba(0,0,0,0.22),0_4px_20px_rgba(0,0,0,0.1)]">
-
         {/* Header */}
         <div className="flex-shrink-0 px-[22px] pt-5 pb-4 border-b border-black/[0.07] dark:border-white/[0.06] bg-[#f8f9fb] dark:bg-white/[0.025]">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-[42px] h-[42px] rounded-[13px] flex-shrink-0 flex items-center justify-center transition-all duration-[400ms]"
-                style={{ background: iconBg }}>
+              <div className="w-[42px] h-[42px] rounded-[13px] flex-shrink-0 flex items-center justify-center transition-all duration-[400ms]" style={{ background: iconBg }}>
                 {isRun ? (
                   <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle cx="12" cy="12" r="9" stroke="rgba(255,255,255,0.22)" strokeWidth="2.5"/>
@@ -344,8 +693,7 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
                     ${active ? "bg-blue-500/[0.07] border-blue-500/[0.22]" : "bg-gray-100 dark:bg-white/[0.035] border-black/[0.07] dark:border-white/[0.055]"}`}>
                     <div className={`w-[22px] h-[22px] rounded-full flex-shrink-0 flex items-center justify-center border-2 transition-all duration-300
                       ${done ? "bg-emerald-600 border-emerald-600" : active ? "bg-blue-600 border-blue-500" : "bg-transparent border-black/[0.07] dark:border-white/[0.055]"}`}>
-                      {done
-                        ? <svg className="w-[11px] h-[11px] text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/></svg>
+                      {done ? <svg className="w-[11px] h-[11px] text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/></svg>
                         : active ? <div className="w-[7px] h-[7px] rounded-full bg-white animate-pulse"/>
                         : <div className="w-[5px] h-[5px] rounded-full bg-gray-400 dark:bg-slate-600"/>}
                     </div>
@@ -401,10 +749,15 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
                           <div className="flex items-center flex-wrap gap-[5px] mb-[3px]">
                             <span className={`text-[9.5px] font-bold tracking-[0.07em] uppercase ${isErr ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-500"}`} style={MONO}>{meta.label}</span>
                             <span className="text-[9.5px] text-gray-400">·</span>
-                            <span className="text-[9.5px] text-gray-500 dark:text-[#8892a4]" style={MONO}>{fieldLabel(issue.field)}</span>
+                            <span className="text-[9.5px] text-gray-500 dark:text-[#8892a4]" style={MONO}>Row {issue.rowNumber}</span>
+                            <span className="text-[9.5px] text-gray-400">·</span>
+                            <span className="text-[9.5px] text-gray-500 dark:text-[#8892a4]" style={MONO}>{FIELD_LABEL[issue.field]}</span>
                           </div>
                           <p className="text-[12px] font-semibold text-gray-900 dark:text-[#e2e8f5] m-0 mb-[2px] truncate">{issue.rowTitle || "(untitled)"}</p>
-                          <p className="text-[11px] text-gray-500 dark:text-[#8892a4] m-0 leading-[1.5]">{issue.message}</p>
+                          {issue.affectedValue && issue.affectedValue !== issue.rowTitle && (
+                            <p className="text-[10px] text-slate-500 dark:text-slate-500 m-0 mb-[2px] break-all line-clamp-1 font-mono">{issue.affectedValue}</p>
+                          )}
+                          <p className="text-[11px] text-gray-500 dark:text-[#8892a4] m-0 leading-[1.5] break-words line-clamp-2">{issue.message}</p>
                         </div>
                         <svg className="w-[12px] h-[12px] text-gray-400 flex-shrink-0 mt-[4px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/>
@@ -466,6 +819,7 @@ export default function Scope({ initialData }: Props) {
 
   const extra    = hasExtraCols(rows);
   const colCount = 6 + (extra.evergreen ? 1 : 0) + (extra.ingestion ? 1 : 0) + 1;
+  const showReportButton = validation.phase === "done" && validation.issues.length > 0;
 
   function addRow() {
     const r: ScopeRow = {
@@ -475,18 +829,16 @@ export default function Scope({ initialData }: Props) {
     };
     setRows(p => [...p, r]);
   }
-
   function updateRow(id: string, field: string, value: string | boolean) {
     setRows(p => p.map(r => r.id === id ? { ...r, [field]: value } : r));
   }
-
-  function removeRow(id: string) {
-    setRows(p => p.filter(r => r.id !== id));
-  }
-
+  function removeRow(id: string) { setRows(p => p.filter(r => r.id !== id)); }
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
-
   function openModalForRow(rowId: string) { setFilterRowId(rowId); setShowModal(true); }
+
+  function handleGenerateReport() {
+    downloadExcelReport(validation.issues, validation.totalLinks, rows);
+  }
 
   async function handleValidate() {
     setFilterRowId(null);
@@ -498,7 +850,12 @@ export default function Scope({ initialData }: Props) {
     } catch (err) {
       setValidation(prev => ({
         ...prev, phase: "done", progress: 100, currentStep: "Error",
-        issues: [{ rowId: "", rowTitle: "System", field: "title", kind: "broken_link", severity: "error", message: String(err) }],
+        issues: [{
+          rowId: "", rowTitle: "System", rowNumber: 0,
+          rowData: { id:"", title:"", referenceLink:"", contentUrl:"", issuingAuth:"", asrbId:"", smeComments:"", initialEvergreen:"", dateOfIngestion:"", isOutOfScope:false },
+          affectedValue: "", field: "title", kind: "broken_link", severity: "error",
+          message: String(err),
+        }],
       }));
     }
   }
@@ -511,7 +868,6 @@ export default function Scope({ initialData }: Props) {
   return (
     <div>
       <div className="rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
-
         {/* Toolbar */}
         <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-lg border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-700/40">
           <div className="flex items-center gap-2">
@@ -528,6 +884,16 @@ export default function Scope({ initialData }: Props) {
                 <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">{validation.issues.length}</span>
               )}
             </button>
+
+            {showReportButton && (
+              <button onClick={handleGenerateReport}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-white dark:bg-[#1e2235] text-violet-700 dark:text-violet-300 border border-violet-300 dark:border-violet-700/40 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition-all"
+                title="Download Excel error report">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-6m6 6v-3m3 7H6a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg>
+                Report (.xlsx)
+              </button>
+            )}
+
             <button onClick={handleSave}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${saved ? "bg-emerald-500 text-white" : "bg-white dark:bg-[#1e2235] text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45]"}`}>
               {saved
@@ -584,7 +950,6 @@ export default function Scope({ initialData }: Props) {
                   const isHighlighted = highlightedRowId === row.id;
                   const rowIssues     = issuesByRow[row.id] ?? 0;
                   const oos           = row.isOutOfScope;
-
                   const rowCls = [
                     "group/row transition-colors",
                     isHighlighted
@@ -595,60 +960,25 @@ export default function Scope({ initialData }: Props) {
                   ].join(" ");
 
                   return (
-                    <tr key={row.id} className={rowCls} tabIndex={-1}
-                      ref={el => { highlightRefs.current[row.id] = el; }}>
-
-                      {/* Document Title */}
+                    <tr key={row.id} className={rowCls} tabIndex={-1} ref={el => { highlightRefs.current[row.id] = el; }}>
                       <td className={CELL}>
                         <div className="flex items-start gap-1.5">
                           {rowIssues > 0 && (
-                            <button
-                              onClick={e => { e.stopPropagation(); openModalForRow(row.id); }}
+                            <button onClick={e => { e.stopPropagation(); openModalForRow(row.id); }}
                               title="View issues"
                               className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center hover:bg-red-600 transition-colors border-none p-0 cursor-pointer"
                             >{rowIssues}</button>
                           )}
-                          <InlineCell
-                            value={row.title}
-                            placeholder="Document title…"
-                            strikethrough={oos}
-                            onChange={val => updateRow(row.id, "title", val)}
-                          />
+                          <InlineCell value={row.title} placeholder="Document title…" strikethrough={oos} onChange={val => updateRow(row.id, "title", val)}/>
                         </div>
                       </td>
-
-                      <td className={CELL}>
-                        <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "referenceLink", val)}/>
-                      </td>
-                      <td className={CELL}>
-                        <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "contentUrl", val)}/>
-                      </td>
-                      <td className={CELL}>
-                        <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
-                      </td>
-
-                      {/* ASRB ID */}
-                      <td className={CELL}>
-                        <div onClick={e => e.stopPropagation()}>
-                          <InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} onChange={val => updateRow(row.id, "asrbId", val)}/>
-                        </div>
-                      </td>
-
-                      <td className={CELL}>
-                        <InlineCell value={row.smeComments} placeholder="Comments…" strikethrough={oos} onChange={val => updateRow(row.id, "smeComments", val)}/>
-                      </td>
-                      {extra.evergreen && (
-                        <td className={CELL}>
-                          <InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} onChange={val => updateRow(row.id, "initialEvergreen", val)}/>
-                        </td>
-                      )}
-                      {extra.ingestion && (
-                        <td className={CELL}>
-                          <InlineCell value={row.dateOfIngestion} placeholder="Date…" strikethrough={oos} onChange={val => updateRow(row.id, "dateOfIngestion", val)}/>
-                        </td>
-                      )}
-
-                      {/* Actions */}
+                      <td className={CELL}><InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "referenceLink", val)}/></td>
+                      <td className={CELL}><InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "contentUrl", val)}/></td>
+                      <td className={CELL}><InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} onChange={val => updateRow(row.id, "issuingAuth", val)}/></td>
+                      <td className={CELL}><div onClick={e => e.stopPropagation()}><InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} onChange={val => updateRow(row.id, "asrbId", val)}/></div></td>
+                      <td className={CELL}><InlineCell value={row.smeComments} placeholder="Comments…" strikethrough={oos} onChange={val => updateRow(row.id, "smeComments", val)}/></td>
+                      {extra.evergreen && <td className={CELL}><InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} onChange={val => updateRow(row.id, "initialEvergreen", val)}/></td>}
+                      {extra.ingestion && <td className={CELL}><InlineCell value={row.dateOfIngestion} placeholder="Date…" strikethrough={oos} onChange={val => updateRow(row.id, "dateOfIngestion", val)}/></td>}
                       <td className="px-2 py-2 text-center align-top">
                         <div className="flex items-center justify-center">
                           <RowToolbar row={row} onUpdate={updateRow} onRemove={removeRow}/>
@@ -666,11 +996,9 @@ export default function Scope({ initialData }: Props) {
                 {rows.length} {rows.length === 1 ? "document" : "documents"} · {rows.filter(r => r.isOutOfScope).length} struck through
               </p>
               {rows.some(r => r.isOutOfScope) && (
-                <button
-                  onClick={() => setRows(p => p.map(r => ({ ...r, isOutOfScope: false })))}
+                <button onClick={() => setRows(p => p.map(r => ({ ...r, isOutOfScope: false })))}
                   className="text-[10.5px] text-slate-400 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-400 underline transition-colors"
-                  style={MONO}
-                >clear all strikethroughs</button>
+                  style={MONO}>clear all strikethroughs</button>
               )}
             </div>
           )}
