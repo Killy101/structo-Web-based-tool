@@ -87,7 +87,7 @@ export default function HomePage() {
                 />
                 <span
                   className={styles.cardDot}
-                  style={{ background: "#f59e0b" }}
+                  style={{ background: "#d4862e" }}
                 />
                 <span
                   className={styles.cardDot}
@@ -97,7 +97,7 @@ export default function HomePage() {
                   style={{
                     marginLeft: "auto",
                     fontSize: "11px",
-                    color: "#94a3b8",
+                    color: "#64748b",
                     fontFamily: "monospace",
                   }}
                 >
@@ -132,13 +132,19 @@ export default function HomePage() {
               <div className={styles.cardFooter}>
                 <span
                   className={styles.changeBadge}
-                  style={{ background: "#fef2f2", color: "#ef4444" }}
+                  style={{
+                    background: "rgba(239,68,68,0.12)",
+                    color: "#ef4444",
+                  }}
                 >
                   2 removed
                 </span>
                 <span
                   className={styles.changeBadge}
-                  style={{ background: "#f0fdf4", color: "#10b981" }}
+                  style={{
+                    background: "rgba(16,185,129,0.12)",
+                    color: "#10b981",
+                  }}
                 >
                   2 added
                 </span>
@@ -169,7 +175,7 @@ export default function HomePage() {
                 height="14"
                 viewBox="0 0 24 24"
                 fill="none"
-                stroke="#42b4f5"
+                stroke="#d4862e"
                 strokeWidth="2.5"
               >
                 <circle cx="12" cy="12" r="10" />
@@ -185,21 +191,23 @@ export default function HomePage() {
       <section className={styles.about} id="about">
         <div className={styles.aboutInner}>
           <div className={styles.aboutLayout}>
-
             {/* Left: Text content */}
             <div className={styles.aboutLeft}>
               <div className={styles.sectionLabel}>About Us</div>
               <h2 className={styles.aboutHeading}>
-                Where document complexity meets<br />structured clarity.
+                Where document complexity meets
+                <br />
+                structured clarity.
               </h2>
               <div className={styles.aboutAccent} />
               <p className={styles.aboutText}>
                 At Innodata&apos;s Legal Regulatory Delivery Unit, we empower
-                organizations to manage complex documents
-                with clarity, accuracy, and speed. Through our platform{" "}
-                <strong>Structo</strong>, we transform traditional document
-                workflows into intelligent, automated processes that reduce
-                manual effort and improve compliance confidence.
+                organizations to manage complex documents with clarity,
+                accuracy, and speed. Through our platform{" "}
+                <strong style={{ color: "#e8963a" }}>Structo</strong>, we
+                transform traditional document workflows into intelligent,
+                automated processes that reduce manual effort and improve
+                compliance confidence.
               </p>
             </div>
 
@@ -207,39 +215,84 @@ export default function HomePage() {
             <div className={styles.aboutDecorPanel}>
               <div className={styles.decorGrid}>
                 <div className={`${styles.decorCard} ${styles.decorCardDark}`}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#42b4f5" strokeWidth="1.8">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  <svg
+                    width="28"
+                    height="28"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#d4862e"
+                    strokeWidth="1.8"
+                  >
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                   </svg>
-                  <span className={styles.decorCardLabel}>Compliance<br/>Validated</span>
+                  <span className={styles.decorCardLabel}>
+                    Compliance
+                    <br />
+                    Validated
+                  </span>
                   <div className={styles.decorCardBadge}>✓ Active</div>
                 </div>
                 <div className={`${styles.decorCard} ${styles.decorCardLight}`}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1e40af" strokeWidth="1.8">
-                    <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                  <svg
+                    width="28"
+                    height="28"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#42b4f5"
+                    strokeWidth="1.8"
+                  >
+                    <polyline points="16 18 22 12 16 6" />
+                    <polyline points="8 6 2 12 8 18" />
                   </svg>
-                  <span className={styles.decorCardLabel}>INNOD.XML<br/>Structured</span>
+                  <span className={styles.decorCardLabel}>
+                    INNOD.XML
+                    <br />
+                    Structured
+                  </span>
                   <div className={styles.decorCardBadgeBlue}>100%</div>
                 </div>
                 <div className={`${styles.decorCard} ${styles.decorCardLight}`}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1e40af" strokeWidth="1.8">
-                    <path d="M9 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                    <path d="M15 17h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-4"/>
-                    <line x1="12" y1="3" x2="12" y2="21"/>
+                  <svg
+                    width="28"
+                    height="28"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#42b4f5"
+                    strokeWidth="1.8"
+                  >
+                    <path d="M9 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <path d="M15 17h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-4" />
+                    <line x1="12" y1="3" x2="12" y2="21" />
                   </svg>
-                  <span className={styles.decorCardLabel}>Documents<br/>Compared</span>
+                  <span className={styles.decorCardLabel}>
+                    Documents
+                    <br />
+                    Compared
+                  </span>
                   <div className={styles.decorCardBadgeBlue}>Live</div>
                 </div>
                 <div className={`${styles.decorCard} ${styles.decorCardDark}`}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#42b4f5" strokeWidth="1.8">
-                    <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                  <svg
+                    width="28"
+                    height="28"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#d4862e"
+                    strokeWidth="1.8"
+                  >
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="M21 21l-4.35-4.35" />
                   </svg>
-                  <span className={styles.decorCardLabel}>Changes<br/>Detected</span>
+                  <span className={styles.decorCardLabel}>
+                    Changes
+                    <br />
+                    Detected
+                  </span>
                   <div className={styles.decorCardBadge}>Real-time</div>
                 </div>
               </div>
               <div className={styles.decorOrb} />
             </div>
-
           </div>
         </div>
       </section>
@@ -356,12 +409,12 @@ export default function HomePage() {
               Innodata
             </div>
             <div
-              style={{ color: "#94a3b8", fontSize: "13px", marginTop: "4px" }}
+              style={{ color: "#64748b", fontSize: "13px", marginTop: "4px" }}
             >
               Legal Regulatory Delivery Unit
             </div>
           </div>
-          <div style={{ color: "#64748b", fontSize: "13px" }}>
+          <div style={{ color: "#475569", fontSize: "13px" }}>
             © 2026 Innodata. All rights reserved. A&M
           </div>
         </div>

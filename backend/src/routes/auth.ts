@@ -4,6 +4,11 @@ import jwt from "jsonwebtoken";
 import prisma from "../lib/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import rateLimit from "express-rate-limit";
+import {
+  PASSWORD_POLICY,
+  validatePasswordPolicy,
+  generateCompliantPassword,
+} from "../lib/password-policy";
 
 const router = Router();
 
@@ -78,6 +83,16 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ error: "Invalid User ID or password" });
+    }
+
+    // Max password age: 90 days
+    const expiresAt = new Date(user.passwordChangedAt);
+    expiresAt.setDate(expiresAt.getDate() + PASSWORD_POLICY.maxAgeDays);
+    if (new Date() > expiresAt) {
+      return res.status(403).json({
+        error: "Password expired. Please contact your administrator.",
+        code: "PASSWORD_EXPIRED",
+      });
     }
 
     await prisma.user.update({
@@ -166,10 +181,9 @@ router.post(
         return res.status(400).json({ error: "Target user ID is required" });
       }
 
-      if (!newPassword || newPassword.length < 8) {
-        return res
-          .status(400)
-          .json({ error: "Password must be at least 8 characters" });
+      const policyError = validatePasswordPolicy(String(newPassword ?? ""));
+      if (policyError) {
+        return res.status(400).json({ error: policyError });
       }
 
       const allowedTargetRoles = CAN_CHANGE_PASSWORD[actorRole];
@@ -180,7 +194,7 @@ router.post(
       }
 
       const target = await prisma.user.findUnique({
-        where: { id: targetUserId },
+        where: { id: Number(targetUserId) },
       });
 
       if (!target) {
@@ -193,11 +207,50 @@ router.post(
         });
       }
 
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await prisma.user.update({
-        where: { id: target.id },
-        data: { password: hashedPassword },
+      // Min password age: 7 days
+      const minChangeDate = new Date(target.passwordChangedAt);
+      minChangeDate.setDate(
+        minChangeDate.getDate() + PASSWORD_POLICY.minAgeDays,
+      );
+      if (new Date() < minChangeDate) {
+        return res.status(400).json({
+          error: `Password cannot be changed yet. Minimum password age is ${PASSWORD_POLICY.minAgeDays} days.`,
+        });
+      }
+
+      // Current password + last 24 remembered passwords
+      if (await bcrypt.compare(newPassword, target.password)) {
+        return res.status(400).json({
+          error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
+        });
+      }
+
+      const recentHistory = await prisma.passwordHistory.findMany({
+        where: { userId: target.id },
+        orderBy: { createdAt: "desc" },
+        take: PASSWORD_POLICY.rememberedCount,
       });
+
+      for (const h of recentHistory) {
+        if (await bcrypt.compare(newPassword, h.hash)) {
+          return res.status(400).json({
+            error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
+          });
+        }
+      }
+
+      const hash = await bcrypt.hash(newPassword, 10);
+      const now = new Date();
+
+      await prisma.$transaction([
+        prisma.user.update({
+          where: { id: target.id },
+          data: { password: hash, passwordChangedAt: now },
+        }),
+        prisma.passwordHistory.create({
+          data: { userId: target.id, hash: hash },
+        }),
+      ]);
 
       await prisma.userLog.create({
         data: {
@@ -247,19 +300,20 @@ router.post(
         });
       }
 
-      const alpha = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz";
-      const nums = "23456789";
-      let suffix = "";
-      for (let i = 0; i < 5; i++)
-        suffix += alpha[Math.floor(Math.random() * alpha.length)];
-      suffix += nums[Math.floor(Math.random() * nums.length)];
-      const newPassword = `innod@${suffix}`;
+      const newPassword = generateCompliantPassword();
 
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await prisma.user.update({
-        where: { id: target.id },
-        data: { password: hashedPassword },
-      });
+      const hash = await bcrypt.hash(newPassword, 10);
+      const now = new Date();
+
+      await prisma.$transaction([
+        prisma.user.update({
+          where: { id: target.id },
+          data: { password: hash, passwordChangedAt: now },
+        }),
+        prisma.passwordHistory.create({
+          data: { userId: target.id, hash: hash },
+        }),
+      ]);
 
       await prisma.userLog.create({
         data: {
