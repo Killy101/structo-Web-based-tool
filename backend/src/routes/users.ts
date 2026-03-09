@@ -9,8 +9,8 @@ import { generateCompliantPassword } from "../lib/password-policy";
 const router = Router();
 
 const CAN_CREATE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 const CAN_DEACTIVATE: Partial<Record<Role, Role[]>> = {
@@ -24,8 +24,8 @@ const CAN_CHANGE_ROLE: Partial<Record<Role, Role[]>> = {
 };
 
 const ALLOWED_TARGET_ROLES: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 function generatePassword(): string {
@@ -232,15 +232,6 @@ router.patch(
           return res
             .status(403)
             .json({ error: "You cannot reassign this user's team" });
-        }
-        const admin = await prisma.user.findUnique({
-          where: { id: req.user!.userId },
-          select: { teamId: true },
-        });
-        if (teamId !== admin?.teamId) {
-          return res
-            .status(403)
-            .json({ error: "You can only assign users to your own team" });
         }
       }
 

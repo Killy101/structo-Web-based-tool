@@ -121,8 +121,8 @@ export const BASE_CREATE_ROLES: Role[] = ["ADMIN", "USER"];
 // ─── ROLE PERMISSIONS ──────────────────────────────────────
 // Who can create which roles
 export const CAN_CREATE_ROLES: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 // Who can deactivate which roles
@@ -133,8 +133,8 @@ export const CAN_DEACTIVATE_ROLES: Partial<Record<Role, Role[]>> = {
 
 // Which roles can a user be changed TO by each actor
 export const ALLOWED_TARGET_ROLES: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 // Who can change/reset passwords for whom

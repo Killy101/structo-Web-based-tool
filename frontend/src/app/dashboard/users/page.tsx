@@ -1018,7 +1018,7 @@ function UserActionsDropdown({
   const canManageRole =
     actorRole === "SUPER_ADMIN" ||
     (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
-  const canManageTeam = actorRole === "SUPER_ADMIN";
+  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
   const canToggle =
     canDeactivate(actorRole, user.role) && user.id !== currentUserId;
 
