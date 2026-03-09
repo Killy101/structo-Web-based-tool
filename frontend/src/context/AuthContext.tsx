@@ -10,7 +10,6 @@ import { useRouter } from "next/navigation";
 import axios from "axios";
 import { User } from "../types";
 import { authApi, getToken, setToken, removeToken } from "../services/api";
-import api from "@/app/lib/api";
 
 interface AuthCtx {
   user: User | null;

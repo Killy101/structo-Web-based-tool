@@ -44,12 +44,9 @@ router.get(
 
       let whereClause: any = {};
 
-      if (actorRole === "SUPER_ADMIN") {
-        whereClause = { role: "ADMIN" };
-      }
-
-      // Admin only sees users in their own team
+      // Super Admin can fetch all users.
       if (actorRole === "ADMIN") {
+        // Admin only sees users in their own team.
         const admin = await prisma.user.findUnique({
           where: { id: actorId },
           select: { teamId: true },

@@ -9,12 +9,19 @@ import Unauthorized from "../../components/layout/Unauthorized";
 import { Spinner, Button } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 import { getToken } from "../../services/api";
+import { useAutoLogout } from "../../hooks/useAutoLogout";
 import type { Role } from "../../types";
 
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
-  "/dashboard/tasks": ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+  "/dashboard/tasks": [
+    "SUPER_ADMIN",
+    "ADMIN",
+    "MANAGER_QA",
+    "MANAGER_QC",
+    "USER",
+  ],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -60,6 +67,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
+  useAutoLogout(15);
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
