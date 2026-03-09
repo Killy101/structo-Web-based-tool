@@ -14,7 +14,14 @@ import type { Role } from "../../types";
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
-  "/dashboard/tasks": ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+  "/dashboard/tasks": [
+    "SUPER_ADMIN",
+    "ADMIN",
+    "MANAGER_QA",
+    "MANAGER_QC",
+    "USER",
+  ],
+  "/dashboard/compare": ["SUPER_ADMIN"],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -161,7 +168,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  const isBrdRoute = pathname.startsWith("/dashboard/brd") || pathname.startsWith("/dashboard/compare");
+  const isBrdRoute =
+    pathname.startsWith("/dashboard/brd") ||
+    pathname.startsWith("/dashboard/compare");
 
   const allowedRoles = RESTRICTED_ROUTES[pathname];
   const isUnauthorized =

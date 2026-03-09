@@ -58,7 +58,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/compare",
     label: "Compare",
-    roles: ["SUPER_ADMIN", "ADMIN"],
+    roles: ["SUPER_ADMIN"],
     icon: (
       <svg
         className="w-5 h-5"
