@@ -14,6 +14,7 @@ import type { Role } from "../../types";
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
+  "/dashboard/tasks": ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -44,6 +45,10 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard/brd": {
     title: "BRD Sources",
     subtitle: "Manage document processing sources",
+  },
+  "/dashboard/tasks": {
+    title: "My Tasks",
+    subtitle: "View and manage assigned tasks",
   },
   "/dashboard/settings": {
     title: "Settings",

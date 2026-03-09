@@ -239,7 +239,36 @@ export function useTasks() {
   useEffect(() => {
     refetch();
   }, [refetch]);
-  return { tasks, isLoading, error, refetch };
+
+  const createTask = async (data: {
+    title: string;
+    description?: string;
+    assigneeIds: number[];
+    brdFileId?: number;
+    dueDate?: string;
+  }) => {
+    const result = await tasksApi.create(data);
+    await refetch();
+    return result;
+  };
+
+  const updateProgress = async (
+    id: number,
+    percentage: number,
+    status?: string,
+  ) => {
+    const result = await tasksApi.updateProgress(id, percentage, status);
+    await refetch();
+    return result;
+  };
+
+  const deleteTask = async (id: number) => {
+    const result = await tasksApi.delete(id);
+    await refetch();
+    return result;
+  };
+
+  return { tasks, isLoading, error, refetch, createTask, updateProgress, deleteTask };
 }
 
 // ─── useUserLogs ───────────────────────────────────────────
