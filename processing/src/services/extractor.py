@@ -5,6 +5,7 @@ This is the entry point imported by src/routers/process.py.
 """
 
 import re
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,258 @@ from .extractors.citations_extractor import extract_citations
 from .extractors.content_profile_extractor import extract_content_profile
 
 
+def _collect_document_text(doc: Document) -> str:
+    """Collect paragraph and table text for relaxed config parsing."""
+    lines: list[str] = []
+    for p in doc.paragraphs:
+        t = (p.text or "").strip()
+        if t:
+            lines.append(t)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                t = (cell.text or "").strip()
+                if t:
+                    lines.append(t)
+
+    return "\n".join(lines)
+
+
+def _extract_braced_block(text: str, open_brace_idx: int) -> str | None:
+    if open_brace_idx < 0 or open_brace_idx >= len(text) or text[open_brace_idx] != "{":
+        return None
+
+    depth = 0
+    in_string = False
+    quote_char = ""
+    escaped = False
+
+    for i in range(open_brace_idx, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote_char:
+                in_string = False
+            continue
+
+        if ch in ('"', "'"):
+            in_string = True
+            quote_char = ch
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace_idx:i + 1]
+
+    return None
+
+
+def _cleanup_json_like(raw: str) -> str:
+    raw = (
+        raw.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\uff1a", ":")
+    )
+    cleaned = re.sub(r"//.*?$", "", raw, flags=re.MULTILINE)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def _parse_json_like_object(raw_obj: str) -> dict | None:
+    cleaned = _cleanup_json_like(raw_obj)
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_config_object(text: str, *keys: str) -> dict | None:
+    for key in keys:
+        m = re.search(rf"(?:\"{re.escape(key)}\"|'{re.escape(key)}'|\b{re.escape(key)}\b)\s*:\s*{{", text)
+        if not m:
+            continue
+        brace_idx = text.find("{", m.end() - 1)
+        if brace_idx < 0:
+            continue
+        block = _extract_braced_block(text, brace_idx)
+        if not block:
+            continue
+        parsed = _parse_json_like_object(block)
+        if isinstance(parsed, dict) and parsed:
+            return parsed
+    return None
+
+
+def _extract_config_scalar(text: str, *keys: str) -> str | None:
+    for key in keys:
+        m = re.search(rf"(?:\"{re.escape(key)}\"|'{re.escape(key)}'|\b{re.escape(key)}\b)\s*:\s*\"([^\"]+)\"", text)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return None
+
+
+def _extract_bracket_block(text: str, open_bracket_idx: int) -> str | None:
+    if open_bracket_idx < 0 or open_bracket_idx >= len(text) or text[open_bracket_idx] != "[":
+        return None
+
+    depth = 0
+    in_string = False
+    quote_char = ""
+    escaped = False
+
+    for i in range(open_bracket_idx, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote_char:
+                in_string = False
+            continue
+
+        if ch in ('"', "'"):
+            in_string = True
+            quote_char = ch
+            continue
+
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[open_bracket_idx:i + 1]
+
+    return None
+
+
+def _extract_list_items(list_block: str) -> list[str]:
+    """Extract direct nested list item blocks from an outer list block."""
+    items: list[str] = []
+    if not list_block or not list_block.startswith("["):
+        return items
+
+    i = 0
+    while i < len(list_block):
+        if list_block[i] != "[":
+            i += 1
+            continue
+        block = _extract_bracket_block(list_block, i)
+        if not block:
+            break
+        if i != 0:  # skip the outer list itself
+            items.append(block)
+        i += len(block)
+    return items
+
+
+def _parse_pattern_row(row_block: str) -> list | None:
+    row = row_block.strip()
+    m = re.match(
+        r"^\[\s*(['\"])(.*?)\1\s*,\s*(['\"])(.*?)\3\s*,\s*(-?\d+)\s*,\s*(['\"])(.*?)\6\s*\]$",
+        row,
+        flags=re.DOTALL,
+    )
+    if not m:
+        return None
+
+    def _u(val: str) -> str:
+        return val.replace(r"\"", '"').replace(r"\\'", "'").strip()
+
+    return [_u(m.group(2)), _u(m.group(4)), int(m.group(5)), _u(m.group(7))]
+
+
+def _extract_path_transform_relaxed(text: str) -> dict | None:
+    """Parse pathTransform even when BRD text is not strict JSON."""
+    cleaned = _cleanup_json_like(text)
+    marker = re.search(r"(?is)(?:\"pathTransform\"|'pathTransform'|pathTransform|path_transform|\"path_transform\"|'path_transform')\s*:\s*{", cleaned)
+    if not marker:
+        return None
+
+    root_open = cleaned.find("{", marker.end() - 1)
+    if root_open < 0:
+        return None
+    root_block = _extract_braced_block(cleaned, root_open)
+    if not root_block:
+        return None
+
+    strict = _parse_json_like_object(root_block)
+    if isinstance(strict, dict) and strict:
+        return strict
+
+    out: dict[str, dict] = {}
+    for level_match in re.finditer(r"(?is)['\"]?(\d{1,2})['\"]?\s*:\s*{", root_block):
+        level = level_match.group(1)
+        level_open = root_block.find("{", level_match.end() - 1)
+        if level_open < 0:
+            continue
+        level_block = _extract_braced_block(root_block, level_open)
+        if not level_block:
+            continue
+
+        pat_match = re.search(r"(?is)(?:\"patterns\"|'patterns'|patterns)\s*:\s*\[", level_block)
+        if not pat_match:
+            continue
+        pat_open = level_block.find("[", pat_match.end() - 1)
+        if pat_open < 0:
+            continue
+        pat_block = _extract_bracket_block(level_block, pat_open)
+        if not pat_block:
+            continue
+
+        patterns: list[list] = []
+        for item in _extract_list_items(pat_block):
+            parsed = _parse_pattern_row(item)
+            if parsed:
+                patterns.append(parsed)
+
+        case_match = re.search(r"(?is)(?:\"case\"|'case'|case)\s*:\s*(['\"])(.*?)\1", level_block)
+        case_val = case_match.group(2) if case_match else ""
+
+        if patterns:
+            out[level] = {"patterns": patterns, "case": case_val}
+
+    return out or None
+
+
+def _extract_brd_config(text: str) -> dict:
+    """Best-effort extraction of BRD config blocks embedded in BRD content."""
+    config: dict = {}
+
+    path_transform = _extract_path_transform_relaxed(text) or _extract_config_object(text, "pathTransform", "path_transform")
+    if path_transform:
+        config["pathTransform"] = path_transform
+
+    custom_toc = _extract_config_object(text, "custom_toc", "customToc")
+    if custom_toc:
+        config["custom_toc"] = custom_toc
+
+    whitespace = _extract_config_object(text, "whitespaceHandling", "whitespace_handling")
+    if whitespace:
+        config["whitespaceHandling"] = whitespace
+
+    level_patterns = _extract_config_object(text, "levelPatterns", "level_patterns")
+    if level_patterns:
+        config["levelPatterns"] = level_patterns
+
+    root_path = _extract_config_scalar(text, "rootPath", "root_path")
+    if root_path:
+        config["rootPath"] = root_path
+
+    return config
+
+
 # ─────────────────────────────────────────────
 # .docx path → full structured extraction
 # ─────────────────────────────────────────────
@@ -24,6 +277,8 @@ from .extractors.content_profile_extractor import extract_content_profile
 def extract_all(docx_path: str) -> dict:
     """Run all extractors on a .docx file and return the combined result."""
     doc = Document(docx_path)
+    doc_text = _collect_document_text(doc)
+    brd_config = _extract_brd_config(doc_text)
     return {
         "extracted_at":    datetime.utcnow().isoformat() + "Z",
         "source_file":     Path(docx_path).name,
@@ -32,6 +287,7 @@ def extract_all(docx_path: str) -> dict:
         "scope":           extract_scope(doc),
         "citations":       extract_citations(doc),
         "content_profile": extract_content_profile(doc),
+        "brd_config":      brd_config,
     }
 
 
@@ -208,6 +464,8 @@ def _fallback_from_text(text: str, format: str) -> dict:
         "word_count":         len(joined.split()),
     }
 
+    brd_config = _extract_brd_config(joined)
+
     return {
         "extracted_at":    datetime.now().isoformat() + "Z",
         "source_file":     "",
@@ -216,6 +474,7 @@ def _fallback_from_text(text: str, format: str) -> dict:
         "scope":           {"in_scope": in_scope, "out_of_scope": [], "summary": f"Scope covers {len(in_scope)} active documents."},
         "citations":       citations,
         "content_profile": content_profile,
+        "brd_config":      brd_config,
     }
 
 
