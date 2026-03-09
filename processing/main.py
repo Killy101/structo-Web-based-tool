@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.routers.process import router as process_router
+from src.routers.compare import router as compare_router
 
 app = FastAPI(title="BRD Processing Service", version="1.0.0")
 
@@ -12,6 +13,7 @@ app.add_middleware(
 )
 
 app.include_router(process_router)
+app.include_router(compare_router)
 
 @app.get("/health")
 def health():

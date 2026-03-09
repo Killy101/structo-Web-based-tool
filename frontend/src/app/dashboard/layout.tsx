@@ -22,6 +22,7 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
     "MANAGER_QC",
     "USER",
   ],
+  "/dashboard/compare": ["SUPER_ADMIN"],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -169,7 +170,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  const isBrdRoute = pathname.startsWith("/dashboard/brd");
+  const isBrdRoute =
+    pathname.startsWith("/dashboard/brd") ||
+    pathname.startsWith("/dashboard/compare");
 
   const allowedRoles = RESTRICTED_ROUTES[pathname];
   const isUnauthorized =
