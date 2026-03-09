@@ -9,6 +9,7 @@ import Unauthorized from "../../components/layout/Unauthorized";
 import { Spinner, Button } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 import { getToken } from "../../services/api";
+import { useAutoLogout } from "../../hooks/useAutoLogout";
 import type { Role } from "../../types";
 
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
@@ -67,6 +68,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
+  useAutoLogout(15);
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
