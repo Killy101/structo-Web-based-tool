@@ -13,6 +13,7 @@ interface Props {
     toc?: Record<string, unknown>;
     citations?: Record<string, unknown>;
     contentProfile?: Record<string, unknown>;
+    brdConfig?: Record<string, unknown>;
   };
   onEdit?: (step: number) => void;
   onComplete?: () => void;
@@ -62,7 +63,7 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
 
   if (format === "old") {
     return {
-      sourceName:      t("content_category_name") || t("document_title"),
+      sourceName:      t("source_name") || t("content_category_name") || t("document_title"),
       sourceType:      t("source_type"),
       publicationDate: t("publication_date"),
       lastUpdatedDate: t("last_updated_date"),
@@ -785,9 +786,13 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   const tocData            = asRecord(initialData?.toc);
   const citationsData      = asRecord(initialData?.citations);
   const contentProfileData = asRecord(initialData?.contentProfile);
+  const brdConfigData      = asRecord(initialData?.brdConfig);
 
   const activeFormat: Format = format === "old" ? "old" : "new";
   const metadataValues = buildTemplateMetadataValues(activeFormat, metadataData);
+  const displayTitle = activeFormat === "old"
+    ? (metadataValues.sourceName || title || "Untitled BRD")
+    : (title || "Untitled BRD");
 
   function markDone(key: string, ms = 1600) {
     if (doneResetTimers.current[key]) window.clearTimeout(doneResetTimers.current[key]);
@@ -894,7 +899,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   async function runGenerateMetajson() {
     setGenerating(p => ({ ...p, metajson: true }));
     try {
-      const response = await api.post<{ success: boolean; metajson: Record<string, unknown>; filename?: string }>("/brd/generate/metajson", { brdId, title, format, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData });
+      const response = await api.post<{ success: boolean; metajson: Record<string, unknown>; filename?: string }>("/brd/generate/metajson", { brdId, title, format, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       const { metajson, filename } = response.data;
       setMetajsonModal({ open: true, data: metajson, filename: filename || `${brdId || "metajson"}.json` });
       setCompleted(p => ({ ...p, metajson: true }));
@@ -912,7 +917,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   async function runGenerateInnod() {
     setGenerating(p => ({ ...p, innod: true }));
     try {
-      const response = await api.post<{ success: boolean; metajson: Record<string, unknown>; filename?: string }>("/brd/generate/metajson", { brdId, title, format, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData });
+      const response = await api.post<{ success: boolean; metajson: Record<string, unknown>; filename?: string }>("/brd/generate/metajson", { brdId, title, format, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       const { metajson, filename } = response.data;
       setInnodModal({ open: true, data: metajson, filename: filename || `${brdId || "innod"}_metajson.json` });
       setCompleted(p => ({ ...p, innod: true }));
@@ -953,15 +958,6 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
 
         {/* ── Document Header ── */}
         <div style={{ textAlign: "center", marginBottom: 36, paddingBottom: 28, borderBottom: "1.5px solid #ddd8d0" }}>
-          <p style={{
-            fontFamily: "'DM Mono', monospace",
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: "0.22em",
-            textTransform: "uppercase",
-            color: "#94a3b8",
-            marginBottom: 10,
-          }}>Business Requirements Document</p>
           <h1 style={{
             fontFamily: "'Georgia', 'Times New Roman', serif",
             fontSize: 26,
@@ -971,7 +967,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
             lineHeight: 1.25,
             margin: "0 0 14px",
           }}>
-            {title || "Untitled BRD"}
+            {displayTitle}
           </h1>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" as const }}>
             {brdId && (

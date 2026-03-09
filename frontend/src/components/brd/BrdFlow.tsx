@@ -27,6 +27,7 @@ interface UploadFlowData {
   toc?: Record<string, unknown>;
   citations?: Record<string, unknown>;
   contentProfile?: Record<string, unknown>;
+  brdConfig?: Record<string, unknown>;
 }
 
 const STEPS = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
@@ -66,6 +67,7 @@ export default function BrdFlow({ onClose, initialStep = 0, initialMeta = null, 
                 toc: meta.toc,
                 citations: meta.citations,
                 contentProfile: meta.contentProfile,
+                brdConfig: meta.brdConfig,
               });
               next();
             }}
@@ -89,6 +91,7 @@ export default function BrdFlow({ onClose, initialStep = 0, initialMeta = null, 
                 toc: uploadMeta?.toc,
                 citations: uploadMeta?.citations,
                 contentProfile: uploadMeta?.contentProfile,
+                brdConfig: uploadMeta?.brdConfig,
               }}
               onEdit={(s) => setStep(s)}
               onComplete={onClose}

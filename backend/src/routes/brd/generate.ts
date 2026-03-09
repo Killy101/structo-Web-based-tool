@@ -686,7 +686,29 @@ router.post("/generate/metajson", async (req: Request, res: Response) => {
       toc?: Record<string, unknown>;
       citations?: Record<string, unknown>;
       contentProfile?: Record<string, unknown>;
+      brdConfig?: Record<string, unknown>;
     };
+
+    // Prefer Python processing output because it preserves BRD-driven fields
+    // like pathTransform/custom_toc/whitespaceHandling from the uploaded BRD.
+    const processingUrl = (process.env.PROCESSING_SERVICE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+    try {
+      const upstream = await fetch(`${processingUrl}/generate/metajson`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (upstream.ok) {
+        const data = await upstream.json();
+        return res.json(data);
+      }
+
+      const upstreamText = await upstream.text();
+      console.warn("[generate/metajson] processing service returned non-200, falling back to local generator:", upstream.status, upstreamText);
+    } catch (proxyErr) {
+      console.warn("[generate/metajson] processing service unreachable, falling back to local generator:", proxyErr);
+    }
 
     const scope          = asRecord(body.scope);
     const metadata       = asRecord(body.metadata);
