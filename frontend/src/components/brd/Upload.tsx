@@ -18,6 +18,7 @@ interface ExtractedResult {
   toc: Record<string, unknown>;
   citations: Record<string, unknown>;
   contentProfile: Record<string, unknown>;
+  brdConfig?: Record<string, unknown>;
 }
 
 interface Props {

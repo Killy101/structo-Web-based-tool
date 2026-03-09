@@ -28,6 +28,8 @@ interface ProcessingResult {
   toc: Record<string, unknown>;
   citations: Record<string, unknown>;
   content_profile: Record<string, unknown>;
+  brd_config?: Record<string, unknown>;
+  brdConfig?: Record<string, unknown>;
 }
 
 router.post(
@@ -83,6 +85,7 @@ router.post(
         toc:            extracted.toc,
         citations:      extracted.citations,
         contentProfile: extracted.content_profile,
+        brdConfig:      extracted.brd_config || extracted.brdConfig || null,
       });
 
     } catch (err) {

@@ -5,6 +5,7 @@ from src.services.extractor import extract_all_sections
 from src.services.scraper import extract_text
 from src.services.pattern_generator import generate_level_patterns
 import tempfile, os, shutil
+import re
 
 router = APIRouter()
 
@@ -267,4 +268,235 @@ async def build_level_patterns(payload: LevelPatternRequest):
         "language": language,
         "levelRange": [min_level, max_level],
         "levelPatterns": patterns,
+    }
+
+class GenerateMetajsonRequest(BaseModel):
+    brdId:          str | None = None
+    title:          str | None = None
+    format:         str | None = "old"
+    scope:          dict[str, Any] | None = None
+    metadata:       dict[str, Any] | None = None
+    toc:            dict[str, Any] | None = None
+    citations:      dict[str, Any] | None = None
+    contentProfile: dict[str, Any] | None = None
+    brdConfig:      dict[str, Any] | None = None
+
+
+def _extract_korean_match_string(doc_title: str) -> str:
+    """
+    'Act (금융회사의 지배구조에 관한 법률)'
+        → '금융회사의 지배구조에 관한 법률'
+    'Act (금융소비자 보호에 관한 법률) (약칭: 금융소비자보호법)'
+        → '금융소비자 보호에 관한 법률) (약칭: 금융소비자보호법'
+    """
+    import re
+    title = (doc_title or "").strip()
+    if not title:
+        return ""
+    m = re.search(r'\((?=[^)]*[가-힣])', title)
+    if m:
+        return title[m.start() + 1:].rstrip(')').strip()
+    if re.search(r'[가-힣]', title):
+        return title
+    return ""
+
+
+def _normalize_scope_match_string(doc_title: str) -> str:
+    title = (doc_title or "").strip().strip('"\'')
+    if not title:
+        return ""
+
+    korean = _extract_korean_match_string(title)
+    if korean:
+        return korean
+
+    # Generic fallback for non-Korean sources: use full document title.
+    return title
+
+
+def _build_scope_entries(scope: dict[str, Any] | None) -> list[str]:
+    """Extract document title match strings from scope payload (snake_case/camelCase)."""
+    if not scope:
+        return []
+
+    def _pick_list(src: dict[str, Any], *keys: str) -> list[Any]:
+        for key in keys:
+            val = src.get(key)
+            if isinstance(val, list):
+                return val
+        return []
+
+    def _pick_title(entry: dict[str, Any]) -> str:
+        for key in ("document_title", "documentTitle", "title", "name"):
+            val = entry.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+
+    def _is_struck(entry: dict[str, Any]) -> bool:
+        raw = entry.get("strikethrough", entry.get("strikeThrough"))
+        return bool(raw)
+
+    in_scope_entries = _pick_list(scope, "in_scope", "inScope")
+
+    entries: list[str] = []
+    for entry in in_scope_entries:
+        if not isinstance(entry, dict) or _is_struck(entry):
+            continue
+        normalized = _normalize_scope_match_string(_pick_title(entry))
+        if normalized:
+            entries.append(normalized)
+
+    # Preserve order while removing duplicates.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in entries:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _split_examples(example: str) -> list[str]:
+    import re
+    s = example.strip().strip('"').strip("\u201c\u201d'")
+    for suffix in ("; etc.", ", etc.", " etc."):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].strip()
+    for sep in (";", "\n", " / "):
+        if sep in s:
+            return [t.strip().strip("\"'\u201c\u201d") for t in s.split(sep) if t.strip()]
+    return [s] if s else []
+
+
+def _build_levels_from_toc(
+    toc: dict[str, Any] | None,
+    citations: dict[str, Any] | None,
+) -> list[dict]:
+    """Convert TOC sections + citation references into level dicts for assemble_metajson."""
+    import re
+    if not toc:
+        return []
+    sections = toc.get("sections") or []
+    if not isinstance(sections, list):
+        return []
+
+    citation_index: dict[str, str] = {}
+    if citations:
+        for ref in (citations.get("references") or []):
+            if isinstance(ref, dict):
+                lvl = str(ref.get("level") or "").strip()
+                rules = str(ref.get("citationRules") or "").strip()
+                if lvl and rules:
+                    citation_index[lvl] = rules
+
+    levels: list[dict] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        raw_level = str(section.get("level") or section.get("id") or "")
+        m = re.search(r"\d+", raw_level)
+        if not m:
+            continue
+        level_num = int(m.group(0))
+        if level_num < 2:
+            continue
+
+        required_raw = str(section.get("required") or "").lower().strip()
+        levels.append({
+            "level":      level_num,
+            "name":       str(section.get("name") or "").strip(),
+            "definition": citation_index.get(str(level_num), "") or str(section.get("definition") or "").strip(),
+            "examples":   _split_examples(str(section.get("example") or "")),
+            "required":   required_raw in ("true", "yes", "y", "1"),
+        })
+
+    return sorted(levels, key=lambda x: x["level"])
+
+
+def _normalise_metadata(metadata: dict[str, Any] | None, format_: str) -> dict[str, Any]:
+    if not metadata:
+        return {}
+
+    def t(key: str) -> str:
+        v = metadata.get(key)
+        return str(v).strip() if v is not None else ""
+
+    has_new_name = bool(
+        t("contentCategoryName")
+        or t("content_category_name")
+        or t("document_title")
+    )
+    has_old_name = bool(t("sourceName") or t("source_name"))
+    has_old_type = bool(t("sourceType") or t("source_type"))
+    auto_new_schema = has_new_name and not has_old_name and not has_old_type
+
+    if format_ == "new" or auto_new_schema:
+        return {
+            "Content Category Name": t("contentCategoryName") or t("content_category_name") or t("document_title"),
+            "Publication Date":      t("publicationDate")      or t("publication_date")      or "{iso-date}",
+            "Last Updated Date":     t("lastUpdatedDate")      or t("last_updated_date")     or "{iso-date}",
+            "Effective Date":        t("effectiveDate")        or t("effective_date")        or "{iso-date}",
+            "Processing Date":       t("processingDate")       or t("processing_date")       or "{iso-date}",
+            "Issuing Agency":        t("issuingAgency")        or t("issuing_agency"),
+            "Content URI":           t("contentUri")           or t("content_uri")           or "{string}",
+            "Geography":             t("geography"),
+            "Language":              t("language"),
+            "Delivery Type":         t("deliveryType")         or t("delivery_type")         or "{string}",
+            "Unique File Id":        "{string}",
+        }
+    else:
+        return {
+            "Source Name":       t("sourceName")      or t("source_name")      or t("contentCategoryName") or t("content_category_name") or t("document_title"),
+            "Source Type":       t("sourceType")      or t("source_type"),
+            "Publication Date":  t("publicationDate") or t("publication_date") or "{iso-date}",
+            "Last Updated Date": t("lastUpdatedDate") or t("last_updated_date") or "{iso-date}",
+            "Effective Date":    t("effectiveDate")   or t("effective_date")   or "{iso-date}",
+            "Processing Date":   t("processingDate")  or t("processing_date")  or "{iso-date}",
+            "Issuing Agency":    t("issuingAgency")   or t("issuing_agency"),
+            "Content URI":       t("contentUrl")      or t("content_uri")      or "{string}",
+            "Geography":         t("geography"),
+            "Language":          t("language"),
+            "Payload Subtype":   t("payloadSubtype")  or t("payload_subtype")  or "Acts",
+            "Status":            t("status")          or "Effective",
+            "BRD_Version":       t("brdVersion")      or t("brd_version"),
+            "Delivery Type":     t("deliveryType")    or t("delivery_type")    or "{string}",
+            "Unique File Id":    "{string}",
+        }
+
+
+@router.post("/generate/metajson")
+async def generate_metajson(payload: GenerateMetajsonRequest):
+    from src.services.pattern_generator.metajson_assembler import assemble_metajson
+
+    format_ = payload.format or "old"
+    metadata = _normalise_metadata(payload.metadata, format_)
+    language = (metadata.get("Language") or "Korean").strip()
+    levels = _build_levels_from_toc(payload.toc, payload.citations)
+    scope_entries = _build_scope_entries(payload.scope)
+
+    whitespace_handling: dict | None = None
+    if payload.brdConfig and isinstance(payload.brdConfig.get("whitespaceHandling"), dict):
+        ws = payload.brdConfig["whitespaceHandling"]
+        whitespace_handling = {
+            str(k): [str(v) for v in vals]
+            for k, vals in ws.items()
+            if isinstance(vals, list)
+        }
+
+    metajson, filename = assemble_metajson(
+        metadata=metadata,
+        levels=levels,
+        language=language,
+        content_profile=payload.contentProfile,
+        scope_entries=scope_entries,
+        whitespace_handling=whitespace_handling,
+        brd_config=payload.brdConfig,
+    )
+
+    return {
+        "success":  True,
+        "metajson": metajson,
+        "filename": filename,
     }
