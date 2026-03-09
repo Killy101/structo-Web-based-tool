@@ -66,17 +66,6 @@ function FieldInput({
   );
 }
 
-function ValidateButton() {
-  return (
-    <button className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-medium bg-white dark:bg-[#1e2235] text-orange-600 dark:text-orange-400 border border-orange-300 dark:border-orange-700/40 hover:bg-orange-50 dark:hover:bg-orange-500/10 transition-all">
-      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-      </svg>
-      Validate
-    </button>
-  );
-}
-
 export default function Metadata({ format, brdId, title, onComplete, initialData }: Props) {
   const fields = format === "old" ? OLD_FIELDS : NEW_FIELDS;
   const [values, setValues] = useState<Record<string, string>>({});
@@ -97,9 +86,6 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const filledCount = fields.filter((f) => values[f.key]?.trim()).length;
-  const progress = Math.round((filledCount / fields.length) * 100);
-
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -113,13 +99,9 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
             <span className="text-[9px]">{format === "new" ? "◉" : "◈"}</span>
             {format === "new" ? "New Format" : "Legacy Format"}
           </span>
-          <span className="text-[10px] text-violet-600 dark:text-violet-400 font-medium">
-            {format === "new" ? "2024+ schema" : "Pre-2024 schema"}
-          </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ValidateButton />
           <button
             onClick={handleSave}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${
@@ -144,10 +126,6 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
               </>
             )}
           </button>
-          <div className="w-24 h-1.5 rounded-full bg-slate-200 dark:bg-[#252d45] overflow-hidden">
-            <div className="h-full rounded-full bg-blue-500 dark:bg-blue-400 transition-all duration-500" style={{ width: `${progress}%` }} />
-          </div>
-          <span className="text-[10.5px] text-slate-600 dark:text-slate-500 font-semibold tabular-nums">{filledCount}/{fields.length}</span>
         </div>
       </div>
 
@@ -223,6 +201,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function buildMetadataValues(
   format: Format,
@@ -237,7 +216,7 @@ function buildMetadataValues(
   if (format === "old") {
     return {
       sourceName:      t("content_category_name") || t("document_title"),
-      sourceType:      t("version"),
+      sourceType:      t("source_type"),        // FIX: dedicated field, not version
       publicationDate: t("publication_date"),
       lastUpdatedDate: t("last_updated_date"),
       processingDate:  t("processing_date"),
@@ -245,7 +224,7 @@ function buildMetadataValues(
       contentUrl:      t("content_uri"),
       geography:       t("geography"),
       language:        t("language"),
-      payloadSubtype:  t("version"),
+      payloadSubtype:  t("payload_subtype"),     // FIX: dedicated field, not version
       status:          t("status"),
     };
   }
