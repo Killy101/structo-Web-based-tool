@@ -166,9 +166,11 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── CHANGE PASSWORD ─────────────────────────────────────
+// ─── CHANGE PASSWORD ──────────────────────────────────────
 // SuperAdmin → ADMIN, MANAGER_QA, MANAGER_QC, USER
-// Admin     → MANAGER_QA, MANAGER_QC, USER
+// Admin      → MANAGER_QA, MANAGER_QC, USER
+// NOTE: Min-age (7 days) is intentionally skipped for admin-initiated changes.
+//       Only password history reuse check is enforced.
 router.post(
   "/change-password",
   authenticate,
@@ -193,6 +195,7 @@ router.post(
           .json({ error: "You are not authorized to change passwords" });
       }
 
+      // FIX: ensure targetUserId is always cast to a number
       const target = await prisma.user.findUnique({
         where: { id: Number(targetUserId) },
       });
@@ -207,24 +210,14 @@ router.post(
         });
       }
 
-      // Min password age: 7 days
-      const minChangeDate = new Date(target.passwordChangedAt);
-      minChangeDate.setDate(
-        minChangeDate.getDate() + PASSWORD_POLICY.minAgeDays,
-      );
-      if (new Date() < minChangeDate) {
-        return res.status(400).json({
-          error: `Password cannot be changed yet. Minimum password age is ${PASSWORD_POLICY.minAgeDays} days.`,
-        });
-      }
-
-      // Current password + last 24 remembered passwords
+      // Check against current password
       if (await bcrypt.compare(newPassword, target.password)) {
         return res.status(400).json({
           error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
         });
       }
 
+      // Check against password history
       const recentHistory = await prisma.passwordHistory.findMany({
         where: { userId: target.id },
         orderBy: { createdAt: "desc" },
@@ -268,7 +261,7 @@ router.post(
   },
 );
 
-// ─── RESET PASSWORD (auto-generate) ─────────────────────
+// ─── RESET PASSWORD (auto-generate) ──────────────────────
 router.post(
   "/reset-user-password",
   authenticate,
@@ -286,8 +279,10 @@ router.post(
         return res.status(403).json({ error: "Not authorized" });
       }
 
+      // FIX: was missing Number() cast — prisma query was receiving a string,
+      //      causing findUnique to return null and the endpoint to 404.
       const target = await prisma.user.findUnique({
-        where: { id: targetUserId },
+        where: { id: Number(targetUserId) },
       });
 
       if (!target) {
@@ -301,7 +296,6 @@ router.post(
       }
 
       const newPassword = generateCompliantPassword();
-
       const hash = await bcrypt.hash(newPassword, 10);
       const now = new Date();
 

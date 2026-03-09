@@ -28,15 +28,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    const interceptor = api.interceptors.request.use((cfg) => {
-      const token = getToken();
-      if (token && cfg.headers) cfg.headers.Authorization = `Bearer ${token}`;
-      return cfg;
-    });
-    return () => api.interceptors.request.eject(interceptor);
-  }, []);
-
   const refreshUser = useCallback(async () => {
     try {
       const { user } = await authApi.me();
