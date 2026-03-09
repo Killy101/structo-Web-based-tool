@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import {
   Card,
   Badge,
@@ -7,8 +7,6 @@ import {
   Modal,
   Input,
   Select,
-  Avatar,
-  Table,
   SearchInput,
   EmptyState,
   ToastContainer,
@@ -17,7 +15,6 @@ import { useUsers, useTeams, useRoles, useToast } from "../../../hooks/index";
 import { useAuth } from "../../../context/AuthContext";
 import {
   ROLE_LABELS,
-  ROLE_BADGE_COLORS,
   USER_STATUS_COLORS,
   CAN_CREATE_ROLES,
   ALLOWED_TARGET_ROLES,
@@ -50,8 +47,57 @@ function getDisplayName(u: Partial<User>): string {
   return full || u.userId || "Unknown";
 }
 
+// Check if user was created within the last 7 days
+function isNewUser(createdAt: string | Date | undefined): boolean {
+  if (!createdAt) return false;
+  const created = new Date(createdAt).getTime();
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return created > sevenDaysAgo;
+}
+
+// Export filtered users as CSV (client-side, no backend needed)
+function exportToCSV(users: User[], filename = "users.csv") {
+  const headers = [
+    "Employee ID",
+    "First Name",
+    "Last Name",
+    "Role",
+    "Team",
+    "Status",
+    "Created",
+  ];
+  const rows = users.map((u) => [
+    u.userId ?? "",
+    u.firstName ?? "",
+    u.lastName ?? "",
+    getUserRoleLabel(u),
+    u.team?.name ?? "",
+    u.status,
+    u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "",
+  ]);
+  const csv = [headers, ...rows]
+    .map((row) =>
+      row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","),
+    )
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 /* ──────────────────────────────────────────────────────────
-   ICON COMPONENTS
+   SORT TYPES
+   ────────────────────────────────────────────────────────── */
+
+type SortKey = "name" | "role" | "team" | "status" | "created";
+type SortDir = "asc" | "desc";
+
+/* ──────────────────────────────────────────────────────────
+   ICONS
    ────────────────────────────────────────────────────────── */
 
 function PlusIcon() {
@@ -64,6 +110,41 @@ function PlusIcon() {
       viewBox="0 0 24 24"
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+    </svg>
+  );
+}
+
+function ListIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4 6h16M4 12h16M4 18h16"
+      />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+    >
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
     </svg>
   );
 }
@@ -138,6 +219,29 @@ function UsersGroupIcon() {
   );
 }
 
+function EyeIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+      />
+    </svg>
+  );
+}
+
 function ToggleIcon({ active }: { active: boolean }) {
   return (
     <svg
@@ -182,8 +286,154 @@ function CheckCircleIcon() {
   );
 }
 
+function DownloadIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+      />
+    </svg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg
+      className="w-3.5 h-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"
+      />
+    </svg>
+  );
+}
+
+// Sort indicator icon for table headers
+function SortIcon({ dir, active }: { dir: SortDir; active: boolean }) {
+  return (
+    <svg
+      className={`w-3.5 h-3.5 transition-all ${active ? "opacity-100" : "opacity-30"}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+      viewBox="0 0 24 24"
+    >
+      {active && dir === "desc" ? (
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+      ) : (
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+      )}
+    </svg>
+  );
+}
+
+// Stat card icons
+function UsersIcon() {
+  return (
+    <svg
+      className="w-5 h-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
+      />
+    </svg>
+  );
+}
+
+function ActiveIcon() {
+  return (
+    <svg
+      className="w-5 h-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+      />
+    </svg>
+  );
+}
+
+function InactiveIcon() {
+  return (
+    <svg
+      className="w-5 h-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+      />
+    </svg>
+  );
+}
+
+function AdminIcon() {
+  return (
+    <svg
+      className="w-5 h-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
+      />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg
+      className="w-3.5 h-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M6 18L18 6M6 6l12 12"
+      />
+    </svg>
+  );
+}
+
 /* ──────────────────────────────────────────────────────────
-   ENHANCED AVATAR — Tailwind-only color palettes
+   AVATAR PALETTES
    ────────────────────────────────────────────────────────── */
 
 const AVATAR_PALETTES = [
@@ -205,7 +455,13 @@ function getAvatarPalette(name: string): string {
   return AVATAR_PALETTES[Math.abs(hash) % AVATAR_PALETTES.length];
 }
 
-function EnhancedAvatar({ user }: { user: Partial<User> }) {
+function EnhancedAvatar({
+  user,
+  size = "md",
+}: {
+  user: Partial<User>;
+  size?: "sm" | "md" | "lg";
+}) {
   const name = getDisplayName(user);
   const initials =
     [user.firstName, user.lastName]
@@ -213,19 +469,41 @@ function EnhancedAvatar({ user }: { user: Partial<User> }) {
       .map((n) => n![0])
       .join("")
       .toUpperCase() || (user.userId || "?").slice(0, 2).toUpperCase();
-
+  const sizeClasses = {
+    sm: "w-8 h-8 text-xs",
+    md: "w-10 h-10 text-sm",
+    lg: "w-14 h-14 text-base",
+  };
   return (
     <div
-      className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold tracking-wide shrink-0 transition-transform group-hover:scale-105 ${getAvatarPalette(name)}`}
+      className={`rounded-xl flex items-center justify-center font-bold tracking-wide shrink-0 ${sizeClasses[size]} ${getAvatarPalette(name)}`}
     >
       {initials}
     </div>
   );
 }
 
-/* ──────────────────────────────────────────────────────────
-   STATUS DOT
-   ────────────────────────────────────────────────────────── */
+const STATUS_FILTER_CHIPS = ["ALL", "ACTIVE", "INACTIVE"] as const;
+type StatusFilterChip = (typeof STATUS_FILTER_CHIPS)[number];
+
+const STATUS_FILTER_STYLES: Record<
+  StatusFilterChip,
+  { base: string; active: string }
+> = {
+  ALL: {
+    base: "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800",
+    active:
+      "bg-slate-700 dark:bg-slate-200 text-white dark:text-slate-900 border-slate-700 dark:border-slate-200",
+  },
+  ACTIVE: {
+    base: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20",
+    active: "bg-emerald-500 text-white border-emerald-500",
+  },
+  INACTIVE: {
+    base: "border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20",
+    active: "bg-rose-500 text-white border-rose-500",
+  },
+};
 
 function StatusDot({
   active,
@@ -236,14 +514,643 @@ function StatusDot({
 }) {
   return (
     <span
-      className={`rounded-full shrink-0 ${
-        size === "small" ? "w-1.5 h-1.5" : "w-2 h-2"
-      } ${
-        active
-          ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]"
-          : "bg-slate-400 dark:bg-slate-500"
-      }`}
+      className={`rounded-full shrink-0 ${size === "small" ? "w-1.5 h-1.5" : "w-2 h-2"} ${active ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]" : "bg-slate-400 dark:bg-slate-500"}`}
     />
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   SORTABLE TABLE
+   Own <table> so headers can be React elements — avoids the
+   Col<User> { header: string } constraint on the shared Table.
+   ────────────────────────────────────────────────────────── */
+
+const SORT_COLS: { label: string; key: SortKey }[] = [
+  { label: "User", key: "name" },
+  { label: "Team", key: "team" },
+  { label: "Role", key: "role" },
+  { label: "Status", key: "status" },
+  { label: "Created", key: "created" },
+];
+
+function SortableTable({
+  data,
+  isLoading,
+  sortKey,
+  sortDir,
+  onSort,
+  currentUserId,
+  onViewDetails,
+}: {
+  data: User[];
+  isLoading: boolean;
+  sortKey: SortKey;
+  sortDir: SortDir;
+  onSort: (k: SortKey) => void;
+  currentUserId: number | undefined;
+  onViewDetails: (u: User) => void;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-slate-100 dark:border-slate-800">
+            {SORT_COLS.map(({ label, key }) => {
+              const active = sortKey === key;
+              return (
+                <th key={key} className="px-4 py-3 text-left">
+                  <button
+                    onClick={() => onSort(key)}
+                    className={`inline-flex items-center gap-1.5 font-semibold text-xs uppercase tracking-wider transition-colors ${
+                      active
+                        ? "text-blue-600 dark:text-blue-400"
+                        : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                    }`}
+                  >
+                    {label}
+                    <SortIcon dir={sortDir} active={active} />
+                  </button>
+                </th>
+              );
+            })}
+            <th className="px-4 py-3" />
+          </tr>
+        </thead>
+        <tbody>
+          {isLoading ? (
+            Array.from({ length: 5 }).map((_, i) => (
+              <tr
+                key={i}
+                className="border-b border-slate-50 dark:border-slate-800/60"
+              >
+                {Array.from({ length: 6 }).map((__, j) => (
+                  <td key={j} className="px-4 py-3">
+                    <div className="h-3 bg-slate-100 dark:bg-slate-800 rounded animate-pulse w-3/4" />
+                  </td>
+                ))}
+              </tr>
+            ))
+          ) : data.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="px-4 py-16 text-center">
+                <p className="text-2xl mb-2">👥</p>
+                <p className="text-sm text-slate-400">
+                  No users match your search
+                </p>
+              </td>
+            </tr>
+          ) : (
+            data.map((u) => {
+              const isSelf = u.id === currentUserId;
+              const isActive = u.status === "ACTIVE";
+              const hasName = u.firstName || u.lastName;
+              return (
+                <tr
+                  key={u.id}
+                  className="border-b border-slate-50 dark:border-slate-800/60 hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors"
+                >
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <EnhancedAvatar user={u} />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm font-semibold text-slate-900 dark:text-white truncate leading-tight">
+                            {hasName ? getDisplayName(u) : u.userId}
+                          </p>
+                          {isSelf && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                              You
+                            </span>
+                          )}
+                          {isNewUser(u.createdAt) && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                              New
+                            </span>
+                          )}
+                        </div>
+                        {hasName && u.userId && (
+                          <p className="text-[11px] font-medium text-slate-400 mt-0.5 tracking-wide">
+                            {u.userId}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-sm text-slate-600 dark:text-slate-300">
+                      {u.team?.name ?? (
+                        <span className="text-slate-400 italic">No team</span>
+                      )}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge className={getUserRoleBadgeColor(u)}>
+                      {getUserRoleLabel(u)}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <StatusDot active={isActive} />
+                      <span
+                        className={`text-sm font-medium ${isActive ? "text-slate-700 dark:text-slate-300" : "text-slate-400"}`}
+                      >
+                        {isActive ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-xs font-medium text-slate-400">
+                      {formatDate(u.createdAt)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={() => onViewDetails(u)}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white text-xs font-semibold shadow-sm hover:shadow-md transition-all"
+                    >
+                      <EyeIcon /> View Details
+                    </button>
+                  </td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   USER DETAIL MODAL
+   ────────────────────────────────────────────────────────── */
+
+function UserDetailModal({
+  isOpen,
+  onClose,
+  user,
+  actorRole,
+  currentUserId,
+  teams,
+  customRoles,
+  onChangePassword,
+  onChangeRole,
+  onAssignTeam,
+  onToggleStatus,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  user: User | null;
+  actorRole: Role;
+  currentUserId: number | undefined;
+  teams: { id: number; name: string }[];
+  customRoles: UserRole[];
+  onChangePassword: (u: User) => void;
+  onChangeRole: (u: User) => void;
+  onAssignTeam: (u: User) => void;
+  onToggleStatus: (u: User) => void;
+}) {
+  if (!user) return null;
+
+  const canManagePassword = canChangePassword(actorRole, user.role);
+  // FIX: consistent permission check — SUPER_ADMIN and ADMIN can both manage roles within their scope
+  const canManageRole =
+    actorRole === "SUPER_ADMIN" ||
+    (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
+  // FIX: consistent with UserCard — SUPER_ADMIN can assign any team, ADMIN can reassign within their scope
+  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canToggle =
+    canDeactivate(actorRole, user.role) && user.id !== currentUserId;
+  const showRoleChange =
+    actorRole === "SUPER_ADMIN" ? user.role !== "SUPER_ADMIN" : canManageRole;
+  const isActive = user.status === "ACTIVE";
+  const isSelf = user.id === currentUserId;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="User Details">
+      <div className="space-y-5">
+        {/* Profile header */}
+        <div className="flex items-center gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+          <EnhancedAvatar user={user} size="lg" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white leading-tight">
+                {getDisplayName(user)}
+              </h3>
+              <Badge className={getUserRoleBadgeColor(user)}>
+                {getUserRoleLabel(user)}
+              </Badge>
+              {/* FIX: "You" badge for current user */}
+              {isSelf && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                  You
+                </span>
+              )}
+              {/* NEW: "New" badge for recently joined users */}
+              {isNewUser(user.createdAt) && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-800">
+                  New
+                </span>
+              )}
+            </div>
+            <p className="text-xs font-mono text-slate-400 mt-0.5">
+              {user.userId}
+            </p>
+            <div className="flex items-center gap-2 mt-1.5">
+              <StatusDot active={isActive} />
+              <span
+                className={`text-xs font-medium ${isActive ? "text-emerald-600 dark:text-emerald-400" : "text-slate-400"}`}
+              >
+                {isActive ? "Active" : "Inactive"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Info grid */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
+              Team
+            </p>
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
+              {user.team?.name ?? (
+                <span className="italic text-slate-400">No team</span>
+              )}
+            </p>
+          </div>
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
+              Joined
+            </p>
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
+              {formatDate(user.createdAt)}
+            </p>
+          </div>
+          {user.userRole && (
+            <div className="col-span-2 bg-blue-50 dark:bg-blue-900/20 rounded-xl p-3">
+              <p className="text-[10px] uppercase tracking-wider font-semibold text-blue-500 dark:text-blue-400 mb-1">
+                Custom Role
+              </p>
+              <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
+                {user.userRole.name}
+              </p>
+              {user.userRole.features?.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {user.userRole.features.map((f) => (
+                    <span
+                      key={f}
+                      className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-800/40 text-blue-700 dark:text-blue-300"
+                    >
+                      {FEATURE_LABELS[f] ?? f}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Actions
+          </p>
+          <div className="grid grid-cols-1 gap-2">
+            {canManagePassword && (
+              <button
+                onClick={() => {
+                  onChangePassword(user);
+                  onClose();
+                }}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg
+                    className="w-4 h-4 text-amber-600 dark:text-amber-400"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    Change Password
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Reset or set a new password
+                  </p>
+                </div>
+              </button>
+            )}
+            {showRoleChange && (
+              <button
+                onClick={() => {
+                  onChangeRole(user);
+                  onClose();
+                }}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg
+                    className="w-4 h-4 text-indigo-600 dark:text-indigo-400"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    Change Role
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Update user permissions
+                  </p>
+                </div>
+              </button>
+            )}
+            {canManageTeam && (
+              <button
+                onClick={() => {
+                  onAssignTeam(user);
+                  onClose();
+                }}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg
+                    className="w-4 h-4 text-teal-600 dark:text-teal-400"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    Assign Team
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Move to a different team
+                  </p>
+                </div>
+              </button>
+            )}
+            {canToggle && (
+              <button
+                onClick={() => {
+                  onToggleStatus(user);
+                  onClose();
+                }}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left group ${isActive ? "border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-900/20" : "border-emerald-200 dark:border-emerald-900/50 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}
+              >
+                <div
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center group-hover:scale-105 transition-transform ${isActive ? "bg-red-100 dark:bg-red-900/30" : "bg-emerald-100 dark:bg-emerald-900/30"}`}
+                >
+                  <svg
+                    className={`w-4 h-4 ${isActive ? "text-red-500" : "text-emerald-600"}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                  >
+                    {isActive ? (
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                      />
+                    ) : (
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    )}
+                  </svg>
+                </div>
+                <div>
+                  <p
+                    className={`text-sm font-semibold ${isActive ? "text-red-500 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}
+                  >
+                    {isActive ? "Deactivate User" : "Activate User"}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    {isActive ? "Disable access" : "Re-enable access"}
+                  </p>
+                </div>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <Button
+          variant="secondary"
+          className="w-full justify-center"
+          onClick={onClose}
+        >
+          Close
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   USER CARD (grid view)
+   ────────────────────────────────────────────────────────── */
+
+function UserCard({
+  user,
+  actorRole,
+  currentUserId,
+  onViewDetails,
+  onChangePassword,
+  onChangeRole,
+  onAssignTeam,
+  onToggleStatus,
+}: {
+  user: User;
+  actorRole: Role;
+  currentUserId: number | undefined;
+  onViewDetails: (u: User) => void;
+  onChangePassword: (u: User) => void;
+  onChangeRole: (u: User) => void;
+  onAssignTeam: (u: User) => void;
+  onToggleStatus: (u: User) => void;
+}) {
+  const isActive = user.status === "ACTIVE";
+  const isSelf = user.id === currentUserId;
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const canManagePassword = canChangePassword(actorRole, user.role);
+  const canManageRole =
+    actorRole === "SUPER_ADMIN" ||
+    (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
+  // FIX: consistent with UserDetailModal — both SUPER_ADMIN and ADMIN can manage teams
+  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
+  const showRoleChange =
+    actorRole === "SUPER_ADMIN" ? user.role !== "SUPER_ADMIN" : canManageRole;
+
+  return (
+    <div
+      className={`relative bg-white dark:bg-slate-900 border rounded-2xl p-5 flex flex-col gap-4 shadow-sm hover:shadow-md transition-all duration-200 hover:-translate-y-0.5 ${isActive ? "border-slate-200 dark:border-slate-800" : "border-slate-200/60 dark:border-slate-800/60 opacity-75"}`}
+    >
+      <div
+        className={`absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl ${isActive ? "bg-gradient-to-r from-emerald-400 to-teal-400" : "bg-slate-200 dark:bg-slate-700"}`}
+      />
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <EnhancedAvatar user={user} size="md" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <p className="text-sm font-bold text-slate-900 dark:text-white truncate leading-tight">
+                {getDisplayName(user)}
+              </p>
+              {/* NEW: "You" badge */}
+              {isSelf && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                  You
+                </span>
+              )}
+              {/* NEW: "New" badge */}
+              {isNewUser(user.createdAt) && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                  New
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] font-mono text-slate-400 mt-0.5 truncate">
+              {user.userId}
+            </p>
+          </div>
+        </div>
+
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setMenuOpen(!menuOpen)}
+            className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+          >
+            <DotsIcon />
+          </button>
+          {menuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setMenuOpen(false)}
+              />
+              <div className="absolute right-0 top-full mt-1.5 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 p-1.5">
+                {canManagePassword && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onChangePassword(user);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+                  >
+                    <KeyIcon /> Change Password
+                  </button>
+                )}
+                {showRoleChange && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onChangeRole(user);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+                  >
+                    <ShieldIcon /> Change Role
+                  </button>
+                )}
+                {canManageTeam && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onAssignTeam(user);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+                  >
+                    <UsersGroupIcon /> Assign Team
+                  </button>
+                )}
+                {canToggle && (
+                  <>
+                    <div className="mx-2 my-1 h-px bg-slate-100 dark:bg-slate-700" />
+                    <button
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onToggleStatus(user);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center gap-2 ${isActive ? "text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}
+                    >
+                      <ToggleIcon active={isActive} />
+                      {isActive ? "Deactivate" : "Activate"}
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <Badge className={getUserRoleBadgeColor(user)}>
+          {getUserRoleLabel(user)}
+        </Badge>
+        <span
+          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${isActive ? "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-slate-800 text-slate-500"}`}
+        >
+          <StatusDot active={isActive} size="small" />
+          {isActive ? "Active" : "Inactive"}
+        </span>
+      </div>
+
+      <div className="space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
+        {user.team && (
+          <div className="flex items-center gap-2">
+            <UsersGroupIcon />
+            <span className="font-medium text-slate-600 dark:text-slate-300">
+              {user.team.name}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <CalendarIcon />
+          <span>Joined {formatDate(user.createdAt)}</span>
+        </div>
+      </div>
+
+      <button
+        onClick={() => onViewDetails(user)}
+        className="mt-auto w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-blue-300 dark:hover:border-blue-600 hover:text-blue-600 dark:hover:text-blue-400 transition-all"
+      >
+        <EyeIcon />
+        View Details
+      </button>
+    </div>
   );
 }
 
@@ -350,7 +1257,6 @@ function CreateUserModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Add New User">
       <div className="space-y-4">
-        {/* Employee ID */}
         <div>
           <Input
             label="Employee ID"
@@ -364,11 +1270,9 @@ function CreateUserModal({
             required
           />
           <p className="text-[11px] text-slate-400 mt-1">
-            3–6 alphanumeric characters (letters &amp; numbers only)
+            3–6 alphanumeric characters
           </p>
         </div>
-
-        {/* Names side by side */}
         <div className="grid grid-cols-2 gap-3">
           <Input
             label="First Name"
@@ -389,8 +1293,6 @@ function CreateUserModal({
             required
           />
         </div>
-
-        {/* Role */}
         <Select
           label="Role"
           value={form.role}
@@ -403,8 +1305,6 @@ function CreateUserModal({
             </option>
           ))}
         </Select>
-
-        {/* Custom Role */}
         {customRoles.length > 0 && (
           <Select
             label="Custom Role (Optional)"
@@ -421,8 +1321,6 @@ function CreateUserModal({
             ))}
           </Select>
         )}
-
-        {/* Feature chips preview */}
         {selectedCustomRole && selectedCustomRole.features.length > 0 && (
           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-3">
             <p className="text-xs font-semibold text-blue-800 dark:text-blue-300 mb-2">
@@ -440,8 +1338,6 @@ function CreateUserModal({
             </div>
           </div>
         )}
-
-        {/* Team */}
         {actorRole === "SUPER_ADMIN" && (
           <Select
             label="Assign to Team"
@@ -458,7 +1354,6 @@ function CreateUserModal({
             ))}
           </Select>
         )}
-
         {actorRole === "ADMIN" && actorTeamId && (
           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-3">
             <p className="text-xs text-blue-700 dark:text-blue-300">
@@ -467,16 +1362,12 @@ function CreateUserModal({
             </p>
           </div>
         )}
-
-        {/* Password info banner */}
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-xl p-3 flex items-start gap-2.5">
           <span className="text-base leading-none mt-px">🔑</span>
           <p className="text-xs text-amber-700 dark:text-amber-400">
-            A secure password will be auto-generated. Copy it and share with the
-            user directly.
+            A secure password will be auto-generated.
           </p>
         </div>
-
         {errors.submit && (
           <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">
@@ -484,7 +1375,6 @@ function CreateUserModal({
             </p>
           </div>
         )}
-
         <div className="flex gap-3 pt-1">
           <Button
             variant="secondary"
@@ -507,7 +1397,7 @@ function CreateUserModal({
 }
 
 /* ──────────────────────────────────────────────────────────
-   PASSWORD REVEAL MODAL
+   PASSWORD MODAL
    ────────────────────────────────────────────────────────── */
 
 function PasswordModal({
@@ -527,16 +1417,12 @@ function PasswordModal({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="User Created Successfully">
       <div className="space-y-5">
-        {/* Success icon */}
         <div className="flex justify-center py-1">
           <CheckCircleIcon />
         </div>
-
-        {/* User info */}
         <div className="text-center">
           <p className="font-bold text-base text-slate-900 dark:text-white">
             {userData?.userId}
@@ -554,8 +1440,6 @@ function PasswordModal({
             </div>
           )}
         </div>
-
-        {/* Password display */}
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wider text-center mb-2 text-slate-400">
             Generated Password
@@ -572,15 +1456,11 @@ function PasswordModal({
             </button>
           </div>
         </div>
-
-        {/* Warning */}
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-xl p-3 text-center">
           <p className="text-xs text-amber-700 dark:text-amber-400">
-            ⚠️ This password is shown only once. Please copy and share it with
-            the user directly.
+            ⚠️ This password is shown only once.
           </p>
         </div>
-
         <Button className="w-full justify-center" onClick={onClose}>
           Done
         </Button>
@@ -604,11 +1484,9 @@ function ChangePasswordModal({
   onClose: () => void;
   targetUser: User | null;
   onChangePassword: (userId: number, newPassword: string) => Promise<void>;
-  onResetPassword: (userId: number) => Promise<{
-    message: string;
-    newPassword: string;
-    targetUserId: string;
-  }>;
+  onResetPassword: (
+    userId: number,
+  ) => Promise<{ message: string; newPassword: string; targetUserId: string }>;
 }) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -660,7 +1538,6 @@ function ChangePasswordModal({
       setTimeout(() => setCopied(false), 2000);
     }
   };
-
   const handleClose = () => {
     setNewPassword("");
     setConfirmPassword("");
@@ -675,7 +1552,6 @@ function ChangePasswordModal({
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Manage Password">
       <div className="space-y-4">
-        {/* Target user */}
         <div className="text-center pb-1">
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Changing password for{" "}
@@ -685,8 +1561,6 @@ function ChangePasswordModal({
             <span className="text-slate-400">({targetUser.userId})</span>
           </p>
         </div>
-
-        {/* Reset result */}
         {resetResult && (
           <div className="space-y-3">
             <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl p-4 flex flex-col items-center gap-3">
@@ -710,17 +1584,14 @@ function ChangePasswordModal({
             </Button>
           </div>
         )}
-
         {!resetResult && (
           <>
-            {/* Auto-generate */}
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 space-y-2.5">
               <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">
                 Auto-generate new password
               </p>
               <p className="text-xs text-blue-600/80 dark:text-blue-400/80">
-                Generates a secure random password. You&apos;ll be shown the new
-                password to share with the user.
+                Generates a secure random password.
               </p>
               <Button
                 size="sm"
@@ -731,8 +1602,6 @@ function ChangePasswordModal({
                 Reset &amp; Generate Password
               </Button>
             </div>
-
-            {/* Divider */}
             <div className="flex items-center gap-3.5">
               <hr className="flex-1 border-slate-200 dark:border-slate-700" />
               <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">
@@ -740,8 +1609,6 @@ function ChangePasswordModal({
               </span>
               <hr className="flex-1 border-slate-200 dark:border-slate-700" />
             </div>
-
-            {/* Manual */}
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
                 Set password manually
@@ -761,7 +1628,6 @@ function ChangePasswordModal({
                 placeholder="Repeat password"
               />
             </div>
-
             {error && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
                 <p className="text-sm text-red-600 dark:text-red-400">
@@ -769,7 +1635,6 @@ function ChangePasswordModal({
                 </p>
               </div>
             )}
-
             <div className="flex gap-3 pt-1">
               <Button
                 variant="secondary"
@@ -795,6 +1660,7 @@ function ChangePasswordModal({
 
 /* ──────────────────────────────────────────────────────────
    CHANGE ROLE MODAL
+   FIX: useEffect to sync selectedRole when targetUser changes
    ────────────────────────────────────────────────────────── */
 
 function ChangeRoleModal({
@@ -817,6 +1683,11 @@ function ChangeRoleModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // FIX: sync selectedRole whenever targetUser changes so stale data doesn't appear
+  useEffect(() => {
+    if (targetUser) setSelectedRole(targetUser.role);
+  }, [targetUser]);
+
   const handleSubmit = async () => {
     if (!targetUser || selectedRole === targetUser.role) {
       onClose();
@@ -835,7 +1706,6 @@ function ChangeRoleModal({
   };
 
   if (!targetUser) return null;
-
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Change Role">
       <div className="space-y-4">
@@ -852,7 +1722,6 @@ function ChangeRoleModal({
             </Badge>
           </div>
         </div>
-
         <Select
           label="New Role"
           value={selectedRole}
@@ -864,13 +1733,11 @@ function ChangeRoleModal({
             </option>
           ))}
         </Select>
-
         {error && (
           <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           </div>
         )}
-
         <div className="flex gap-3 pt-1">
           <Button
             variant="secondary"
@@ -894,6 +1761,7 @@ function ChangeRoleModal({
 
 /* ──────────────────────────────────────────────────────────
    ASSIGN TEAM MODAL
+   FIX: derive availableTeams inside useEffect using raw teams list
    ────────────────────────────────────────────────────────── */
 
 function AssignTeamModal({
@@ -909,21 +1777,30 @@ function AssignTeamModal({
   teams: { id: number; name: string }[];
   onAssignTeam: (userId: number, teamId: number | null) => Promise<void>;
 }) {
-  const [selectedTeamId, setSelectedTeamId] = useState<number>(
-    targetUser?.teamId ?? 0,
-  );
+  const [selectedTeamId, setSelectedTeamId] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // FIX: derive availableTeams cleanly from raw teams (not from render-time derived value)
+  const availableTeams = teams.filter((t) => t.id !== targetUser?.teamId);
+
+  // FIX: reset selection when targetUser or open state changes using raw teams data
+  useEffect(() => {
+    const available = teams.filter((t) => t.id !== targetUser?.teamId);
+    setSelectedTeamId(available[0]?.id ?? 0);
+    setError("");
+  }, [targetUser, isOpen, teams]);
+
   const handleSubmit = async () => {
     if (!targetUser) return;
+    if (!selectedTeamId) {
+      setError("Please select a team");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      await onAssignTeam(
-        targetUser.id,
-        selectedTeamId === 0 ? null : selectedTeamId,
-      );
+      await onAssignTeam(targetUser.id, selectedTeamId);
       onClose();
     } catch (e) {
       setError(getErrorMessage(e));
@@ -933,7 +1810,6 @@ function AssignTeamModal({
   };
 
   if (!targetUser) return null;
-
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Assign Team">
       <div className="space-y-4">
@@ -946,30 +1822,35 @@ function AssignTeamModal({
           </p>
           {targetUser.team && (
             <p className="text-xs text-slate-400 mt-1">
-              Current team: {targetUser.team.name}
+              Current team:{" "}
+              <span className="font-medium">{targetUser.team.name}</span>
             </p>
           )}
         </div>
-
         <Select
           label="Team"
           value={String(selectedTeamId)}
           onChange={(e) => setSelectedTeamId(parseInt(e.target.value) || 0)}
         >
-          <option value="0">— No Team —</option>
-          {teams.map((t) => (
+          <option value="0">Select a new team</option>
+          {availableTeams.map((t) => (
             <option key={t.id} value={String(t.id)}>
               {t.name}
             </option>
           ))}
         </Select>
-
+        {availableTeams.length === 0 && (
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-xl p-3">
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              No other teams available for reassignment.
+            </p>
+          </div>
+        )}
         {error && (
           <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           </div>
         )}
-
         <div className="flex gap-3 pt-1">
           <Button
             variant="secondary"
@@ -982,133 +1863,13 @@ function AssignTeamModal({
             className="flex-1 justify-center"
             onClick={handleSubmit}
             loading={loading}
+            disabled={availableTeams.length === 0}
           >
             Assign Team
           </Button>
         </div>
       </div>
     </Modal>
-  );
-}
-
-/* ──────────────────────────────────────────────────────────
-   USER ACTIONS DROPDOWN
-   ────────────────────────────────────────────────────────── */
-
-function UserActionsDropdown({
-  user,
-  actorRole,
-  currentUserId,
-  onChangePassword,
-  onChangeRole,
-  onAssignTeam,
-  onToggleStatus,
-}: {
-  user: User;
-  actorRole: Role;
-  currentUserId: number | undefined;
-  onChangePassword: (u: User) => void;
-  onChangeRole: (u: User) => void;
-  onAssignTeam: (u: User) => void;
-  onToggleStatus: (u: User) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  const canManagePassword = canChangePassword(actorRole, user.role);
-  const canManageRole =
-    actorRole === "SUPER_ADMIN" ||
-    (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
-  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
-  const canToggle =
-    canDeactivate(actorRole, user.role) && user.id !== currentUserId;
-
-  const showRoleChange =
-    canManageRole && user.role !== "SUPER_ADMIN" && user.role !== "ADMIN"
-      ? actorRole === "ADMIN"
-        ? true
-        : true
-      : actorRole === "SUPER_ADMIN" && user.role !== "SUPER_ADMIN";
-
-  const hasAnyAction =
-    canManagePassword || showRoleChange || canManageTeam || canToggle;
-
-  if (!hasAnyAction) return null;
-
-  return (
-    <div className="relative">
-      <button
-        className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50 hover:border-slate-200 dark:hover:border-slate-600 transition-all"
-        onClick={() => setOpen(!open)}
-      >
-        <DotsIcon />
-      </button>
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1.5 w-52 bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-xl shadow-xl shadow-slate-900/5 dark:shadow-black/30 z-50 p-1.5">
-            {canManagePassword && (
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  onChangePassword(user);
-                }}
-                className="w-full text-left px-3 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors flex items-center gap-2.5"
-              >
-                <KeyIcon />
-                Change Password
-              </button>
-            )}
-
-            {showRoleChange && (
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  onChangeRole(user);
-                }}
-                className="w-full text-left px-3 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors flex items-center gap-2.5"
-              >
-                <ShieldIcon />
-                Change Role
-              </button>
-            )}
-
-            {canManageTeam && (
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  onAssignTeam(user);
-                }}
-                className="w-full text-left px-3 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors flex items-center gap-2.5"
-              >
-                <UsersGroupIcon />
-                Assign Team
-              </button>
-            )}
-
-            {canToggle && (
-              <>
-                <div className="mx-2 my-1 h-px bg-slate-100 dark:bg-slate-700" />
-                <button
-                  onClick={() => {
-                    setOpen(false);
-                    onToggleStatus(user);
-                  }}
-                  className={`w-full text-left px-3 py-2.5 text-sm font-medium rounded-lg transition-colors flex items-center gap-2.5 ${
-                    user.status === "ACTIVE"
-                      ? "text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
-                      : "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
-                  }`}
-                >
-                  <ToggleIcon active={user.status === "ACTIVE"} />
-                  {user.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                </button>
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </div>
   );
 }
 
@@ -1139,12 +1900,20 @@ export default function UsersPage() {
   const [statusFilter, setStatus] = useState("ALL");
   const [teamFilter, setTeamFilter] = useState("ALL");
 
-  // Modal states
+  // NEW: pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(10);
+
+  // NEW: sort state
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
   const [showCreate, setShowCreate] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
   const [genPassword, setGenPwd] = useState("");
   const [newUser, setNewUser] = useState<Partial<User> | null>(null);
 
+  const [showDetailModal, setShowDetailModal] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showChangeRole, setShowChangeRole] = useState(false);
   const [showAssignTeam, setShowAssignTeam] = useState(false);
@@ -1153,32 +1922,155 @@ export default function UsersPage() {
   const actorRole = (currentUser?.role ?? "USER") as Role;
   const actorTeamId = currentUser?.teamId ?? null;
 
-  // Filter
-  const filtered = users.filter((u) => {
-    const q =
-      `${u.userId ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
-    const matchesSearch = q.includes(search.toLowerCase());
-    const matchesRole =
-      roleFilter === "ALL" ||
-      (roleFilter.startsWith("CUSTOM_")
-        ? u.userRoleId === parseInt(roleFilter.replace("CUSTOM_", ""))
-        : u.role === roleFilter);
-    const matchesStatus = statusFilter === "ALL" || u.status === statusFilter;
-    const matchesTeam =
-      teamFilter === "ALL" ||
-      (teamFilter === "NONE" ? !u.teamId : u.teamId === parseInt(teamFilter));
-    return matchesSearch && matchesRole && matchesStatus && matchesTeam;
-  });
+  // NEW: sort handler — toggles direction if same key, resets to asc for new key
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
+  // Filter change handlers that reset pagination
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    setCurrentPage(1);
+  };
+
+  const handleRoleChange = (value: string) => {
+    setRole(value);
+    setCurrentPage(1);
+  };
+
+  const handleStatusChange = (value: StatusFilterChip) => {
+    setStatus(value);
+    setCurrentPage(1);
+  };
+
+  const handleTeamChange = (value: string) => {
+    setTeamFilter(value);
+    setCurrentPage(1);
+  };
+
+  // NEW: isFiltering now also checks if any filter is active (used for clear button)
+  const isFiltering =
+    !!search ||
+    roleFilter !== "ALL" ||
+    statusFilter !== "ALL" ||
+    teamFilter !== "ALL";
+
+  // NEW: clear all filters at once
+  const handleClearFilters = () => {
+    setSearch("");
+    setRole("ALL");
+    setStatus("ALL");
+    setTeamFilter("ALL");
+    setCurrentPage(1);
+  };
+
+  // Filter + sort pipeline using useMemo for performance
+  const filtered = useMemo(() => {
+    const base = users.filter((u) => {
+      const q =
+        `${u.userId ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
+      const matchesSearch = q.includes(search.toLowerCase());
+      const matchesRole =
+        roleFilter === "ALL" ||
+        (roleFilter.startsWith("CUSTOM_")
+          ? u.userRoleId === parseInt(roleFilter.replace("CUSTOM_", ""))
+          : u.role === roleFilter);
+      const matchesStatus = statusFilter === "ALL" || u.status === statusFilter;
+      const matchesTeam =
+        teamFilter === "ALL" ||
+        (teamFilter === "NONE" ? !u.teamId : u.teamId === parseInt(teamFilter));
+      return matchesSearch && matchesRole && matchesStatus && matchesTeam;
+    });
+
+    // NEW: sorting
+    return [...base].sort((a, b) => {
+      let aVal = "";
+      let bVal = "";
+      switch (sortKey) {
+        case "name":
+          aVal = getDisplayName(a).toLowerCase();
+          bVal = getDisplayName(b).toLowerCase();
+          break;
+        case "role":
+          aVal = getUserRoleLabel(a).toLowerCase();
+          bVal = getUserRoleLabel(b).toLowerCase();
+          break;
+        case "team":
+          aVal = (a.team?.name ?? "").toLowerCase();
+          bVal = (b.team?.name ?? "").toLowerCase();
+          break;
+        case "status":
+          aVal = a.status;
+          bVal = b.status;
+          break;
+        case "created":
+          aVal = a.createdAt ?? "";
+          bVal = b.createdAt ?? "";
+          break;
+      }
+      const cmp = aVal.localeCompare(bVal);
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [users, search, roleFilter, statusFilter, teamFilter, sortKey, sortDir]);
+
+  // NEW: Pagination logic
+  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const startIdx = (currentPage - 1) * itemsPerPage;
+  const endIdx = startIdx + itemsPerPage;
+  const paginatedData = filtered.slice(startIdx, endIdx);
+
+  // Generate page numbers for pagination
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    const maxVisible = 7; // Show max 7 page buttons
+
+    if (totalPages <= maxVisible) {
+      // Show all pages if total is small
+      for (let i = 1; i <= totalPages; i++) {
+        pages.push(i);
+      }
+    } else {
+      // Always show first page
+      pages.push(1);
+
+      if (currentPage > 3) {
+        pages.push("...");
+      }
+
+      // Show pages around current page
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+
+      for (let i = start; i <= end; i++) {
+        pages.push(i);
+      }
+
+      if (currentPage < totalPages - 2) {
+        pages.push("...");
+      }
+
+      // Always show last page
+      pages.push(totalPages);
+    }
+
+    return pages;
+  };
 
   const activeCount = users.filter((u) => u.status === "ACTIVE").length;
   const inactiveCount = users.filter((u) => u.status === "INACTIVE").length;
+  const adminCount = users.filter((u) => u.role === "ADMIN").length;
+  const userCount = users.filter((u) => u.role === "USER").length;
 
   const actorTeamName =
     actorRole === "ADMIN" && currentUser?.teamId
       ? (teams.find((team) => team.id === currentUser.teamId)?.name ??
         "Your Team")
       : null;
-
   const headerTitle =
     actorRole === "SUPER_ADMIN"
       ? "User Management"
@@ -1186,13 +2078,68 @@ export default function UsersPage() {
         ? "Team Members"
         : "Users";
 
-  const isFiltering =
-    search ||
-    roleFilter !== "ALL" ||
-    statusFilter !== "ALL" ||
-    teamFilter !== "ALL";
+  const statCards = [
+    {
+      label: "Total Users",
+      value: users.length,
+      icon: <UsersIcon />,
+      gradient:
+        "from-indigo-50 to-blue-50 dark:from-indigo-950/60 dark:to-blue-950/60",
+      border: "border-indigo-200 dark:border-indigo-900/50",
+      numClass: "text-indigo-800 dark:text-indigo-300",
+      lblClass: "text-indigo-600 dark:text-indigo-500",
+      iconClass: "text-indigo-400 dark:text-indigo-600",
+    },
+    {
+      label: "Active",
+      value: activeCount,
+      icon: <ActiveIcon />,
+      gradient:
+        "from-emerald-50 to-teal-50 dark:from-emerald-950/60 dark:to-teal-950/60",
+      border: "border-emerald-200 dark:border-emerald-900/50",
+      numClass: "text-emerald-800 dark:text-emerald-300",
+      lblClass: "text-emerald-600 dark:text-emerald-500",
+      iconClass: "text-emerald-400 dark:text-emerald-600",
+    },
+    {
+      label: "Inactive",
+      value: inactiveCount,
+      icon: <InactiveIcon />,
+      gradient:
+        inactiveCount > 0
+          ? "from-rose-50 to-orange-50 dark:from-rose-950/60 dark:to-orange-950/60"
+          : "from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-900",
+      border:
+        inactiveCount > 0
+          ? "border-rose-200 dark:border-rose-900/50"
+          : "border-slate-200 dark:border-slate-800",
+      // NEW: grey out inactive card when count is 0
+      numClass:
+        inactiveCount > 0
+          ? "text-rose-800 dark:text-rose-300"
+          : "text-slate-400 dark:text-slate-600",
+      lblClass:
+        inactiveCount > 0
+          ? "text-rose-600 dark:text-rose-500"
+          : "text-slate-400 dark:text-slate-600",
+      iconClass:
+        inactiveCount > 0
+          ? "text-rose-400 dark:text-rose-600"
+          : "text-slate-300 dark:text-slate-700",
+    },
+    {
+      label: actorRole === "SUPER_ADMIN" ? "Admins" : "Users",
+      value: actorRole === "SUPER_ADMIN" ? adminCount : userCount,
+      icon: <AdminIcon />,
+      gradient:
+        "from-sky-50 to-cyan-50 dark:from-sky-950/60 dark:to-cyan-950/60",
+      border: "border-sky-200 dark:border-sky-900/50",
+      numClass: "text-sky-800 dark:text-sky-300",
+      lblClass: "text-sky-600 dark:text-sky-500",
+      iconClass: "text-sky-400 dark:text-sky-600",
+    },
+  ];
 
-  // Handlers
   const handleToggle = async (u: User) => {
     const name = getDisplayName(u);
     try {
@@ -1216,16 +2163,18 @@ export default function UsersPage() {
     refetch();
   };
 
+  const handleOpenViewDetails = (u: User) => {
+    setTargetUser(u);
+    setShowDetailModal(true);
+  };
   const handleOpenChangePassword = (u: User) => {
     setTargetUser(u);
     setShowChangePassword(true);
   };
-
   const handleOpenChangeRole = (u: User) => {
     setTargetUser(u);
     setShowChangeRole(true);
   };
-
   const handleOpenAssignTeam = (u: User) => {
     setTargetUser(u);
     setShowAssignTeam(true);
@@ -1235,202 +2184,147 @@ export default function UsersPage() {
     await changePassword(userId, newPassword);
     show("Password changed successfully", "success");
   };
-
   const handleResetPassword = async (userId: number) => {
     const result = await resetPassword(userId);
     show("Password reset successfully", "success");
     return result;
   };
-
   const handleChangeRole = async (userId: number, newRole: string) => {
     await changeRole(userId, newRole);
     show("Role updated successfully", "success");
     refetch();
   };
-
   const handleAssignTeam = async (userId: number, teamId: number | null) => {
     await assignTeam(userId, teamId);
     show("Team assignment updated", "success");
     refetch();
   };
 
-  // Filter select shared classes
+  // NEW: Export CSV — exports currently filtered list
+  const handleExportCSV = () => {
+    exportToCSV(filtered, `users-${new Date().toISOString().slice(0, 10)}.csv`);
+    show(
+      `Exported ${filtered.length} user${filtered.length !== 1 ? "s" : ""} to CSV`,
+      "success",
+    );
+  };
+
   const filterSelectClasses =
     "px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 hover:border-slate-300 dark:hover:border-slate-600 transition-all cursor-pointer";
 
-  // Table columns
-  const columns = [
-    {
-      key: "user",
-      header: "User",
-      render: (u: User) => {
-        const displayName = getDisplayName(u);
-        const hasName = u.firstName || u.lastName;
-        return (
-          <div className="flex items-center gap-3 group">
-            <EnhancedAvatar user={u} />
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-slate-900 dark:text-white truncate leading-tight">
-                {hasName ? displayName : u.userId}
-              </p>
-              {hasName && u.userId && (
-                <p className="text-[11px] font-medium text-slate-400 mt-0.5 tracking-wide">
-                  {u.userId}
-                </p>
-              )}
-            </div>
-          </div>
-        );
-      },
-    },
-    {
-      key: "team",
-      header: "Team",
-      render: (u: User) => (
-        <span className="text-sm text-slate-600 dark:text-slate-300">
-          {u.team?.name ?? (
-            <span className="text-slate-400 italic">No team</span>
-          )}
-        </span>
-      ),
-    },
-    {
-      key: "role",
-      header: "Role",
-      render: (u: User) => (
-        <Badge className={getUserRoleBadgeColor(u)}>
-          {getUserRoleLabel(u)}
-        </Badge>
-      ),
-    },
-    {
-      key: "status",
-      header: "Status",
-      render: (u: User) => (
-        <div className="flex items-center gap-2">
-          <StatusDot active={u.status === "ACTIVE"} />
-          <span
-            className={`text-sm font-medium ${
-              u.status === "ACTIVE"
-                ? "text-slate-700 dark:text-slate-300"
-                : "text-slate-400"
-            }`}
-          >
-            {u.status === "ACTIVE" ? "Active" : "Inactive"}
-          </span>
-        </div>
-      ),
-    },
-    {
-      key: "created",
-      header: "Created",
-      render: (u: User) => (
-        <span className="text-xs font-medium text-slate-400">
-          {formatDate(u.createdAt)}
-        </span>
-      ),
-    },
-    {
-      key: "actions",
-      header: "",
-      className: "text-right",
-      render: (u: User) => (
-        <UserActionsDropdown
-          user={u}
-          actorRole={actorRole}
-          currentUserId={currentUser?.id}
-          onChangePassword={handleOpenChangePassword}
-          onChangeRole={handleOpenChangeRole}
-          onAssignTeam={handleOpenAssignTeam}
-          onToggleStatus={handleToggle}
-        />
-      ),
-    },
-  ];
-
   return (
-    <div className="space-y-5 max-w-screen-xl">
-      {/* ─── Header ─── */}
-      <div className="flex items-start justify-between">
+    <div className="h-full w-full min-h-0 px-6 py-5 text-xs flex flex-col gap-5">
+      {/* ── Header ── */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
             {headerTitle}
-          </h2>
-          <div className="flex flex-wrap items-center gap-2 mt-2.5">
-            {/* Total pill */}
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
-              <span className="font-bold text-slate-700 dark:text-slate-200">
-                {users.length}
-              </span>
-              total
-            </span>
-            {/* Active pill */}
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
-              <StatusDot active size="small" />
-              <span className="font-semibold">{activeCount}</span>
-              active
-            </span>
-            {/* Inactive pill */}
-            {inactiveCount > 0 && (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
-                <StatusDot active={false} size="small" />
-                <span className="font-semibold">{inactiveCount}</span>
-                inactive
-              </span>
-            )}
-            {/* Team pill for admins */}
-            {actorTeamName && (
-              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
-                {actorTeamName}
-              </span>
-            )}
-          </div>
+          </h1>
+          <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+            Manage user accounts, roles, and team assignments
+          </p>
         </div>
-
-        {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
-          <Button onClick={() => setShowCreate(true)}>
-            <PlusIcon />
-            Add User
-          </Button>
-        )}
-      </div>
-
-      {/* ─── Filters ─── */}
-      <Card className="p-3">
         <div className="flex flex-wrap items-center gap-2.5">
           <SearchInput
             value={search}
-            onChange={setSearch}
-            placeholder="Search by ID or name…"
-            className="flex-1 min-w-48"
+            onChange={handleSearchChange}
+            placeholder="Search by ID, name, or role..."
+            className="w-full sm:min-w-64 lg:w-72"
+            autoComplete="off"
           />
-          <select
-            value={roleFilter}
-            onChange={(e) => setRole(e.target.value)}
-            className={filterSelectClasses}
+
+          {/* NEW: Export CSV — exports the currently filtered list */}
+          <button
+            onClick={handleExportCSV}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:border-emerald-300 dark:hover:border-emerald-700 transition-all"
           >
-            <option value="ALL">All Roles</option>
-            <option value="ADMIN">Admin</option>
-            <option value="USER">User</option>
-            {customRoles.map((r) => (
-              <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatus(e.target.value)}
-            className={filterSelectClasses}
+            <DownloadIcon />
+            Export CSV
+          </button>
+
+          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
+            <Button onClick={() => setShowCreate(true)}>
+              <PlusIcon /> Add User
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Stat Cards (with icons) ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        {statCards.map((s) => (
+          <div
+            key={s.label}
+            className={`rounded-2xl p-4 flex items-center justify-between bg-gradient-to-br ${s.gradient} border ${s.border} hover:shadow-md transition-shadow`}
           >
-            <option value="ALL">All Status</option>
-            <option value="ACTIVE">Active</option>
-            <option value="INACTIVE">Inactive</option>
-          </select>
+            <div>
+              <div className={`text-2xl font-bold leading-none ${s.numClass}`}>
+                {s.value}
+              </div>
+              <div className={`text-xs mt-1 font-semibold ${s.lblClass}`}>
+                {s.label}
+              </div>
+            </div>
+            {/* NEW: icon on right side of stat card */}
+            <div className={`${s.iconClass} opacity-60`}>{s.icon}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Status Chips ── */}
+      <div className="flex flex-wrap items-center gap-2">
+        {STATUS_FILTER_CHIPS.map((chip) => {
+          const count =
+            chip === "ALL"
+              ? users.length
+              : users.filter((u) => u.status === chip).length;
+          const active = statusFilter === chip;
+          const styles = STATUS_FILTER_STYLES[chip];
+          return (
+            <button
+              key={chip}
+              onClick={() => handleStatusChange(chip)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 whitespace-nowrap ${active ? styles.active : styles.base}`}
+            >
+              <span className="font-mono font-bold">{count}</span>
+              {chip === "ALL"
+                ? "All"
+                : chip === "ACTIVE"
+                  ? "Active"
+                  : "Inactive"}
+            </button>
+          );
+        })}
+        {actorTeamName && (
+          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/40">
+            Team: {actorTeamName}
+          </span>
+        )}
+      </div>
+
+      {/* ── Filter Controls ── */}
+      <Card className="p-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {actorRole !== "ADMIN" && (
+            <select
+              value={roleFilter}
+              onChange={(e) => handleRoleChange(e.target.value)}
+              className={filterSelectClasses}
+            >
+              <option value="ALL">All Roles</option>
+              <option value="ADMIN">Admin</option>
+              <option value="USER">User</option>
+              {customRoles.map((r) => (
+                <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          )}
           {actorRole === "SUPER_ADMIN" && (
             <select
               value={teamFilter}
-              onChange={(e) => setTeamFilter(e.target.value)}
+              onChange={(e) => handleTeamChange(e.target.value)}
               className={filterSelectClasses}
             >
               <option value="ALL">All Teams</option>
@@ -1443,36 +2337,96 @@ export default function UsersPage() {
             </select>
           )}
 
-          {/* Filter result count badge */}
+          {/* NEW: result count + clear filters button */}
           {isFiltering && (
-            <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
-              {filtered.length} result{filtered.length !== 1 ? "s" : ""}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
+                {filtered.length} result{filtered.length !== 1 ? "s" : ""}
+              </span>
+              <button
+                onClick={handleClearFilters}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 border border-slate-200 dark:border-slate-700 hover:border-red-200 dark:hover:border-red-800 transition-all"
+              >
+                <XIcon /> Clear filters
+              </button>
+            </div>
           )}
         </div>
       </Card>
 
-      {/* ─── Table ─── */}
-      <Card className="overflow-hidden">
-        {error ? (
+      {/* ── Content: List or Grid ── */}
+      {error ? (
+        <Card className="overflow-hidden">
           <EmptyState
             icon="❌"
             title="Failed to load users"
             description={error}
           />
-        ) : (
-          <Table
-            columns={columns}
-            data={filtered}
-            keyExtractor={(u) => u.id}
+        </Card>
+      ) : (
+        // LIST VIEW with sortable columns
+        <Card className="overflow-hidden">
+          <SortableTable
+            data={paginatedData}
             isLoading={isLoading}
-            emptyMessage="No users match your search"
-            emptyIcon="👥"
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={handleSort}
+            currentUserId={currentUser?.id}
+            onViewDetails={handleOpenViewDetails}
           />
-        )}
-      </Card>
+        </Card>
+      )}
 
-      {/* ─── Modals ─── */}
+      {/* ── Pagination ── */}
+      {!error && !isLoading && filtered.length > 0 && totalPages > 1 && (
+        <Card className="p-3">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-600 dark:text-slate-400">
+              Showing {startIdx + 1} to {Math.min(endIdx, filtered.length)} of{" "}
+              {filtered.length} results
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                Previous
+              </button>
+              {getPageNumbers().map((page, idx) => (
+                <button
+                  key={idx}
+                  onClick={() =>
+                    typeof page === "number" && setCurrentPage(page)
+                  }
+                  disabled={page === "..."}
+                  className={`min-w-[2rem] px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    page === currentPage
+                      ? "bg-blue-600 dark:bg-blue-500 text-white shadow-sm"
+                      : page === "..."
+                        ? "text-slate-400 dark:text-slate-600 cursor-default"
+                        : "border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  }`}
+                >
+                  {page}
+                </button>
+              ))}
+              <button
+                onClick={() =>
+                  setCurrentPage((p) => Math.min(totalPages, p + 1))
+                }
+                disabled={currentPage === totalPages}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* ── Modals ── */}
       <CreateUserModal
         isOpen={showCreate}
         onClose={() => setShowCreate(false)}
@@ -1487,6 +2441,24 @@ export default function UsersPage() {
         onClose={() => setShowPwd(false)}
         password={genPassword}
         userData={newUser}
+      />
+
+      {/* FIX: setTargetUser(null) restored on detail modal close */}
+      <UserDetailModal
+        isOpen={showDetailModal}
+        onClose={() => {
+          setShowDetailModal(false);
+          setTargetUser(null);
+        }}
+        user={targetUser}
+        actorRole={actorRole}
+        currentUserId={currentUser?.id}
+        teams={teams}
+        customRoles={customRoles}
+        onChangePassword={handleOpenChangePassword}
+        onChangeRole={handleOpenChangeRole}
+        onAssignTeam={handleOpenAssignTeam}
+        onToggleStatus={handleToggle}
       />
       <ChangePasswordModal
         isOpen={showChangePassword}

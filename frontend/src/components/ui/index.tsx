@@ -388,11 +388,13 @@ export const SearchInput = ({
   onChange,
   placeholder = "Search...",
   className = "",
+  autoComplete = "off",
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   className?: string;
+  autoComplete?: string;
 }) => (
   <div className={`relative ${className}`}>
     <svg
@@ -413,6 +415,7 @@ export const SearchInput = ({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      autoComplete={autoComplete}
       className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0] transition-all"
     />
   </div>
