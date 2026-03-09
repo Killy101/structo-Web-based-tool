@@ -161,7 +161,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  const isBrdRoute = pathname.startsWith("/dashboard/brd");
+  const isBrdRoute = pathname.startsWith("/dashboard/brd") || pathname.startsWith("/dashboard/compare");
 
   const allowedRoles = RESTRICTED_ROUTES[pathname];
   const isUnauthorized =
