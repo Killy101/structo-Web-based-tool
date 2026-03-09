@@ -29,6 +29,9 @@ router.get("/", authenticate, async (req: AuthRequest, res: Response) => {
       } else {
         return res.json({ tasks: [] });
       }
+    } else if (actorRole === "SUPER_ADMIN") {
+      // Super admin sees all tasks across all teams
+      whereClause = {};
     }
 
     const tasks = await prisma.taskAssignment.findMany({
