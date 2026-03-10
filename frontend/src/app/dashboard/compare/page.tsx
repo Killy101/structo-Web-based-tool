@@ -1,6 +1,7 @@
 "use client";
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState } from "react";
 import dynamic from "next/dynamic";
+import { useAuth } from "../../../context/AuthContext";
 
 const ChunkPanel = dynamic(
   () => import("../../../components/compare/ChunkPanel"),
@@ -17,68 +18,88 @@ const MergePanel = dynamic(
 
 type Tab = "chunk" | "compare" | "merge";
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  {
-    id: "chunk",
-    label: "Chunk",
-    icon: (
-      <svg
-        className="w-4 h-4"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M4 6h16M4 10h16M4 14h8M4 18h8"
-        />
-      </svg>
-    ),
-  },
-  {
-    id: "compare",
-    label: "Compare",
-    icon: (
-      <svg
-        className="w-4 h-4"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
-        />
-      </svg>
-    ),
-  },
-  {
-    id: "merge",
-    label: "Merge",
-    icon: (
-      <svg
-        className="w-4 h-4"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-        />
-      </svg>
-    ),
-  },
-];
+/**
+ * Role-based tab access:
+ *   SUPER_ADMIN, MANAGER_QA  → Chunk + Compare + Merge  (can also edit XML)
+ *   MANAGER_QC, ADMIN, USER  → Compare only              (read-only XML)
+ */
+const FULL_ACCESS_ROLES = ["SUPER_ADMIN", "MANAGER_QA"];
 
 export default function ComparePage() {
-  const [activeTab, setActiveTab] = useState<Tab>("chunk");
+  const { user } = useAuth();
+  const hasFullAccess = FULL_ACCESS_ROLES.includes(user?.role ?? "");
+
+  const [activeTab, setActiveTab] = useState<Tab>(
+    hasFullAccess ? "chunk" : "compare",
+  );
+
+  const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    ...(hasFullAccess
+      ? [
+          {
+            id: "chunk" as Tab,
+            label: "Chunk",
+            icon: (
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 6h16M4 10h16M4 14h8M4 18h8"
+                />
+              </svg>
+            ),
+          },
+        ]
+      : []),
+    {
+      id: "compare",
+      label: "Compare",
+      icon: (
+        <svg
+          className="w-4 h-4"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+          />
+        </svg>
+      ),
+    },
+    ...(hasFullAccess
+      ? [
+          {
+            id: "merge" as Tab,
+            label: "Merge",
+            icon: (
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                />
+              </svg>
+            ),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div className="flex flex-col h-full min-h-0 -m-6">
@@ -111,13 +132,31 @@ export default function ComparePage() {
             </React.Fragment>
           );
         })}
+
+        {/* Role badge */}
+        <div className="ml-auto">
+          {hasFullAccess ? (
+            <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
+              {user?.role === "SUPER_ADMIN" ? "Super Admin" : "Updating Team"} · Full Access
+            </span>
+          ) : (
+            <span className="text-[10px] px-2 py-1 rounded-full bg-amber-500/15 text-amber-400 font-medium">
+              {user?.role === "MANAGER_QC"
+                ? "Pre-Production"
+                : user?.role === "ADMIN"
+                  ? "Production"
+                  : "Viewer"}{" "}
+              · Compare Only
+            </span>
+          )}
+        </div>
       </div>
 
       {/* ── Panel content ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden p-4 min-h-0">
-        {activeTab === "chunk" && <ChunkPanel />}
+        {hasFullAccess && activeTab === "chunk" && <ChunkPanel />}
         {activeTab === "compare" && <ComparePanel />}
-        {activeTab === "merge" && <MergePanel />}
+        {hasFullAccess && activeTab === "merge" && <MergePanel />}
       </div>
     </div>
   );

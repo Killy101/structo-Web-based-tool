@@ -22,7 +22,9 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
     "MANAGER_QC",
     "USER",
   ],
-  "/dashboard/compare": ["SUPER_ADMIN"],
+  // SUPER_ADMIN + MANAGER_QA: full access (all tabs, can edit XML)
+  // MANAGER_QC / ADMIN / USER: compare-only, read-only XML
+  "/dashboard/compare": ["SUPER_ADMIN", "MANAGER_QA", "MANAGER_QC", "ADMIN", "USER"],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {

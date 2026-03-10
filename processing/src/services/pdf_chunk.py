@@ -170,3 +170,315 @@ def chunk_pdfs_and_xml(
         "new_pdf_chunk_count": len(new_chunks),
         "xml_chunk_count":     len(xml_chunks),
     }
+
+
+# ── PDF Compare / Merge helpers ────────────────────────────────────────────────
+
+def _text_to_xml(text: str) -> str:
+    """
+    Wrap plain extracted PDF text into a simple XML document so it can be
+    processed by compare_xml / merge_xml.  Each non-empty paragraph becomes a
+    <paragraph> element.
+    """
+    import html as _html
+
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [text.strip()] if text.strip() else ["(empty)"]
+
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<document>"]
+    for i, para in enumerate(paragraphs):
+        escaped = _html.escape(para)
+        lines.append(f'  <paragraph index="{i}">{escaped}</paragraph>')
+    lines.append("</document>")
+    return "\n".join(lines)
+
+
+def compare_pdfs_with_xml(
+    old_pdf_bytes: bytes,
+    new_pdf_bytes: bytes,
+    xml_bytes: bytes,
+) -> dict:
+    """
+    Extract text from two PDF files, run a structural + line-level diff, and
+    include the raw XML file for sidebar reference.
+
+    Returns a dict matching the /compare/diff JSON contract:
+      {
+        "diff":         { additions, removals, modifications, mismatches, summary },
+        "line_diff":    [ … ],
+        "xml_content":  str,   # raw XML for reference display
+      }
+    """
+    from src.services.xml_compare import compare_xml, line_diff as xml_line_diff
+
+    old_text = _extract_pdf_text(old_pdf_bytes)
+    new_text = _extract_pdf_text(new_pdf_bytes)
+
+    # Line-level diff on raw extracted text
+    lines = xml_line_diff(old_text, new_text)
+
+    # Structural diff by wrapping paragraphs in XML
+    old_xml = _text_to_xml(old_text)
+    new_xml = _text_to_xml(new_text)
+    diff = compare_xml(old_xml, new_xml)
+
+    xml_content = ""
+    try:
+        xml_content = xml_bytes.decode("utf-8")
+    except Exception:
+        pass
+
+    return {
+        "diff": diff,
+        "line_diff": lines,
+        "xml_content": xml_content,
+    }
+
+
+def merge_pdfs_with_xml(
+    old_pdf_bytes: bytes,
+    new_pdf_bytes: bytes,
+    xml_bytes: bytes,
+    accept: list,
+    reject: list,
+) -> str:
+    """
+    Merge the PDF-derived XML representations based on accept/reject decisions.
+    The supplied XML file is used as an initial reference; the merge result is
+    the paragraph-level XML derived from the two PDFs with changes applied.
+
+    Returns a merged XML string.
+    """
+    from src.services.xml_compare import merge_xml
+
+    old_text = _extract_pdf_text(old_pdf_bytes)
+    new_text = _extract_pdf_text(new_pdf_bytes)
+
+    old_xml = _text_to_xml(old_text)
+    new_xml = _text_to_xml(new_text)
+
+    return merge_xml(old_xml, new_xml, accept, reject)
+
+
+# ── Span-level PDF change detection ────────────────────────────────────────────
+
+def _extract_pdf_spans(pdf_bytes: bytes) -> list[dict]:
+    """
+    Extract every text span from a PDF with its font / colour metadata.
+
+    Returned span fields
+    ────────────────────
+    text        : str   – raw span text
+    text_norm   : str   – normalised (lower-cased, collapsed whitespace)
+    bold        : bool
+    italic      : bool
+    color       : int   – RGB packed as int (0 = black)
+    is_colored  : bool  – True when the colour is neither black nor white
+    size        : float – font size rounded to 1 dp
+    page        : int   – 1-based page number
+    bbox        : list  – [x0, y0, x1, y1]
+    """
+    spans: list[dict] = []
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page_num, page in enumerate(doc):
+            raw = page.get_text("rawdict", flags=0)
+            for block in raw.get("blocks", []):
+                if block.get("type") != 0:        # 0 = text block
+                    continue
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "")
+                        stripped = text.strip()
+                        if not stripped:
+                            continue
+                        flags  = span.get("flags", 0)
+                        color  = span.get("color", 0)
+                        spans.append({
+                            "text":       text,
+                            "text_norm":  " ".join(stripped.split()).lower(),
+                            "bold":       bool(flags & 0x10),
+                            "italic":     bool(flags & 0x02),
+                            "color":      color,
+                            "is_colored": color not in (0, 16777215),  # not black/white
+                            "size":       round(span.get("size", 12), 1),
+                            "page":       page_num + 1,
+                            "bbox":       list(span.get("bbox", [0, 0, 0, 0])),
+                        })
+        doc.close()
+    except Exception:
+        pass
+    return spans
+
+
+def _find_xml_path_for_text(xml_content: str, search: str) -> str | None:
+    """
+    Return the XPath-like path of the deepest XML element whose concatenated
+    text content contains *search* (case-insensitive).
+    Returns None when no match is found or the XML is invalid.
+    """
+    from xml.etree import ElementTree as ET
+
+    if not xml_content or not search:
+        return None
+    needle = " ".join(search.split()).lower()
+    if not needle:
+        return None
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    def _search(elem: ET.Element, path: str) -> str | None:
+        full = " ".join(("".join(elem.itertext())).split()).lower()
+        if needle not in full:
+            return None
+        for idx, child in enumerate(elem):
+            res = _search(child, f"{path}/{child.tag}[{idx}]")
+            if res:
+                return res
+        return path
+
+    root_path = f"/{root.tag}"
+    for idx, child in enumerate(root):
+        res = _search(child, f"{root_path}/{child.tag}[{idx}]")
+        if res:
+            return res
+    full = " ".join(("".join(root.itertext())).split()).lower()
+    return root_path if needle in full else None
+
+
+def _emphasis_tag(span: dict) -> str | None:
+    """Return a suggested XML emphasis fragment for the given span."""
+    tags: list[str] = []
+    if span.get("bold"):
+        tags.append("b")
+    if span.get("italic"):
+        tags.append("i")
+    if span.get("is_colored"):
+        tags.append("em")
+    if not tags:
+        return None
+    text   = span.get("text", "…").strip()
+    open_  = "".join(f"<{t}>" for t in tags)
+    close_ = "".join(f"</{t}>" for t in reversed(tags))
+    return f"{open_}{text}{close_}"
+
+
+def detect_pdf_changes(
+    old_pdf_bytes: bytes,
+    new_pdf_bytes: bytes,
+    xml_bytes: bytes,
+) -> dict:
+    """
+    Compare OLD and NEW PDFs at the span level and map each difference to its
+    nearest XML element path.
+
+    Change types
+    ────────────
+    addition    – span present only in NEW
+    removal     – span present only in OLD
+    modification – span text changed (replace ratio > 0.3)
+    emphasis    – same text but bold / italic / colour differs
+    mismatch    – structural reordering / significant divergence
+
+    Returns
+    ───────
+    {
+        "changes":     list[dict],
+        "xml_content": str,
+        "summary":     { addition, removal, modification, emphasis, mismatch },
+    }
+    """
+    import difflib
+
+    old_spans   = _extract_pdf_spans(old_pdf_bytes)
+    new_spans   = _extract_pdf_spans(new_pdf_bytes)
+    xml_content = ""
+    try:
+        xml_content = xml_bytes.decode("utf-8")
+    except Exception:
+        pass
+
+    old_norms = [s["text_norm"] for s in old_spans]
+    new_norms = [s["text_norm"] for s in new_spans]
+
+    matcher = difflib.SequenceMatcher(None, old_norms, new_norms, autojunk=False)
+    changes: list[dict] = []
+    cid     = 0
+    summary: dict[str, int] = {
+        "addition": 0, "removal": 0,
+        "modification": 0, "emphasis": 0, "mismatch": 0,
+    }
+
+    def _make(ctype: str, text: str, os_, ns_, page: int) -> dict:
+        nonlocal cid
+        cid += 1
+        xml_path = _find_xml_path_for_text(xml_content, text) if xml_content else None
+        fmt_old = ({"bold": os_["bold"], "italic": os_["italic"],
+                    "color": os_["color"]} if os_ else None)
+        fmt_new = ({"bold": ns_["bold"], "italic": ns_["italic"],
+                    "color": ns_["color"], "is_colored": ns_["is_colored"]}
+                   if ns_ else None)
+        # Build suggested XML replacement
+        if ctype == "modification":
+            sug = ns_["text"].strip() if ns_ else None
+        elif ctype == "emphasis":
+            sug = _emphasis_tag(ns_) if ns_ else None
+        elif ctype == "addition":
+            sug = (_emphasis_tag(ns_) if (ns_ and (ns_["bold"] or ns_["italic"] or ns_["is_colored"]))
+                   else (ns_["text"].strip() if ns_ else None))
+        else:
+            sug = None
+        return {
+            "id":             f"chg_{cid:03d}",
+            "type":           ctype,
+            "text":           text,
+            "old_text":       os_["text"].strip() if os_ else None,
+            "new_text":       ns_["text"].strip() if ns_ else None,
+            "old_formatting": fmt_old,
+            "new_formatting": fmt_new,
+            "xml_path":       xml_path,
+            "page":           page,
+            "suggested_xml":  sug,
+        }
+
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            # Same text — check for formatting (emphasis) changes
+            for k in range(i2 - i1):
+                os_, ns_ = old_spans[i1 + k], new_spans[j1 + k]
+                if (os_["bold"]   != ns_["bold"] or
+                        os_["italic"] != ns_["italic"] or
+                        os_["color"]  != ns_["color"]):
+                    changes.append(_make("emphasis", ns_["text"].strip(), os_, ns_, ns_["page"]))
+                    summary["emphasis"] += 1
+
+        elif op == "insert":
+            for k in range(j1, j2):
+                s = new_spans[k]
+                changes.append(_make("addition", s["text"].strip(), None, s, s["page"]))
+                summary["addition"] += 1
+
+        elif op == "delete":
+            for k in range(i1, i2):
+                s = old_spans[k]
+                changes.append(_make("removal", s["text"].strip(), s, None, s["page"]))
+                summary["removal"] += 1
+
+        elif op == "replace":
+            old_c = old_spans[i1:i2]
+            new_c = new_spans[j1:j2]
+            ot    = " ".join(s["text_norm"] for s in old_c)
+            nt    = " ".join(s["text_norm"] for s in new_c)
+            ratio = difflib.SequenceMatcher(None, ot, nt).ratio()
+            ctype = "modification" if ratio > 0.3 else "mismatch"
+            for k in range(max(len(old_c), len(new_c))):
+                os_ = old_c[k] if k < len(old_c) else None
+                ns_ = new_c[k] if k < len(new_c) else None
+                pivot = ns_ or os_
+                changes.append(_make(ctype, pivot["text"].strip(), os_, ns_, pivot["page"]))
+                summary[ctype] += 1
+
+    return {"changes": changes, "xml_content": xml_content, "summary": summary}
