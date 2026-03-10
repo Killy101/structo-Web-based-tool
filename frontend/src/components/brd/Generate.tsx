@@ -636,8 +636,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null);
     try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "Ready", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData });
-      setSavedToDB(true);
+      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "COMPLETED", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });      setSavedToDB(true);
     } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
     finally { setSaving(false); }
   }
@@ -742,7 +741,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
                 ) : (
                   <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-500/10">
                     <svg className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">Ready</span></p>
+                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">Completed</span></p>
                     <button onClick={()=>setSavedToDB(false)} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
                   </div>
                 )}

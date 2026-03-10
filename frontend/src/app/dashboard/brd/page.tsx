@@ -10,13 +10,14 @@ import {
 import BrdFlow from "@/components/brd/BrdFlow";
 import api from "@/app/lib/api";
 
-type BrdStatus = "Reviewed" | "Ready" | "Processing" | "Draft";
+// DB enum values returned directly from the API
+type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
 
 interface Brd {
   id:          string;
-  title:       string;       // fallback / internal name
-  sourceName?: string;       // from metadata "source name" field
-  contentName?: string;      // from metadata "content name" field
+  title:       string;
+  sourceName?: string;
+  contentName?: string;
   status:      BrdStatus;
   version:     string;
   lastUpdated: string;
@@ -29,22 +30,56 @@ function displayTitle(brd: Brd): string {
   return brd.sourceName?.trim() || brd.contentName?.trim() || brd.title;
 }
 
-const FILTER_CHIPS = ["All", "Processing", "Ready", "Reviewed", "Draft"] as const;
+/** Human-readable label for each DB status enum value */
+const STATUS_LABEL: Record<BrdStatus, string> = {
+  DRAFT:     "On Going",
+  PAUSED:    "Paused",
+  COMPLETED: "Completed",
+  APPROVED:  "Approved",
+  ON_HOLD:   "On Hold",
+};
+
+const FILTER_CHIPS = ["All", "DRAFT", "PAUSED", "COMPLETED", "ON_HOLD"] as const;
 type FilterKey = typeof FILTER_CHIPS[number];
 
+const FILTER_LABEL: Record<FilterKey, string> = {
+  All:       "All",
+  DRAFT:     "On Going",
+  PAUSED:    "Paused",
+  COMPLETED: "Completed",
+  ON_HOLD:   "On Hold",
+};
+
 const STATUS_BADGE: Record<BrdStatus, string> = {
-  Reviewed:   "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
-  Ready:      "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  Processing: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
-  Draft:      "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400",
+  DRAFT:     "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
+  PAUSED:    "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  COMPLETED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+  APPROVED:  "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300",
+  ON_HOLD:   "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400",
+};
+
+const STATUS_DOT: Record<BrdStatus, string> = {
+  DRAFT:     "bg-sky-500 animate-pulse",
+  PAUSED:    "bg-amber-500",
+  COMPLETED: "bg-emerald-600",
+  APPROVED:  "bg-violet-600",
+  ON_HOLD:   "bg-slate-500",
+};
+
+const STATUS_ICON: Record<BrdStatus, string> = {
+  DRAFT:     "▶",
+  PAUSED:    "⏸",
+  COMPLETED: "✓",
+  APPROVED:  "✔",
+  ON_HOLD:   "⏹",
 };
 
 const FILTER_CHIP_STYLES: Record<FilterKey, { base: string; active: string }> = {
-  All:        { base: "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800",                  active: "bg-slate-700 dark:bg-slate-200 text-white dark:text-slate-900 border-slate-700 dark:border-slate-200" },
-  Processing: { base: "border-sky-300 dark:border-sky-800 text-sky-700 dark:text-sky-400 bg-sky-50 dark:bg-sky-900/20",                        active: "bg-sky-500 text-white border-sky-500" },
-  Ready:      { base: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20", active: "bg-emerald-500 text-white border-emerald-500" },
-  Reviewed:   { base: "border-violet-300 dark:border-violet-800 text-violet-700 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/20",       active: "bg-violet-600 text-white border-violet-600" },
-  Draft:      { base: "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-800",                active: "bg-slate-500 text-white border-slate-500" },
+  All:       { base: "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800",                  active: "bg-slate-700 dark:bg-slate-200 text-white dark:text-slate-900 border-slate-700 dark:border-slate-200" },
+  DRAFT:     { base: "border-sky-300 dark:border-sky-800 text-sky-700 dark:text-sky-400 bg-sky-50 dark:bg-sky-900/20",                        active: "bg-sky-500 text-white border-sky-500" },
+  COMPLETED: { base: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20", active: "bg-emerald-500 text-white border-emerald-500" },
+  PAUSED:    { base: "border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20",             active: "bg-amber-500 text-white border-amber-500" },
+  ON_HOLD:   { base: "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-800",                active: "bg-slate-500 text-white border-slate-500" },
 };
 
 // ── Icons ─────────────────────────────────────────────────────────
@@ -62,7 +97,6 @@ const HISTORY_MOCK = (brd: Brd) => [
   { ver: "v1.0",      date: "2025-02-14",    note: "Initial draft published", latest: false },
 ];
 
-// ── Component ─────────────────────────────────────────────────────
 export default function BrdPage() {
   const [brds,         setBrds]         = useState<Brd[]>([]);
   const [loading,      setLoading]      = useState(true);
@@ -74,14 +108,18 @@ export default function BrdPage() {
   const [flowFinalMode,    setFlowFinalMode]    = useState<"generate" | "view">("generate");
   const [flowInitialMeta,  setFlowInitialMeta]  = useState<{ format: "new" | "old"; brdId: string; title: string } | null>(null);
 
-  // ── Fetch BRDs from DB ─────────────────────────────────────────
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   const fetchBrds = useCallback(async () => {
     try {
       setLoading(true);
+      setFetchError(null);
       const res = await api.get<Brd[]>("/brd");
       setBrds(res.data);
-    } catch (err) {
+    } catch (err: any) {
+      const msg = err?.response?.data?.error ?? err?.message ?? "Unknown error";
       console.error("Failed to fetch BRDs:", err);
+      setFetchError(msg);
     } finally {
       setLoading(false);
     }
@@ -91,13 +129,11 @@ export default function BrdPage() {
     fetchBrds();
   }, [fetchBrds]);
 
-  // ── Close BrdFlow and re-fetch ─────────────────────────────────
   const handleFlowClose = useCallback(() => {
     setShowBrdFlow(false);
     fetchBrds();
   }, [fetchBrds]);
 
-  // ── Delete ─────────────────────────────────────────────────────
   const handleRemove = async (id: string) => {
     try {
       await api.delete(`/brd/${id}`);
@@ -134,25 +170,16 @@ export default function BrdPage() {
       icon: <svg className="w-5 h-5 text-indigo-700 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>,
     },
     {
-      label: "Reviewed", value: statusCounts["Reviewed"] || 0,
-      gradient: "from-violet-50 to-purple-50 dark:from-violet-950/60 dark:to-purple-950/60",
-      border: "border-violet-200 dark:border-violet-900/50",
-      numClass: "text-violet-800 dark:text-violet-300",
-      lblClass: "text-violet-600 dark:text-violet-500",
-      iconBg: "bg-violet-100 dark:bg-violet-900/50",
-      icon: <svg className="w-5 h-5 text-violet-700 dark:text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
-    },
-    {
-      label: "Ready", value: statusCounts["Ready"] || 0,
+      label: "Completed", value: statusCounts["COMPLETED"] || 0,
       gradient: "from-emerald-50 to-teal-50 dark:from-emerald-950/60 dark:to-teal-950/60",
       border: "border-emerald-200 dark:border-emerald-900/50",
       numClass: "text-emerald-800 dark:text-emerald-300",
       lblClass: "text-emerald-600 dark:text-emerald-500",
       iconBg: "bg-emerald-100 dark:bg-emerald-900/50",
-      icon: <svg className="w-5 h-5 text-emerald-700 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M5 13l4 4L19 7" /></svg>,
+      icon: <svg className="w-5 h-5 text-emerald-700 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
     },
     {
-      label: "Processing", value: statusCounts["Processing"] || 0,
+      label: "On Going", value: statusCounts["DRAFT"] || 0,
       gradient: "from-sky-50 to-cyan-50 dark:from-sky-950/60 dark:to-cyan-950/60",
       border: "border-sky-200 dark:border-sky-900/50",
       numClass: "text-sky-800 dark:text-sky-300",
@@ -160,9 +187,17 @@ export default function BrdPage() {
       iconBg: "bg-sky-100 dark:bg-sky-900/50",
       icon: <svg className="w-5 h-5 text-sky-600 dark:text-sky-400 animate-spin" style={{ animationDuration: "3s" }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>,
     },
+    {
+      label: "Paused", value: statusCounts["PAUSED"] || 0,
+      gradient: "from-amber-50 to-orange-50 dark:from-amber-950/60 dark:to-orange-950/60",
+      border: "border-amber-200 dark:border-amber-900/50",
+      numClass: "text-amber-800 dark:text-amber-300",
+      lblClass: "text-amber-600 dark:text-amber-500",
+      iconBg: "bg-amber-100 dark:bg-amber-900/50",
+      icon: <svg className="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
+    },
   ];
 
-  // ── BrdFlow shown fullscreen ───────────────────────────────────
   if (showBrdFlow) {
     return (
       <div className="h-full w-full">
@@ -207,6 +242,13 @@ export default function BrdPage() {
         </div>
       </div>
 
+      {/* ── Fetch Error ── */}
+      {fetchError && (
+        <div className="px-4 py-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-xs font-medium">
+          ⚠ Backend error: <span className="font-mono">{fetchError}</span>
+        </div>
+      )}
+
       {/* ── Stat Cards ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         {statCards.map((s) => (
@@ -235,7 +277,7 @@ export default function BrdPage() {
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 whitespace-nowrap ${on ? styles.active : styles.base}`}
             >
               <span className="font-mono font-bold">{count}</span>
-              {chip}
+              {FILTER_LABEL[chip]}
             </button>
           );
         })}
@@ -281,6 +323,7 @@ export default function BrdPage() {
               ) : filtered.map((brd, idx) => {
                 const name = displayTitle(brd);
                 const hasSourceLabel = !!(brd.sourceName?.trim() || brd.contentName?.trim());
+                const isLocked = brd.status !== "DRAFT" && brd.status !== "COMPLETED" && brd.status !== "APPROVED";
                 return (
                   <tr
                     key={brd.id}
@@ -299,7 +342,6 @@ export default function BrdPage() {
                         <span className="text-xs font-medium text-slate-900 dark:text-slate-100 leading-snug line-clamp-2" title={name}>
                           {name}
                         </span>
-                        {/* If the display name differs from the internal title, show the internal title as a subtle sub-label */}
                         {hasSourceLabel && brd.title && brd.title !== name && (
                           <span className="text-[10px] text-slate-400 dark:text-slate-500 font-normal truncate" title={brd.title}>
                             {brd.title}
@@ -316,13 +358,8 @@ export default function BrdPage() {
                     {/* Status */}
                     <td className="px-4 py-3.5 whitespace-nowrap text-center">
                       <Badge className={`inline-flex items-center gap-1.5 font-medium ${STATUS_BADGE[brd.status]}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                          brd.status === "Processing" ? "bg-sky-500 animate-pulse"
-                          : brd.status === "Reviewed" ? "bg-violet-600"
-                          : brd.status === "Ready"    ? "bg-emerald-600"
-                          : "bg-slate-500"
-                        }`} />
-                        {brd.status}
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[brd.status]}`} />
+                        {STATUS_ICON[brd.status]} {STATUS_LABEL[brd.status]}
                       </Badge>
                     </td>
 
@@ -342,24 +379,28 @@ export default function BrdPage() {
                     <td className="px-4 py-3.5 whitespace-nowrap text-center">
                       <div className="flex items-center justify-center gap-1.5">
                         <button
+                          disabled={isLocked}
                           onClick={() => {
                             setFlowFinalMode("view");
                             setFlowInitialStep(6);
                             setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name });
                             setShowBrdFlow(true);
                           }}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all"
+                          title={isLocked ? "Still processing…" : "View BRD"}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                         >
                           <EyeIcon /> View
                         </button>
                         <button
+                          disabled={isLocked}
                           onClick={() => {
                             setFlowFinalMode("generate");
                             setFlowInitialStep(6);
                             setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name });
                             setShowBrdFlow(true);
                           }}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
+                          title={isLocked ? "Still processing…" : "Edit BRD"}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                         >
                           <EditIcon /> Edit
                         </button>

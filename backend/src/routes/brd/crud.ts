@@ -4,6 +4,8 @@ import prisma from "../../lib/prisma";
 
 const router = Router();
 
+const VALID_STATUSES = ["DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"];
+
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
 router.get("/", async (_req: Request, res: Response) => {
   try {
@@ -24,15 +26,40 @@ router.get("/", async (_req: Request, res: Response) => {
     });
 
     const data = brds.map((b) => {
-      // geography lives inside the metadata JSON blob
       const meta = b.sections?.metadata as Record<string, unknown> | null;
-      const geography = (meta?.geography as string) ?? "—";
+
+      const geography     = (meta?.geography              as string) ?? "—";
+      const categoryName  = (meta?.content_category_name  as string) ?? "";
+      const documentTitle = (meta?.document_title         as string) ?? "";
+
+      // Rebuild the specific title the same way upload.ts does, so the list
+      // always shows the most descriptive name even if b.title is stale.
+      let displayName = b.title;
+      if (categoryName && documentTitle) {
+        const catLower = categoryName.toLowerCase();
+        const docLower = documentTitle.toLowerCase();
+        const isRedundant =
+          catLower === docLower ||
+          catLower.includes(docLower) ||
+          docLower.includes(catLower);
+
+        displayName = isRedundant
+          ? (categoryName.length >= documentTitle.length ? categoryName : documentTitle)
+          : `${categoryName} - ${documentTitle}`;
+      } else if (categoryName) {
+        displayName = categoryName;
+      } else if (documentTitle) {
+        displayName = documentTitle;
+      }
+
+      // Capitalise first letter
+      displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
 
       return {
         id:          b.brdId,
-        title:       b.title,
+        title:       displayName,   // combined specific title shown in the list
         format:      b.format === "OLD" ? "old" : "new",
-        status:      mapStatus(b.status),
+        status:      b.status,      // raw enum: DRAFT | PAUSED | COMPLETED | APPROVED | ON_HOLD
         version:     "v1.0",
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
@@ -50,15 +77,13 @@ router.get("/", async (_req: Request, res: Response) => {
 router.get("/next-id", async (_req: Request, res: Response) => {
   try {
     const count = await prisma.brd.count();
-    const next  = String(count + 1).padStart(3, "0");
-    return res.json({ nextId: `BRD-${next}` });
+    return res.json({ nextId: `BRD-${String(count + 1).padStart(3, "0")}` });
   } catch (err) {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // ── GET /brd/:brdId — single BRD with all section blobs ───────────────────
-// Used by View/Edit flow to load existing BRD data into the form steps
 router.get("/:brdId", async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
@@ -67,14 +92,37 @@ router.get("/:brdId", async (req: Request, res: Response) => {
     });
     if (!brd) return res.status(404).json({ error: "BRD not found" });
 
+    const meta          = brd.sections?.metadata as Record<string, unknown> | null;
+    const categoryName  = (meta?.content_category_name as string) ?? "";
+    const documentTitle = (meta?.document_title        as string) ?? "";
+
+    let displayName = brd.title;
+    if (categoryName && documentTitle) {
+      const catLower = categoryName.toLowerCase();
+      const docLower = documentTitle.toLowerCase();
+      const isRedundant =
+        catLower === docLower ||
+        catLower.includes(docLower) ||
+        docLower.includes(catLower);
+
+      displayName = isRedundant
+        ? (categoryName.length >= documentTitle.length ? categoryName : documentTitle)
+        : `${categoryName} - ${documentTitle}`;
+    } else if (categoryName) {
+      displayName = categoryName;
+    } else if (documentTitle) {
+      displayName = documentTitle;
+    }
+
+    displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+
     return res.json({
       id:             brd.brdId,
-      title:          brd.title,
+      title:          displayName,
       format:         brd.format === "OLD" ? "old" : "new",
-      status:         mapStatus(brd.status),
+      status:         brd.status,
       version:        "v1.0",
       lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
-      // All section blobs returned as-is — frontend uses them directly
       scope:          brd.sections?.scope          ?? null,
       metadata:       brd.sections?.metadata       ?? null,
       toc:            brd.sections?.toc            ?? null,
@@ -102,11 +150,18 @@ router.delete("/:brdId", async (req: Request, res: Response) => {
 router.patch("/:brdId", async (req: Request, res: Response) => {
   try {
     const { status, title } = req.body;
+
+    if (status && !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({
+        error: `Invalid status: "${status}". Must be one of: ${VALID_STATUSES.join(", ")}`,
+      });
+    }
+
     const brd = await prisma.brd.update({
       where: { brdId: String(req.params.brdId) },
       data: {
         ...(title  && { title }),
-        ...(status && { status }),
+        ...(status && { status: status as any }),
       },
     });
     return res.json({ success: true, brdId: brd.brdId });
@@ -114,16 +169,5 @@ router.patch("/:brdId", async (req: Request, res: Response) => {
     return res.status(404).json({ error: "BRD not found" });
   }
 });
-
-// ── Helper ─────────────────────────────────────────────────────────────────
-function mapStatus(s: string): string {
-  switch (s) {
-    case "APPROVED":  return "Reviewed";
-    case "IN_REVIEW": return "Ready";
-    case "DRAFT":     return "Processing";
-    case "ARCHIVED":  return "Draft";
-    default:          return "Draft";
-  }
-}
 
 export default router;

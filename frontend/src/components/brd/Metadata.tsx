@@ -201,7 +201,10 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function stripQuotes(value: string): string {
+  return value.trim().replace(/^["']+|["']+$/g, "").trim();
+}
 
 function buildMetadataValues(
   format: Format,
@@ -209,14 +212,14 @@ function buildMetadataValues(
 ): Record<string, string> {
   if (!initialData) return {};
 
-  // Helper: safely get a string field from the extractor output
+  // Helper: safely get a string field, stripping surrounding quotes
   const t = (key: string): string =>
-    typeof initialData[key] === "string" ? (initialData[key] as string).trim() : "";
+    typeof initialData[key] === "string" ? stripQuotes(initialData[key] as string) : "";
 
   if (format === "old") {
     return {
       sourceName:      t("content_category_name") || t("document_title"),
-      sourceType:      t("source_type"),        // FIX: dedicated field, not version
+      sourceType:      t("source_type"),
       publicationDate: t("publication_date"),
       lastUpdatedDate: t("last_updated_date"),
       processingDate:  t("processing_date"),
@@ -224,7 +227,7 @@ function buildMetadataValues(
       contentUrl:      t("content_uri"),
       geography:       t("geography"),
       language:        t("language"),
-      payloadSubtype:  t("payload_subtype"),     // FIX: dedicated field, not version
+      payloadSubtype:  t("payload_subtype"),
       status:          t("status"),
     };
   }

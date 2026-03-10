@@ -177,10 +177,11 @@ enum BrdFormat {
 }
 
 enum BrdStatus {
-  DRAFT      // uploaded, not yet saved by user  → "Processing"
-  IN_REVIEW  // user saved all sections          → "Ready"
-  APPROVED   // reviewed/signed off              → "Reviewed"
-  ARCHIVED   // soft-deleted / old               → "Draft"
+  DRAFT
+  PAUSED
+  COMPLETED
+  APPROVED
+  ON_HOLD
 }
 
 model Brd {
@@ -194,13 +195,12 @@ model Brd {
   createdById Int
   uploadId    Int?      @unique
 
-  upload    FileUpload? @relation("BrdSourceFile", fields: [uploadId], references: [id])
-  createdBy User        @relation("BrdCreatedBy", fields: [createdById], references: [id])
+  upload    FileUpload?  @relation("BrdSourceFile", fields: [uploadId], references: [id])
+  createdBy User         @relation("BrdCreatedBy", fields: [createdById], references: [id])
   sections  BrdSections?
 }
 
 // One row per BRD. All section data stored as JSON blobs.
-// Adding new fields to any section = zero migrations required.
 model BrdSections {
   id    Int    @id @default(autoincrement())
   brdId String @unique

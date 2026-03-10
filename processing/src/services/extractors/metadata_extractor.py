@@ -7,6 +7,38 @@ import re
 from .base import heading_level, para_text
 
 
+# ─── US States (for language inference) ──────────────────────────────────────
+_US_STATES = {
+    "alabama","alaska","arizona","arkansas","california","colorado","connecticut",
+    "delaware","florida","georgia","hawaii","idaho","illinois","indiana","iowa",
+    "kansas","kentucky","louisiana","maine","maryland","massachusetts","michigan",
+    "minnesota","mississippi","missouri","montana","nebraska","nevada",
+    "new hampshire","new jersey","new mexico","new york","north carolina",
+    "north dakota","ohio","oklahoma","oregon","pennsylvania","rhode island",
+    "south carolina","south dakota","tennessee","texas","utah","vermont",
+    "virginia","washington","west virginia","wisconsin","wyoming",
+    # abbreviations
+    "al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il","in",
+    "ia","ks","ky","la","me","md","ma","mi","mn","ms","mo","mt","ne","nv",
+    "nh","nj","nm","ny","nc","nd","oh","ok","or","pa","ri","sc","sd","tn",
+    "tx","ut","vt","va","wa","wv","wi","wy","dc","united states","u.s.","usa",
+}
+
+
+def _clean(value: str) -> str:
+    """Strip excess whitespace and normalize internal spaces."""
+    return " ".join(value.split())
+
+
+def _infer_language(geography: str, existing_language: str) -> str:
+    """If language is blank and geography is a US state, return English."""
+    if existing_language.strip():
+        return existing_language
+    if geography.strip().lower() in _US_STATES:
+        return "English"
+    return existing_language
+
+
 def extract_metadata(doc) -> dict:
     """
     Extract metadata from the BRD Metadata table.
@@ -18,6 +50,7 @@ def extract_metadata(doc) -> dict:
     for table in doc.tables:
         if table.rows and "metadata element" in table.rows[0].cells[0].text.strip().lower():
             return extract_metadata_legacy(doc)
+
     metadata = {
         # ── Core BRD fields ──────────────────────────────────────────
         "content_category_name":     "",
@@ -41,11 +74,20 @@ def extract_metadata(doc) -> dict:
         "author":                    "",
     }
 
-    # Document title = first H1
+    # Document title = first H1 that is not a boilerplate section heading
+    _skip = {
+        "document history", "glossary", "file delivery", "system display",
+        "citation visualization", "legal", "copyright",
+        "structuring requirements", "content structure", "formatting requirements",
+        "document structure", "template instructions", "instructions",
+        "overview", "introduction", "background", "purpose", "scope",
+    }
     for para in doc.paragraphs:
         if heading_level(para) == 1 and para_text(para):
-            metadata["document_title"] = para_text(para)
-            break
+            t = para_text(para).strip().lower()
+            if not any(s in t for s in _skip):
+                metadata["document_title"] = para_text(para)
+                break
 
     key_map = {
         "content category name":     "content_category_name",
@@ -104,6 +146,21 @@ def extract_metadata(doc) -> dict:
                         if not metadata[field]:
                             metadata[field] = value
                     break
+
+    # ── Post-processing: clean whitespace and infer language ──────────────
+    for field in (
+        "content_category_name", "publication_date", "last_updated_date",
+        "processing_date", "issuing_agency", "related_government_agency",
+        "content_uri", "geography", "language", "status",
+        "region", "country", "version", "author",
+    ):
+        if isinstance(metadata.get(field), str):
+            metadata[field] = _clean(metadata[field])
+
+    metadata["language"] = _infer_language(
+        metadata.get("geography", ""),
+        metadata.get("language", ""),
+    )
 
     return metadata
 
@@ -173,15 +230,14 @@ def extract_metadata_legacy(doc) -> dict:
         "region":                    "region",
         "country":                   "country",
         "contributors":              "contributors",
-        "payload subtype":           "payload_subtype",  # own field, matched before "source type"
-        "source type":               "source_type",      # own field
+        "payload subtype":           "payload_subtype",
+        "source type":               "source_type",
         "version":                   "version",
         "author":                    "author",
     }
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     url_re = re.compile(r"https?://[^\s\)\]」）,]+")
 
-    # Fields whose raw values should have surrounding quotes stripped
     _strip_quotes = {"status", "source_type", "payload_subtype"}
 
     for table in doc.tables:
@@ -191,8 +247,7 @@ def extract_metadata_legacy(doc) -> dict:
                 continue
             label = cells[0].text.strip().lower().strip("*: \xa0").replace("\n", " ")
 
-            # Deduplicate cells — python-docx repeats the same cell object for
-            # every column a merged cell spans, so we must de-dupe by XML node id.
+            # Deduplicate merged cells
             seen_ids: set = set()
             unique_cells = []
             for c in cells[1:]:
@@ -201,9 +256,6 @@ def extract_metadata_legacy(doc) -> dict:
                     seen_ids.add(cid)
                     unique_cells.append(c)
 
-            # Take the first non-empty cell whose text is ≤ 300 chars (concise value).
-            # Rows with long instructional text (e.g. Publication Date guidance) are
-            # intentionally skipped so they don't pollute the extracted value.
             value = ""
             for c in unique_cells:
                 v = c.text.replace("\xa0", " ").strip()
@@ -226,5 +278,20 @@ def extract_metadata_legacy(doc) -> dict:
                         if not metadata[field]:
                             metadata[field] = value
                     break
+
+    # ── Post-processing: clean whitespace and infer language ──────────────
+    for field in (
+        "content_category_name", "publication_date", "last_updated_date",
+        "processing_date", "issuing_agency", "related_government_agency",
+        "content_uri", "geography", "language", "status", "source_type",
+        "payload_subtype", "region", "country", "version", "author",
+    ):
+        if isinstance(metadata.get(field), str):
+            metadata[field] = _clean(metadata[field])
+
+    metadata["language"] = _infer_language(
+        metadata.get("geography", ""),
+        metadata.get("language", ""),
+    )
 
     return metadata

@@ -624,8 +624,20 @@ def extract_scope_legacy(doc) -> dict:
         raw_paras.append(text)
 
     # ── Build entries ──────────────────────────────────────────────────────────
+    # Layout C: inline "(link: <url>)" appended to title text (Hawaii-style)
+    _inline_link_re = re.compile(r"\s*\(link:\s*(https?://\S+?)\)\s*$", re.IGNORECASE)
+
     def _is_url(text: str) -> bool:
         return bool(url_re.match(text))
+
+    def _extract_inline_link(text: str) -> tuple[str, str]:
+        """If text ends with '(link: <url>)', return (clean_title, url). Else (text, '')."""
+        m = _inline_link_re.search(text)
+        if m:
+            url = m.group(1).rstrip(".,;)")
+            clean = _inline_link_re.sub("", text).strip()
+            return clean, url
+        return text, ""
 
     in_scope: list[dict] = []
     seen: set[str] = set()
@@ -639,13 +651,16 @@ def extract_scope_legacy(doc) -> dict:
             i += 1
             continue
 
-        title = text
-        content_url = ""
+        # Layout C: URL embedded inline as "(link: <url>)"
+        title, content_url = _extract_inline_link(text)
 
-        # Layout B: next paragraph is the per-title content URL
-        if i + 1 < len(raw_paras) and _is_url(raw_paras[i + 1]):
-            content_url = raw_paras[i + 1].rstrip(".,;")
-            i += 2
+        if not content_url:
+            # Layout B: next paragraph is the per-title content URL
+            if i + 1 < len(raw_paras) and _is_url(raw_paras[i + 1]):
+                content_url = raw_paras[i + 1].rstrip(".,;")
+                i += 2
+            else:
+                i += 1
         else:
             i += 1
 

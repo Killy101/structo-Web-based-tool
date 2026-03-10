@@ -41,10 +41,7 @@ interface BrdDetailResponse {
   brdConfig?:      Record<string, unknown>;
 }
 
-// Full flow (new upload): Upload → Scope → Metadata → TOC → Citation → ContentProfile → Generate
-const STEPS = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
-
-// Edit flow (from registry): skips Upload entirely
+const STEPS      = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
 const EDIT_STEPS = ["Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
 
 const STEP_META = [
@@ -57,37 +54,77 @@ const STEP_META = [
   { icon: "✦", desc: "Review and generate the final BRD document" },
 ];
 
-// Edit mode step meta: same as STEP_META but without the Upload entry (index 0)
 const EDIT_STEP_META = STEP_META.slice(1);
 
-// ── Exit confirmation modal ────────────────────────────────────────────────
-function ExitConfirmModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+// ── Exit / Save confirmation modal ────────────────────────────────────────────
+function SaveAndExitModal({
+  isSaving,
+  onConfirm,
+  onCancel,
+}: {
+  isSaving: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl w-[min(400px,90vw)] p-6 space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex items-center justify-center flex-shrink-0">
+      <div className="bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl w-[min(420px,90vw)] overflow-hidden">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-slate-100 dark:border-white/10 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex items-center justify-center flex-shrink-0">
             <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
             </svg>
           </div>
           <div>
-            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Exit without saving?</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Any unsaved changes will be lost.</p>
+            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Save & Exit</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Your progress will be saved</p>
           </div>
         </div>
-        <div className="flex justify-end gap-2 pt-1">
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-3">
+          <p className="text-sm text-slate-700 dark:text-slate-300">
+            Your edits will be <span className="font-semibold text-slate-900 dark:text-white">saved automatically</span> and this BRD will be marked as{" "}
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-500/15 text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-amber-600/30">
+              ⏸ Paused
+            </span>
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            You can resume editing at any time from the BRD Registry.
+          </p>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 pb-5 flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+            disabled={isSaving}
+            className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 transition-all"
           >
-            Cancel
+            Keep Editing
           </button>
           <button
             onClick={onConfirm}
-            className="px-4 py-2 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-700 transition-all"
+            disabled={isSaving}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-60 transition-all"
           >
-            Exit anyway
+            {isSaving ? (
+              <>
+                <svg className="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
+                  <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
+                </svg>
+                Saving…
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                </svg>
+                Save & Exit
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -101,17 +138,10 @@ export default function BrdFlow({
   initialMeta = null,
   finalStepMode = "generate",
 }: Props) {
-  // ── Edit mode: opened from registry (has a brdId, no upload needed) ────────
-  // Requirement 5: in edit mode never show the Upload step.
   const isEditMode = !!initialMeta?.brdId;
-
-  // When Generate's per-section "Edit" button was clicked, cameFromGenerate=true
-  // so we can show the "Back to Generate" shortcut (requirement 4).
   const cameFromGenerate = isEditMode && initialStep >= 1 && initialStep <= 5;
 
-  // Convert full-flow step index → edit-mode step index (subtract 1 because no Upload)
   const toEditStep   = (s: number) => Math.max(0, s - 1);
-  // Convert edit-mode step index → full-flow step index
   const fromEditStep = (s: number) => s + 1;
 
   const steps    = isEditMode ? EDIT_STEPS     : STEPS;
@@ -123,6 +153,7 @@ export default function BrdFlow({
 
   const [step,            setStep]            = useState(clampedInitial);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [isSaving,        setIsSaving]        = useState(false);
   const [uploadMeta,      setUploadMeta]      = useState<UploadFlowData | null>(
     initialMeta
       ? { format: initialMeta.format, brdId: initialMeta.brdId, title: initialMeta.title }
@@ -132,12 +163,10 @@ export default function BrdFlow({
   const [viewError,   setViewError]   = useState<string | null>(null);
 
   const isLastStep     = step === steps.length - 1;
-  const isGenerateStep = isLastStep; // Generate is always the last step
+  const isGenerateStep = isLastStep;
 
-  // ── Fetch full BRD data when opening in edit or view mode ─────────────────
   useEffect(() => {
     if (!initialMeta?.brdId) return;
-    // In full flow only fetch when jumping straight to Generate
     if (!isEditMode && initialStep < 6) return;
 
     setViewLoading(true);
@@ -170,8 +199,9 @@ export default function BrdFlow({
   const next = () => setStep((s) => Math.min(s + 1, steps.length - 1));
   const prev = () => setStep((s) => Math.max(s - 1, 0));
 
-  // Requirement 1: show exit confirmation unless already on Generate (work saved)
-  // or on the very first Upload screen before anything was uploaded.
+  // On exit: blank upload screen (nothing to save) → close immediately.
+  // On Generate step (work already saved) → close immediately.
+  // Otherwise → show Save & Exit modal.
   const requestClose = useCallback(() => {
     const isBlankUpload = !isEditMode && step === 0 && !uploadMeta;
     if (isGenerateStep || isBlankUpload) {
@@ -180,6 +210,37 @@ export default function BrdFlow({
       setShowExitConfirm(true);
     }
   }, [isGenerateStep, isEditMode, step, uploadMeta, onClose]);
+
+  // Save current state as "paused" then close
+  const handleSaveAndExit = useCallback(async () => {
+    if (!uploadMeta?.brdId) {
+      onClose?.();
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      await api.post("/brd/save", {
+        brdId:          uploadMeta.brdId,
+        title:          uploadMeta.title,
+        format:         uploadMeta.format,
+        status:         "PAUSED",
+        scope:          uploadMeta.scope,
+        metadata:       uploadMeta.metadata,
+        toc:            uploadMeta.toc,
+        citations:      uploadMeta.citations,
+        contentProfile: uploadMeta.contentProfile,
+        brdConfig:      uploadMeta.brdConfig ?? null,
+      });
+    } catch (err) {
+      console.warn("[BrdFlow] Save-on-exit failed:", err);
+      // Still exit — don't block the user
+    } finally {
+      setIsSaving(false);
+      setShowExitConfirm(false);
+      onClose?.();
+    }
+  }, [uploadMeta, onClose]);
 
   function getBestTitle(): string {
     const md = uploadMeta?.metadata as Record<string, unknown> | undefined;
@@ -197,18 +258,14 @@ export default function BrdFlow({
     return uploadMeta?.title ?? initialMeta?.title ?? "Untitled BRD";
   }
 
-  // When Generate calls onEdit(fullStep), map to the right local step index
   function handleEditFromGenerate(targetFullStep: number) {
     setStep(isEditMode ? toEditStep(targetFullStep) : targetFullStep);
   }
 
-  // ── Step renderer ──────────────────────────────────────────────────────────
   function renderStepContent() {
-    // Normalise to the full-flow step number so switch cases are always the same
     const fullStep = isEditMode ? fromEditStep(step) : step;
 
     switch (fullStep) {
-      // ── 0: Upload (full flow only — never reached in edit mode) ────────────
       case 0:
         return (
           <Upload
@@ -219,11 +276,9 @@ export default function BrdFlow({
           />
         );
 
-      // ── 1: Scope ────────────────────────────────────────────────────────────
       case 1:
         return <Scope initialData={uploadMeta?.scope} />;
 
-      // ── 2: Metadata ─────────────────────────────────────────────────────────
       case 2:
         return (
           <Metadata
@@ -234,19 +289,15 @@ export default function BrdFlow({
           />
         );
 
-      // ── 3: TOC ──────────────────────────────────────────────────────────────
       case 3:
         return <Toc initialData={uploadMeta?.toc as { sections?: { id?: string; level?: string; name?: string; required?: string; definition?: string; example?: string; note?: string; tocRequirements?: string; smeComments?: string }[] } | undefined} />;
 
-      // ── 4: Citation ─────────────────────────────────────────────────────────
       case 4:
         return <Citation initialData={uploadMeta?.citations} />;
 
-      // ── 5: Content Profiling ────────────────────────────────────────────────
       case 5:
         return <ContentProfile initialData={uploadMeta?.contentProfile} />;
 
-      // ── 6: Generate ─────────────────────────────────────────────────────────
       case 6: {
         if (viewLoading) {
           return (
@@ -297,7 +348,6 @@ export default function BrdFlow({
     }
   }
 
-  // ── Step indicator ─────────────────────────────────────────────────────────
   function StepIndicator() {
     return (
       <div className="flex items-center justify-center gap-0 px-4 py-3 overflow-x-auto">
@@ -347,7 +397,6 @@ export default function BrdFlow({
               Business Requirements Document
             </h2>
           </div>
-          {/* Requirement 1: ✕ now triggers confirmation */}
           <button
             onClick={requestClose}
             className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
@@ -384,7 +433,6 @@ export default function BrdFlow({
         <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex-shrink-0 bg-slate-50 dark:bg-slate-800/50">
           {!isLastStep ? (
             <>
-              {/* Back — disabled on first step of any flow */}
               <button
                 onClick={prev}
                 disabled={step === 0}
@@ -398,8 +446,6 @@ export default function BrdFlow({
 
               <div className="flex items-center gap-3">
                 <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
-
-                {/* Requirement 4: "Back to Generate" shortcut when editing a specific section */}
                 {cameFromGenerate && (
                   <button
                     onClick={() => setStep(steps.length - 1)}
@@ -430,13 +476,13 @@ export default function BrdFlow({
             </p>
           )}
         </div>
-
       </div>
 
-      {/* Requirement 1: Exit confirmation overlay */}
+      {/* Save & Exit modal */}
       {showExitConfirm && (
-        <ExitConfirmModal
-          onConfirm={() => { setShowExitConfirm(false); onClose?.(); }}
+        <SaveAndExitModal
+          isSaving={isSaving}
+          onConfirm={handleSaveAndExit}
           onCancel={() => setShowExitConfirm(false)}
         />
       )}
