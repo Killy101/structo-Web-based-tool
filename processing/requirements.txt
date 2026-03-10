@@ -48,3 +48,7 @@ urllib3==2.6.3
 uvicorn==0.41.0
 watchfiles==1.1.1
 websockets==16.0
+docx2txt==0.8
+langchain==1.2.10
+langchain-text-splitters==1.1.1
+langchain-core==1.2.17

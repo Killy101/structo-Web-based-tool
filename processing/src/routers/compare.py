@@ -1,5 +1,6 @@
 """
 FastAPI router for XML Chunk / Compare / Merge operations.
+Now includes /compare/chunk/pdf  — LangChain-powered PDF + XML chunking.
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -14,11 +15,12 @@ from src.services.xml_compare import (
     line_diff,
     merge_xml,
 )
+from src.services.pdf_chunk import chunk_pdfs_and_xml
 
 router = APIRouter(prefix="/compare", tags=["compare"])
 
 
-# ── Chunk ──────────────────────────────────────────────────────────────────────
+# ── Chunk (XML only — legacy) ──────────────────────────────────────────────────
 
 @router.post("/chunk")
 async def chunk_endpoint(
@@ -29,10 +31,7 @@ async def chunk_endpoint(
     max_file_size: Optional[int] = Form(None),
     identifier: Optional[str] = Form(None),
 ):
-    """
-    Chunk an XML file by tag name, with optional attribute/value filter
-    and max_file_size per chunk (bytes).
-    """
+    """Chunk an XML file by tag name (legacy endpoint)."""
     content_bytes = await file.read()
     try:
         xml_str = content_bytes.decode("utf-8")
@@ -63,6 +62,63 @@ async def chunk_endpoint(
     }
 
 
+# ── Chunk (PDF + XML — LangChain) ──────────────────────────────────────────────
+
+@router.post("/chunk/pdf")
+async def chunk_pdf_endpoint(
+    old_pdf:      UploadFile = File(...),
+    new_pdf:      UploadFile = File(...),
+    xml_file:     UploadFile = File(...),
+    tag_name:     str        = Form(...),
+    source_name:  str        = Form(...),
+    attribute:    Optional[str] = Form(None),
+    value:        Optional[str] = Form(None),
+    max_file_size: Optional[int] = Form(None),
+    chunk_size:   int        = Form(1500),
+    chunk_overlap: int       = Form(150),
+):
+    """
+    LangChain-powered pipeline:
+      1. Extract text from OLD and NEW PDFs (PyMuPDF)
+      2. Split both with RecursiveCharacterTextSplitter
+      3. Chunk the XML file by tag_name
+      4. Align PDF chunks ↔ XML chunks by index
+      5. Detect changes per chunk (NEW vs OLD)
+    """
+    old_bytes = await old_pdf.read()
+    new_bytes = await new_pdf.read()
+    xml_bytes = await xml_file.read()
+
+    try:
+        xml_str = xml_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
+
+    try:
+        result = chunk_pdfs_and_xml(
+            old_pdf_bytes=old_bytes,
+            new_pdf_bytes=new_bytes,
+            xml_content=xml_str,
+            tag_name=tag_name,
+            attribute=attribute or None,
+            value=value or None,
+            max_file_size=max_file_size,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "success":      True,
+        "source_name":  source_name,
+        "old_filename": old_pdf.filename,
+        "new_filename": new_pdf.filename,
+        "xml_filename": xml_file.filename,
+        **result,
+    }
+
+
 # ── Compare ────────────────────────────────────────────────────────────────────
 
 @router.post("/diff")
@@ -70,11 +126,7 @@ async def diff_endpoint(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
 ):
-    """
-    Compare two XML files.
-    Returns structural diff: additions, removals, modifications, mismatches,
-    plus line-level diff for side-by-side display.
-    """
+    """Compare two XML files — structural diff + line diff."""
     old_bytes = await old_file.read()
     new_bytes = await new_file.read()
 
@@ -85,17 +137,17 @@ async def diff_endpoint(
         raise HTTPException(status_code=422, detail="Files must be valid UTF-8 XML")
 
     try:
-        diff = compare_xml(old_xml, new_xml)
+        diff  = compare_xml(old_xml, new_xml)
         lines = line_diff(old_xml, new_xml)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     return {
-        "success": True,
+        "success":      True,
         "old_filename": old_file.filename,
         "new_filename": new_file.filename,
-        "diff": diff,
-        "line_diff": lines,
+        "diff":         diff,
+        "line_diff":    lines,
     }
 
 
@@ -110,10 +162,7 @@ class MergeRequest(BaseModel):
 
 @router.post("/merge")
 async def merge_endpoint(payload: MergeRequest):
-    """
-    Merge old and new XML based on accepted/rejected change paths.
-    Returns the merged XML string.
-    """
+    """Merge old and new XML based on accepted/rejected change paths."""
     try:
         merged = merge_xml(
             old_xml=payload.old_xml,
@@ -124,17 +173,12 @@ async def merge_endpoint(payload: MergeRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    return {
-        "success": True,
-        "merged_xml": merged,
-    }
+    return {"success": True, "merged_xml": merged}
 
 
 @router.post("/merge/download")
 async def merge_download_endpoint(payload: MergeRequest):
-    """
-    Same as /merge but returns the XML as a file download.
-    """
+    """Same as /merge but returns the XML as a file download."""
     try:
         merged = merge_xml(
             old_xml=payload.old_xml,
