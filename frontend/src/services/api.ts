@@ -8,6 +8,9 @@ import {
   CreateUserResponse,
   Team,
   UserRole,
+  BaseRoleFeaturePolicy,
+  TeamRoleFeaturePolicyItem,
+  TeamFeatureOption,
   TaskAssignment,
   UserLog,
 } from "../types";
@@ -61,6 +64,19 @@ export const usersApi = {
 
 export const teamsApi = {
   getAll: () => api.get<{ teams: Team[] }>("/teams").then((r) => r.data),
+  getPolicies: () =>
+    api
+      .get<{
+        policies: TeamRoleFeaturePolicyItem[];
+        featureCatalog: TeamFeatureOption[];
+      }>("/teams/policies")
+      .then((r) => r.data),
+  updatePolicy: (teamId: number, role: "ADMIN" | "USER", features: string[]) =>
+    api
+      .patch<{ message: string }>(`/teams/${teamId}/policies/${role}`, {
+        features,
+      })
+      .then((r) => r.data),
   create: (name: string) =>
     api
       .post<{ message: string; team: Team }>("/teams", { name })
@@ -74,8 +90,11 @@ export const teamsApi = {
 };
 
 export const rolesApi = {
-  getAll: () =>
-    api.get<{ roles: UserRole[] }>("/roles").then((r) => r.data),
+  getAll: () => api.get<{ roles: UserRole[] }>("/roles").then((r) => r.data),
+  getBasePolicies: () =>
+    api
+      .get<{ policies: BaseRoleFeaturePolicy[] }>("/roles/base-policies")
+      .then((r) => r.data),
   create: (name: string, features: string[]) =>
     api
       .post<{ message: string; role: UserRole }>("/roles", { name, features })
@@ -83,6 +102,13 @@ export const rolesApi = {
   update: (id: number, data: { name?: string; features?: string[] }) =>
     api
       .patch<{ message: string; role: UserRole }>(`/roles/${id}`, data)
+      .then((r) => r.data),
+  updateBasePolicy: (role: "ADMIN" | "USER", features: string[]) =>
+    api
+      .patch<{
+        message: string;
+        policy: BaseRoleFeaturePolicy;
+      }>(`/roles/base-policies/${role}`, { features })
       .then((r) => r.data),
   delete: (id: number) =>
     api.delete<{ message: string }>(`/roles/${id}`).then((r) => r.data),

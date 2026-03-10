@@ -12,6 +12,87 @@ import {
 
 const router = Router();
 
+const TEAM_POLICY_PREFIX = "__TEAM_ROLE_POLICY__";
+
+function policySlug(teamSlug: string, role: "ADMIN" | "USER") {
+  return `${TEAM_POLICY_PREFIX}${teamSlug}__${role}`;
+}
+
+function defaultTeamRoleFeatures(
+  teamSlug: string,
+): Record<"ADMIN" | "USER", string[]> {
+  const slug = teamSlug.toLowerCase();
+
+  if (slug === "pre-production") {
+    return {
+      ADMIN: [
+        "dashboard",
+        "brd-process",
+        "user-management",
+        "compare-basic",
+        "compare-pdf-xml-only",
+        "user-logs",
+      ],
+      USER: [
+        "dashboard",
+        "brd-process",
+        "compare-basic",
+        "compare-pdf-xml-only",
+      ],
+    };
+  }
+
+  if (slug === "production") {
+    return {
+      ADMIN: [
+        "dashboard",
+        "brd-view-generate",
+        "user-management",
+        "compare-basic",
+        "compare-pdf-xml-only",
+        "user-logs",
+      ],
+      USER: [
+        "dashboard",
+        "brd-view-generate",
+        "compare-basic",
+        "compare-pdf-xml-only",
+      ],
+    };
+  }
+
+  if (slug === "updating") {
+    return {
+      ADMIN: [
+        "dashboard",
+        "brd-view-generate",
+        "user-management",
+        "compare-basic",
+        "compare-pdf-xml-only",
+        "user-logs",
+      ],
+      USER: [
+        "dashboard",
+        "brd-view-generate",
+        "compare-basic",
+        "compare-chunk",
+        "compare-merge",
+      ],
+    };
+  }
+
+  return {
+    ADMIN: [
+      "dashboard",
+      "brd-process",
+      "user-management",
+      "compare-basic",
+      "user-logs",
+    ],
+    USER: ["dashboard", "brd-process", "compare-basic"],
+  };
+}
+
 // ─── Who can change whose password ───────────────────────
 const CAN_CHANGE_PASSWORD: Record<string, string[]> = {
   SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
@@ -159,7 +240,25 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json({ user });
+    let effectiveFeatures: string[] = [];
+    if (user.role === "SUPER_ADMIN") {
+      effectiveFeatures = ["*"];
+    } else if (
+      (user.role === "ADMIN" || user.role === "USER") &&
+      user.team?.slug
+    ) {
+      const policy = await prisma.userRole.findUnique({
+        where: {
+          slug: policySlug(user.team.slug, user.role),
+        },
+        select: { features: true },
+      });
+
+      effectiveFeatures =
+        policy?.features ?? defaultTeamRoleFeatures(user.team.slug)[user.role];
+    }
+
+    res.json({ user: { ...user, effectiveFeatures } });
   } catch (error) {
     console.error("Get user error:", error);
     res.status(500).json({ error: "Internal server error" });

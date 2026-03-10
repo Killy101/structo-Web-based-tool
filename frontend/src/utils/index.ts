@@ -71,15 +71,10 @@ export const FILE_STATUS_HEX: Record<TaskStatus, string> = {
 // ─── TEAM PERMISSIONS ──────────────────────────────────────
 // Team slug → allowed features
 export const TEAM_PERMISSIONS: Record<string, string[]> = {
-  "pre-production": ["brd-process", "generate-reports", "history", "user-logs"],
-  production: ["view-brd", "generate-reports", "history", "user-logs"],
-  updating: ["view-brd", "compare", "generate-reports", "history", "user-logs"],
-  "post-production": [
-    "brd-process",
-    "generate-reports",
-    "history",
-    "user-logs",
-  ],
+  "pre-production": ["brd-process", "generate-reports", "user-logs"],
+  production: ["view-brd", "generate-reports", "user-logs"],
+  updating: ["view-brd", "compare", "generate-reports", "user-logs"],
+  "post-production": ["brd-process", "generate-reports", "user-logs"],
 };
 
 export const teamHasAccess = (
@@ -96,7 +91,6 @@ export const FEATURE_LABELS: Record<string, string> = {
   "view-brd": "View BRD Sources",
   compare: "Compare",
   "generate-reports": "Generate Reports",
-  history: "History",
   "user-logs": "User Logs",
 };
 

@@ -17,7 +17,13 @@ export default function Unauthorized() {
         className="mb-8"
       >
         {/* Floor shadow */}
-        <ellipse cx="140" cy="200" rx="100" ry="12" fill={dark ? "#1e293b" : "#e2e8f0"} />
+        <ellipse
+          cx="140"
+          cy="200"
+          rx="100"
+          ry="12"
+          fill={dark ? "#1e293b" : "#e2e8f0"}
+        />
 
         {/* Shield body */}
         <path
@@ -61,24 +67,63 @@ export default function Unauthorized() {
         <rect x="138.5" y="114" width="3" height="6" rx="1.5" fill="white" />
 
         {/* X marks */}
-        <g stroke={dark ? "#475569" : "#94a3b8"} strokeWidth="2.5" strokeLinecap="round" opacity="0.5">
+        <g
+          stroke={dark ? "#475569" : "#94a3b8"}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          opacity="0.5"
+        >
           <line x1="50" y1="60" x2="58" y2="68" />
           <line x1="58" y1="60" x2="50" y2="68" />
         </g>
-        <g stroke={dark ? "#475569" : "#94a3b8"} strokeWidth="2.5" strokeLinecap="round" opacity="0.5">
+        <g
+          stroke={dark ? "#475569" : "#94a3b8"}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          opacity="0.5"
+        >
           <line x1="222" y1="50" x2="230" y2="58" />
           <line x1="230" y1="50" x2="222" y2="58" />
         </g>
-        <g stroke={dark ? "#475569" : "#94a3b8"} strokeWidth="2" strokeLinecap="round" opacity="0.35">
+        <g
+          stroke={dark ? "#475569" : "#94a3b8"}
+          strokeWidth="2"
+          strokeLinecap="round"
+          opacity="0.35"
+        >
           <line x1="210" y1="140" x2="216" y2="146" />
           <line x1="216" y1="140" x2="210" y2="146" />
         </g>
 
         {/* Dots decoration */}
-        <circle cx="60" cy="140" r="3" fill={dark ? "#334155" : "#cbd5e1"} opacity="0.5" />
-        <circle cx="230" cy="100" r="2.5" fill={dark ? "#334155" : "#cbd5e1"} opacity="0.5" />
-        <circle cx="45" cy="100" r="2" fill={dark ? "#334155" : "#cbd5e1"} opacity="0.4" />
-        <circle cx="240" cy="160" r="2" fill={dark ? "#334155" : "#cbd5e1"} opacity="0.4" />
+        <circle
+          cx="60"
+          cy="140"
+          r="3"
+          fill={dark ? "#334155" : "#cbd5e1"}
+          opacity="0.5"
+        />
+        <circle
+          cx="230"
+          cy="100"
+          r="2.5"
+          fill={dark ? "#334155" : "#cbd5e1"}
+          opacity="0.5"
+        />
+        <circle
+          cx="45"
+          cy="100"
+          r="2"
+          fill={dark ? "#334155" : "#cbd5e1"}
+          opacity="0.4"
+        />
+        <circle
+          cx="240"
+          cy="160"
+          r="2"
+          fill={dark ? "#334155" : "#cbd5e1"}
+          opacity="0.4"
+        />
 
         {/* 403 text */}
         <text
@@ -105,12 +150,9 @@ export default function Unauthorized() {
         <p
           className={`text-sm leading-relaxed ${dark ? "text-slate-400" : "text-slate-500"}`}
         >
-          Sorry, only <span className={`font-semibold ${dark ? "text-red-400" : "text-red-500"}`}>Admin</span> and{" "}
-          <span className={`font-semibold ${dark ? "text-red-400" : "text-red-500"}`}>Super Admin</span> are allowed on this page.
+          Sorry, you are not allowed to access this page.
         </p>
-        <p
-          className={`text-xs ${dark ? "text-slate-500" : "text-slate-400"}`}
-        >
+        <p className={`text-xs ${dark ? "text-slate-500" : "text-slate-400"}`}>
           Please contact your administrator if you need access.
         </p>
       </div>

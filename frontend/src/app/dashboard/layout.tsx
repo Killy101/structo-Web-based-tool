@@ -14,7 +14,9 @@ import type { Role } from "../../types";
 
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
-  "/dashboard/settings": ["SUPER_ADMIN", "ADMIN"],
+  "/dashboard/settings": ["SUPER_ADMIN"],
+  "/dashboard/validate": [],
+  "/dashboard/history": [],
   "/dashboard/tasks": [
     "SUPER_ADMIN",
     "ADMIN",
@@ -24,7 +26,13 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
   ],
   // SUPER_ADMIN + MANAGER_QA: full access (all tabs, can edit XML)
   // MANAGER_QC / ADMIN / USER: compare-only, read-only XML
-  "/dashboard/compare": ["SUPER_ADMIN", "MANAGER_QA", "MANAGER_QC", "ADMIN", "USER"],
+  "/dashboard/compare": [
+    "SUPER_ADMIN",
+    "MANAGER_QA",
+    "MANAGER_QC",
+    "ADMIN",
+    "USER",
+  ],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -176,9 +184,28 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     pathname.startsWith("/dashboard/brd") ||
     pathname.startsWith("/dashboard/compare");
 
+  const hasFeature = (feature: string | string[]) => {
+    if (user?.role === "SUPER_ADMIN") return true;
+    const enabled = user?.effectiveFeatures ?? [];
+    if (enabled.includes("*")) return true;
+    if (Array.isArray(feature)) return feature.some((f) => enabled.includes(f));
+    return enabled.includes(feature);
+  };
+
   const allowedRoles = RESTRICTED_ROUTES[pathname];
-  const isUnauthorized =
+  const roleUnauthorized =
     allowedRoles !== undefined && !allowedRoles.includes(user?.role as Role);
+
+  const featureUnauthorized =
+    (pathname === "/dashboard" && !hasFeature("dashboard")) ||
+    (pathname.startsWith("/dashboard/users") &&
+      !hasFeature("user-management")) ||
+    (pathname.startsWith("/dashboard/brd") &&
+      !hasFeature(["brd-process", "brd-view-generate"])) ||
+    (pathname.startsWith("/dashboard/compare") &&
+      !hasFeature(["compare-basic", "compare-chunk", "compare-merge"]));
+
+  const isUnauthorized = roleUnauthorized || featureUnauthorized;
 
   return (
     <div

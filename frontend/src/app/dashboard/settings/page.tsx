@@ -10,8 +10,10 @@ import {
   Table,
   ToastContainer,
 } from "../../../components/ui";
-import { useTeams, useRoles, useToast } from "../../../hooks";
-import { Team, UserRole } from "../../../types";
+import Unauthorized from "../../../components/layout/Unauthorized";
+import { useAuth } from "../../../context/AuthContext";
+import { useTeams, useRoles, useTeamPolicies, useToast } from "../../../hooks";
+import { Team, TeamRoleFeaturePolicyItem, UserRole } from "../../../types";
 import { FEATURE_LABELS } from "../../../utils";
 
 // ─── Available features for role configuration ──────────────────────────────
@@ -48,8 +50,8 @@ function AddTeamModal({
       const msg =
         err instanceof Error
           ? err.message
-          : (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "Failed to create team";
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to create team");
       setError(msg);
     } finally {
       setLoading(false);
@@ -112,8 +114,8 @@ function EditTeamModal({
       const msg =
         err instanceof Error
           ? err.message
-          : (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "Failed to update team";
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to update team");
       setError(msg);
     } finally {
       setLoading(false);
@@ -232,8 +234,8 @@ function AddRoleModal({
       const msg =
         err instanceof Error
           ? err.message
-          : (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "Failed to create role";
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to create role");
       setError(msg);
     } finally {
       setLoading(false);
@@ -338,8 +340,8 @@ function EditRoleModal({
       const msg =
         err instanceof Error
           ? err.message
-          : (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "Failed to update role";
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to update role");
       setError(msg);
     } finally {
       setLoading(false);
@@ -444,8 +446,14 @@ function DeleteRoleModal({
 
 // ─── Settings Page ────────────────────────────────────────────────────────────
 export default function SettingsPage() {
-  const { teams, isLoading: teamsLoading, createTeam, updateTeam, deleteTeam } =
-    useTeams();
+  const { user } = useAuth();
+  const {
+    teams,
+    isLoading: teamsLoading,
+    createTeam,
+    updateTeam,
+    deleteTeam,
+  } = useTeams();
   const {
     roles,
     isLoading: rolesLoading,
@@ -453,6 +461,12 @@ export default function SettingsPage() {
     updateRole,
     deleteRole,
   } = useRoles();
+  const {
+    policies: teamPolicies,
+    featureCatalog,
+    isLoading: teamPoliciesLoading,
+    updatePolicy,
+  } = useTeamPolicies();
   const { toasts, show, dismiss } = useToast();
 
   // Team modal states
@@ -466,6 +480,7 @@ export default function SettingsPage() {
   const [deleteRoleTarget, setDeleteRoleTarget] = useState<UserRole | null>(
     null,
   );
+  const [savingPolicyKey, setSavingPolicyKey] = useState<string | null>(null);
 
   // ─── Team handlers ──────────────────────────────────────────
   const handleCreateTeam = async (name: string) => {
@@ -487,8 +502,8 @@ export default function SettingsPage() {
       const msg =
         err instanceof Error
           ? err.message
-          : (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "Failed to delete team";
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to delete team");
       show(msg, "error");
       throw err;
     }
@@ -517,10 +532,37 @@ export default function SettingsPage() {
       const msg =
         err instanceof Error
           ? err.message
-          : (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "Failed to delete role";
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to delete role");
       show(msg, "error");
       throw err;
+    }
+  };
+
+  const handleTeamPolicyToggle = async (
+    policy: TeamRoleFeaturePolicyItem,
+    role: "ADMIN" | "USER",
+    feature: string,
+  ) => {
+    const current = policy[role].features ?? [];
+    const next = current.includes(feature)
+      ? current.filter((f) => f !== feature)
+      : [...current, feature];
+
+    const key = `${policy.team.id}:${role}`;
+    setSavingPolicyKey(key);
+    try {
+      await updatePolicy(policy.team.id, role, next);
+      show(`${policy.team.name} ${role} access updated`, "success");
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to update team policy");
+      show(msg, "error");
+    } finally {
+      setSavingPolicyKey(null);
     }
   };
 
@@ -679,6 +721,99 @@ export default function SettingsPage() {
     },
   ];
 
+  const teamPolicyColumns = [
+    {
+      key: "team",
+      header: "Team",
+      render: (row: TeamRoleFeaturePolicyItem) => (
+        <div>
+          <p className="font-medium text-slate-900 dark:text-white">
+            {row.team.name}
+          </p>
+          <p className="text-[11px] text-slate-500 font-mono">
+            {row.team.slug}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "adminFeatures",
+      header: "Admin Access",
+      render: (row: TeamRoleFeaturePolicyItem) => {
+        const isSaving = savingPolicyKey === `${row.team.id}:ADMIN`;
+        return (
+          <div className="flex flex-wrap gap-2">
+            {featureCatalog.map((feature) => {
+              const isOn = row.ADMIN.features.includes(feature.key);
+              return (
+                <label
+                  key={`${row.team.id}-ADMIN-${feature.key}`}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isOn}
+                    disabled={isSaving}
+                    onChange={() =>
+                      handleTeamPolicyToggle(row, "ADMIN", feature.key)
+                    }
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-[#1a56f0] focus:ring-[#1a56f0]"
+                  />
+                  <span className="text-slate-600 dark:text-slate-300">
+                    {feature.label}
+                  </span>
+                </label>
+              );
+            })}
+            {isSaving && (
+              <span className="text-xs text-slate-400 italic">Saving...</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "userFeatures",
+      header: "User Access",
+      render: (row: TeamRoleFeaturePolicyItem) => {
+        const isSaving = savingPolicyKey === `${row.team.id}:USER`;
+        return (
+          <div className="flex flex-wrap gap-2">
+            {featureCatalog.map((feature) => {
+              const isOn = row.USER.features.includes(feature.key);
+              return (
+                <label
+                  key={`${row.team.id}-USER-${feature.key}`}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isOn}
+                    disabled={isSaving}
+                    onChange={() =>
+                      handleTeamPolicyToggle(row, "USER", feature.key)
+                    }
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-[#1a56f0] focus:ring-[#1a56f0]"
+                  />
+                  <span className="text-slate-600 dark:text-slate-300">
+                    {feature.label}
+                  </span>
+                </label>
+              );
+            })}
+            {isSaving && (
+              <span className="text-xs text-slate-400 italic">Saving...</span>
+            )}
+          </div>
+        );
+      },
+    },
+  ];
+
+  if (user?.role !== "SUPER_ADMIN") {
+    return <Unauthorized />;
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -711,11 +846,27 @@ export default function SettingsPage() {
         />
       </Card>
 
+      {/* ─── Team Role Policies Section ─────────────────────────── */}
+      <Card>
+        <CardHeader
+          title="Team Feature Access"
+          subtitle="Configure feature access per team for Admin and User. New teams get default policies automatically and can be edited here."
+        />
+        <Table
+          columns={teamPolicyColumns}
+          data={teamPolicies}
+          keyExtractor={(row) => row.team.id}
+          isLoading={teamPoliciesLoading}
+          emptyMessage="No team policies found"
+          emptyIcon="🧩"
+        />
+      </Card>
+
       {/* ─── User Roles Section ────────────────────────────────── */}
       <Card>
         <CardHeader
           title="User Roles"
-          subtitle="Manage custom user roles and their feature access. Only Super Admins can create or delete roles."
+          subtitle="Manage feature access profiles. Assign these roles to Admin and User accounts from User Management."
           action={
             <Button size="sm" onClick={() => setShowAddRole(true)}>
               + Add Role

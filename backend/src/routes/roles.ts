@@ -5,6 +5,37 @@ import { authorize } from "../middleware/authorize";
 
 const router = Router();
 
+const BASE_POLICY_PREFIX = "__BASE_ROLE_POLICY__";
+const BASE_ROLES = ["ADMIN", "USER"] as const;
+type BaseRole = (typeof BASE_ROLES)[number];
+
+const BASE_ROLE_DEFAULT_FEATURES: Record<BaseRole, string[]> = {
+  ADMIN: [
+    "brd-process",
+    "view-brd",
+    "compare",
+    "generate-reports",
+    "user-logs",
+  ],
+  USER: ["view-brd", "generate-reports"],
+};
+
+const basePolicySlug = (role: BaseRole) => `${BASE_POLICY_PREFIX}${role}`;
+
+async function ensureBasePolicy(role: BaseRole) {
+  const slug = basePolicySlug(role);
+  const existing = await prisma.userRole.findUnique({ where: { slug } });
+  if (existing) return existing;
+
+  return prisma.userRole.create({
+    data: {
+      name: `Base Role Policy: ${role}`,
+      slug,
+      features: BASE_ROLE_DEFAULT_FEATURES[role],
+    },
+  });
+}
+
 // ── GET /roles ────────────────────────────────────────────
 router.get(
   "/",
@@ -13,6 +44,13 @@ router.get(
   async (_req: AuthRequest, res: Response) => {
     try {
       const roles = await prisma.userRole.findMany({
+        where: {
+          NOT: {
+            slug: {
+              startsWith: BASE_POLICY_PREFIX,
+            },
+          },
+        },
         orderBy: { createdAt: "asc" },
         include: {
           _count: { select: { users: true } },
@@ -22,6 +60,87 @@ router.get(
       res.json({ roles });
     } catch (error) {
       console.error("Get roles error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── GET /roles/base-policies (SuperAdmin only) ───────────
+router.get(
+  "/base-policies",
+  authenticate,
+  authorize(["SUPER_ADMIN"]),
+  async (_req: AuthRequest, res: Response) => {
+    try {
+      const policies = await Promise.all(
+        BASE_ROLES.map(async (role) => {
+          const policy = await ensureBasePolicy(role);
+          return {
+            id: policy.id,
+            role,
+            features: policy.features,
+            updatedAt: policy.updatedAt,
+          };
+        }),
+      );
+
+      res.json({ policies });
+    } catch (error) {
+      console.error("Get base policies error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── PATCH /roles/base-policies/:role (SuperAdmin only) ───
+router.patch(
+  "/base-policies/:role",
+  authenticate,
+  authorize(["SUPER_ADMIN"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const roleParam = String(req.params.role || "").toUpperCase();
+      const role = BASE_ROLES.find((r) => r === roleParam) as
+        | BaseRole
+        | undefined;
+
+      if (!role) {
+        return res.status(400).json({ error: "Role must be ADMIN or USER" });
+      }
+
+      const { features } = req.body;
+      if (!Array.isArray(features)) {
+        return res.status(400).json({ error: "Features must be an array" });
+      }
+
+      const policy = await ensureBasePolicy(role);
+
+      const updated = await prisma.userRole.update({
+        where: { id: policy.id },
+        data: {
+          features: features.filter((f) => typeof f === "string"),
+        },
+      });
+
+      await prisma.userLog.create({
+        data: {
+          userId: req.user!.userId,
+          action: "BASE_ROLE_POLICY_UPDATED",
+          details: `Updated feature policy for ${role}`,
+        },
+      });
+
+      res.json({
+        message: "Base role policy updated",
+        policy: {
+          id: updated.id,
+          role,
+          features: updated.features,
+          updatedAt: updated.updatedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Update base policy error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   },

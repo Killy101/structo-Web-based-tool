@@ -1,5 +1,6 @@
 "use client";
 import React, { useEffect, useState, useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Card,
   Badge,
@@ -15,7 +16,6 @@ import { useUsers, useTeams, useRoles, useToast } from "../../../hooks/index";
 import { useAuth } from "../../../context/AuthContext";
 import {
   ROLE_LABELS,
-  USER_STATUS_COLORS,
   CAN_CREATE_ROLES,
   ALLOWED_TARGET_ROLES,
   FEATURE_LABELS,
@@ -96,6 +96,23 @@ function exportToCSV(users: User[], filename = "users.csv") {
 type SortKey = "name" | "role" | "team" | "status" | "created";
 type SortDir = "asc" | "desc";
 
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [value, delayMs]);
+
+  return debounced;
+}
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /* ──────────────────────────────────────────────────────────
    ICONS
    ────────────────────────────────────────────────────────── */
@@ -114,7 +131,7 @@ function PlusIcon() {
   );
 }
 
-function ListIcon() {
+export function ListIcon() {
   return (
     <svg
       className="w-4 h-4"
@@ -132,7 +149,7 @@ function ListIcon() {
   );
 }
 
-function GridIcon() {
+export function GridIcon() {
   return (
     <svg
       className="w-4 h-4"
@@ -322,6 +339,24 @@ function CalendarIcon() {
   );
 }
 
+function RefreshIcon() {
+  return (
+    <svg
+      className="w-3.5 h-3.5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+      />
+    </svg>
+  );
+}
+
 // Sort indicator icon for table headers
 function SortIcon({ dir, active }: { dir: SortDir; active: boolean }) {
   return (
@@ -427,6 +462,75 @@ function XIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
         d="M6 18L18 6M6 6l12 12"
+      />
+    </svg>
+  );
+}
+
+function CheckSquareIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      viewBox="0 0 24 24"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 12l3 3 5-6" />
+    </svg>
+  );
+}
+
+function ActivateIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+      />
+    </svg>
+  );
+}
+
+function DeactivateIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+      />
+    </svg>
+  );
+}
+
+function TeamAssignIcon() {
+  return (
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0z"
       />
     </svg>
   );
@@ -541,6 +645,11 @@ function SortableTable({
   onSort,
   currentUserId,
   onViewDetails,
+  selectedUserIds,
+  allPageSelected,
+  somePageSelected,
+  onToggleSelect,
+  onToggleSelectAllPage,
 }: {
   data: User[];
   isLoading: boolean;
@@ -549,16 +658,39 @@ function SortableTable({
   onSort: (k: SortKey) => void;
   currentUserId: number | undefined;
   onViewDetails: (u: User) => void;
+  selectedUserIds: Set<number>;
+  allPageSelected: boolean;
+  somePageSelected: boolean;
+  onToggleSelect: (userId: number) => void;
+  onToggleSelectAllPage: () => void;
 }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-slate-100 dark:border-slate-800">
+          <tr className="bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
+            <th className="px-4 py-3 text-left w-10">
+              <input
+                type="checkbox"
+                checked={allPageSelected}
+                ref={(el) => {
+                  if (el) {
+                    el.indeterminate = somePageSelected && !allPageSelected;
+                  }
+                }}
+                onChange={onToggleSelectAllPage}
+                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
+                aria-label="Select all users on this page"
+              />
+            </th>
+
             {SORT_COLS.map(({ label, key }) => {
               const active = sortKey === key;
               return (
-                <th key={key} className="px-4 py-3 text-left">
+                <th
+                  key={key}
+                  className="px-4 py-3 text-left font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest text-[10px]"
+                >
                   <button
                     onClick={() => onSort(key)}
                     className={`inline-flex items-center gap-1.5 font-semibold text-xs uppercase tracking-wider transition-colors ${
@@ -573,48 +705,84 @@ function SortableTable({
                 </th>
               );
             })}
-            <th className="px-4 py-3" />
+
+            <th
+              className="px-4 py-3 text-center font-bold text-slate-500 dark:text-slat
+            e-400 uppercase tracking-widest text-[10px]"
+            >
+              Actions
+            </th>
           </tr>
         </thead>
-        <tbody>
+
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
           {isLoading ? (
-            Array.from({ length: 5 }).map((_, i) => (
-              <tr
-                key={i}
-                className="border-b border-slate-50 dark:border-slate-800/60"
+            <tr>
+              <td
+                colSpan={7}
+                className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
               >
-                {Array.from({ length: 6 }).map((__, j) => (
-                  <td key={j} className="px-4 py-3">
-                    <div className="h-3 bg-slate-100 dark:bg-slate-800 rounded animate-pulse w-3/4" />
-                  </td>
-                ))}
-              </tr>
-            ))
+                <div className="flex items-center justify-center gap-2">
+                  <svg
+                    className="animate-spin w-4 h-4 text-blue-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      opacity="0.2"
+                    />
+                    <path
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      opacity="0.8"
+                    />
+                  </svg>
+                  <span className="text-xs font-medium">Loading users...</span>
+                </div>
+              </td>
+            </tr>
           ) : data.length === 0 ? (
             <tr>
-              <td colSpan={6} className="px-4 py-16 text-center">
-                <p className="text-2xl mb-2">👥</p>
-                <p className="text-sm text-slate-400">
-                  No users match your search
-                </p>
+              <td
+                colSpan={7}
+                className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
+              >
+                <div className="text-2xl mb-2">Users</div>
+                <div className="font-medium">No users match your search</div>
               </td>
             </tr>
           ) : (
-            data.map((u) => {
+            data.map((u, idx) => {
               const isSelf = u.id === currentUserId;
               const isActive = u.status === "ACTIVE";
               const hasName = u.firstName || u.lastName;
+
               return (
                 <tr
                   key={u.id}
-                  className="border-b border-slate-50 dark:border-slate-800/60 hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors"
+                  className={`group transition-colors hover:bg-blue-50/60 dark:hover:bg-slate-800/50 ${idx % 2 === 0 ? "bg-white dark:bg-transparent" : "bg-slate-50/60 dark:bg-slate-800/20"}`}
                 >
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedUserIds.has(u.id)}
+                      onChange={() => onToggleSelect(u.id)}
+                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
+                      aria-label={`Select ${getDisplayName(u)}`}
+                    />
+                  </td>
+
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <EnhancedAvatar user={u} />
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <p className="text-sm font-semibold text-slate-900 dark:text-white truncate leading-tight">
+                          <p className="text-xs font-semibold text-slate-900 dark:text-white truncate leading-tight">
                             {hasName ? getDisplayName(u) : u.userId}
                           </p>
                           {isSelf && (
@@ -636,33 +804,38 @@ function SortableTable({
                       </div>
                     </div>
                   </td>
+
                   <td className="px-4 py-3">
-                    <span className="text-sm text-slate-600 dark:text-slate-300">
+                    <span className="text-xs text-slate-600 dark:text-slate-300">
                       {u.team?.name ?? (
                         <span className="text-slate-400 italic">No team</span>
                       )}
                     </span>
                   </td>
+
                   <td className="px-4 py-3">
                     <Badge className={getUserRoleBadgeColor(u)}>
                       {getUserRoleLabel(u)}
                     </Badge>
                   </td>
+
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <StatusDot active={isActive} />
                       <span
-                        className={`text-sm font-medium ${isActive ? "text-slate-700 dark:text-slate-300" : "text-slate-400"}`}
+                        className={`text-xs font-medium ${isActive ? "text-slate-700 dark:text-slate-300" : "text-slate-400"}`}
                       >
                         {isActive ? "Active" : "Inactive"}
                       </span>
                     </div>
                   </td>
+
                   <td className="px-4 py-3">
                     <span className="text-xs font-medium text-slate-400">
                       {formatDate(u.createdAt)}
                     </span>
                   </td>
+
                   <td className="px-4 py-3 text-right">
                     <button
                       onClick={() => onViewDetails(u)}
@@ -691,8 +864,6 @@ function UserDetailModal({
   user,
   actorRole,
   currentUserId,
-  teams,
-  customRoles,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -703,8 +874,6 @@ function UserDetailModal({
   user: User | null;
   actorRole: Role;
   currentUserId: number | undefined;
-  teams: { id: number; name: string }[];
-  customRoles: UserRole[];
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -980,7 +1149,7 @@ function UserDetailModal({
    USER CARD (grid view)
    ────────────────────────────────────────────────────────── */
 
-function UserCard({
+export function UserCard({
   user,
   actorRole,
   currentUserId,
@@ -1873,11 +2042,115 @@ function AssignTeamModal({
   );
 }
 
+function BulkAssignTeamModal({
+  isOpen,
+  onClose,
+  selectedCount,
+  teams,
+  actorRole,
+  actorTeamId,
+  onAssign,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  selectedCount: number;
+  teams: { id: number; name: string }[];
+  actorRole: Role;
+  actorTeamId: number | null;
+  onAssign: (teamId: number | null) => Promise<void>;
+}) {
+  const [teamId, setTeamId] = useState<number>(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const availableTeams =
+    actorRole === "ADMIN" ? teams.filter((t) => t.id === actorTeamId) : teams;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setError("");
+    setTeamId(availableTeams[0]?.id ?? 0);
+  }, [availableTeams, isOpen]);
+
+  const handleSubmit = async () => {
+    if (!teamId) {
+      setError("Please select a team");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      await onAssign(teamId);
+      onClose();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Bulk Assign Team">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Assign selected users to a team. Selected users: {selectedCount}
+        </p>
+        <Select
+          label="Team"
+          value={String(teamId)}
+          onChange={(e) => setTeamId(parseInt(e.target.value, 10) || 0)}
+        >
+          <option value="0">Select team</option>
+          {availableTeams.map((t) => (
+            <option key={t.id} value={String(t.id)}>
+              {t.name}
+            </option>
+          ))}
+        </Select>
+        {error && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
+            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          </div>
+        )}
+        <div className="flex gap-3 pt-1">
+          <Button
+            variant="secondary"
+            className="flex-1 justify-center"
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 justify-center"
+            onClick={handleSubmit}
+            loading={loading}
+            disabled={availableTeams.length === 0}
+          >
+            Assign Team
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /* ──────────────────────────────────────────────────────────
    MAIN PAGE
    ────────────────────────────────────────────────────────── */
 
 export default function UsersPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const initialQ = searchParams.get("q") ?? "";
+  const initialRole = searchParams.get("role") ?? "ALL";
+  const initialStatus = searchParams.get("status") ?? "ALL";
+  const initialTeam = searchParams.get("team") ?? "ALL";
+  const initialSort = (searchParams.get("sort") as SortKey) ?? "name";
+  const initialDir = (searchParams.get("dir") as SortDir) ?? "asc";
+  const initialPage = parsePositiveInt(searchParams.get("page"), 1);
+
   const { user: currentUser } = useAuth();
   const {
     users,
@@ -1895,18 +2168,24 @@ export default function UsersPage() {
   const { roles: customRoles } = useRoles();
   const { toasts, show, dismiss } = useToast();
 
-  const [search, setSearch] = useState("");
-  const [roleFilter, setRole] = useState("ALL");
-  const [statusFilter, setStatus] = useState("ALL");
-  const [teamFilter, setTeamFilter] = useState("ALL");
+  const [search, setSearch] = useState(initialQ);
+  const [roleFilter, setRole] = useState(initialRole);
+  const [statusFilter, setStatus] = useState(initialStatus);
+  const [teamFilter, setTeamFilter] = useState(initialTeam);
 
   // NEW: pagination state
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialPage);
   const [itemsPerPage] = useState(10);
 
   // NEW: sort state
-  const [sortKey, setSortKey] = useState<SortKey>("name");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [sortKey, setSortKey] = useState<SortKey>(initialSort);
+  const [sortDir, setSortDir] = useState<SortDir>(initialDir);
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(
+    new Set(),
+  );
+  const [showBulkAssignTeam, setShowBulkAssignTeam] = useState(false);
+
+  const debouncedSearch = useDebouncedValue(search, 250);
 
   const [showCreate, setShowCreate] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
@@ -1936,26 +2215,30 @@ export default function UsersPage() {
   const handleSearchChange = (value: string) => {
     setSearch(value);
     setCurrentPage(1);
+    setSelectedUserIds(new Set());
   };
 
   const handleRoleChange = (value: string) => {
     setRole(value);
     setCurrentPage(1);
+    setSelectedUserIds(new Set());
   };
 
   const handleStatusChange = (value: StatusFilterChip) => {
     setStatus(value);
     setCurrentPage(1);
+    setSelectedUserIds(new Set());
   };
 
   const handleTeamChange = (value: string) => {
     setTeamFilter(value);
     setCurrentPage(1);
+    setSelectedUserIds(new Set());
   };
 
   // NEW: isFiltering now also checks if any filter is active (used for clear button)
   const isFiltering =
-    !!search ||
+    !!debouncedSearch ||
     roleFilter !== "ALL" ||
     statusFilter !== "ALL" ||
     teamFilter !== "ALL";
@@ -1967,6 +2250,7 @@ export default function UsersPage() {
     setStatus("ALL");
     setTeamFilter("ALL");
     setCurrentPage(1);
+    setSelectedUserIds(new Set());
   };
 
   // Filter + sort pipeline using useMemo for performance
@@ -1974,7 +2258,7 @@ export default function UsersPage() {
     const base = users.filter((u) => {
       const q =
         `${u.userId ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
-      const matchesSearch = q.includes(search.toLowerCase());
+      const matchesSearch = q.includes(debouncedSearch.toLowerCase());
       const matchesRole =
         roleFilter === "ALL" ||
         (roleFilter.startsWith("CUSTOM_")
@@ -2016,13 +2300,93 @@ export default function UsersPage() {
       const cmp = aVal.localeCompare(bVal);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [users, search, roleFilter, statusFilter, teamFilter, sortKey, sortDir]);
+  }, [
+    users,
+    debouncedSearch,
+    roleFilter,
+    statusFilter,
+    teamFilter,
+    sortKey,
+    sortDir,
+  ]);
 
   // NEW: Pagination logic
   const totalPages = Math.ceil(filtered.length / itemsPerPage);
-  const startIdx = (currentPage - 1) * itemsPerPage;
+  const effectiveCurrentPage =
+    totalPages === 0 ? 1 : Math.min(currentPage, totalPages);
+  const startIdx = (effectiveCurrentPage - 1) * itemsPerPage;
   const endIdx = startIdx + itemsPerPage;
   const paginatedData = filtered.slice(startIdx, endIdx);
+  const paginatedIds = useMemo(
+    () => paginatedData.map((u) => u.id),
+    [paginatedData],
+  );
+
+  const allPageSelected =
+    paginatedIds.length > 0 &&
+    paginatedIds.every((id) => selectedUserIds.has(id));
+  const somePageSelected = paginatedIds.some((id) => selectedUserIds.has(id));
+
+  const selectedUsers = useMemo(
+    () => users.filter((u) => selectedUserIds.has(u.id)),
+    [users, selectedUserIds],
+  );
+
+  const canBulkAssignTeam =
+    actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (debouncedSearch) next.set("q", debouncedSearch);
+    if (roleFilter !== "ALL") next.set("role", roleFilter);
+    if (statusFilter !== "ALL") next.set("status", statusFilter);
+    if (teamFilter !== "ALL") next.set("team", teamFilter);
+    if (sortKey !== "name") next.set("sort", sortKey);
+    if (sortDir !== "asc") next.set("dir", sortDir);
+    if (effectiveCurrentPage > 1)
+      next.set("page", String(effectiveCurrentPage));
+
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, {
+      scroll: false,
+    });
+  }, [
+    effectiveCurrentPage,
+    debouncedSearch,
+    pathname,
+    roleFilter,
+    router,
+    sortDir,
+    sortKey,
+    statusFilter,
+    teamFilter,
+  ]);
+
+  const toggleSelect = (userId: number) => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) {
+        next.delete(userId);
+      } else {
+        next.add(userId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllPage = () => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        paginatedIds.forEach((id) => next.delete(id));
+      } else {
+        paginatedIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedUserIds(new Set());
 
   // Generate page numbers for pagination
   const getPageNumbers = () => {
@@ -2038,19 +2402,19 @@ export default function UsersPage() {
       // Always show first page
       pages.push(1);
 
-      if (currentPage > 3) {
+      if (effectiveCurrentPage > 3) {
         pages.push("...");
       }
 
       // Show pages around current page
-      const start = Math.max(2, currentPage - 1);
-      const end = Math.min(totalPages - 1, currentPage + 1);
+      const start = Math.max(2, effectiveCurrentPage - 1);
+      const end = Math.min(totalPages - 1, effectiveCurrentPage + 1);
 
       for (let i = start; i <= end; i++) {
         pages.push(i);
       }
 
-      if (currentPage < totalPages - 2) {
+      if (effectiveCurrentPage < totalPages - 2) {
         pages.push("...");
       }
 
@@ -2089,6 +2453,7 @@ export default function UsersPage() {
       numClass: "text-indigo-800 dark:text-indigo-300",
       lblClass: "text-indigo-600 dark:text-indigo-500",
       iconClass: "text-indigo-400 dark:text-indigo-600",
+      iconBg: "bg-indigo-100 dark:bg-indigo-900/50",
     },
     {
       label: "Active",
@@ -2100,6 +2465,7 @@ export default function UsersPage() {
       numClass: "text-emerald-800 dark:text-emerald-300",
       lblClass: "text-emerald-600 dark:text-emerald-500",
       iconClass: "text-emerald-400 dark:text-emerald-600",
+      iconBg: "bg-emerald-100 dark:bg-emerald-900/50",
     },
     {
       label: "Inactive",
@@ -2126,6 +2492,10 @@ export default function UsersPage() {
         inactiveCount > 0
           ? "text-rose-400 dark:text-rose-600"
           : "text-slate-300 dark:text-slate-700",
+      iconBg:
+        inactiveCount > 0
+          ? "bg-rose-100 dark:bg-rose-900/50"
+          : "bg-slate-100 dark:bg-slate-800",
     },
     {
       label: actorRole === "SUPER_ADMIN" ? "Admins" : "Users",
@@ -2137,6 +2507,7 @@ export default function UsersPage() {
       numClass: "text-sky-800 dark:text-sky-300",
       lblClass: "text-sky-600 dark:text-sky-500",
       iconClass: "text-sky-400 dark:text-sky-600",
+      iconBg: "bg-sky-100 dark:bg-sky-900/50",
     },
   ];
 
@@ -2200,6 +2571,67 @@ export default function UsersPage() {
     refetch();
   };
 
+  const handleBulkActivate = async () => {
+    const eligible = selectedUsers.filter(
+      (u) => u.status !== "ACTIVE" && canDeactivate(actorRole, u.role),
+    );
+    if (eligible.length === 0) {
+      show("No selected users can be activated", "warning");
+      return;
+    }
+
+    await Promise.all(eligible.map((u) => activateUser(u.id)));
+    show(
+      `Activated ${eligible.length} user${eligible.length === 1 ? "" : "s"}`,
+      "success",
+    );
+    clearSelection();
+    refetch();
+  };
+
+  const handleBulkDeactivate = async () => {
+    const eligible = selectedUsers.filter(
+      (u) =>
+        u.status === "ACTIVE" &&
+        canDeactivate(actorRole, u.role) &&
+        u.id !== currentUser?.id,
+    );
+    if (eligible.length === 0) {
+      show("No selected users can be deactivated", "warning");
+      return;
+    }
+
+    await Promise.all(eligible.map((u) => deactivateUser(u.id)));
+    show(
+      `Deactivated ${eligible.length} user${eligible.length === 1 ? "" : "s"}`,
+      "success",
+    );
+    clearSelection();
+    refetch();
+  };
+
+  const handleBulkAssignTeam = async (teamId: number | null) => {
+    const eligible = selectedUsers.filter((u) => {
+      if (actorRole === "ADMIN") {
+        return u.role !== "ADMIN" && u.role !== "SUPER_ADMIN";
+      }
+      return u.role !== "SUPER_ADMIN";
+    });
+
+    if (eligible.length === 0) {
+      show("No selected users can be reassigned", "warning");
+      return;
+    }
+
+    await Promise.all(eligible.map((u) => assignTeam(u.id, teamId)));
+    show(
+      `Assigned team for ${eligible.length} user${eligible.length === 1 ? "" : "s"}`,
+      "success",
+    );
+    clearSelection();
+    refetch();
+  };
+
   // NEW: Export CSV — exports currently filtered list
   const handleExportCSV = () => {
     exportToCSV(filtered, `users-${new Date().toISOString().slice(0, 10)}.csv`);
@@ -2210,7 +2642,7 @@ export default function UsersPage() {
   };
 
   const filterSelectClasses =
-    "px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 hover:border-slate-300 dark:hover:border-slate-600 transition-all cursor-pointer";
+    "px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 hover:border-slate-300 dark:hover:border-slate-600 transition-all cursor-pointer";
 
   return (
     <div className="h-full w-full min-h-0 px-6 py-5 text-xs flex flex-col gap-5">
@@ -2224,19 +2656,26 @@ export default function UsersPage() {
             Manage user accounts, roles, and team assignments
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 lg:w-full lg:max-w-2xl">
           <SearchInput
             value={search}
             onChange={handleSearchChange}
             placeholder="Search by ID, name, or role..."
-            className="w-full sm:min-w-64 lg:w-72"
+            className="w-full sm:min-w-72 lg:flex-1"
             autoComplete="off"
           />
+
+          <button
+            onClick={refetch}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 transition-all"
+          >
+            <RefreshIcon /> Refresh
+          </button>
 
           {/* NEW: Export CSV — exports the currently filtered list */}
           <button
             onClick={handleExportCSV}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:border-emerald-300 dark:hover:border-emerald-700 transition-all"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:border-emerald-300 dark:hover:border-emerald-700 transition-all"
           >
             <DownloadIcon />
             Export CSV
@@ -2250,13 +2689,55 @@ export default function UsersPage() {
         </div>
       </div>
 
+      {selectedUsers.length > 0 && (
+        <Card className="p-3 border-blue-200/70 dark:border-blue-800/40 bg-blue-50/50 dark:bg-blue-900/10">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-blue-200 dark:border-blue-800/40 text-xs font-semibold text-blue-700 dark:text-blue-300">
+              <CheckSquareIcon />
+              {selectedUsers.length} selected
+            </span>
+            <button
+              onClick={handleBulkActivate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-700 text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all"
+            >
+              <ActivateIcon /> Activate
+            </button>
+            <button
+              onClick={handleBulkDeactivate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-300 dark:border-rose-700 text-xs font-semibold text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-all"
+            >
+              <DeactivateIcon /> Deactivate
+            </button>
+            {canBulkAssignTeam && (
+              <button
+                onClick={() => setShowBulkAssignTeam(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-300 dark:border-sky-700 text-xs font-semibold text-sky-700 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-all"
+              >
+                <TeamAssignIcon /> Assign Team
+              </button>
+            )}
+            <button
+              onClick={clearSelection}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+            >
+              <XIcon /> Clear
+            </button>
+          </div>
+        </Card>
+      )}
+
       {/* ── Stat Cards (with icons) ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         {statCards.map((s) => (
           <div
             key={s.label}
-            className={`rounded-2xl p-4 flex items-center justify-between bg-gradient-to-br ${s.gradient} border ${s.border} hover:shadow-md transition-shadow`}
+            className={`rounded-2xl p-4 flex items-center gap-3.5 bg-gradient-to-br ${s.gradient} border ${s.border} hover:shadow-md transition-shadow`}
           >
+            <div
+              className={`w-10 h-10 rounded-xl ${s.iconBg} flex items-center justify-center flex-shrink-0`}
+            >
+              <div className={`${s.iconClass} opacity-80`}>{s.icon}</div>
+            </div>
             <div>
               <div className={`text-2xl font-bold leading-none ${s.numClass}`}>
                 {s.value}
@@ -2265,8 +2746,6 @@ export default function UsersPage() {
                 {s.label}
               </div>
             </div>
-            {/* NEW: icon on right side of stat card */}
-            <div className={`${s.iconClass} opacity-60`}>{s.icon}</div>
           </div>
         ))}
       </div>
@@ -2365,7 +2844,7 @@ export default function UsersPage() {
         </Card>
       ) : (
         // LIST VIEW with sortable columns
-        <Card className="overflow-hidden">
+        <Card className="overflow-hidden flex-1 min-h-0">
           <SortableTable
             data={paginatedData}
             isLoading={isLoading}
@@ -2374,6 +2853,11 @@ export default function UsersPage() {
             onSort={handleSort}
             currentUserId={currentUser?.id}
             onViewDetails={handleOpenViewDetails}
+            selectedUserIds={selectedUserIds}
+            allPageSelected={allPageSelected}
+            somePageSelected={somePageSelected}
+            onToggleSelect={toggleSelect}
+            onToggleSelectAllPage={toggleSelectAllPage}
           />
         </Card>
       )}
@@ -2389,7 +2873,7 @@ export default function UsersPage() {
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
+                disabled={effectiveCurrentPage === 1}
                 className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
                 Previous
@@ -2402,7 +2886,7 @@ export default function UsersPage() {
                   }
                   disabled={page === "..."}
                   className={`min-w-[2rem] px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    page === currentPage
+                    page === effectiveCurrentPage
                       ? "bg-blue-600 dark:bg-blue-500 text-white shadow-sm"
                       : page === "..."
                         ? "text-slate-400 dark:text-slate-600 cursor-default"
@@ -2414,9 +2898,11 @@ export default function UsersPage() {
               ))}
               <button
                 onClick={() =>
-                  setCurrentPage((p) => Math.min(totalPages, p + 1))
+                  setCurrentPage((p) =>
+                    Math.min(Math.max(totalPages, 1), p + 1),
+                  )
                 }
-                disabled={currentPage === totalPages}
+                disabled={effectiveCurrentPage === totalPages}
                 className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
                 Next
@@ -2453,8 +2939,6 @@ export default function UsersPage() {
         user={targetUser}
         actorRole={actorRole}
         currentUserId={currentUser?.id}
-        teams={teams}
-        customRoles={customRoles}
         onChangePassword={handleOpenChangePassword}
         onChangeRole={handleOpenChangeRole}
         onAssignTeam={handleOpenAssignTeam}
@@ -2489,6 +2973,16 @@ export default function UsersPage() {
         targetUser={targetUser}
         teams={teams}
         onAssignTeam={handleAssignTeam}
+      />
+
+      <BulkAssignTeamModal
+        isOpen={showBulkAssignTeam}
+        onClose={() => setShowBulkAssignTeam(false)}
+        selectedCount={selectedUsers.length}
+        teams={teams}
+        actorRole={actorRole}
+        actorTeamId={actorTeamId}
+        onAssign={handleBulkAssignTeam}
       />
 
       <ToastContainer toasts={toasts} onDismiss={dismiss} />

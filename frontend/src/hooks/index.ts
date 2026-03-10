@@ -9,6 +9,9 @@ import {
   CreateUserPayload,
   Team,
   UserRole,
+  BaseRoleFeaturePolicy,
+  TeamRoleFeaturePolicyItem,
+  TeamFeatureOption,
   TaskAssignment,
   UserLog,
 } from "../types";
@@ -165,6 +168,7 @@ export function useTeams() {
 // ─── useRoles ──────────────────────────────────────────────
 export function useRoles() {
   const [roles, setRoles] = useState<UserRole[]>([]);
+  const [basePolicies, setBasePolicies] = useState<BaseRoleFeaturePolicy[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -173,7 +177,9 @@ export function useRoles() {
     setError(null);
     try {
       const { roles } = await rolesApi.getAll();
+      const { policies } = await rolesApi.getBasePolicies();
       setRoles(roles);
+      setBasePolicies(policies);
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -206,14 +212,70 @@ export function useRoles() {
     return result;
   };
 
+  const updateBasePolicy = async (
+    role: "ADMIN" | "USER",
+    features: string[],
+  ) => {
+    const result = await rolesApi.updateBasePolicy(role, features);
+    await refetch();
+    return result;
+  };
+
   return {
     roles,
+    basePolicies,
     isLoading,
     error,
     refetch,
     createRole,
     updateRole,
+    updateBasePolicy,
     deleteRole,
+  };
+}
+
+// ─── useTeamPolicies ──────────────────────────────────────
+export function useTeamPolicies() {
+  const [policies, setPolicies] = useState<TeamRoleFeaturePolicyItem[]>([]);
+  const [featureCatalog, setFeatureCatalog] = useState<TeamFeatureOption[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { policies, featureCatalog } = await teamsApi.getPolicies();
+      setPolicies(policies);
+      setFeatureCatalog(featureCatalog);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  const updatePolicy = async (
+    teamId: number,
+    role: "ADMIN" | "USER",
+    features: string[],
+  ) => {
+    const result = await teamsApi.updatePolicy(teamId, role, features);
+    await refetch();
+    return result;
+  };
+
+  return {
+    policies,
+    featureCatalog,
+    isLoading,
+    error,
+    refetch,
+    updatePolicy,
   };
 }
 
@@ -268,7 +330,15 @@ export function useTasks() {
     return result;
   };
 
-  return { tasks, isLoading, error, refetch, createTask, updateProgress, deleteTask };
+  return {
+    tasks,
+    isLoading,
+    error,
+    refetch,
+    createTask,
+    updateProgress,
+    deleteTask,
+  };
 }
 
 // ─── useUserLogs ───────────────────────────────────────────

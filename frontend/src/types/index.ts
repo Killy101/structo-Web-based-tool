@@ -24,6 +24,34 @@ export interface UserRole {
   _count?: { users: number };
 }
 
+export interface BaseRoleFeaturePolicy {
+  id: number;
+  role: "ADMIN" | "USER";
+  features: string[];
+  updatedAt: string;
+}
+
+export interface TeamFeatureOption {
+  key: string;
+  label: string;
+}
+
+export interface TeamRoleFeaturePolicyItem {
+  team: { id: number; name: string; slug: string };
+  ADMIN: {
+    role: "ADMIN";
+    id: number | null;
+    features: string[];
+    updatedAt: string | null;
+  };
+  USER: {
+    role: "USER";
+    id: number | null;
+    features: string[];
+    updatedAt: string | null;
+  };
+}
+
 export interface Team {
   id: number;
   name: string;
@@ -50,6 +78,7 @@ export interface User {
   createdById?: number | null;
   teamId?: number | null;
   team?: { id: number; name: string; slug: string } | null;
+  effectiveFeatures?: string[];
   userRoleId?: number | null;
   userRole?: {
     id: number;

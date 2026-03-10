@@ -5,6 +5,144 @@ import { authorize } from "../middleware/authorize";
 
 const router = Router();
 
+const TEAM_POLICY_PREFIX = "__TEAM_ROLE_POLICY__";
+const POLICY_ROLES = ["ADMIN", "USER"] as const;
+type PolicyRole = (typeof POLICY_ROLES)[number];
+
+const FEATURE_CATALOG: Record<string, string> = {
+  dashboard: "Dashboard",
+  "brd-process": "BRD Process",
+  "brd-view-generate": "BRD View and Generate Sources",
+  "user-management": "User Management",
+  "compare-basic": "Compare",
+  "compare-chunk": "Compare Chunk",
+  "compare-merge": "Compare Merge",
+  "compare-pdf-xml-only": "Compare PDF + XML Only",
+  "user-logs": "User Logs",
+};
+
+function humanizeFeatureKey(key: string): string {
+  return key.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function policySlug(teamSlug: string, role: PolicyRole) {
+  return `${TEAM_POLICY_PREFIX}${teamSlug}__${role}`;
+}
+
+function defaultTeamRoleFeatures(
+  teamSlug: string,
+): Record<PolicyRole, string[]> {
+  const slug = teamSlug.toLowerCase();
+
+  if (slug === "pre-production") {
+    return {
+      ADMIN: [
+        "dashboard",
+        "brd-process",
+        "user-management",
+        "compare-basic",
+        "compare-pdf-xml-only",
+        "user-logs",
+      ],
+      USER: [
+        "dashboard",
+        "brd-process",
+        "compare-basic",
+        "compare-pdf-xml-only",
+      ],
+    };
+  }
+
+  if (slug === "production") {
+    return {
+      ADMIN: [
+        "dashboard",
+        "brd-view-generate",
+        "user-management",
+        "compare-basic",
+        "compare-pdf-xml-only",
+        "user-logs",
+      ],
+      USER: [
+        "dashboard",
+        "brd-view-generate",
+        "compare-basic",
+        "compare-pdf-xml-only",
+      ],
+    };
+  }
+
+  if (slug === "updating") {
+    return {
+      ADMIN: [
+        "dashboard",
+        "brd-view-generate",
+        "user-management",
+        "compare-basic",
+        "compare-pdf-xml-only",
+        "user-logs",
+      ],
+      USER: [
+        "dashboard",
+        "brd-view-generate",
+        "compare-basic",
+        "compare-chunk",
+        "compare-merge",
+      ],
+    };
+  }
+
+  return {
+    ADMIN: [
+      "dashboard",
+      "brd-process",
+      "user-management",
+      "compare-basic",
+      "user-logs",
+    ],
+    USER: ["dashboard", "brd-process", "compare-basic"],
+  };
+}
+
+async function ensureTeamPolicies(teamSlug: string) {
+  const defaults = defaultTeamRoleFeatures(teamSlug);
+
+  await Promise.all(
+    POLICY_ROLES.map(async (role) => {
+      const slug = policySlug(teamSlug, role);
+      const existing = await prisma.userRole.findUnique({ where: { slug } });
+      if (existing) return existing;
+
+      return prisma.userRole.create({
+        data: {
+          name: `Team Policy: ${teamSlug} (${role})`,
+          slug,
+          features: defaults[role],
+        },
+      });
+    }),
+  );
+}
+
+async function renameTeamPolicies(oldSlug: string, nextSlug: string) {
+  if (oldSlug === nextSlug) return;
+
+  for (const role of POLICY_ROLES) {
+    const current = await prisma.userRole.findUnique({
+      where: { slug: policySlug(oldSlug, role) },
+    });
+    if (!current) continue;
+
+    await prisma.userRole.update({
+      where: { id: current.id },
+      data: {
+        slug: policySlug(nextSlug, role),
+        name: `Team Policy: ${nextSlug} (${role})`,
+      },
+    });
+  }
+}
+
 // ── GET /teams ────────────────────────────────────────────
 router.get(
   "/",
@@ -75,6 +213,8 @@ router.post(
         data: { name: name.trim(), slug },
       });
 
+      await ensureTeamPolicies(team.slug);
+
       await prisma.userLog.create({
         data: {
           userId: req.user!.userId,
@@ -119,6 +259,8 @@ router.patch(
         data: { name: name.trim(), slug },
       });
 
+      await renameTeamPolicies(team.slug, updated.slug);
+
       res.json({ message: "Team updated", team: updated });
     } catch (error) {
       console.error("Update team error:", error);
@@ -160,4 +302,143 @@ router.delete(
   },
 );
 
+// ── GET /teams/policies (SuperAdmin/Admin) ───────────────
+router.get(
+  "/policies",
+  authenticate,
+  authorize(["SUPER_ADMIN", "ADMIN"]),
+  async (_req: AuthRequest, res: Response) => {
+    try {
+      const teams = await prisma.team.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { id: true, name: true, slug: true },
+      });
+
+      const policyRows = await prisma.userRole.findMany({
+        where: {
+          slug: {
+            startsWith: TEAM_POLICY_PREFIX,
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          features: true,
+          updatedAt: true,
+        },
+      });
+
+      const bySlug = new Map(policyRows.map((r) => [r.slug, r]));
+      const items = await Promise.all(
+        teams.map(async (team) => {
+          await ensureTeamPolicies(team.slug);
+
+          const admin = bySlug.get(policySlug(team.slug, "ADMIN"));
+          const user = bySlug.get(policySlug(team.slug, "USER"));
+
+          return {
+            team,
+            ADMIN: {
+              role: "ADMIN",
+              id: admin?.id ?? null,
+              features:
+                admin?.features ?? defaultTeamRoleFeatures(team.slug).ADMIN,
+              updatedAt: admin?.updatedAt ?? null,
+            },
+            USER: {
+              role: "USER",
+              id: user?.id ?? null,
+              features:
+                user?.features ?? defaultTeamRoleFeatures(team.slug).USER,
+              updatedAt: user?.updatedAt ?? null,
+            },
+          };
+        }),
+      );
+
+      const knownFeatures = new Set(Object.keys(FEATURE_CATALOG));
+      for (const row of policyRows) {
+        for (const feature of row.features) knownFeatures.add(feature);
+      }
+
+      const featureCatalog = Array.from(knownFeatures)
+        .sort()
+        .map((key) => ({
+          key,
+          label: FEATURE_CATALOG[key] ?? humanizeFeatureKey(key),
+        }));
+
+      res.json({ policies: items, featureCatalog });
+    } catch (error) {
+      console.error("Get team policies error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
 export default router;
+
+// ── PATCH /teams/:id/policies/:role (SuperAdmin only) ───
+router.patch(
+  "/:id/policies/:role",
+  authenticate,
+  authorize(["SUPER_ADMIN"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const teamId = parseInt(req.params.id as string, 10);
+      const role = String(req.params.role || "").toUpperCase() as PolicyRole;
+      const { features } = req.body;
+
+      if (!POLICY_ROLES.includes(role)) {
+        return res.status(400).json({ error: "Role must be ADMIN or USER" });
+      }
+
+      if (!Array.isArray(features)) {
+        return res.status(400).json({ error: "Features must be an array" });
+      }
+
+      const team = await prisma.team.findUnique({ where: { id: teamId } });
+      if (!team) return res.status(404).json({ error: "Team not found" });
+
+      await ensureTeamPolicies(team.slug);
+
+      const policy = await prisma.userRole.findUnique({
+        where: { slug: policySlug(team.slug, role) },
+      });
+
+      if (!policy) {
+        return res.status(404).json({ error: "Team role policy not found" });
+      }
+
+      const updated = await prisma.userRole.update({
+        where: { id: policy.id },
+        data: {
+          features: features.filter((f) => typeof f === "string"),
+        },
+      });
+
+      await prisma.userLog.create({
+        data: {
+          userId: req.user!.userId,
+          action: "TEAM_POLICY_UPDATED",
+          details: `Updated ${role} policy for team ${team.name}`,
+        },
+      });
+
+      res.json({
+        message: "Team policy updated",
+        policy: {
+          teamId: team.id,
+          teamSlug: team.slug,
+          role,
+          features: updated.features,
+          updatedAt: updated.updatedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Update team policy error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);

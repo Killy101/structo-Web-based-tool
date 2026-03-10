@@ -11,6 +11,7 @@ interface NavItem {
   href: string;
   label: string;
   roles: Role[];
+  feature?: string | string[];
   icon: React.ReactNode;
 }
 
@@ -19,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
     href: "/dashboard",
     label: "Dashboard",
     roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    feature: "dashboard",
     icon: (
       <svg
         className="w-5 h-5"
@@ -38,7 +40,8 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/brd",
     label: "BRD Sources",
-    roles: ["SUPER_ADMIN", "ADMIN"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    feature: ["brd-process", "brd-view-generate"],
     icon: (
       <svg
         className="w-5 h-5"
@@ -58,7 +61,8 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/compare",
     label: "Compare",
-    roles: ["SUPER_ADMIN"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    feature: "compare-basic",
     icon: (
       <svg
         className="w-5 h-5"
@@ -84,7 +88,8 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/users",
     label: "User Management",
-    roles: ["SUPER_ADMIN", "ADMIN"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    feature: "user-management",
     icon: (
       <svg
         className="w-5 h-5"
@@ -122,46 +127,6 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
-    href: "/dashboard/validate",
-    label: "Validation",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC"],
-    icon: (
-      <svg
-        className="w-5 h-5"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={1.8}
-          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "/dashboard/history",
-    label: "History",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-    icon: (
-      <svg
-        className="w-5 h-5"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={1.8}
-          d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-        />
-      </svg>
-    ),
-  },
-  {
     href: "/dashboard/settings",
     label: "Settings",
     roles: ["SUPER_ADMIN"],
@@ -190,7 +155,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const notifications = [
-  { msg: "3 files pending validation", time: "5m ago", color: "bg-amber-500" },
+  { msg: "3 files pending review", time: "5m ago", color: "bg-amber-500" },
   {
     msg: "New user has been registered",
     time: "1h ago",
@@ -282,6 +247,21 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { dark, toggle } = useTheme();
   const [showNotif, setShowNotif] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const hasFeature = (feature?: string | string[]) => {
+    if (!feature) return true;
+    if (user?.role === "SUPER_ADMIN") return true;
+    const enabled = user?.effectiveFeatures ?? [];
+    if (enabled.includes("*")) return true;
+    if (Array.isArray(feature)) return feature.some((f) => enabled.includes(f));
+    return enabled.includes(feature);
+  };
+
+  const canAccess = (item: NavItem) => {
+    const roleOk = item.roles.includes((user?.role as Role) ?? "USER");
+    const featureOk = hasFeature(item.feature);
+    return roleOk && featureOk;
+  };
+
   const filtered = NAV_ITEMS.filter(
     (item) => item.href !== "/dashboard/settings",
   );
@@ -352,15 +332,21 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto scrollbar-none">
           {filtered.map((item) => {
             const active = isActive(item.href);
+            const allowed = canAccess(item);
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                title={collapsed ? item.label : undefined}
+                title={
+                  collapsed
+                    ? `${item.label}${allowed ? "" : " (No access)"}`
+                    : undefined
+                }
                 className={`
                   flex items-center gap-3 px-3 py-2.5 rounded-xl
                   transition-all duration-150 group
                   ${active ? "text-white shadow-lg" : inactiveItemClass}
+                  ${!allowed && !active ? "opacity-70" : ""}
                   ${collapsed ? "justify-center" : ""}
                 `}
                 style={
@@ -376,6 +362,11 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 {!collapsed && (
                   <span className="text-sm font-medium truncate">
                     {item.label}
+                  </span>
+                )}
+                {!collapsed && !active && !allowed && (
+                  <span className="ml-auto inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/25">
+                    Locked
                   </span>
                 )}
                 {!collapsed && active && (
@@ -541,44 +532,46 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           </button>
 
           {/* settings */}
-          <Link
-            href="/dashboard/settings"
-            title={collapsed ? "Settings" : undefined}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${isActive("/dashboard/settings") ? "text-white shadow-lg" : inactiveItemClass} ${collapsed ? "justify-center" : ""}`}
-            style={
-              isActive("/dashboard/settings")
-                ? {
-                    background: "linear-gradient(135deg, #1a8fd1, #146da3)",
-                    boxShadow: "0 4px 16px rgba(26, 143, 209, 0.3)",
-                  }
-                : undefined
-            }
-          >
-            <span className="flex-shrink-0">
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.8}
-                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.8}
-                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                />
-              </svg>
-            </span>
-            {!collapsed && (
-              <span className="text-sm font-medium">Settings</span>
-            )}
-          </Link>
+          {user?.role === "SUPER_ADMIN" && (
+            <Link
+              href="/dashboard/settings"
+              title={collapsed ? "Settings" : undefined}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${isActive("/dashboard/settings") ? "text-white shadow-lg" : inactiveItemClass} ${collapsed ? "justify-center" : ""}`}
+              style={
+                isActive("/dashboard/settings")
+                  ? {
+                      background: "linear-gradient(135deg, #1a8fd1, #146da3)",
+                      boxShadow: "0 4px 16px rgba(26, 143, 209, 0.3)",
+                    }
+                  : undefined
+              }
+            >
+              <span className="flex-shrink-0">
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.8}
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.8}
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+              </span>
+              {!collapsed && (
+                <span className="text-sm font-medium">Settings</span>
+              )}
+            </Link>
+          )}
         </div>
 
         {/* collapse toggle */}

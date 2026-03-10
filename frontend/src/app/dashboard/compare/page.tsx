@@ -18,23 +18,31 @@ const MergePanel = dynamic(
 
 type Tab = "chunk" | "compare" | "merge";
 
-/**
- * Role-based tab access:
- *   SUPER_ADMIN, MANAGER_QA  → Chunk + Compare + Merge  (can also edit XML)
- *   MANAGER_QC, ADMIN, USER  → Compare only              (read-only XML)
- */
-const FULL_ACCESS_ROLES = ["SUPER_ADMIN", "MANAGER_QA"];
-
 export default function ComparePage() {
   const { user } = useAuth();
-  const hasFullAccess = FULL_ACCESS_ROLES.includes(user?.role ?? "");
+  const features = user?.effectiveFeatures ?? [];
+  const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
+  const canCompare = isSuperAdmin || features.includes("compare-basic");
+  const canChunk = isSuperAdmin || features.includes("compare-chunk");
+  const canMerge = isSuperAdmin || features.includes("compare-merge");
+  const comparePdfXmlOnly =
+    isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const hasExtendedAccess = canChunk || canMerge;
 
   const [activeTab, setActiveTab] = useState<Tab>(
-    hasFullAccess ? "chunk" : "compare",
+    hasExtendedAccess ? (canChunk ? "chunk" : "compare") : "compare",
   );
 
+  if (!canCompare && !canChunk && !canMerge) {
+    return (
+      <div className="h-full flex items-center justify-center text-center text-slate-500 dark:text-slate-400">
+        You do not have compare access for your team policy.
+      </div>
+    );
+  }
+
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    ...(hasFullAccess
+    ...(canChunk
       ? [
           {
             id: "chunk" as Tab,
@@ -76,7 +84,7 @@ export default function ComparePage() {
         </svg>
       ),
     },
-    ...(hasFullAccess
+    ...(canMerge
       ? [
           {
             id: "merge" as Tab,
@@ -135,18 +143,17 @@ export default function ComparePage() {
 
         {/* Role badge */}
         <div className="ml-auto">
-          {hasFullAccess ? (
+          {hasExtendedAccess ? (
             <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
-              {user?.role === "SUPER_ADMIN" ? "Super Admin" : "Updating Team"} · Full Access
+              {user?.role === "SUPER_ADMIN"
+                ? "Super Admin"
+                : (user?.team?.name ?? "Team")}{" "}
+              · Full Access
             </span>
           ) : (
             <span className="text-[10px] px-2 py-1 rounded-full bg-amber-500/15 text-amber-400 font-medium">
-              {user?.role === "MANAGER_QC"
-                ? "Pre-Production"
-                : user?.role === "ADMIN"
-                  ? "Production"
-                  : "Viewer"}{" "}
-              · Compare Only
+              {user?.team?.name ?? "Team"} ·{" "}
+              {comparePdfXmlOnly ? "Compare PDF+XML Only" : "Compare"}
             </span>
           )}
         </div>
@@ -154,9 +161,9 @@ export default function ComparePage() {
 
       {/* ── Panel content ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden p-4 min-h-0">
-        {hasFullAccess && activeTab === "chunk" && <ChunkPanel />}
+        {canChunk && activeTab === "chunk" && <ChunkPanel />}
         {activeTab === "compare" && <ComparePanel />}
-        {hasFullAccess && activeTab === "merge" && <MergePanel />}
+        {canMerge && activeTab === "merge" && <MergePanel />}
       </div>
     </div>
   );
