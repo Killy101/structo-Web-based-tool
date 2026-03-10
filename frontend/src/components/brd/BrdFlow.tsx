@@ -1,15 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { EmptyState, Button } from "../../components/ui";
+import { useState, useEffect, useCallback } from "react";
 import Upload from "./Upload";
 import Scope from "./Scope";
 import Metadata from "./Metadata";
-import ContentProf from "./ContentProf";
+import ContentProfile from "./ContentProf";
 import Toc from "./TOC";
 import Citation from "./Citation";
 import Generate from "./Generate";
-import View from "./View";
+import api from "@/app/lib/api";
 
 interface Props {
   onClose?: () => void;
@@ -30,7 +29,23 @@ interface UploadFlowData {
   brdConfig?: Record<string, unknown>;
 }
 
+interface BrdDetailResponse {
+  id:              string;
+  title:           string;
+  format:          "new" | "old";
+  scope?:          Record<string, unknown>;
+  metadata?:       Record<string, unknown>;
+  toc?:            Record<string, unknown>;
+  citations?:      Record<string, unknown>;
+  contentProfile?: Record<string, unknown>;
+  brdConfig?:      Record<string, unknown>;
+}
+
+// Full flow (new upload): Upload → Scope → Metadata → TOC → Citation → ContentProfile → Generate
 const STEPS = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
+
+// Edit flow (from registry): skips Upload entirely
+const EDIT_STEPS = ["Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
 
 const STEP_META = [
   { icon: "↑", desc: "Start by uploading your source documents" },
@@ -42,276 +57,389 @@ const STEP_META = [
   { icon: "✦", desc: "Review and generate the final BRD document" },
 ];
 
-export default function BrdFlow({ onClose, initialStep = 0, initialMeta = null, finalStepMode = "generate" }: Props) {
-  const [step, setStep] = useState(Math.max(0, Math.min(initialStep, STEPS.length - 1)));
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [uploadMeta, setUploadMeta] = useState<UploadFlowData | null>(initialMeta);
+// Edit mode step meta: same as STEP_META but without the Upload entry (index 0)
+const EDIT_STEP_META = STEP_META.slice(1);
 
-  const next = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
+// ── Exit confirmation modal ────────────────────────────────────────────────
+function ExitConfirmModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl w-[min(400px,90vw)] p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Exit without saving?</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Any unsaved changes will be lost.</p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-700 transition-all"
+          >
+            Exit anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function BrdFlow({
+  onClose,
+  initialStep = 0,
+  initialMeta = null,
+  finalStepMode = "generate",
+}: Props) {
+  // ── Edit mode: opened from registry (has a brdId, no upload needed) ────────
+  // Requirement 5: in edit mode never show the Upload step.
+  const isEditMode = !!initialMeta?.brdId;
+
+  // When Generate's per-section "Edit" button was clicked, cameFromGenerate=true
+  // so we can show the "Back to Generate" shortcut (requirement 4).
+  const cameFromGenerate = isEditMode && initialStep >= 1 && initialStep <= 5;
+
+  // Convert full-flow step index → edit-mode step index (subtract 1 because no Upload)
+  const toEditStep   = (s: number) => Math.max(0, s - 1);
+  // Convert edit-mode step index → full-flow step index
+  const fromEditStep = (s: number) => s + 1;
+
+  const steps    = isEditMode ? EDIT_STEPS     : STEPS;
+  const stepMeta = isEditMode ? EDIT_STEP_META : STEP_META;
+
+  const clampedInitial = isEditMode
+    ? Math.max(0, Math.min(toEditStep(initialStep), EDIT_STEPS.length - 1))
+    : Math.max(0, Math.min(initialStep, STEPS.length - 1));
+
+  const [step,            setStep]            = useState(clampedInitial);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [uploadMeta,      setUploadMeta]      = useState<UploadFlowData | null>(
+    initialMeta
+      ? { format: initialMeta.format, brdId: initialMeta.brdId, title: initialMeta.title }
+      : null
+  );
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewError,   setViewError]   = useState<string | null>(null);
+
+  const isLastStep     = step === steps.length - 1;
+  const isGenerateStep = isLastStep; // Generate is always the last step
+
+  // ── Fetch full BRD data when opening in edit or view mode ─────────────────
+  useEffect(() => {
+    if (!initialMeta?.brdId) return;
+    // In full flow only fetch when jumping straight to Generate
+    if (!isEditMode && initialStep < 6) return;
+
+    setViewLoading(true);
+    setViewError(null);
+
+    api
+      .get<BrdDetailResponse>(`/brd/${initialMeta.brdId}`)
+      .then((res) => {
+        const d = res.data;
+        setUploadMeta({
+          format:         d.format         ?? initialMeta.format,
+          brdId:          d.id             ?? initialMeta.brdId,
+          title:          d.title          ?? initialMeta.title,
+          scope:          d.scope,
+          metadata:       d.metadata,
+          toc:            d.toc,
+          citations:      d.citations,
+          contentProfile: d.contentProfile,
+          brdConfig:      d.brdConfig,
+        });
+      })
+      .catch((err) => {
+        console.error("Failed to load BRD:", err);
+        setViewError("Failed to load BRD data. Please try again.");
+      })
+      .finally(() => setViewLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const next = () => setStep((s) => Math.min(s + 1, steps.length - 1));
   const prev = () => setStep((s) => Math.max(s - 1, 0));
 
-  const isLastStep = step === STEPS.length - 1;
+  // Requirement 1: show exit confirmation unless already on Generate (work saved)
+  // or on the very first Upload screen before anything was uploaded.
+  const requestClose = useCallback(() => {
+    const isBlankUpload = !isEditMode && step === 0 && !uploadMeta;
+    if (isGenerateStep || isBlankUpload) {
+      onClose?.();
+    } else {
+      setShowExitConfirm(true);
+    }
+  }, [isGenerateStep, isEditMode, step, uploadMeta, onClose]);
 
-  const renderStepContent = () => {
-    switch (step) {
+  function getBestTitle(): string {
+    const md = uploadMeta?.metadata as Record<string, unknown> | undefined;
+    if (md) {
+      const t = (k: string) => (typeof md[k] === "string" ? (md[k] as string).trim() : "");
+      return (
+        t("content_category_name") ||
+        t("source_name") ||
+        t("document_title") ||
+        uploadMeta?.title ||
+        initialMeta?.title ||
+        "Untitled BRD"
+      );
+    }
+    return uploadMeta?.title ?? initialMeta?.title ?? "Untitled BRD";
+  }
+
+  // When Generate calls onEdit(fullStep), map to the right local step index
+  function handleEditFromGenerate(targetFullStep: number) {
+    setStep(isEditMode ? toEditStep(targetFullStep) : targetFullStep);
+  }
+
+  // ── Step renderer ──────────────────────────────────────────────────────────
+  function renderStepContent() {
+    // Normalise to the full-flow step number so switch cases are always the same
+    const fullStep = isEditMode ? fromEditStep(step) : step;
+
+    switch (fullStep) {
+      // ── 0: Upload (full flow only — never reached in edit mode) ────────────
       case 0:
         return (
           <Upload
-            onComplete={(meta) => {
-              setUploadMeta({
-                format: meta.format === "old" ? "old" : "new",
-                brdId: meta.brdId,
-                title: meta.title,
-                scope: meta.scope,
-                metadata: meta.metadata,
-                toc: meta.toc,
-                citations: meta.citations,
-                contentProfile: meta.contentProfile,
-                brdConfig: meta.brdConfig,
-              });
+            onComplete={(data) => {
+              setUploadMeta(data as UploadFlowData);
               next();
             }}
           />
         );
-      case 1: return <Scope initialData={uploadMeta?.scope} />;
-      case 2: return <Metadata format={uploadMeta?.format ?? "new"} brdId={uploadMeta?.brdId} title={uploadMeta?.title} initialData={uploadMeta?.metadata} />;
-      case 3: return <Toc initialData={uploadMeta?.toc} />;
-      case 4: return <Citation initialData={uploadMeta?.citations} />;
-      case 5: return <ContentProf initialData={uploadMeta?.contentProfile} />;
-      case 6:
-        return finalStepMode === "view"
-          ? <View brdId={uploadMeta?.brdId} title={uploadMeta?.title} format={uploadMeta?.format} onComplete={onClose} />
-          : <Generate
-              brdId={uploadMeta?.brdId}
-              title={uploadMeta?.title}
-              format={uploadMeta?.format}
-              initialData={{
-                scope: uploadMeta?.scope,
-                metadata: uploadMeta?.metadata,
-                toc: uploadMeta?.toc,
-                citations: uploadMeta?.citations,
-                contentProfile: uploadMeta?.contentProfile,
-                brdConfig: uploadMeta?.brdConfig,
-              }}
-              onEdit={(s) => setStep(s)}
-              onComplete={onClose}
-            />;
-      default: return (
-        <div className="flex flex-col items-center justify-center py-12 gap-4">
-          <EmptyState title="Step not found" description="Please go back and try again" />
-          <Button onClick={prev}>Go Back</Button>
-        </div>
-      );
+
+      // ── 1: Scope ────────────────────────────────────────────────────────────
+      case 1:
+        return <Scope initialData={uploadMeta?.scope} />;
+
+      // ── 2: Metadata ─────────────────────────────────────────────────────────
+      case 2:
+        return (
+          <Metadata
+            format={uploadMeta?.format ?? "new"}
+            brdId={uploadMeta?.brdId}
+            title={getBestTitle()}
+            initialData={uploadMeta?.metadata}
+          />
+        );
+
+      // ── 3: TOC ──────────────────────────────────────────────────────────────
+      case 3:
+        return <Toc initialData={uploadMeta?.toc as { sections?: { id?: string; level?: string; name?: string; required?: string; definition?: string; example?: string; note?: string; tocRequirements?: string; smeComments?: string }[] } | undefined} />;
+
+      // ── 4: Citation ─────────────────────────────────────────────────────────
+      case 4:
+        return <Citation initialData={uploadMeta?.citations} />;
+
+      // ── 5: Content Profiling ────────────────────────────────────────────────
+      case 5:
+        return <ContentProfile initialData={uploadMeta?.contentProfile} />;
+
+      // ── 6: Generate ─────────────────────────────────────────────────────────
+      case 6: {
+        if (viewLoading) {
+          return (
+            <div className="flex items-center justify-center py-24 gap-3">
+              <svg className="animate-spin w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
+                <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
+              </svg>
+              <span className="text-sm font-medium text-slate-500">Loading BRD data…</span>
+            </div>
+          );
+        }
+        if (viewError) {
+          return (
+            <div className="flex flex-col items-center justify-center py-24 gap-4">
+              <p className="text-sm text-red-600 font-medium">{viewError}</p>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 transition-all"
+              >
+                Close
+              </button>
+            </div>
+          );
+        }
+        return (
+          <Generate
+            brdId={uploadMeta?.brdId}
+            title={getBestTitle()}
+            format={uploadMeta?.format ?? initialMeta?.format ?? "new"}
+            initialData={{
+              scope:          uploadMeta?.scope,
+              metadata:       uploadMeta?.metadata,
+              toc:            uploadMeta?.toc,
+              citations:      uploadMeta?.citations,
+              contentProfile: uploadMeta?.contentProfile,
+              brdConfig:      uploadMeta?.brdConfig,
+            }}
+            canEdit={finalStepMode !== "view"}
+            onEdit={handleEditFromGenerate}
+            onComplete={onClose}
+          />
+        );
+      }
+
+      default:
+        return null;
     }
-  };
+  }
+
+  // ── Step indicator ─────────────────────────────────────────────────────────
+  function StepIndicator() {
+    return (
+      <div className="flex items-center justify-center gap-0 px-4 py-3 overflow-x-auto">
+        {steps.map((label, i) => {
+          const done    = i < step;
+          const current = i === step;
+          return (
+            <div key={label} className="flex items-center">
+              <button
+                onClick={() => { if (i <= step) setStep(i); }}
+                disabled={i > step}
+                title={label}
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all
+                  ${done    ? "bg-blue-600 border-blue-600 text-white cursor-pointer hover:bg-blue-700"
+                  : current ? "bg-white border-blue-500 text-blue-600 shadow-md"
+                  :           "bg-white border-slate-300 text-slate-400 cursor-not-allowed"}`}
+              >
+                {done ? (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  stepMeta[i].icon
+                )}
+              </button>
+              {i < steps.length - 1 && (
+                <div className={`h-0.5 w-10 lg:w-16 mx-1 transition-all ${i < step ? "bg-blue-500" : "bg-slate-200"}`} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
-    <div
-      className="h-full min-h-full w-full flex flex-col bg-slate-100 dark:bg-[#0d1117] px-4 py-5 sm:px-6"
-      style={{ fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif" }}
-    >
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap');`}</style>
-      <style>{`
-        .brd-step-scroll {
-          scrollbar-width: thin;
-          scrollbar-color: #cbd5e1 #f1f5f9;
-        }
-        .brd-step-scroll::-webkit-scrollbar {
-          width: 10px;
-        }
-        .brd-step-scroll::-webkit-scrollbar-track {
-          background: #f1f5f9;
-          border-radius: 9999px;
-        }
-        .brd-step-scroll::-webkit-scrollbar-thumb {
-          background: #cbd5e1;
-          border-radius: 9999px;
-          border: 2px solid #f1f5f9;
-        }
-        .brd-step-scroll::-webkit-scrollbar-thumb:hover {
-          background: #94a3b8;
-        }
-        .dark .brd-step-scroll {
-          scrollbar-color: #334155 #0f172a;
-        }
-        .dark .brd-step-scroll::-webkit-scrollbar-track {
-          background: #0f172a;
-        }
-        .dark .brd-step-scroll::-webkit-scrollbar-thumb {
-          background: #334155;
-          border-color: #0f172a;
-        }
-        .dark .brd-step-scroll::-webkit-scrollbar-thumb:hover {
-          background: #475569;
-        }
-      `}</style>
+    <>
+      <div className="h-full w-full flex flex-col bg-white dark:bg-slate-900 overflow-hidden">
 
-      <div className="w-full h-full min-h-0 flex flex-col">
-
-        {/* ── Header ── */}
-        <div className="flex justify-between items-start mb-4 px-1">
+        {/* Top bar */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex-shrink-0">
           <div>
-            <p className="text-[11px] font-medium tracking-[0.1em] uppercase text-slate-600 dark:text-slate-500 mb-1"
-               style={{ fontFamily: "'DM Mono', monospace" }}>
-              Document Workflow
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+              {isEditMode ? "Edit BRD" : "Document Workflow"}
             </p>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
               Business Requirements Document
-            </h1>
+            </h2>
           </div>
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-300 dark:border-[#2a3147] text-slate-600 dark:text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:border-slate-500 dark:hover:border-slate-500 transition-all text-sm mt-1 flex-shrink-0 bg-slate-50 dark:bg-[#161b2e]"
-            >
-              ✕
-            </button>
+          {/* Requirement 1: ✕ now triggers confirmation */}
+          <button
+            onClick={requestClose}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Step indicator */}
+        <div className="border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
+          <StepIndicator />
+          <div className="flex items-center justify-center pb-2">
+            <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
+              <span className="font-bold text-blue-600 dark:text-blue-400">
+                {stepMeta[step].icon} {steps[step]}
+              </span>
+              <span className="text-slate-300 dark:text-slate-700">·</span>
+              <span className="text-slate-500">{stepMeta[step].desc}</span>
+              <span className="text-slate-400 dark:text-slate-600 font-mono text-[10px] ml-1">
+                {step + 1} / {steps.length}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5">
+          {renderStepContent()}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex-shrink-0 bg-slate-50 dark:bg-slate-800/50">
+          {!isLastStep ? (
+            <>
+              {/* Back — disabled on first step of any flow */}
+              <button
+                onClick={prev}
+                disabled={step === 0}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                Back
+              </button>
+
+              <div className="flex items-center gap-3">
+                <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
+
+                {/* Requirement 4: "Back to Generate" shortcut when editing a specific section */}
+                {cameFromGenerate && (
+                  <button
+                    onClick={() => setStep(steps.length - 1)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-700/40 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    Back to Generate
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={next}
+                disabled={!isEditMode && step === 0 && !uploadMeta}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                Next
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </>
+          ) : (
+            <p className="text-[11px] text-slate-400 dark:text-slate-600 mx-auto">
+              All changes are saved automatically
+            </p>
           )}
         </div>
 
-        {/* ── Main Card ── */}
-        <div className="bg-slate-50 dark:bg-[#161b2e] border border-slate-300 dark:border-[#2a3147] rounded-2xl shadow-sm dark:shadow-[0_4px_24px_rgba(0,0,0,0.4)] flex-1 min-h-0 flex flex-col">
-
-          {/* Step Progress */}
-          <div className="px-7 pt-6">
-            <div className="flex items-start">
-              {STEPS.map((s, i) => {
-                const isDone = i < step;
-                const isActive = i === step;
-                return (
-                  <div key={s} className={`flex items-start ${i < STEPS.length - 1 ? "flex-1" : ""}`}>
-                    <div className="flex flex-col items-center">
-                      {/* Dot */}
-                      <div
-                        className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-medium flex-shrink-0 transition-all duration-200
-                          ${isDone
-                            ? "bg-blue-600 dark:bg-blue-500 text-white"
-                            : isActive
-                            ? "bg-blue-50 dark:bg-blue-500/10 border-[1.5px] border-blue-600 dark:border-blue-400 text-blue-700 dark:text-blue-200 shadow-[0_0_0_3px_rgba(59,130,246,0.12)] dark:shadow-[0_0_0_3px_rgba(59,130,246,0.2)]"
-                            : "bg-blue-50/60 dark:bg-blue-500/5 border-[1.5px] border-blue-200 dark:border-blue-900/40 text-blue-600 dark:text-blue-700"
-                          }`}
-                        style={{ fontFamily: "'DM Mono', monospace" }}
-                      >
-                        {isDone ? (
-                          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        ) : isActive && isLastStep ? (
-                          <span>✦</span>
-                        ) : (
-                          <span>{i + 1}</span>
-                        )}
-                      </div>
-                      {/* Label */}
-                      <span
-                        className={`mt-1.5 text-[10.5px] font-medium text-center w-[80px] transition-colors duration-200
-                          ${isDone || isActive ? "text-blue-800 dark:text-blue-300" : "text-blue-600 dark:text-blue-700"}`}
-                      >
-                        {s}
-                      </span>
-                    </div>
-
-                    {/* Connector */}
-                    {i < STEPS.length - 1 && (
-                      <div className="flex-1 h-px bg-blue-100 dark:bg-blue-900/40 mx-2 mt-[13px] relative overflow-hidden">
-                        <div
-                          className="h-full bg-blue-600 dark:bg-blue-500 transition-all duration-500 ease-out"
-                          style={{ width: isDone ? "100%" : "0%" }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Step Header */}
-          <div className="px-7 pt-5">
-            <div className="h-px bg-gradient-to-r from-transparent via-slate-300 dark:via-[#2a3147] to-transparent mb-5" />
-            <div className="flex items-center gap-2.5 mb-1">
-              <span className="text-lg leading-none text-slate-900 dark:text-slate-300">
-                {STEP_META[step].icon}
-              </span>
-              <h2 className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-                {STEPS[step]}
-              </h2>
-              <span
-                className="ml-auto text-[10px] font-medium text-slate-700 dark:text-slate-500 bg-slate-200 dark:bg-[#1e2235] border border-slate-300 dark:border-[#2a3147] px-2 py-0.5 rounded-full"
-                style={{ fontFamily: "'DM Mono', monospace", letterSpacing: "0.04em" }}
-              >
-                {step + 1} / {STEPS.length}
-              </span>
-            </div>
-            <p className="text-[12.5px] text-slate-700 dark:text-slate-500 pl-7">
-              {STEP_META[step].desc}
-            </p>
-          </div>
-
-          {/* Step Content */}
-          <div className="px-7 py-5 flex-1 min-h-0 overflow-auto brd-step-scroll">
-            {renderStepContent()}
-          </div>
-
-          {/* Navigation Footer */}
-          <div className="px-7 py-4 border-t border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#131829] rounded-b-2xl flex justify-between items-center">
-
-            {/* Back / Exit button */}
-            {finalStepMode === "view" ? (
-              <div />
-            ) : step === 0 ? (
-              <div />
-            ) : (
-              <button
-                onClick={prev}
-                className="px-4 py-2 rounded-lg text-[13px] font-medium border border-slate-300 dark:border-[#2a3147] text-slate-700 dark:text-slate-400 bg-transparent dark:bg-[#1e2235] hover:bg-slate-100 dark:hover:bg-[#252d45] hover:border-slate-400 dark:hover:border-[#3a4460] hover:text-slate-900 dark:hover:text-slate-200 transition-all"
-              >
-                ← Back
-              </button>
-            )}
-
-            <div className="flex items-center gap-3">
-              {/* Pill progress indicators */}
-              {finalStepMode !== "view" && (
-                <div className="flex items-center gap-1 mr-2">
-                  {STEPS.map((_, i) => (
-                    <div
-                      key={i}
-                      className={`h-[5px] rounded-full transition-all duration-300 ${
-                        i === step
-                          ? "bg-blue-600 dark:bg-blue-400"
-                          : i < step
-                          ? "bg-blue-300 dark:bg-blue-700"
-                          : "bg-blue-100 dark:bg-blue-900/40"
-                      }`}
-                      style={{ width: i === step ? 16 : 5 }}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Step 0 manages its own Continue via Upload's onComplete */}
-              {finalStepMode === "view" ? (
-                <div />
-              ) : step === 0 ? (
-                <div /> // spacer — Upload handles navigation
-              ) : !isLastStep ? (
-                <button
-                  onClick={next}
-                  className="px-4 py-2 rounded-lg text-[13px] font-medium bg-slate-800 dark:bg-blue-600 text-white hover:bg-slate-700 dark:hover:bg-blue-500 border border-transparent transition-all"
-                >
-                  Continue →
-                </button>
-              ) : null /* Generate step manages its own completion button */}
-            </div>
-          </div>
-        </div>
-
-        {/* ── Footer hint ── */}
-        <p className="text-center text-[11.5px] text-slate-600 dark:text-[#5d6a90] mt-3.5 tracking-wide">
-          All changes are saved automatically
-        </p>
       </div>
-    </div>
+
+      {/* Requirement 1: Exit confirmation overlay */}
+      {showExitConfirm && (
+        <ExitConfirmModal
+          onConfirm={() => { setShowExitConfirm(false); onClose?.(); }}
+          onCancel={() => setShowExitConfirm(false)}
+        />
+      )}
+    </>
   );
 }

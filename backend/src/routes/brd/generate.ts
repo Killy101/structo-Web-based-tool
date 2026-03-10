@@ -61,6 +61,11 @@ interface MetaJsonOutput {
   pathTransform: Record<string, unknown>;
 }
 
+type PathTransformValue = {
+  patterns?: unknown;
+  case?: unknown;
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function asString(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
@@ -312,7 +317,7 @@ function extractRequiredLevels(tocSections: TocSection[]): number[] {
       const m = asString(s.level || s.id || "").match(/\d+/);
       return m ? parseInt(m[0], 10) : NaN;
     })
-    .filter((n) => !isNaN(n))
+    .filter((n) => !isNaN(n) && n >= 2)
     .sort((a, b) => a - b);
 }
 
@@ -355,6 +360,201 @@ function parseCitationReferences(citations: Record<string, unknown>): CitationRe
     .map((item) => item as CitationReference);
 }
 
+function buildScopePathTransform(inScope: ScopeEntry[]): Record<string, unknown> {
+  const seen = new Set<string>();
+  const patterns: [string, string, number, string][] = [];
+
+  for (const row of inScope) {
+    if (row?.strikethrough) continue;
+    const title = asString(row?.document_title).trim();
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    patterns.push([title, title, 0, ""]);
+  }
+
+  if (!patterns.length) return {};
+  return {
+    "2": {
+      patterns,
+      case: "",
+    },
+  };
+}
+
+function buildCitationPathTransform(citationRefs: CitationReference[]): Record<string, unknown> {
+  const out: Record<string, { patterns: [string, string, number, string][]; case: string }> = {};
+
+  const add = (level: number, find: string, replace = "") => {
+    const key = String(level);
+    if (!out[key]) out[key] = { patterns: [], case: "" };
+    const normalizedFind = asString(find).trim();
+    const normalizedReplace = asString(replace).trim();
+    if (!normalizedFind) return;
+    const exists = out[key].patterns.some((p) => p[0] === normalizedFind && p[1] === normalizedReplace);
+    if (!exists) out[key].patterns.push([normalizedFind, normalizedReplace, 0, ""]);
+  };
+
+  for (const ref of citationRefs) {
+    const level = parseLevelNumber(ref.level);
+    if (level === null || level < 2) continue;
+    const raw = asString(ref.citationRules).trim();
+    if (!raw) continue;
+
+    // Regex lines from citation rules become transform find-patterns.
+    const regexLines = extractRegexPatternsFromCitationRule(raw);
+    for (const regexLine of regexLines) add(level, regexLine, "");
+  }
+
+  const normalized: Record<string, unknown> = {};
+  Object.entries(out).forEach(([k, v]) => {
+    if (v.patterns.length) normalized[k] = v;
+  });
+  return normalized;
+}
+
+function buildPathTransformFromLevelPatterns(levelPatterns: Record<string, string[]>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+
+  for (const [levelKey, patterns] of Object.entries(levelPatterns)) {
+    const levelNum = parseLevelNumber(levelKey);
+    if (levelNum === null || levelNum < 2) continue;
+    if (!Array.isArray(patterns) || patterns.length === 0) continue;
+
+    const rows: [string, string, number, string][] = patterns
+      .map((p) => asString(p).trim())
+      .filter((p) => !!p)
+      .map((p) => [p, "", 0, ""]);
+
+    if (rows.length) {
+      out[String(levelNum)] = {
+        patterns: rows,
+        case: "",
+      };
+    }
+  }
+
+  return out;
+}
+
+function ensureNonEmptyPathTransform(
+  pathTransform: Record<string, unknown>,
+  levelPatterns: Record<string, string[]>,
+  levelRange: [number, number]
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...pathTransform };
+  const fromPatterns = buildPathTransformFromLevelPatterns(levelPatterns);
+  for (const [key, value] of Object.entries(fromPatterns)) {
+    if (!merged[key]) merged[key] = value;
+  }
+
+  const fromLevelRange = buildPathTransformFromLevelRange(levelRange);
+  for (const [key, value] of Object.entries(fromLevelRange)) {
+    if (!merged[key]) merged[key] = value;
+  }
+
+  if (Object.keys(merged).length) return merged;
+
+  return buildPathTransformFromLevelRange(levelRange);
+}
+
+function fillMissingLevelPatterns(
+  levelPatterns: Record<string, string[]>,
+  language: string,
+  levelRange: [number, number]
+): Record<string, string[]> {
+  const out: Record<string, string[]> = { ...levelPatterns };
+  const defaults = defaultLevelPatterns(language);
+
+  for (let level = Math.max(2, levelRange[0]); level <= Math.max(2, levelRange[1]); level++) {
+    const key = String(level);
+    if (!Array.isArray(out[key]) || out[key].length === 0) {
+      if (Array.isArray(defaults[key]) && defaults[key].length) {
+        out[key] = [...defaults[key]];
+      }
+    }
+  }
+
+  // Level 2 is always title-level catch-all in this flow.
+  out["2"] = ["^.*$"];
+
+  // Trim any out-of-range spillover from upstream/default inputs.
+  const trimmed: Record<string, string[]> = {};
+  for (const [key, patterns] of Object.entries(out)) {
+    const levelNum = parseLevelNumber(key);
+    if (levelNum === null) continue;
+    if (levelNum < Math.max(2, levelRange[0]) || levelNum > Math.max(2, levelRange[1])) continue;
+    trimmed[String(levelNum)] = patterns;
+  }
+  if (!trimmed["2"]) trimmed["2"] = ["^.*$"];
+
+  return trimmed;
+}
+
+function buildPathTransformFromLevelRange(levelRange: [number, number]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (let level = Math.max(2, levelRange[0]); level <= Math.max(2, levelRange[1]); level++) {
+    out[String(level)] = {
+      patterns: [["^.*$", "", 0, ""]],
+      case: "",
+    };
+  }
+  return out;
+}
+
+function pickBrdPathTransform(rawConfig: unknown): Record<string, unknown> {
+  const cfg = asRecord(rawConfig);
+  const candidate = asRecord(cfg.pathTransform || cfg.path_transform);
+  const out: Record<string, unknown> = {};
+
+  const isTemplateNoise = (text: string): boolean => {
+    const normalized = asString(text).trim().toLowerCase();
+    if (!normalized) return true;
+    if (normalized === "level" || normalized === "example" || normalized === "definition") return true;
+    if (normalized === "note" || normalized === "notes") return true;
+    if (/^level\s*\d+$/.test(normalized)) return true;
+    return false;
+  };
+
+  const sanitizeRows = (rows: unknown[]): [string, string, number, string][] => {
+    const clean: [string, string, number, string][] = [];
+    for (const row of rows) {
+      if (!Array.isArray(row) || row.length < 4) continue;
+      const find = asString(row[0]).trim();
+      const replace = asString(row[1]);
+      const flag = Number(row[2]);
+      const extra = asString(row[3]);
+      if (!find || isTemplateNoise(find)) continue;
+      clean.push([find, replace, Number.isFinite(flag) ? flag : 0, extra]);
+    }
+    return clean;
+  };
+
+  const looksRegexLike = (text: string): boolean => /[\\[\](){}^$*+?.|]/.test(text);
+
+  for (const [key, value] of Object.entries(candidate)) {
+    const normalizedKey = (asString(key).match(/\d+/)?.[0] || asString(key)).trim();
+    const levelNum = parseLevelNumber(normalizedKey);
+    const obj = asRecord(value as PathTransformValue);
+    let patterns = Array.isArray(obj.patterns) ? sanitizeRows(obj.patterns) : [];
+    if (levelNum !== null && levelNum >= 3) {
+      patterns = patterns.filter(([find, replace]) => {
+        const f = asString(find).trim();
+        const r = asString(replace).trim();
+        if (!f) return false;
+        if (r === f && !looksRegexLike(f)) return false;
+        return true;
+      });
+    }
+    if (!normalizedKey || !patterns.length) continue;
+    out[normalizedKey] = {
+      patterns,
+      case: asString(obj.case),
+    };
+  }
+
+  return out;
+}
+
 function parseLevelNumber(value: unknown): number | null {
   const match = asString(value).match(/\d+/);
   if (!match) return null;
@@ -370,6 +570,58 @@ function normalizeLanguage(language: string): "spanish" | "portuguese" | "chines
   if (/(japanese|ja\b|ja-)/.test(key)) return "japanese";
   if (/(korean|ko\b|ko-)/.test(key)) return "korean";
   return "english";
+}
+
+// Geography tokens that are expected for each non-English language.
+// If the resolved geography matches none of a language's tokens, the language
+// is considered a mis-assignment and falls back to English.
+const LANGUAGE_GEOGRAPHY_TOKENS: Record<string, string[]> = {
+  korean:     ["korea", "kr"],
+  japanese:   ["japan", "jp"],
+  chinese:    ["china", "taiwan", "hong kong", "zh", "tw", "hk"],
+  spanish:    ["spain", "mexico", "colombia", "argentina", "chile", "peru",
+               "venezuela", "ecuador", "bolivia", "paraguay", "uruguay",
+               "honduras", "guatemala", "el salvador", "nicaragua", "costa rica",
+               "panama", "cuba", "dominican", "puerto rico"],
+  portuguese: ["brazil", "portugal", "brasil"],
+};
+
+/**
+ * Validates language against geography and returns the corrected language string.
+ *
+ * The two main cases this handles:
+ *   1. Language is blank/missing → infer from geography (e.g. "United States" → "English").
+ *   2. Language is set but contradicts geography (e.g. "Korean" + "United States") →
+ *      fall back to "English" so the correct patterns are generated.
+ *
+ * English is never second-guessed since it is the global default and is valid
+ * for any geography that is not explicitly mapped to another language.
+ */
+function resolveLanguage(rawLanguage: string, geography: string): string {
+  const geo = geography.toLowerCase().trim();
+  const normalized = normalizeLanguage(rawLanguage);
+
+  // If no language was declared, infer from geography.
+  if (!rawLanguage.trim()) {
+    for (const [lang, tokens] of Object.entries(LANGUAGE_GEOGRAPHY_TOKENS)) {
+      if (tokens.some((t) => geo.includes(t))) return lang;
+    }
+    return "English";
+  }
+
+  // English is always valid — no geography check needed.
+  if (normalized === "english") return rawLanguage;
+
+  // Non-English: verify geography is consistent.
+  const expectedTokens = LANGUAGE_GEOGRAPHY_TOKENS[normalized] ?? [];
+  if (expectedTokens.length > 0 && !expectedTokens.some((t) => geo.includes(t))) {
+    console.warn(
+      `[generate/metajson] Language "${rawLanguage}" is inconsistent with geography "${geography}". Falling back to "English".`
+    );
+    return "English";
+  }
+
+  return rawLanguage;
 }
 
 function defaultLevelPatterns(language: string): Record<string, string[]> {
@@ -477,6 +729,33 @@ function defaultLevelPatterns(language: string): Record<string, string[]> {
 function extractRegexPatternsFromCitationRule(rule: string): string[] {
   if (!rule.trim()) return [];
 
+  const inferHeadingRegex = (raw: string): string | null => {
+    const candidate = asString(raw)
+      .replace(/\s+/g, " ")
+      .replace(/^['"`]+|['"`]+$/g, "")
+      .trim();
+    if (!candidate) return null;
+
+    const cleaned = candidate
+      .replace(/^level\s*\d+\s*/i, "")
+      .replace(/^[\s:-]+/, "")
+      .replace(/^(example|examples|pattern|regex|rule)\s*:\s*/i, "")
+      .trim();
+    if (!cleaned) return null;
+
+    const match = cleaned.match(
+      /^(chapter|part|division|subdivision|section|article|rule|title|subtitle|subpart|subchapter|appendix|schedule|exhibit|attachment|form)\s+([0-9]+(?:[A-Z])?(?:[-.][0-9A-Z]+)*)$/i
+    );
+    if (!match) return null;
+
+    const keyword = match[1];
+    const kw = keyword.toLowerCase() === "article"
+      ? "(ARTICLE|Article|Art\\.?)"
+      : `(${keyword.toUpperCase()}|${keyword[0].toUpperCase()}${keyword.slice(1).toLowerCase()})`;
+
+    return `^${kw} ?[0-9]+[A-Z]?(?:[-.][0-9A-Z]+)*$`;
+  };
+
   const looksRegexPattern = (text: string) => {
     const lowered = text.toLowerCase();
     if (lowered.includes("<level") || lowered.includes("example:")) return false;
@@ -490,6 +769,8 @@ function extractRegexPatternsFromCitationRule(rule: string): string[] {
     );
   };
 
+  const plainCandidates: string[] = [];
+
   const candidates = rule
     .replace(/\r/g, "\n")
     .split(/\n|;/)
@@ -502,6 +783,10 @@ function extractRegexPatternsFromCitationRule(rule: string): string[] {
     .map((line) => line.replace(/\bexample\s*:.*$/i, "").trim())
     .map((line) => line.replace(/\*\s*note\s*:.*$/i, "").trim())
     .map((line) => line.replace(/^['"`]+|['"`,]+$/g, "").trim())
+    .map((line) => {
+      if (line) plainCandidates.push(line);
+      return line;
+    })
     .filter((line) => !!line && looksRegexPattern(line));
 
   const extracted: string[] = [];
@@ -514,6 +799,11 @@ function extractRegexPatternsFromCitationRule(rule: string): string[] {
     }
 
     extracted.push(line);
+  }
+
+  for (const candidate of plainCandidates) {
+    const inferred = inferHeadingRegex(candidate);
+    if (inferred) extracted.push(inferred);
   }
 
   return [...new Set(extracted)];
@@ -687,6 +977,7 @@ router.post("/generate/metajson", async (req: Request, res: Response) => {
       citations?: Record<string, unknown>;
       contentProfile?: Record<string, unknown>;
       brdConfig?: Record<string, unknown>;
+      brd_config?: Record<string, unknown>;
     };
 
     // Prefer Python processing output because it preserves BRD-driven fields
@@ -715,11 +1006,17 @@ router.post("/generate/metajson", async (req: Request, res: Response) => {
     const toc            = asRecord(body.toc);
     const citations      = asRecord(body.citations);
     const contentProfile = asRecord(body.contentProfile);
+    const brdConfig      = asRecord(body.brdConfig || body.brd_config);
 
-    const inScope: ScopeEntry[]     = asArray(scope.in_scope) as ScopeEntry[];
+    const inScope: ScopeEntry[]     = asArray(scope.in_scope || scope.inScope) as ScopeEntry[];
     const tocSections: TocSection[] = asArray(toc.sections) as TocSection[];
     const citationRefs: CitationReference[] = parseCitationReferences(citations);
     const cpLevels: LevelRow[]      = asArray(asRecord(contentProfile).levels) as LevelRow[];
+    const pathTransform = {
+      ...buildScopePathTransform(inScope),
+      ...buildCitationPathTransform(citationRefs),
+      ...pickBrdPathTransform(brdConfig),
+    };
 
     const requestedFormat = asString(body.format).toLowerCase().trim();
     const legacy = requestedFormat
@@ -740,7 +1037,10 @@ router.post("/generate/metajson", async (req: Request, res: Response) => {
       metadata.related_government_agency    || ""
     );
     const geography = asString(metadata["Geography"] || metadata.geography || "");
-    const language  = asString(metadata["Language"]  || metadata.language  || "English");
+    const language  = resolveLanguage(
+      asString(metadata["Language"] || metadata.language || ""),
+      geography,
+    );
     const payloadType  = asString(metadata.payload_type || metadata.payload_subtype || "Law");
     const status       = asString(metadata.status || "Effective");
     const deliveryType = asString(metadata.delivery_type || "{string}");
@@ -765,10 +1065,8 @@ router.post("/generate/metajson", async (req: Request, res: Response) => {
       levelPatterns = buildLevelPatternsFromCitations(citationRefs, language, levelRange, cpLevels);
     }
 
-    // Level 2 in this BRD flow is the document title.
-    if (levelPatterns["2"]) {
-      levelPatterns["2"] = ["^.*$"];
-    }
+    levelPatterns = fillMissingLevelPatterns(levelPatterns, language, levelRange);
+    const finalPathTransform = ensureNonEmptyPathTransform(pathTransform, levelPatterns, levelRange);
 
     // ── Build the metajson ──────────────────────────────────────────────────
     const metajson: MetaJsonOutput = {
@@ -827,7 +1125,7 @@ router.post("/generate/metajson", async (req: Request, res: Response) => {
       requiredLevels: extractRequiredLevels(tocSections).length
         ? extractRequiredLevels(tocSections)
         : [2],
-      pathTransform: {},
+      pathTransform: finalPathTransform,
     };
 
     res.json({ success: true, metajson, filename: `${filename}.json` });
