@@ -8,6 +8,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 import io
+import json
 
 from src.services.xml_compare import (
     chunk_xml,
@@ -15,7 +16,11 @@ from src.services.xml_compare import (
     line_diff,
     merge_xml,
 )
-from src.services.pdf_chunk import chunk_pdfs_and_xml
+from src.services.pdf_chunk import (
+    chunk_pdfs_and_xml,
+    compare_pdfs_with_xml,
+    merge_pdfs_with_xml,
+)
 
 router = APIRouter(prefix="/compare", tags=["compare"])
 
@@ -194,3 +199,72 @@ async def merge_download_endpoint(payload: MergeRequest):
         media_type="application/xml",
         headers={"Content-Disposition": 'attachment; filename="merged.xml"'},
     )
+
+
+# ── Compare (PDF + XML) ────────────────────────────────────────────────────────
+
+@router.post("/diff/pdf")
+async def diff_pdf_endpoint(
+    old_pdf:  UploadFile = File(...),
+    new_pdf:  UploadFile = File(...),
+    xml_file: UploadFile = File(...),
+):
+    """
+    Compare two PDFs alongside an XML reference file.
+
+    Extracts plain text from both PDFs, runs a structural paragraph-level diff
+    and a line-level diff, and returns the XML file content for reference.
+    Response shape mirrors /compare/diff.
+    """
+    old_bytes  = await old_pdf.read()
+    new_bytes  = await new_pdf.read()
+    xml_bytes  = await xml_file.read()
+
+    try:
+        result = compare_pdfs_with_xml(old_bytes, new_bytes, xml_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "success":      True,
+        "old_filename": old_pdf.filename,
+        "new_filename": new_pdf.filename,
+        "xml_filename": xml_file.filename,
+        **result,
+    }
+
+
+# ── Merge (PDF + XML) ──────────────────────────────────────────────────────────
+
+@router.post("/merge/pdf")
+async def merge_pdf_endpoint(
+    old_pdf:  UploadFile = File(...),
+    new_pdf:  UploadFile = File(...),
+    xml_file: UploadFile = File(...),
+    accept:   str = Form("[]"),
+    reject:   str = Form("[]"),
+):
+    """
+    Merge changes detected between two PDFs into an XML structure.
+
+    accept / reject are JSON-encoded lists of paragraph paths returned by
+    /compare/diff/pdf.
+    """
+    old_bytes  = await old_pdf.read()
+    new_bytes  = await new_pdf.read()
+    xml_bytes  = await xml_file.read()
+
+    try:
+        accept_list = json.loads(accept)
+        reject_list = json.loads(reject)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid accept/reject JSON: {exc}")
+
+    try:
+        merged = merge_pdfs_with_xml(
+            old_bytes, new_bytes, xml_bytes, accept_list, reject_list
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {"success": True, "merged_xml": merged}

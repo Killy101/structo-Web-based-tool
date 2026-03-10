@@ -279,6 +279,7 @@ function DiffRow({ line }: { line: LineDiff }) {
 export default function ComparePanel() {
   const [oldFile, setOldFile] = useState<File | null>(null);
   const [newFile, setNewFile] = useState<File | null>(null);
+  const [xmlFile, setXmlFile] = useState<File | null>(null);
   const [result, setResult] = useState<CompareResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -292,10 +293,15 @@ export default function ComparePanel() {
   const newRef = useRef<HTMLInputElement>(
     null,
   ) as React.RefObject<HTMLInputElement>;
+  const xmlRef = useRef<HTMLInputElement>(
+    null,
+  ) as React.RefObject<HTMLInputElement>;
+
+  const isReady = !!oldFile && !!newFile && !!xmlFile;
 
   const handleCompare = useCallback(async () => {
-    if (!oldFile || !newFile) {
-      setError("Please select both files");
+    if (!oldFile || !newFile || !xmlFile) {
+      setError("Please select all three files (OLD PDF, NEW PDF, XML)");
       return;
     }
     setError(null);
@@ -304,9 +310,10 @@ export default function ComparePanel() {
     setSelected(null);
     try {
       const form = new FormData();
-      form.append("old_file", oldFile);
-      form.append("new_file", newFile);
-      const res = await fetch(`${PROCESSING_URL}/compare/diff`, {
+      form.append("old_pdf", oldFile);
+      form.append("new_pdf", newFile);
+      form.append("xml_file", xmlFile);
+      const res = await fetch(`${PROCESSING_URL}/compare/diff/pdf`, {
         method: "POST",
         body: form,
       });
@@ -372,11 +379,11 @@ export default function ComparePanel() {
       {/* ── Toolbar ── */}
       <div className="flex-shrink-0 flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-700/60 bg-slate-900/50 flex-wrap">
         <FilePickerButton
-          label="OLD XML"
+          label="OLD PDF"
           file={oldFile}
           color="amber"
           inputRef={oldRef}
-          accept=".xml,text/xml"
+          accept=".pdf,application/pdf"
           onChange={setOldFile}
         />
         <div className="flex items-center gap-1 text-slate-600">
@@ -395,22 +402,45 @@ export default function ComparePanel() {
           </svg>
         </div>
         <FilePickerButton
-          label="NEW XML"
+          label="NEW PDF"
           file={newFile}
           color="emerald"
           inputRef={newRef}
-          accept=".xml,text/xml"
+          accept=".pdf,application/pdf"
           onChange={setNewFile}
+        />
+        <div className="flex items-center gap-1 text-slate-600">
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+            />
+          </svg>
+        </div>
+        <FilePickerButton
+          label="XML File"
+          file={xmlFile}
+          color="amber"
+          inputRef={xmlRef}
+          accept=".xml,text/xml,application/xml"
+          onChange={setXmlFile}
         />
 
         <div className="flex-1" />
 
         <button
           onClick={handleCompare}
-          disabled={!oldFile || !newFile || loading}
+          disabled={!isReady || loading}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all
             ${
-              oldFile && newFile && !loading
+              isReady && !loading
                 ? "bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white shadow-lg shadow-blue-500/20"
                 : "bg-slate-800 text-slate-600 cursor-not-allowed"
             }`}
@@ -767,11 +797,11 @@ export default function ComparePanel() {
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-300">
-                Compare two XML files
+                Compare OLD PDF, NEW PDF, and XML
               </p>
               <p className="text-xs text-slate-600 mt-1 max-w-xs">
-                Select an OLD and NEW XML file above, then click Run Compare to
-                see a full structural and line-level diff.
+                Select an OLD PDF, NEW PDF, and XML file above, then click Run
+                Compare to see a full structural and line-level diff.
               </p>
             </div>
           </div>

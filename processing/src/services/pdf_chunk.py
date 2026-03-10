@@ -170,3 +170,92 @@ def chunk_pdfs_and_xml(
         "new_pdf_chunk_count": len(new_chunks),
         "xml_chunk_count":     len(xml_chunks),
     }
+
+
+# ── PDF Compare / Merge helpers ────────────────────────────────────────────────
+
+def _text_to_xml(text: str) -> str:
+    """
+    Wrap plain extracted PDF text into a simple XML document so it can be
+    processed by compare_xml / merge_xml.  Each non-empty paragraph becomes a
+    <paragraph> element.
+    """
+    import html as _html
+
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [text.strip()] if text.strip() else ["(empty)"]
+
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<document>"]
+    for i, para in enumerate(paragraphs):
+        escaped = _html.escape(para)
+        lines.append(f'  <paragraph index="{i}">{escaped}</paragraph>')
+    lines.append("</document>")
+    return "\n".join(lines)
+
+
+def compare_pdfs_with_xml(
+    old_pdf_bytes: bytes,
+    new_pdf_bytes: bytes,
+    xml_bytes: bytes,
+) -> dict:
+    """
+    Extract text from two PDF files, run a structural + line-level diff, and
+    include the raw XML file for sidebar reference.
+
+    Returns a dict matching the /compare/diff JSON contract:
+      {
+        "diff":         { additions, removals, modifications, mismatches, summary },
+        "line_diff":    [ … ],
+        "xml_content":  str,   # raw XML for reference display
+      }
+    """
+    from src.services.xml_compare import compare_xml, line_diff as xml_line_diff
+
+    old_text = _extract_pdf_text(old_pdf_bytes)
+    new_text = _extract_pdf_text(new_pdf_bytes)
+
+    # Line-level diff on raw extracted text
+    lines = xml_line_diff(old_text, new_text)
+
+    # Structural diff by wrapping paragraphs in XML
+    old_xml = _text_to_xml(old_text)
+    new_xml = _text_to_xml(new_text)
+    diff = compare_xml(old_xml, new_xml)
+
+    xml_content = ""
+    try:
+        xml_content = xml_bytes.decode("utf-8")
+    except Exception:
+        pass
+
+    return {
+        "diff": diff,
+        "line_diff": lines,
+        "xml_content": xml_content,
+    }
+
+
+def merge_pdfs_with_xml(
+    old_pdf_bytes: bytes,
+    new_pdf_bytes: bytes,
+    xml_bytes: bytes,
+    accept: list,
+    reject: list,
+) -> str:
+    """
+    Merge the PDF-derived XML representations based on accept/reject decisions.
+    The supplied XML file is used as an initial reference; the merge result is
+    the paragraph-level XML derived from the two PDFs with changes applied.
+
+    Returns a merged XML string.
+    """
+    from src.services.xml_compare import merge_xml
+
+    old_text = _extract_pdf_text(old_pdf_bytes)
+    new_text = _extract_pdf_text(new_pdf_bytes)
+
+    old_xml = _text_to_xml(old_text)
+    new_xml = _text_to_xml(new_text)
+
+    return merge_xml(old_xml, new_xml, accept, reject)

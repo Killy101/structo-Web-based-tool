@@ -87,37 +87,25 @@ function FilePicker({
   file,
   color,
   inputRef,
+  accept,
   onChange,
 }: {
   label: string;
   file: File | null;
-  color: "amber" | "emerald";
+  color: "amber" | "emerald" | "blue";
   inputRef: React.RefObject<HTMLInputElement>;
-  onChange: (f: File | null, text: string) => void;
+  accept: string;
+  onChange: (f: File | null) => void;
 }) {
   const colors = {
     amber:
       "border-amber-500/40 bg-amber-500/8 text-amber-300 hover:bg-amber-500/15",
     emerald:
       "border-emerald-500/40 bg-emerald-500/8 text-emerald-300 hover:bg-emerald-500/15",
+    blue:
+      "border-blue-500/40 bg-blue-500/8 text-blue-300 hover:bg-blue-500/15",
   };
-  const dots = { amber: "bg-amber-400", emerald: "bg-emerald-400" };
-
-  async function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0] ?? null;
-    if (!f) {
-      onChange(null, "");
-      return;
-    }
-    const text = await new Promise<string>((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result as string);
-      r.onerror = () => rej(new Error("Read failed"));
-      r.readAsText(f);
-    });
-    onChange(f, text);
-    e.target.value = "";
-  }
+  const dots = { amber: "bg-amber-400", emerald: "bg-emerald-400", blue: "bg-blue-400" };
 
   return (
     <div className="flex items-center gap-2.5 min-w-0">
@@ -149,7 +137,7 @@ function FilePicker({
             {file.name}
           </span>
           <button
-            onClick={() => onChange(null, "")}
+            onClick={() => onChange(null)}
             className="w-4 h-4 rounded-full bg-slate-700 hover:bg-red-500/30 flex items-center justify-center transition-colors shrink-0"
           >
             <svg
@@ -173,9 +161,12 @@ function FilePicker({
       <input
         ref={inputRef}
         type="file"
-        accept=".xml,text/xml,application/xml"
+        accept={accept}
         className="hidden"
-        onChange={handleChange}
+        onChange={(e) => {
+          onChange(e.target.files?.[0] ?? null);
+          e.target.value = "";
+        }}
       />
     </div>
   );
@@ -271,8 +262,7 @@ function ProgressRing({
 export default function MergePanel() {
   const [oldFile, setOldFile] = useState<File | null>(null);
   const [newFile, setNewFile] = useState<File | null>(null);
-  const [oldXml, setOldXml] = useState("");
-  const [newXml, setNewXml] = useState("");
+  const [xmlFile, setXmlFile] = useState<File | null>(null);
 
   const [items, setItems] = useState<MergeItem[]>([]);
   const [mergedXml, setMerged] = useState<string | null>(null);
@@ -284,10 +274,13 @@ export default function MergePanel() {
 
   const oldRef = useRef<HTMLInputElement>(null);
   const newRef = useRef<HTMLInputElement>(null);
+  const xmlRef = useRef<HTMLInputElement>(null);
+
+  const isReady = !!oldFile && !!newFile && !!xmlFile;
 
   const handleLoadDiff = useCallback(async () => {
-    if (!oldFile || !newFile) {
-      setError("Please select both files");
+    if (!oldFile || !newFile || !xmlFile) {
+      setError("Please select all three files (OLD PDF, NEW PDF, XML)");
       return;
     }
     setError(null);
@@ -298,9 +291,10 @@ export default function MergePanel() {
     setPreview(null);
     try {
       const form = new FormData();
-      form.append("old_file", oldFile);
-      form.append("new_file", newFile);
-      const res = await fetch(`${PROCESSING_URL}/compare/diff`, {
+      form.append("old_pdf", oldFile);
+      form.append("new_pdf", newFile);
+      form.append("xml_file", xmlFile);
+      const res = await fetch(`${PROCESSING_URL}/compare/diff/pdf`, {
         method: "POST",
         body: form,
       });
@@ -347,24 +341,25 @@ export default function MergePanel() {
   }
 
   const handleMerge = useCallback(async () => {
+    if (!oldFile || !newFile || !xmlFile) return;
     setError(null);
     setLMerge(true);
-    const accept = items
+    const acceptPaths = items
       .filter((i) => i.decision === "accept")
       .map((i) => i.entry.path);
-    const reject = items
+    const rejectPaths = items
       .filter((i) => i.decision === "reject")
       .map((i) => i.entry.path);
     try {
-      const res = await fetch(`${PROCESSING_URL}/compare/merge`, {
+      const form = new FormData();
+      form.append("old_pdf", oldFile);
+      form.append("new_pdf", newFile);
+      form.append("xml_file", xmlFile);
+      form.append("accept", JSON.stringify(acceptPaths));
+      form.append("reject", JSON.stringify(rejectPaths));
+      const res = await fetch(`${PROCESSING_URL}/compare/merge/pdf`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          old_xml: oldXml,
-          new_xml: newXml,
-          accept,
-          reject,
-        }),
+        body: form,
       });
       if (!res.ok) {
         const e = await res.json().catch(() => ({ detail: "Unknown error" }));
@@ -377,7 +372,7 @@ export default function MergePanel() {
     } finally {
       setLMerge(false);
     }
-  }, [items, oldXml, newXml]);
+  }, [items, oldFile, newFile, xmlFile]);
 
   function downloadMerged() {
     if (!mergedXml) return;
@@ -402,14 +397,12 @@ export default function MergePanel() {
       {/* ── Toolbar ── */}
       <div className="flex-shrink-0 flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-700/60 bg-slate-900/50 flex-wrap">
         <FilePicker
-          label="OLD XML"
+          label="OLD PDF"
           file={oldFile}
           color="amber"
           inputRef={oldRef as React.RefObject<HTMLInputElement>}
-          onChange={(f, t) => {
-            setOldFile(f);
-            setOldXml(t);
-          }}
+          accept=".pdf,application/pdf"
+          onChange={setOldFile}
         />
         <div className="text-slate-700">
           <svg
@@ -427,49 +420,45 @@ export default function MergePanel() {
           </svg>
         </div>
         <FilePicker
-          label="OLD XML"
-          file={oldFile}
-          color="amber"
-          inputRef={oldRef as React.RefObject<HTMLInputElement>}
-          onChange={(f, t) => {
-            setOldFile(f);
-            setOldXml(t);
-          }}
-        />
-        <div className="text-slate-700">
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
-            />
-          </svg>
-        </div>
-        <FilePicker
-          label="NEW XML"
+          label="NEW PDF"
           file={newFile}
           color="emerald"
           inputRef={newRef as React.RefObject<HTMLInputElement>}
-          onChange={(f, t) => {
-            setNewFile(f);
-            setNewXml(t);
-          }}
+          accept=".pdf,application/pdf"
+          onChange={setNewFile}
+        />
+        <div className="text-slate-700">
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+            />
+          </svg>
+        </div>
+        <FilePicker
+          label="XML (with changes)"
+          file={xmlFile}
+          color="blue"
+          inputRef={xmlRef as React.RefObject<HTMLInputElement>}
+          accept=".xml,text/xml,application/xml"
+          onChange={setXmlFile}
         />
 
         <div className="flex-1" />
 
         <button
           onClick={handleLoadDiff}
-          disabled={!oldFile || !newFile || loadingDiff}
+          disabled={!isReady || loadingDiff}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all
             ${
-              oldFile && newFile && !loadingDiff
+              isReady && !loadingDiff
                 ? "bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white shadow-lg shadow-blue-500/20"
                 : "bg-slate-800 text-slate-600 cursor-not-allowed"
             }`}
@@ -899,11 +888,12 @@ export default function MergePanel() {
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-300">
-                Merge XML changes
+                Merge PDF + XML changes
               </p>
               <p className="text-xs text-slate-600 mt-1 max-w-xs">
-                Select OLD and NEW XML files, load their differences, then
-                accept or reject each change to produce the final merged output.
+                Select OLD PDF, NEW PDF, and the XML file with changes, load
+                their differences, then accept or reject each change to produce
+                the final merged output.
               </p>
             </div>
           </div>
