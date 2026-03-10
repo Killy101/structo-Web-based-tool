@@ -1,8 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from typing import Any
-from src.services.extractor import extract_all_sections
-from src.services.scraper import extract_text
+from src.services.extractor import extract_all_sections, extract_text
 from src.services.pattern_generator import generate_level_patterns
 import tempfile, os, shutil
 import re
@@ -86,7 +85,6 @@ def _default_level_patterns(language: str) -> dict[str, list[str]]:
 def _parse_level_number(level: int | str | None) -> int | None:
     if level is None:
         return None
-    import re
     match = re.search(r"\d+", str(level))
     if not match:
         return None
@@ -100,8 +98,6 @@ def _extract_pattern_lines(rule: str) -> list[str]:
     if not rule or not rule.strip():
         return []
 
-    import re
-
     lines = (
         rule.replace("\r", "\n")
         .replace("\t", " ")
@@ -110,13 +106,10 @@ def _extract_pattern_lines(rule: str) -> list[str]:
 
     def _looks_regex_pattern(text: str) -> bool:
         lowered = text.lower()
-        # Reject BRD template syntax lines (not actual regex patterns)
         if "<level" in lowered or "example:" in lowered:
             return False
         if re.search(r"\+\s*\"", text):
             return False
-
-        # Accept only strong regex signals; plain prose or concat formulas are ignored.
         return bool(
             re.search(r"(\\^|\$|\\[dDsSwWbBAZz]|\\\\.)", text)
             or re.search(r"\[[^\]]+\](?:\{\d+(?:,\d*)?\}|[+*?])?", text)
@@ -129,19 +122,16 @@ def _extract_pattern_lines(rule: str) -> list[str]:
         cur = line.strip()
         if not cur:
             continue
-        # Remove wrappers like <Level 2> or Level 2 labels that are not patterns.
         cur = re.sub(r"^<\s*level\s*\d+\s*>\s*", "", cur, flags=re.IGNORECASE).strip()
         cur = re.sub(r"^level\s*\d+\s*[:\-]?\s*", "", cur, flags=re.IGNORECASE).strip()
         cur = re.sub(r"^[-*\d.)\s]+", "", cur).strip()
         cur = re.sub(r"^(pattern|regex|rule|example|examples|notes?)\s*:\s*", "", cur, flags=re.IGNORECASE).strip()
         cur = cur.strip('"\'`').strip().rstrip(",")
-        # Ignore trailing inline examples/notes after a pattern declaration.
         cur = re.sub(r"\bexample\s*:.*$", "", cur, flags=re.IGNORECASE).strip()
         cur = re.sub(r"\*\s*note\s*:.*$", "", cur, flags=re.IGNORECASE).strip()
         if cur and _looks_regex_pattern(cur):
             cleaned.append(cur)
 
-    # Keep order, remove exact duplicates
     dedup: list[str] = []
     seen: set[str] = set()
     for item in cleaned:
@@ -165,11 +155,8 @@ async def process_document(file: UploadFile = File(...), format: str = "new"):
         tmp_path = tmp.name
 
     try:
-        # ── .docx: full structured extraction via python-docx ───────────────
         if suffix == ".docx":
             result = await extract_all_sections(tmp_path, format)
-
-        # ── .pdf / .doc / other: raw text extraction via scraper ────────────
         else:
             try:
                 raw_text = extract_text(tmp_path, suffix)
@@ -215,7 +202,6 @@ async def build_level_patterns(payload: LevelPatternRequest):
         key = str(level)
         patterns[key] = list(defaults.get(key, ["^.*$"]))
 
-    # Python inference based on language + citation text
     inferred_input: list[dict[str, Any]] = []
     for citation in citations:
         level = _parse_level_number(citation.level)
@@ -244,7 +230,6 @@ async def build_level_patterns(payload: LevelPatternRequest):
 
     inferred = generate_level_patterns(language=language, levels=inferred_input) if inferred_input else {}
 
-    # Apply inferred patterns first for all levels in range.
     for level in range(min_level, max_level + 1):
         key = str(level)
         if key in inferred and inferred[key]:
@@ -259,7 +244,6 @@ async def build_level_patterns(payload: LevelPatternRequest):
         if from_citation:
             patterns[key] = from_citation
 
-    # Level 2 is always the document title.
     if "2" in patterns:
         patterns["2"] = [r"^.*$"]
 
@@ -269,6 +253,7 @@ async def build_level_patterns(payload: LevelPatternRequest):
         "levelRange": [min_level, max_level],
         "levelPatterns": patterns,
     }
+
 
 class GenerateMetajsonRequest(BaseModel):
     brdId:          str | None = None
@@ -283,13 +268,6 @@ class GenerateMetajsonRequest(BaseModel):
 
 
 def _extract_korean_match_string(doc_title: str) -> str:
-    """
-    'Act (금융회사의 지배구조에 관한 법률)'
-        → '금융회사의 지배구조에 관한 법률'
-    'Act (금융소비자 보호에 관한 법률) (약칭: 금융소비자보호법)'
-        → '금융소비자 보호에 관한 법률) (약칭: 금융소비자보호법'
-    """
-    import re
     title = (doc_title or "").strip()
     if not title:
         return ""
@@ -305,17 +283,14 @@ def _normalize_scope_match_string(doc_title: str) -> str:
     title = (doc_title or "").strip().strip('"\'')
     if not title:
         return ""
-
     korean = _extract_korean_match_string(title)
     if korean:
         return korean
-
-    # Generic fallback for non-Korean sources: use full document title.
     return title
 
 
 def _build_scope_entries(scope: dict[str, Any] | None) -> list[str]:
-    """Extract document title match strings from scope payload (snake_case/camelCase)."""
+    """Extract document title match strings from scope payload."""
     if not scope:
         return []
 
@@ -347,7 +322,6 @@ def _build_scope_entries(scope: dict[str, Any] | None) -> list[str]:
         if normalized:
             entries.append(normalized)
 
-    # Preserve order while removing duplicates.
     deduped: list[str] = []
     seen: set[str] = set()
     for item in entries:
@@ -359,7 +333,6 @@ def _build_scope_entries(scope: dict[str, Any] | None) -> list[str]:
 
 
 def _split_examples(example: str) -> list[str]:
-    import re
     s = example.strip().strip('"').strip("\u201c\u201d'")
     for suffix in ("; etc.", ", etc.", " etc."):
         if s.endswith(suffix):
@@ -375,7 +348,6 @@ def _build_levels_from_toc(
     citations: dict[str, Any] | None,
 ) -> list[dict]:
     """Convert TOC sections + citation references into level dicts for assemble_metajson."""
-    import re
     if not toc:
         return []
     sections = toc.get("sections") or []
@@ -466,14 +438,93 @@ def _normalise_metadata(metadata: dict[str, Any] | None, format_: str) -> dict[s
         }
 
 
+def _is_template_noise(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return True
+    if normalized in {"level", "example", "definition", "note", "notes"}:
+        return True
+    if re.match(r"^level\s*\d+$", normalized):
+        return True
+    return False
+
+
+def _looks_regex_like(text: str) -> bool:
+    return bool(re.search(r"[\\\[\](){}^$*+?.|]", text or ""))
+
+
+def _sanitize_path_transform_output(metajson: dict[str, Any]) -> None:
+    raw_pt = metajson.get("pathTransform")
+    raw_lp = metajson.get("levelPatterns")
+
+    pt: dict[str, dict[str, Any]] = {}
+
+    if isinstance(raw_pt, dict):
+        for key, value in raw_pt.items():
+            level_key = str(key)
+            level_num = int(level_key) if level_key.isdigit() else None
+            if not isinstance(value, dict):
+                continue
+            rows = value.get("patterns")
+            if not isinstance(rows, list):
+                continue
+
+            cleaned_rows: list[list[Any]] = []
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 4:
+                    continue
+                find = str(row[0] if row[0] is not None else "").strip()
+                replace = str(row[1] if row[1] is not None else "")
+                if not find or _is_template_noise(find):
+                    continue
+                if level_num is not None and level_num >= 3:
+                    if replace.strip() == find and not _looks_regex_like(find):
+                        continue
+                try:
+                    flag = int(row[2])
+                except (TypeError, ValueError):
+                    flag = 0
+                extra = str(row[3] if row[3] is not None else "")
+                cleaned_rows.append([find, replace, flag, extra])
+
+            if cleaned_rows:
+                pt[level_key] = {"patterns": cleaned_rows, "case": str(value.get("case") or "")}
+
+    # Ensure level 2 always exists.
+    if "2" not in pt:
+        pt["2"] = {"patterns": [["^.*$", "", 0, ""]], "case": ""}
+
+    # Backfill missing levels from levelPatterns with regex find rows.
+    if isinstance(raw_lp, dict):
+        for key, pats in raw_lp.items():
+            level_key = str(key)
+            if level_key in pt:
+                continue
+            if not level_key.isdigit() or int(level_key) < 3:
+                continue
+            if not isinstance(pats, list):
+                continue
+            rows: list[list[Any]] = []
+            for p in pats:
+                pattern = str(p).strip()
+                if pattern:
+                    rows.append([pattern, "", 0, ""])
+            if rows:
+                pt[level_key] = {"patterns": rows, "case": ""}
+
+    metajson["pathTransform"] = pt
+
+
 @router.post("/generate/metajson")
 async def generate_metajson(payload: GenerateMetajsonRequest):
-    from src.services.pattern_generator.metajson_assembler import assemble_metajson
+    from src.services.pattern_generator.pattern_generator import assemble_metajson
 
-    format_ = payload.format or "old"
+    format_  = payload.format or "old"
     metadata = _normalise_metadata(payload.metadata, format_)
     language = (metadata.get("Language") or "Korean").strip()
-    levels = _build_levels_from_toc(payload.toc, payload.citations)
+    levels   = _build_levels_from_toc(payload.toc, payload.citations)
+
+    # Build scope_entries for back-compat (used as level-2 pattern match strings)
     scope_entries = _build_scope_entries(payload.scope)
 
     whitespace_handling: dict | None = None
@@ -485,15 +536,24 @@ async def generate_metajson(payload: GenerateMetajsonRequest):
             if isinstance(vals, list)
         }
 
+    # ── KEY FIX: pass full scope + citations dicts so assemble_metajson
+    #    can build pathTransform levels 3+ from citation rules and apply
+    #    language-conventional cleanup patterns. ──────────────────────────────
     metajson, filename = assemble_metajson(
         metadata=metadata,
         levels=levels,
         language=language,
+        scope=payload.scope,            # ← full scope dict (new)
+        citations=payload.citations,    # ← full citations dict (new)
         content_profile=payload.contentProfile,
         scope_entries=scope_entries,
         whitespace_handling=whitespace_handling,
         brd_config=payload.brdConfig,
     )
+
+    # Final safety net: remove template/noise rows and ensure level-backed
+    # pathTransform rows are emitted even when upstream config is noisy.
+    _sanitize_path_transform_output(metajson)
 
     return {
         "success":  True,

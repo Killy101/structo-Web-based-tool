@@ -51,6 +51,7 @@ model User {
   userRole          UserRole?         @relation(fields: [userRoleId], references: [id])
   userLogs          UserLog[]
   validations       Validation[]
+  createdBrds       Brd[]             @relation("BrdCreatedBy")
 }
 
 model TaskAssignment {
@@ -106,6 +107,7 @@ model FileUpload {
   uploadedBy   User             @relation(fields: [uploadedById], references: [id])
   tasks        TaskAssignment[]
   validation   Validation?
+  brd          Brd?             @relation("BrdSourceFile")
 }
 
 model FileOutput {
@@ -165,4 +167,54 @@ enum AssignmentStatus {
   PENDING
   IN_PROGRESS
   COMPLETED
+}
+
+// ── BRD ───────────────────────────────────────────────────────────────────────
+
+enum BrdFormat {
+  NEW
+  OLD
+}
+
+enum BrdStatus {
+  DRAFT      // uploaded, not yet saved by user  → "Processing"
+  IN_REVIEW  // user saved all sections          → "Ready"
+  APPROVED   // reviewed/signed off              → "Reviewed"
+  ARCHIVED   // soft-deleted / old               → "Draft"
+}
+
+model Brd {
+  id          Int       @id @default(autoincrement())
+  brdId       String    @unique
+  title       String
+  format      BrdFormat @default(NEW)
+  status      BrdStatus @default(DRAFT)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdById Int
+  uploadId    Int?      @unique
+
+  upload    FileUpload? @relation("BrdSourceFile", fields: [uploadId], references: [id])
+  createdBy User        @relation("BrdCreatedBy", fields: [createdById], references: [id])
+  sections  BrdSections?
+}
+
+// One row per BRD. All section data stored as JSON blobs.
+// Adding new fields to any section = zero migrations required.
+model BrdSections {
+  id    Int    @id @default(autoincrement())
+  brdId String @unique
+  brd   Brd    @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
+
+  scope          Json?   // { in_scope: [], out_of_scope: [] }
+  metadata       Json?   // flat key-value object (new or old format)
+  toc            Json?   // { sections: [] }
+  citations      Json?   // { references: [] }
+  contentProfile Json?   // { rc_filename, heading_annotation, levels: [], whitespace: [] }
+  brdConfig      Json?   // catch-all for extractor extras
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("brd_sections")
 }

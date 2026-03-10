@@ -24,7 +24,47 @@ function tryParseJson(raw: string): { ok: true; value: Record<string, unknown> }
 }
 
 function formatJson(obj: Record<string, unknown>): string {
-  return JSON.stringify(obj, null, 2);
+  const INDENT = "  ";
+
+  const isPatternRow = (value: unknown): value is [string, string, number, string] => {
+    return (
+      Array.isArray(value) &&
+      value.length === 4 &&
+      typeof value[0] === "string" &&
+      typeof value[1] === "string" &&
+      typeof value[2] === "number" &&
+      typeof value[3] === "string"
+    );
+  };
+
+  const print = (value: unknown, depth: number): string => {
+    const pad = INDENT.repeat(depth);
+    const nextPad = INDENT.repeat(depth + 1);
+
+    if (value === null || typeof value !== "object") {
+      return JSON.stringify(value);
+    }
+
+    if (Array.isArray(value)) {
+      if (isPatternRow(value)) {
+        return `[${JSON.stringify(value[0])}, ${JSON.stringify(value[1])}, ${value[2]}, ${JSON.stringify(value[3])}]`;
+      }
+      if (value.length === 0) return "[]";
+      return `[
+${value.map((item) => `${nextPad}${print(item, depth + 1)}`).join(",\n")}
+${pad}]`;
+    }
+
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return "{}";
+    return `{
+${entries
+  .map(([k, v]) => `${nextPad}${JSON.stringify(k)}: ${print(v, depth + 1)}`)
+  .join(",\n")}
+${pad}}`;
+  };
+
+  return print(obj, 0);
 }
 
 function highlightJson(raw: string): string {

@@ -6,7 +6,7 @@ function cn(...classes: (string | false | undefined)[]): string {
 }
 
 type Format = "new" | "old" | null;
-type Stage  = "idle" | "validating" | "validated" | "processing" | "done" | "error";
+type Stage  = "idle" | "checking" | "duplicate" | "validating" | "validated" | "processing" | "done" | "error";
 
 interface ExtractedResult {
   brdId: string;
@@ -21,18 +21,26 @@ interface ExtractedResult {
   brdConfig?: Record<string, unknown>;
 }
 
+// Shape returned by GET /brd/check-duplicate
+interface DuplicateCheckResponse {
+  exists:  boolean;
+  brdId?:  string;
+  title?:  string;
+  status?: string;
+}
+
 interface Props {
   onComplete?: (result: ExtractedResult) => void;
 }
 
 const PIPELINE_STEPS = [
-  { key: "upload",    label: "Uploading File",              icon: "⬡" },
-  { key: "extract",   label: "Text Extraction",             icon: "◎" },
-  { key: "scope",     label: "Scope Detection",             icon: "≡" },
-  { key: "metadata",  label: "Metadata Extraction",         icon: "↑" },
-  { key: "toc",       label: "Table of Contents",           icon: "≣" },
-  { key: "citations", label: "Citation Rules",              icon: "❝" },
-  { key: "profile",   label: "Content Profiling",           icon: "✦" },
+  { key: "upload",    label: "Uploading File",      icon: "⬡" },
+  { key: "extract",   label: "Text Extraction",     icon: "◎" },
+  { key: "scope",     label: "Scope Detection",     icon: "≡" },
+  { key: "metadata",  label: "Metadata Extraction", icon: "↑" },
+  { key: "toc",       label: "Table of Contents",   icon: "≣" },
+  { key: "citations", label: "Citation Rules",      icon: "❝" },
+  { key: "profile",   label: "Content Profiling",   icon: "✦" },
 ];
 
 export default function Upload({ onComplete }: Props) {
@@ -43,6 +51,7 @@ export default function Upload({ onComplete }: Props) {
   const [result,       setResult]       = useState<ExtractedResult | null>(null);
   const [pipelineStep, setPipelineStep] = useState(-1);
   const [errorMsg,     setErrorMsg]     = useState<string>("");
+  const [dupInfo,      setDupInfo]      = useState<DuplicateCheckResponse | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   function handleFile(f: File) {
@@ -51,6 +60,7 @@ export default function Upload({ onComplete }: Props) {
     setResult(null);
     setPipelineStep(-1);
     setErrorMsg("");
+    setDupInfo(null);
   }
 
   function handleDrop(e: React.DragEvent) {
@@ -60,9 +70,27 @@ export default function Upload({ onComplete }: Props) {
     if (f) handleFile(f);
   }
 
-  /** Validate = just check file + format are ready, then show "Process" */
-  function handleValidate() {
+  /** Validate: check for duplicate in DB first, then show "Process" */
+  async function handleValidate() {
     if (!file || !format) return;
+
+    setStage("checking");
+    setDupInfo(null);
+
+    try {
+      const res = await api.get<DuplicateCheckResponse>("/brd/check-duplicate", {
+        params: { filename: file.name },
+      });
+
+      if (res.data.exists) {
+        setDupInfo(res.data);
+        setStage("duplicate");
+        return;
+      }
+    } catch {
+      // If the endpoint doesn't exist yet, fall through gracefully
+    }
+
     setStage("validated");
   }
 
@@ -72,8 +100,6 @@ export default function Upload({ onComplete }: Props) {
     setStage("processing");
     setErrorMsg("");
 
-    // Animate first 6 steps while the real request runs (each ~900ms)
-    // Step 7 (profile) completes when the response arrives
     let step = 0;
     const stepInterval = setInterval(() => {
       step++;
@@ -93,9 +119,29 @@ export default function Upload({ onComplete }: Props) {
       clearInterval(stepInterval);
 
       const data = res.data;
-
-      // Complete all steps
       setPipelineStep(PIPELINE_STEPS.length);
+
+      // ── Immediately write a "Processing" record to the registry ──────────
+      // Ensures the BRD appears in the list even if the user exits before
+      // reaching Generate. Generate will overwrite with status "Ready" on save.
+      try {
+        await api.post("/brd/save", {
+          brdId:          data.brdId,
+          title:          data.title,
+          format:         data.format,
+          status:         "Processing",
+          scope:          data.scope,
+          metadata:       data.metadata,
+          toc:            data.toc,
+          citations:      data.citations,
+          contentProfile: data.contentProfile,
+          brdConfig:      data.brdConfig ?? null,
+        });
+      } catch (saveErr) {
+        // Non-fatal — user can still continue; Generate will save on completion
+        console.warn("[Upload] Draft save failed:", saveErr);
+      }
+
       setTimeout(() => {
         setResult(data);
         setStage("done");
@@ -118,7 +164,7 @@ export default function Upload({ onComplete }: Props) {
   return (
     <div className="w-full max-w-2xl mx-auto px-6 py-8 space-y-8 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30">
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="space-y-2">
         <span className="inline-flex items-center rounded-md px-2 py-1 text-[11px] font-semibold uppercase tracking-wider bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">
           Document Upload
@@ -131,7 +177,7 @@ export default function Upload({ onComplete }: Props) {
         </p>
       </div>
 
-      {/* ── 1. Format Selection ── */}
+      {/* 1. Format Selection */}
       <div className="space-y-3 rounded-xl border border-slate-300/90 dark:border-slate-600 bg-slate-50/60 dark:bg-slate-900/40 p-4">
         <label className="text-xs font-semibold uppercase tracking-widest text-black dark:text-slate-100 font-mono">
           Document Format
@@ -140,7 +186,7 @@ export default function Upload({ onComplete }: Props) {
           {(["new", "old"] as const).map((f) => (
             <button
               key={f}
-              onClick={() => { setFormat(f); setStage("idle"); setResult(null); setPipelineStep(-1); }}
+              onClick={() => { setFormat(f); setStage("idle"); setResult(null); setPipelineStep(-1); setDupInfo(null); }}
               className={cn(
                 "group relative px-4 py-4 rounded-lg border transition-all duration-200 text-left overflow-hidden",
                 format === f
@@ -169,7 +215,7 @@ export default function Upload({ onComplete }: Props) {
         </div>
       </div>
 
-      {/* ── 2. Drop Zone ── */}
+      {/* 2. Drop Zone */}
       <div className="space-y-3 rounded-xl border border-slate-300/90 dark:border-slate-600 bg-slate-50/60 dark:bg-slate-900/40 p-4">
         <label className="text-xs font-semibold uppercase tracking-widest text-black dark:text-slate-100 font-mono">
           Upload File
@@ -223,7 +269,7 @@ export default function Upload({ onComplete }: Props) {
         </div>
       </div>
 
-      {/* ── 3. Validate Button ── */}
+      {/* 3. Validate Button */}
       {file && format && stage === "idle" && (
         <div className="flex justify-end pt-2">
           <button onClick={handleValidate} className="px-6 py-2.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 hover:shadow-md active:scale-95">
@@ -232,12 +278,61 @@ export default function Upload({ onComplete }: Props) {
         </div>
       )}
 
-      {/* ── 4. Validated: show meta + Process ── */}
+      {/* Checking spinner */}
+      {stage === "checking" && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+          <svg className="animate-spin w-4 h-4 text-blue-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
+            <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
+          </svg>
+          <p className="text-sm text-slate-600 dark:text-slate-400">Checking for existing records…</p>
+        </div>
+      )}
+
+      {/* ── Requirement 3: Duplicate file warning ── */}
+      {stage === "duplicate" && dupInfo && (
+        <div className="space-y-3">
+          <div className="flex items-start gap-3 px-4 py-4 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-600/40">
+            <svg className="w-5 h-5 flex-shrink-0 text-amber-600 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">File already processed</p>
+              <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                <span className="font-medium">{file?.name}</span> has already been ingested into the system.
+              </p>
+              {dupInfo.brdId && (
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-amber-700 dark:text-amber-400">
+                  {dupInfo.brdId  && <span><span className="font-semibold">BRD ID:</span> {dupInfo.brdId}</span>}
+                  {dupInfo.title  && <span><span className="font-semibold">Title:</span> {dupInfo.title}</span>}
+                  {dupInfo.status && <span><span className="font-semibold">Status:</span> {dupInfo.status}</span>}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => { setStage("idle"); setDupInfo(null); }}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => setStage("validated")}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-all"
+            >
+              Process anyway
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Validated: show meta + Process */}
       {stage === "validated" && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             {[
-              { label: "File", value: file?.name ?? "" },
+              { label: "File",   value: file?.name ?? "" },
               { label: "Format", value: format === "new" ? "New Format" : "Legacy Format" },
             ].map(({ label, value }) => (
               <div key={label} className="px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
@@ -254,7 +349,7 @@ export default function Upload({ onComplete }: Props) {
         </div>
       )}
 
-      {/* ── 5. Pipeline ── */}
+      {/* 5. Pipeline */}
       {(stage === "processing" || stage === "done") && (
         <div className="rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-300 dark:border-slate-600">
@@ -297,7 +392,7 @@ export default function Upload({ onComplete }: Props) {
         </div>
       )}
 
-      {/* ── 6. Error ── */}
+      {/* 6. Error */}
       {stage === "error" && (
         <div className="flex items-start gap-3 px-4 py-3 rounded-lg bg-red-50 dark:bg-red-500/10 border-l-4 border-red-500">
           <svg className="w-4 h-4 flex-shrink-0 text-red-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
@@ -311,7 +406,7 @@ export default function Upload({ onComplete }: Props) {
         </div>
       )}
 
-      {/* ── 7. Done ── */}
+      {/* 7. Done */}
       {stage === "done" && result && (
         <div className="space-y-4">
           <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border-l-4 border-emerald-500">
@@ -323,7 +418,6 @@ export default function Upload({ onComplete }: Props) {
             </p>
           </div>
 
-          {/* Quick summary of extracted data */}
           <div className="grid grid-cols-2 gap-3">
             {[
               { label: "BRD ID",     value: result.brdId },
