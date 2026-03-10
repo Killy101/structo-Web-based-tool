@@ -179,6 +179,16 @@ export interface DashboardStats {
   recentActivity: FileUpload[];
 }
 
+export interface BrdSourceItem {
+  id: string;
+  title: string;
+  format: "old" | "new";
+  status: string;
+  version: string;
+  lastUpdated: string;
+  geography: string;
+}
+
 export interface CreateUserPayload {
   userId: string;
   firstName: string;

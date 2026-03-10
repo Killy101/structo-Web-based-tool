@@ -12,6 +12,7 @@ import {
   BaseRoleFeaturePolicy,
   TeamRoleFeaturePolicyItem,
   TeamFeatureOption,
+  BrdSourceItem,
   TaskAssignment,
   UserLog,
 } from "../types";
@@ -23,6 +24,7 @@ import {
   rolesApi,
   tasksApi,
   userLogsApi,
+  brdApi,
   authApi,
 } from "../services/api";
 
@@ -342,7 +344,7 @@ export function useTasks() {
 }
 
 // ─── useUserLogs ───────────────────────────────────────────
-export function useUserLogs() {
+export function useUserLogs(scope: "all" | "mine" = "all") {
   const [logs, setLogs] = useState<UserLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -351,8 +353,36 @@ export function useUserLogs() {
     setIsLoading(true);
     setError(null);
     try {
-      const { logs } = await userLogsApi.getAll();
+      const { logs } =
+        scope === "all"
+          ? await userLogsApi.getAll()
+          : await userLogsApi.getMine();
       setLogs(logs);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [scope]);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+  return { logs, isLoading, error, refetch };
+}
+
+// ─── useBrds ──────────────────────────────────────────────
+export function useBrds() {
+  const [brds, setBrds] = useState<BrdSourceItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await brdApi.getAll();
+      setBrds(data);
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -363,7 +393,8 @@ export function useUserLogs() {
   useEffect(() => {
     refetch();
   }, [refetch]);
-  return { logs, isLoading, error, refetch };
+
+  return { brds, isLoading, error, refetch };
 }
 
 // ─── useFiles ──────────────────────────────────────────────

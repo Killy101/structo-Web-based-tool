@@ -11,6 +11,7 @@ import {
   BaseRoleFeaturePolicy,
   TeamRoleFeaturePolicyItem,
   TeamFeatureOption,
+  BrdSourceItem,
   TaskAssignment,
   UserLog,
 } from "../types";
@@ -140,6 +141,12 @@ export const tasksApi = {
 
 export const userLogsApi = {
   getAll: () => api.get<{ logs: UserLog[] }>("/user-logs").then((r) => r.data),
+  getMine: () =>
+    api.get<{ logs: UserLog[] }>("/user-logs/my").then((r) => r.data),
+};
+
+export const brdApi = {
+  getAll: () => api.get<BrdSourceItem[]>("/brd").then((r) => r.data),
 };
 
 export const filesApi = {
