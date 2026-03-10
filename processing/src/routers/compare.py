@@ -20,6 +20,7 @@ from src.services.pdf_chunk import (
     chunk_pdfs_and_xml,
     compare_pdfs_with_xml,
     merge_pdfs_with_xml,
+    detect_pdf_changes,
 )
 
 router = APIRouter(prefix="/compare", tags=["compare"])
@@ -268,3 +269,38 @@ async def merge_pdf_endpoint(
         raise HTTPException(status_code=422, detail=str(exc))
 
     return {"success": True, "merged_xml": merged}
+
+# ── Detect (PDF + XML) — span-level change detection ──────────────────────────
+
+@router.post("/detect")
+async def detect_changes_endpoint(
+    old_pdf:  UploadFile = File(...),
+    new_pdf:  UploadFile = File(...),
+    xml_file: UploadFile = File(...),
+):
+    """
+    Detect per-span changes between OLD and NEW PDFs and map them to the
+    provided XML reference file.
+
+    Each change is classified as one of:
+      addition | removal | modification | emphasis | mismatch
+
+    Emphasis covers bold / italic / colour changes in the NEW PDF.
+    Returns { changes, xml_content, summary } alongside the filenames.
+    """
+    old_bytes = await old_pdf.read()
+    new_bytes = await new_pdf.read()
+    xml_bytes = await xml_file.read()
+
+    try:
+        result = detect_pdf_changes(old_bytes, new_bytes, xml_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "success":      True,
+        "old_filename": old_pdf.filename,
+        "new_filename": new_pdf.filename,
+        "xml_filename": xml_file.filename,
+        **result,
+    }
