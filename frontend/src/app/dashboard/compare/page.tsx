@@ -20,6 +20,17 @@ const MergePanel = dynamic(
 
 type Workflow = "selector" | "chunk" | "compare" | "merge";
 
+/**
+ * Cross-module job state.
+ * After /upload succeeds, job_id is stored here so ChunkPanel can call
+ * /start-chunking, and ComparePanel can call /compare/{chunk_id}?job_id=...
+ */
+export interface JobState {
+  job_id: string;
+  source_name: string;
+  status: "uploaded" | "processing" | "done" | "error";
+}
+
 // ── Workflow Selector Card ────────────────────────────────────────────────────
 
 function WorkflowCard({
@@ -148,12 +159,14 @@ function PageHeader({
   user,
   selectedChunk,
   onViewChunks,
+  activeJob,
 }: {
   workflow: Workflow;
   onBack: () => void;
   user: User | null;
   selectedChunk: PdfChunk | null;
   onViewChunks: () => void;
+  activeJob: JobState | null;
 }) {
   const titles: Record<Workflow, string> = {
     selector: "Document Comparison",
@@ -228,6 +241,31 @@ function PageHeader({
           {subtitles[workflow]}
         </p>
       </div>
+
+      {/* Active job badge */}
+      {activeJob && workflow !== "selector" && (
+        <div
+          className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-mono"
+          style={{
+            background: "rgba(16, 185, 129, 0.07)",
+            borderColor: "rgba(16, 185, 129, 0.2)",
+            color: "#6ee7b7",
+          }}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+              activeJob.status === "done"
+                ? "bg-emerald-400"
+                : activeJob.status === "processing"
+                  ? "bg-amber-400 animate-pulse"
+                  : activeJob.status === "error"
+                    ? "bg-red-400"
+                    : "bg-slate-400"
+            }`}
+          />
+          {activeJob.source_name}
+        </div>
+      )}
 
       {/* Chunk → Compare navigation hint */}
       {selectedChunk && workflow !== "compare" && (
@@ -368,9 +406,9 @@ function WorkflowSelector({
           }
           steps={[
             "Upload Old PDF, New PDF, and XML file",
-            "Set source name and XML tag for chunking",
-            "Review chunk results in a modal — see which sections changed",
-            "Open changed chunks in Compare for detailed review",
+            "Files uploaded via /upload → job_id returned",
+            "POST /start-chunking to begin async processing",
+            "Review chunk list → open changed chunks in Compare",
           ]}
         />
       </div>
@@ -410,11 +448,11 @@ function WorkflowSelector({
             </div>
             <div>
               <p className="text-sm font-semibold text-emerald-300">
-                Merge XML
+                Merge XML Chunks
               </p>
               <p className="text-xs text-slate-500 mt-0.5">
-                Manually merge accepted or rejected changes from two XML files
-                into a final output
+                Combine reviewed XML chunks (SourceName_innod.NNNNN.xml) into a
+                final SourceName_final.xml document
               </p>
             </div>
             <svg
@@ -466,25 +504,23 @@ export default function ComparePage() {
   const { user } = useAuth();
   const features = user?.effectiveFeatures ?? [];
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
-
-  // Roles that always have access regardless of feature flags
-  const isManager =
-    user?.role === "MANAGER_QA" ||
-    user?.role === "MANAGER_QC" ||
-    user?.role === "ADMIN";
-
-  const hasBaseAccess = isSuperAdmin || isManager;
-
-  const canCompare = hasBaseAccess || features.includes("compare-basic");
-  const canChunk = hasBaseAccess || features.includes("compare-chunk");
-  const canMerge = hasBaseAccess || features.includes("compare-merge");
+  const canCompare = isSuperAdmin || features.includes("compare-basic");
+  const canChunk = isSuperAdmin || features.includes("compare-chunk");
+  const canMerge = isSuperAdmin || features.includes("compare-merge");
 
   const [workflow, setWorkflow] = useState<Workflow>("selector");
+
+  // Active job — set by ChunkPanel after /upload succeeds
+  const [activeJob, setActiveJob] = useState<JobState | null>(null);
 
   // Cross-module state: chunk selected in ChunkPanel → passed to ComparePanel
   const [selectedChunk, setSelectedChunk] = useState<PdfChunk | null>(null);
   const [selectedChunkSourceName, setSelectedChunkSourceName] =
     useState<string>("");
+
+  function handleJobCreated(job: JobState) {
+    setActiveJob(job);
+  }
 
   function handleNavigateToCompare(chunk: PdfChunk, sourceName: string) {
     setSelectedChunk(chunk);
@@ -506,6 +542,7 @@ export default function ComparePage() {
         workflow={workflow}
         onBack={handleBack}
         user={user}
+        activeJob={activeJob}
         selectedChunk={selectedChunk}
         onViewChunks={() => setWorkflow("compare")}
       />
@@ -521,23 +558,28 @@ export default function ComparePage() {
       )}
 
       {workflow === "chunk" && (
-        <div className="flex-1 overflow-hidden min-h-0">
-          <ChunkPanel onNavigateToCompare={handleNavigateToCompare} />
+        <div className="flex-1 overflow-hidden p-4 min-h-0">
+          <ChunkPanel
+            onNavigateToCompare={handleNavigateToCompare}
+            onJobCreated={handleJobCreated}
+            activeJob={activeJob}
+          />
         </div>
       )}
 
       {workflow === "compare" && (
-        <div className="flex-1 overflow-hidden min-h-0">
+        <div className="flex-1 overflow-hidden p-4 min-h-0">
           <ComparePanel
             initialChunk={selectedChunk}
             initialSourceName={selectedChunkSourceName}
+            activeJob={activeJob}
           />
         </div>
       )}
 
       {workflow === "merge" && canMerge && (
         <div className="flex-1 overflow-hidden p-4 min-h-0">
-          <MergePanel />
+          <MergePanel activeJob={activeJob} />
         </div>
       )}
     </div>

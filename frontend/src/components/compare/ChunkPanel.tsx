@@ -57,8 +57,18 @@ interface ChunkResponse {
   };
 }
 
+export interface JobState {
+  job_id: string;
+  source_name: string;
+  status: "uploaded" | "processing" | "done" | "error";
+}
+
 interface ChunkPanelProps {
   onNavigateToCompare?: (chunk: PdfChunk, sourceName: string) => void;
+  /** Called after /upload succeeds — passes job state up to the page */
+  onJobCreated?: (job: JobState) => void;
+  /** Active job from page-level state (shared across panels) */
+  activeJob?: JobState | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,10 +79,17 @@ function fmtBytes(b: number) {
   return `${(b / 1048576).toFixed(1)} MB`;
 }
 
-function downloadBlob(content: string, filename: string, mime = "application/xml") {
+function downloadBlob(
+  content: string,
+  filename: string,
+  mime = "application/xml",
+) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement("a"), { href: url, download: filename });
+  const a = Object.assign(document.createElement("a"), {
+    href: url,
+    download: filename,
+  });
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -82,17 +99,45 @@ function downloadBlob(content: string, filename: string, mime = "application/xml
 type DZColor = "violet" | "blue" | "emerald";
 
 const DZC: Record<DZColor, Record<string, string>> = {
-  violet:  { border: "border-violet-500/40",  bg: "bg-violet-500/8",  badge: "bg-violet-500/20 text-violet-300",  icon: "text-violet-400",  activeBg: "bg-violet-500/12" },
-  blue:    { border: "border-blue-500/40",    bg: "bg-blue-500/8",    badge: "bg-blue-500/20 text-blue-300",      icon: "text-blue-400",    activeBg: "bg-blue-500/12"   },
-  emerald: { border: "border-emerald-500/40", bg: "bg-emerald-500/8", badge: "bg-emerald-500/20 text-emerald-300", icon: "text-emerald-400", activeBg: "bg-emerald-500/12" },
+  violet: {
+    border: "border-violet-500/40",
+    bg: "bg-violet-500/8",
+    badge: "bg-violet-500/20 text-violet-300",
+    icon: "text-violet-400",
+    activeBg: "bg-violet-500/12",
+  },
+  blue: {
+    border: "border-blue-500/40",
+    bg: "bg-blue-500/8",
+    badge: "bg-blue-500/20 text-blue-300",
+    icon: "text-blue-400",
+    activeBg: "bg-blue-500/12",
+  },
+  emerald: {
+    border: "border-emerald-500/40",
+    bg: "bg-emerald-500/8",
+    badge: "bg-emerald-500/20 text-emerald-300",
+    icon: "text-emerald-400",
+    activeBg: "bg-emerald-500/12",
+  },
 };
 
 function DropZone({
-  label, sublabel, accept, file, onFile, color, icon,
+  label,
+  sublabel,
+  accept,
+  file,
+  onFile,
+  color,
+  icon,
 }: {
-  label: string; sublabel?: string; accept: string;
-  file: File | null; onFile: (f: File | null) => void;
-  color: DZColor; icon: "pdf" | "xml";
+  label: string;
+  sublabel?: string;
+  accept: string;
+  file: File | null;
+  onFile: (f: File | null) => void;
+  color: DZColor;
+  icon: "pdf" | "xml";
 }) {
   const ref = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
@@ -101,46 +146,86 @@ function DropZone({
   return (
     <div
       onClick={() => ref.current?.click()}
-      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDrag(true);
+      }}
       onDragLeave={() => setDrag(false)}
       onDrop={(e) => {
-        e.preventDefault(); setDrag(false);
-        const f = e.dataTransfer.files[0]; if (f) onFile(f);
+        e.preventDefault();
+        setDrag(false);
+        const f = e.dataTransfer.files[0];
+        if (f) onFile(f);
       }}
       className={`relative cursor-pointer rounded-xl border-2 border-dashed transition-all p-4 group
-        ${drag
-          ? `${c.border} ${c.activeBg} scale-[1.01]`
-          : `border-slate-700/50 hover:${c.border} hover:${c.bg}`}`}
+        ${
+          drag
+            ? `${c.border} ${c.activeBg} scale-[1.01]`
+            : `border-slate-700/50 hover:${c.border} hover:${c.bg}`
+        }`}
     >
-      <input ref={ref} type="file" accept={accept} className="hidden"
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
+      <input
+        ref={ref}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
+      />
 
       <div className="flex flex-col items-center gap-2 text-center">
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0
-          ${file ? c.bg : "bg-slate-800/60 group-hover:" + c.bg} ${c.icon}`}>
+        <div
+          className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0
+          ${file ? c.bg : "bg-slate-800/60 group-hover:" + c.bg} ${c.icon}`}
+        >
           {icon === "pdf" ? (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+              />
             </svg>
           ) : (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
             </svg>
           )}
         </div>
 
         <div className="min-w-0 w-full">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">{label}</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">
+            {label}
+          </p>
           {sublabel && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-500">{sublabel}</span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-500">
+              {sublabel}
+            </span>
           )}
           <div className="mt-1.5">
             {file ? (
               <div className="flex items-center justify-center gap-1.5">
-                <p className="text-xs font-medium text-white truncate max-w-[120px]">{file.name}</p>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${c.badge} flex-shrink-0`}>
+                <p className="text-xs font-medium text-white truncate max-w-[120px]">
+                  {file.name}
+                </p>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full ${c.badge} flex-shrink-0`}
+                >
                   {fmtBytes(file.size)}
                 </span>
               </div>
@@ -152,11 +237,24 @@ function DropZone({
 
         {file && (
           <button
-            onClick={(e) => { e.stopPropagation(); onFile(null); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFile(null);
+            }}
             className="absolute top-2 right-2 w-5 h-5 rounded-full bg-slate-700/80 hover:bg-red-500/30 flex items-center justify-center transition-colors"
           >
-            <svg className="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg
+              className="w-3 h-3 text-slate-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         )}
@@ -183,7 +281,11 @@ function ChunkResultModal({
   const [filter, setFilter] = useState<"all" | "changed" | "unchanged">("all");
 
   const filtered = response.pdf_chunks.filter((c) =>
-    filter === "all" ? true : filter === "changed" ? c.has_changes : !c.has_changes
+    filter === "all"
+      ? true
+      : filter === "changed"
+        ? c.has_changes
+        : !c.has_changes,
   );
 
   const { summary, folder_structure } = response;
@@ -191,22 +293,32 @@ function ChunkResultModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
       <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl border border-slate-700/60 bg-slate-900 shadow-2xl overflow-hidden">
-
         {/* Header */}
         <div className="flex-shrink-0 px-6 py-4 border-b border-slate-800">
           <div className="flex items-start justify-between">
             <div>
               <h2 className="text-base font-bold text-white">Chunk Results</h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Source: <span className="text-slate-300">{response.source_name}</span>
+                Source:{" "}
+                <span className="text-slate-300">{response.source_name}</span>
               </p>
             </div>
             <button
               onClick={onClose}
               className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 flex items-center justify-center transition-colors"
             >
-              <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <svg
+                className="w-4 h-4 text-slate-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
               </svg>
             </button>
           </div>
@@ -226,8 +338,18 @@ function ChunkResultModal({
               onClick={onDownloadAll}
               className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-[11px] font-semibold transition-colors"
             >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              <svg
+                className="w-3 h-3"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                />
               </svg>
               Download All
             </button>
@@ -237,12 +359,16 @@ function ChunkResultModal({
           {folder_structure && (
             <div className="mt-3 px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/40">
               <p className="text-[10px] text-slate-500 font-mono">
-                <span className="text-slate-400">{folder_structure.chunked}/</span>
-                {" "}← unchanged chunks saved here
+                <span className="text-slate-400">
+                  {folder_structure.chunked}/
+                </span>{" "}
+                ← unchanged chunks saved here
               </p>
               <p className="text-[10px] text-slate-500 font-mono">
-                <span className="text-slate-400">{folder_structure.compare}/</span>
-                {" "}← chunks with changes for review
+                <span className="text-slate-400">
+                  {folder_structure.compare}/
+                </span>{" "}
+                ← chunks with changes for review
               </p>
             </div>
           )}
@@ -255,15 +381,21 @@ function ChunkResultModal({
               key={f}
               onClick={() => setFilter(f)}
               className={`text-[11px] px-3 py-1 rounded-full font-semibold capitalize transition-all
-                ${filter === f
-                  ? f === "changed"
-                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-                    : f === "unchanged"
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                      : "bg-slate-700 text-white"
-                  : "text-slate-500 hover:text-slate-300"}`}
+                ${
+                  filter === f
+                    ? f === "changed"
+                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                      : f === "unchanged"
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                        : "bg-slate-700 text-white"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
             >
-              {f === "all" ? `All (${summary.total})` : f === "changed" ? `Changed (${summary.changed})` : `Unchanged (${summary.unchanged})`}
+              {f === "all"
+                ? `All (${summary.total})`
+                : f === "changed"
+                  ? `Changed (${summary.changed})`
+                  : `Unchanged (${summary.unchanged})`}
             </button>
           ))}
         </div>
@@ -274,14 +406,18 @@ function ChunkResultModal({
             <div
               key={chunk.index}
               className={`group rounded-xl border transition-all
-                ${chunk.has_changes
-                  ? "border-amber-500/25 bg-amber-500/5 hover:border-amber-500/40"
-                  : "border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/35"}`}
+                ${
+                  chunk.has_changes
+                    ? "border-amber-500/25 bg-amber-500/5 hover:border-amber-500/40"
+                    : "border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/35"
+                }`}
             >
               <div className="px-4 py-3 flex items-center gap-3">
                 {/* Index */}
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0
-                  ${chunk.has_changes ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-300"}`}>
+                <div
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0
+                  ${chunk.has_changes ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-300"}`}
+                >
                   {String(chunk.index).padStart(2, "0")}
                 </div>
 
@@ -303,7 +439,9 @@ function ChunkResultModal({
                   </div>
                   <p className="text-[10px] text-slate-600 mt-0.5 truncate font-mono">
                     {chunk.xml_tag ? `<${chunk.xml_tag}>` : "—"}
-                    {chunk.xml_size > 0 && <span className="ml-1">{fmtBytes(chunk.xml_size)}</span>}
+                    {chunk.xml_size > 0 && (
+                      <span className="ml-1">{fmtBytes(chunk.xml_size)}</span>
+                    )}
                   </p>
                 </div>
 
@@ -314,8 +452,18 @@ function ChunkResultModal({
                     title="Download this chunk"
                     className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/40 flex items-center justify-center transition-colors"
                   >
-                    <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    <svg
+                      className="w-3.5 h-3.5 text-slate-400"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                      />
                     </svg>
                   </button>
                   {chunk.has_changes && (
@@ -324,13 +472,25 @@ function ChunkResultModal({
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-[11px] font-semibold transition-colors"
                     >
                       Review in Compare
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      <svg
+                        className="w-3 h-3"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M9 5l7 7-7 7"
+                        />
                       </svg>
                     </button>
                   )}
                   {!chunk.has_changes && (
-                    <span className="text-[10px] text-emerald-600 italic">Auto-saved</span>
+                    <span className="text-[10px] text-emerald-600 italic">
+                      Auto-saved
+                    </span>
                   )}
                 </div>
               </div>
@@ -339,7 +499,8 @@ function ChunkResultModal({
               {chunk.new_text && (
                 <div className="px-4 pb-3">
                   <p className="text-[10px] text-slate-600 font-mono leading-relaxed line-clamp-2">
-                    {chunk.new_text.slice(0, 150)}{chunk.new_text.length > 150 ? "…" : ""}
+                    {chunk.new_text.slice(0, 150)}
+                    {chunk.new_text.length > 150 ? "…" : ""}
                   </p>
                 </div>
               )}
@@ -348,7 +509,9 @@ function ChunkResultModal({
 
           {filtered.length === 0 && (
             <div className="flex items-center justify-center py-12">
-              <p className="text-sm text-slate-600">No chunks in this category</p>
+              <p className="text-sm text-slate-600">
+                No chunks in this category
+              </p>
             </div>
           )}
         </div>
@@ -359,7 +522,11 @@ function ChunkResultModal({
 
 // ── Main ChunkPanel ────────────────────────────────────────────────────────────
 
-export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
+export default function ChunkPanel({
+  onNavigateToCompare,
+  onJobCreated,
+  activeJob,
+}: ChunkPanelProps) {
   const [oldPdf, setOldPdf] = useState<File | null>(null);
   const [newPdf, setNewPdf] = useState<File | null>(null);
   const [xmlFile, setXmlFile] = useState<File | null>(null);
@@ -368,12 +535,21 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
   const [chunkSize, setChunkSize] = useState(1500);
 
   const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState<
+    "uploading" | "chunking" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ChunkResponse | null>(null);
   const [showModal, setShowModal] = useState(false);
 
-  const isReady = !!oldPdf && !!newPdf && !!xmlFile && sourceName.trim().length > 0;
+  const isReady =
+    !!oldPdf && !!newPdf && !!xmlFile && sourceName.trim().length > 0;
 
+  /**
+   * Two-step pipeline aligned with architecture:
+   *   Step 1: POST /compare/upload   → get job_id
+   *   Step 2: POST /compare/start-chunking → process & get chunks
+   */
   const handleChunk = useCallback(async () => {
     if (!isReady) return;
     setLoading(true);
@@ -381,33 +557,84 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
     setResult(null);
 
     try {
-      const form = new FormData();
-      form.append("old_pdf", oldPdf!);
-      form.append("new_pdf", newPdf!);
-      form.append("xml_file", xmlFile!);
-      form.append("tag_name", tagName);
-      form.append("source_name", sourceName.trim());
-      form.append("chunk_size", String(chunkSize));
+      // ── Step 1: Upload files ──────────────────────────────────────────────
+      setLoadingStep("uploading");
+      const uploadForm = new FormData();
+      uploadForm.append("old_pdf", oldPdf!);
+      uploadForm.append("new_pdf", newPdf!);
+      uploadForm.append("xml_file", xmlFile!);
+      uploadForm.append("source_name", sourceName.trim());
 
-      const res = await fetch(`${PROCESSING_URL}/compare/chunk/pdf`, {
+      const uploadRes = await fetch(`${PROCESSING_URL}/compare/upload`, {
         method: "POST",
-        body: form,
+        body: uploadForm,
       });
 
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e.detail ?? `HTTP ${res.status}`);
+      if (!uploadRes.ok) {
+        const e = await uploadRes.json().catch(() => ({}));
+        throw new Error(e.detail ?? `Upload failed: HTTP ${uploadRes.status}`);
       }
 
-      const data: ChunkResponse = await res.json();
+      const uploadData = await uploadRes.json();
+      const job_id: string = uploadData.job_id;
+
+      // Propagate job state to parent page
+      onJobCreated?.({
+        job_id,
+        source_name: sourceName.trim(),
+        status: "uploaded",
+      });
+
+      // ── Step 2: Start chunking ────────────────────────────────────────────
+      setLoadingStep("chunking");
+
+      const chunkRes = await fetch(`${PROCESSING_URL}/compare/start-chunking`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_id,
+          tag_name: tagName,
+          chunk_size: chunkSize,
+          chunk_overlap: 150,
+        }),
+      });
+
+      if (!chunkRes.ok) {
+        const e = await chunkRes.json().catch(() => ({}));
+        throw new Error(e.detail ?? `Chunking failed: HTTP ${chunkRes.status}`);
+      }
+
+      const data: ChunkResponse = await chunkRes.json();
       setResult(data);
       setShowModal(true);
+
+      onJobCreated?.({
+        job_id,
+        source_name: sourceName.trim(),
+        status: "done",
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Chunking failed");
+      onJobCreated?.({
+        job_id: activeJob?.job_id ?? "",
+        source_name: sourceName.trim(),
+        status: "error",
+      });
     } finally {
       setLoading(false);
+      setLoadingStep(null);
     }
-  }, [isReady, oldPdf, newPdf, xmlFile, sourceName, tagName, chunkSize]);
+  }, [
+    isReady,
+    oldPdf,
+    newPdf,
+    xmlFile,
+    sourceName,
+    tagName,
+    chunkSize,
+    onJobCreated,
+    activeJob,
+  ]);
 
   function handleDownloadChunk(chunk: PdfChunk) {
     const content = chunk.xml_chunk_file || chunk.xml_content;
@@ -418,8 +645,8 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
 
   function handleDownloadAll() {
     if (!result) return;
-    result.pdf_chunks.forEach((chunk) => {
-      setTimeout(() => handleDownloadChunk(chunk), chunk.index * 100);
+    result.pdf_chunks.forEach((chunk, i) => {
+      setTimeout(() => handleDownloadChunk(chunk), i * 100);
     });
   }
 
@@ -436,7 +663,8 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
       <div className="flex-shrink-0 px-6 pt-4 pb-2">
         <h2 className="text-sm font-bold text-slate-200">Chunk PDF + XML</h2>
         <p className="text-xs text-slate-500 mt-0.5">
-          Upload OLD PDF, NEW PDF, and OLD XML to split into reviewable XML chunks
+          Upload OLD PDF, NEW PDF, and OLD XML to split into reviewable XML
+          chunks
         </p>
       </div>
 
@@ -457,7 +685,7 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
           </div>
           <div className="text-slate-600 text-[10px] font-mono">
             {sourceName
-              ? `→ ${sourceName.replace(/[^\w\-]/g, '_')}_innod.00001.xml`
+              ? `→ ${sourceName.replace(/[^\w\-]/g, "_")}_innod.00001.xml`
               : "Filename preview"}
           </div>
         </div>
@@ -500,7 +728,9 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
       <div className="flex-shrink-0 px-6 pb-3">
         <div className="flex items-center gap-3 p-3 rounded-xl border border-slate-700/40 bg-slate-900/20">
           <div className="flex-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block mb-1">XML Tag</label>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block mb-1">
+              XML Tag
+            </label>
             <input
               type="text"
               value={tagName}
@@ -511,7 +741,9 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
           </div>
           <div className="w-px h-8 bg-slate-800" />
           <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block mb-1">Chunk Size</label>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block mb-1">
+              Chunk Size
+            </label>
             <input
               type="number"
               value={chunkSize}
@@ -532,23 +764,49 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
             onClick={handleChunk}
             disabled={!isReady || loading}
             className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all
-              ${isReady && !loading
-                ? "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white shadow-lg shadow-blue-500/25"
-                : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+              ${
+                isReady && !loading
+                  ? "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white shadow-lg shadow-blue-500/25"
+                  : "bg-slate-800 text-slate-600 cursor-not-allowed"
+              }`}
           >
             {loading ? (
               <>
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                <svg
+                  className="w-4 h-4 animate-spin"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                  />
                 </svg>
                 Chunking…
               </>
             ) : (
               <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M4 6h16M4 10h16M4 14h8M4 18h8" />
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 6h16M4 10h16M4 14h8M4 18h8"
+                  />
                 </svg>
                 Chunk
               </>
@@ -556,7 +814,9 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
           </button>
 
           {!sourceName.trim() && (
-            <p className="text-xs text-slate-600 italic">Enter a source name to enable chunking</p>
+            <p className="text-xs text-slate-600 italic">
+              Enter a source name to enable chunking
+            </p>
           )}
 
           {result && (
@@ -564,8 +824,18 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
               onClick={() => setShowModal(true)}
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700/40 text-slate-300 text-xs font-semibold transition-colors"
             >
-              <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              <svg
+                className="w-3.5 h-3.5 text-emerald-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                />
               </svg>
               View Results ({result.summary.total} chunks)
             </button>
@@ -576,8 +846,18 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
       {/* ── Error ── */}
       {error && (
         <div className="flex-shrink-0 mx-6 mb-3 flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5">
-          <svg className="w-4 h-4 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          <svg
+            className="w-4 h-4 text-red-400 flex-shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
           </svg>
           <p className="text-xs text-red-300">{error}</p>
         </div>
@@ -587,31 +867,60 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
       {!result && !loading && (
         <div className="flex-1 flex flex-col items-center justify-center text-center gap-4 px-6">
           <div className="w-20 h-20 rounded-2xl bg-slate-800/60 border border-slate-700/40 flex items-center justify-center">
-            <svg className="w-10 h-10 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M4 6h16M4 10h16M4 14h8M4 18h8" />
+            <svg
+              className="w-10 h-10 text-slate-600"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M4 6h16M4 10h16M4 14h8M4 18h8"
+              />
             </svg>
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-400">Ready to Chunk</p>
+            <p className="text-sm font-semibold text-slate-400">
+              Ready to Chunk
+            </p>
             <p className="text-xs text-slate-600 mt-1 max-w-sm">
-              Upload OLD PDF, NEW PDF, and OLD XML, enter a source name, then click{" "}
-              <span className="text-blue-400 font-semibold">Chunk</span> to split into XML chunks.
+              Upload OLD PDF, NEW PDF, and OLD XML, enter a source name, then
+              click <span className="text-blue-400 font-semibold">Chunk</span>{" "}
+              to split into XML chunks.
             </p>
           </div>
 
           {/* Step guide */}
           <div className="grid grid-cols-3 gap-3 mt-2 max-w-lg w-full">
             {[
-              { step: "1", label: "Upload Files", desc: "OLD PDF, NEW PDF, OLD XML" },
-              { step: "2", label: "Set Source Name", desc: "Used for chunk file naming" },
-              { step: "3", label: "Click Chunk", desc: "Review results in modal" },
+              {
+                step: "1",
+                label: "Upload Files",
+                desc: "OLD PDF, NEW PDF, OLD XML",
+              },
+              {
+                step: "2",
+                label: "Set Source Name",
+                desc: "Used for chunk file naming",
+              },
+              {
+                step: "3",
+                label: "Click Chunk",
+                desc: "Review results in modal",
+              },
             ].map(({ step, label, desc }) => (
-              <div key={step} className="p-3 rounded-xl border border-slate-800 bg-slate-900/30 text-left">
+              <div
+                key={step}
+                className="p-3 rounded-xl border border-slate-800 bg-slate-900/30 text-left"
+              >
                 <div className="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-400 mb-2">
                   {step}
                 </div>
-                <p className="text-[11px] font-semibold text-slate-300">{label}</p>
+                <p className="text-[11px] font-semibold text-slate-300">
+                  {label}
+                </p>
                 <p className="text-[10px] text-slate-600 mt-0.5">{desc}</p>
               </div>
             ))}
@@ -623,16 +932,80 @@ export default function ChunkPanel({ onNavigateToCompare }: ChunkPanelProps) {
       {loading && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <div className="relative w-16 h-16">
-            <svg className="w-16 h-16 animate-spin text-blue-500/30" fill="none" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+            <svg
+              className="w-16 h-16 animate-spin text-blue-500/30"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="2"
+              />
             </svg>
-            <svg className="absolute inset-0 w-16 h-16 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24" style={{ animationDuration: "1s" }}>
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" strokeDasharray="16 48" />
+            <svg
+              className="absolute inset-0 w-16 h-16 animate-spin text-blue-500"
+              fill="none"
+              viewBox="0 0 24 24"
+              style={{ animationDuration: "1s" }}
+            >
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeDasharray="16 48"
+              />
             </svg>
           </div>
           <div className="text-center">
-            <p className="text-sm font-semibold text-slate-300">Processing files…</p>
-            <p className="text-xs text-slate-600 mt-1">Extracting text, splitting into chunks, detecting changes</p>
+            <p className="text-sm font-semibold text-slate-300">
+              {loadingStep === "uploading"
+                ? "Uploading files…"
+                : "Processing chunks…"}
+            </p>
+            <p className="text-xs text-slate-600 mt-1">
+              {loadingStep === "uploading"
+                ? "Sending OLD PDF, NEW PDF, and XML to server"
+                : "Extracting text, splitting into chunks, detecting changes"}
+            </p>
+            {/* Step indicator */}
+            <div className="flex items-center gap-2 justify-center mt-3">
+              <div
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-all ${
+                  loadingStep === "uploading"
+                    ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
+                    : "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                }`}
+              >
+                {loadingStep !== "uploading" ? "✓ " : ""}Step 1: Upload
+              </div>
+              <svg
+                className="w-3 h-3 text-slate-600"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 5l7 7-7 7"
+                />
+              </svg>
+              <div
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-all ${
+                  loadingStep === "chunking"
+                    ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
+                    : "bg-slate-800 text-slate-500 border-slate-700/40"
+                }`}
+              >
+                Step 2: Chunk
+              </div>
+            </div>
           </div>
         </div>
       )}

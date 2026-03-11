@@ -31,6 +31,8 @@ type ChangeType =
 interface Formatting {
   bold: boolean;
   italic: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
   color: number;
   is_colored?: boolean;
 }
@@ -43,6 +45,7 @@ interface Change {
   new_text: string | null;
   old_formatting: Formatting | null;
   new_formatting: (Formatting & { is_colored?: boolean }) | null;
+  emphasis?: string[];
   xml_path: string | null;
   page: number;
   suggested_xml: string | null;
@@ -75,8 +78,10 @@ interface ValidationResult {
 }
 
 interface ComparePanelProps {
-  initialChunk?: PdfChunk | null;
-  initialSourceName?: string;
+  initialChunk?:       PdfChunk | null;
+  initialSourceName?:  string;
+  /** Active job passed down from page — enables /save-xml and /compare/{chunk_id} */
+  activeJob?:          { job_id: string; source_name: string; status: string } | null;
 }
 
 // ── Change-type metadata ───────────────────────────────────────────────────────
@@ -174,6 +179,138 @@ function fmtBytes(b: number) {
   if (b < 1024) return `${b} B`;
   if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1048576).toFixed(1)} MB`;
+}
+
+// ── Fuzzy text search helpers ─────────────────────────────────────────────────
+
+/**
+ * Find `needle` inside `haystack` with whitespace-normalised comparison.
+ * Returns [start, end] indices in the ORIGINAL haystack string.
+ * Falls back to [-1, -1] when no acceptable match is found.
+ *
+ * Strategy:
+ *  1. Exact substring match
+ *  2. Trimmed match
+ *  3. Normalised-whitespace match — walks both strings in parallel to map
+ *     the normalised index back to an original character position.
+ */
+function fuzzyIndexOf(haystack: string, needle: string): [number, number] {
+  if (!needle || !haystack) return [-1, -1];
+
+  // 1. Exact match
+  let idx = haystack.indexOf(needle);
+  if (idx >= 0) return [idx, idx + needle.length];
+
+  // 2. Trimmed match
+  const trimmed = needle.trim();
+  idx = haystack.indexOf(trimmed);
+  if (idx >= 0) return [idx, idx + trimmed.length];
+
+  // 3. Normalised-whitespace match
+  const needleNorm = trimmed.replace(/\s+/g, " ").toLowerCase();
+  if (!needleNorm) return [-1, -1];
+
+  // Build a parallel array: origIdx[normPos] = original index of that char.
+  // Consecutive whitespace collapses to one space.
+  const origIdx: number[] = [];
+  let n = "";
+  let prevWs = true; // leading whitespace collapsed
+  for (let i = 0; i < haystack.length; i++) {
+    const ch = haystack[i];
+    if (/\s/.test(ch)) {
+      if (!prevWs) {
+        origIdx.push(i);
+        n += " ";
+        prevWs = true;
+      }
+    } else {
+      origIdx.push(i);
+      n += ch.toLowerCase();
+      prevWs = false;
+    }
+  }
+
+  const normIdx = n.indexOf(needleNorm);
+  if (normIdx < 0) return [-1, -1];
+
+  const start = normIdx < origIdx.length ? origIdx[normIdx] : -1;
+  if (start < 0) return [-1, -1];
+
+  // Map the last normalised character of the needle back to the original string.
+  // Clamp both index lookups to the length of origIdx to avoid out-of-bounds access.
+  const endNormIdx = Math.min(normIdx + needleNorm.length - 1, origIdx.length - 1);
+  const end = origIdx[endNormIdx] + 1;
+
+  return [start, Math.min(end, haystack.length)];
+}
+
+/**
+ * Replace the first occurrence of `search` inside `text` using fuzzy matching.
+ * Returns the modified string, or the original when `search` is not found.
+ */
+function fuzzyReplace(text: string, search: string, replacement: string): string {
+  const [start, end] = fuzzyIndexOf(text, search);
+  if (start < 0) return text;
+  return text.slice(0, start) + replacement + text.slice(end);
+}
+
+/** Escape special HTML characters for safe innerHTML rendering. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Build an HTML string of the raw XML content with detected change positions
+ * wrapped in coloured <mark> elements — used for the "Preview" XML panel.
+ */
+function buildHighlightedXml(
+  xmlContent: string,
+  changes: Change[],
+  selectedId: string | null,
+): string {
+  if (!xmlContent) return "";
+  if (changes.length === 0) return escapeHtml(xmlContent);
+
+  type Range = { start: number; end: number; type: ChangeType; selected: boolean };
+  const ranges: Range[] = [];
+
+  const colorStyle: Record<ChangeType, string> = {
+    addition:     "background:rgba(16,185,129,0.25);border-radius:2px;",
+    removal:      "background:rgba(239,68,68,0.25);border-radius:2px;text-decoration:line-through;",
+    modification: "background:rgba(245,158,11,0.25);border-radius:2px;",
+    mismatch:     "background:rgba(139,92,246,0.25);border-radius:2px;",
+    emphasis:     "background:rgba(59,130,246,0.25);border-radius:2px;",
+  };
+
+  for (const change of changes) {
+    if (change.dismissed) continue;
+    const searchText = change.old_text || change.new_text || change.text;
+    if (!searchText) continue;
+    const [start, end] = fuzzyIndexOf(xmlContent, searchText);
+    if (start < 0) continue;
+    ranges.push({ start, end, type: change.type, selected: change.id === selectedId });
+  }
+
+  // Sort by start position; skip overlapping ranges
+  ranges.sort((a, b) => a.start - b.start);
+
+  let html = "";
+  let pos = 0;
+  for (const r of ranges) {
+    if (r.start < pos) continue; // skip overlap
+    html += escapeHtml(xmlContent.slice(pos, r.start));
+    const outline = r.selected ? "outline:2px solid rgba(255,255,255,0.5);" : "";
+    html += `<mark style="${colorStyle[r.type]}${outline}">`;
+    html += escapeHtml(xmlContent.slice(r.start, r.end));
+    html += "</mark>";
+    pos = r.end;
+  }
+  html += escapeHtml(xmlContent.slice(pos));
+  return html;
 }
 
 // ── iLovePDF-style Large DropZone ──────────────────────────────────────────────
@@ -751,6 +888,16 @@ function ChangeItem({
                     I
                   </span>
                 )}
+                {change.new_formatting.underline && (
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-slate-800 text-slate-300 underline border border-slate-700/50">
+                    U
+                  </span>
+                )}
+                {change.new_formatting.strikethrough && (
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-slate-800 text-slate-300 line-through border border-slate-700/50">
+                    S
+                  </span>
+                )}
                 {change.new_formatting.is_colored && (
                   <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
                     Color
@@ -957,10 +1104,10 @@ function XmlEditor({
   useEffect(() => {
     if (!highlightText || !editorRef.current || !content) return;
     const el = editorRef.current;
-    const idx = content.indexOf(highlightText);
+    const [idx, idxEnd] = fuzzyIndexOf(content, highlightText);
     if (idx < 0) return;
     el.focus();
-    el.setSelectionRange(idx, idx + highlightText.length);
+    el.setSelectionRange(idx, idxEnd);
     const linesBefore = content.substring(0, idx).split("\n").length;
     el.scrollTop = Math.max(0, (linesBefore - 4) * 19);
   }, [highlightText]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1064,6 +1211,7 @@ function UploadBanner({
 export default function ComparePanel({
   initialChunk,
   initialSourceName,
+  activeJob,
 }: ComparePanelProps) {
   const { user } = useAuth();
   const canEdit = user?.role === "SUPER_ADMIN" || user?.role === "MANAGER_QA";
@@ -1093,6 +1241,7 @@ export default function ComparePanel({
   const isReady = !!oldPdf && !!newPdf && !!xmlFile;
   const hasResult = changes.length > 0 || xmlContent.length > 0;
   const [uploadCollapsed, setUploadCollapsed] = useState(false);
+  const [xmlPreviewMode, setXmlPreviewMode] = useState<"edit" | "preview">("edit");
 
   // Auto-collapse upload area once all 3 files are ready
   useEffect(() => {
@@ -1125,9 +1274,17 @@ export default function ComparePanel({
       });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
-        throw new Error(e.detail ?? `HTTP ${res.status}`);
+        const detail = Array.isArray(e.detail)
+          ? e.detail.map((d: { msg?: string }) => d.msg ?? JSON.stringify(d)).join("; ")
+          : e.detail;
+        throw new Error(detail ?? `HTTP ${res.status}`);
       }
       const data: DetectResponse = await res.json();
+      console.log("[ComparePanel] detect response:", {
+        changes: data.changes?.length,
+        summary: data.summary,
+        xml_content_length: data.xml_content?.length,
+      });
       setChanges(data.changes);
       setXmlContent(data.xml_content);
       setSummary(data.summary);
@@ -1145,10 +1302,10 @@ export default function ComparePanel({
       const searchText = change.old_text || change.new_text || change.text;
       if (!searchText || !editorRef.current || !xmlContent) return;
       const el = editorRef.current;
-      const idx = xmlContent.indexOf(searchText);
+      const [idx, idxEnd] = fuzzyIndexOf(xmlContent, searchText);
       if (idx < 0) return;
       el.focus();
-      el.setSelectionRange(idx, idx + searchText.length);
+      el.setSelectionRange(idx, idxEnd);
       el.scrollTop = Math.max(
         0,
         (xmlContent.substring(0, idx).split("\n").length - 4) * 19,
@@ -1165,38 +1322,35 @@ export default function ComparePanel({
       if (mode === "emphasis") {
         const t = change.new_text || change.text;
         if (t && change.new_formatting) {
-          const { bold, italic, is_colored } = change.new_formatting;
+          const { bold, italic, underline, strikethrough, is_colored } = change.new_formatting;
           let repl = t;
-          if (italic) repl = `<i>${repl}</i>`;
-          if (bold) repl = `<b>${repl}</b>`;
-          if (is_colored && !bold && !italic) repl = `<em>${repl}</em>`;
-          xml = xml.replace(t, repl);
+          // Apply innermost → outermost (reverse order so outermost wraps everything)
+          if (strikethrough) repl = `<s>${repl}</s>`;
+          if (underline)     repl = `<u>${repl}</u>`;
+          if (italic)        repl = `<i>${repl}</i>`;
+          if (bold)          repl = `<b>${repl}</b>`;
+          if (is_colored && !bold && !italic && !underline && !strikethrough)
+            repl = `<em>${repl}</em>`;
+          xml = fuzzyReplace(xml, t, repl);
         }
       } else if (change.suggested_xml) {
         // Use suggested_xml (already contains proper del/ins markup from backend)
         const searchText = change.old_text || change.text;
-        if (searchText && xml.includes(searchText))
-          xml = xml.replace(searchText, change.suggested_xml);
+        if (searchText) xml = fuzzyReplace(xml, searchText, change.suggested_xml);
       } else {
         switch (change.type) {
           case "modification":
           case "mismatch":
-            if (
-              change.old_text &&
-              change.new_text &&
-              xml.includes(change.old_text)
-            )
-              xml = xml.replace(
+            if (change.old_text && change.new_text)
+              xml = fuzzyReplace(
+                xml,
                 change.old_text,
                 `<del>${change.old_text}</del><ins>${change.new_text}</ins>`,
               );
             break;
           case "removal":
-            if (change.old_text && xml.includes(change.old_text))
-              xml = xml.replace(
-                change.old_text,
-                `<del>${change.old_text}</del>`,
-              );
+            if (change.old_text)
+              xml = fuzzyReplace(xml, change.old_text, `<del>${change.old_text}</del>`);
             break;
           case "addition":
             if (change.new_text) {
@@ -1231,38 +1385,34 @@ export default function ComparePanel({
 
       if (change.type === "emphasis") {
         const t = change.new_text || change.text;
-        if (t && change.new_formatting && xml.includes(t)) {
-          const { bold, italic, is_colored } = change.new_formatting;
+        if (t && change.new_formatting) {
+          const { bold, italic, underline, strikethrough, is_colored } = change.new_formatting;
           let repl = t;
-          if (italic) repl = `<i>${repl}</i>`;
-          if (bold) repl = `<b>${repl}</b>`;
-          if (is_colored && !bold && !italic) repl = `<em>${repl}</em>`;
-          xml = xml.replace(t, repl);
+          if (strikethrough) repl = `<s>${repl}</s>`;
+          if (underline)     repl = `<u>${repl}</u>`;
+          if (italic)        repl = `<i>${repl}</i>`;
+          if (bold)          repl = `<b>${repl}</b>`;
+          if (is_colored && !bold && !italic && !underline && !strikethrough)
+            repl = `<em>${repl}</em>`;
+          xml = fuzzyReplace(xml, t, repl);
         }
       } else if (change.suggested_xml) {
         const searchText = change.old_text || change.text;
-        if (searchText && xml.includes(searchText))
-          xml = xml.replace(searchText, change.suggested_xml);
+        if (searchText) xml = fuzzyReplace(xml, searchText, change.suggested_xml);
       } else {
         switch (change.type) {
           case "modification":
           case "mismatch":
-            if (
-              change.old_text &&
-              change.new_text &&
-              xml.includes(change.old_text)
-            )
-              xml = xml.replace(
+            if (change.old_text && change.new_text)
+              xml = fuzzyReplace(
+                xml,
                 change.old_text,
                 `<del>${change.old_text}</del><ins>${change.new_text}</ins>`,
               );
             break;
           case "removal":
-            if (change.old_text && xml.includes(change.old_text))
-              xml = xml.replace(
-                change.old_text,
-                `<del>${change.old_text}</del>`,
-              );
+            if (change.old_text)
+              xml = fuzzyReplace(xml, change.old_text, `<del>${change.old_text}</del>`);
             break;
           case "addition":
             if (change.new_text) {
@@ -1282,9 +1432,7 @@ export default function ComparePanel({
 
     setXmlContent(xml);
     setChanges((prev) =>
-      prev.map((c) =>
-        appliedIds.includes(c.id) ? { ...c, applied: true } : c,
-      ),
+      prev.map((c) => (appliedIds.includes(c.id) ? { ...c, applied: true } : c)),
     );
   }, [canEdit, xmlContent, changes]);
 
@@ -1343,6 +1491,38 @@ export default function ComparePanel({
     });
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Persist edited XML back to the server via POST /compare/save-xml.
+   * Requires an activeJob with job_id and a chunk to identify the record.
+   */
+  async function handleSaveXml() {
+    if (!activeJob?.job_id || !initialChunk) {
+      // Fall back to local download if no job context
+      handleDownload();
+      return;
+    }
+    try {
+      const res = await fetch(`${PROCESSING_URL}/compare/save-xml`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_id:      activeJob.job_id,
+          chunk_id:    String(initialChunk.index),
+          xml_content: xmlContent,
+          has_changes: changes.some((c) => !c.dismissed),
+        }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        console.error("save-xml failed:", e.detail);
+      }
+    } catch (err) {
+      console.error("save-xml error:", err);
+    }
+    // Always also download locally so user has a copy
+    handleDownload();
   }
 
   const selectedChange = changes.find((c) => c.id === selectedId) ?? null;
@@ -1516,31 +1696,19 @@ export default function ComparePanel({
           )}
 
           {/* Highlight All — shown once changes exist and not all applied */}
-          {canEdit &&
-            changes.length > 0 &&
-            changes.some((c) => !c.applied && !c.dismissed) && (
-              <button
-                onClick={handleApplyAll}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
-                title="Apply all pending changes with bold/italic/del/ins markup"
-              >
-                <svg
-                  className="w-3 h-3"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 13l4 4L19 7"
-                  />
-                </svg>
-                Highlight All (
-                {changes.filter((c) => !c.applied && !c.dismissed).length})
-              </button>
-            )}
+          {canEdit && changes.length > 0 && changes.some((c) => !c.applied && !c.dismissed) && (
+            <button
+              onClick={handleApplyAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
+              title="Apply all pending changes with bold/italic/del/ins markup"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M5 13l4 4L19 7" />
+              </svg>
+              Highlight All ({changes.filter((c) => !c.applied && !c.dismissed).length})
+            </button>
+          )}
 
           <div className="ml-auto flex items-center gap-2">
             {/* Legend toggle */}
@@ -1588,10 +1756,10 @@ export default function ComparePanel({
               </button>
             )}
 
-            {/* Download available to all users once XML is loaded */}
+            {/* Download — also saves to server via /save-xml when activeJob is set */}
             {xmlContent && (
               <button
-                onClick={handleDownload}
+                onClick={handleSaveXml}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
               >
                 <svg
@@ -1791,13 +1959,40 @@ export default function ComparePanel({
                 </span>
               )}
             </div>
-            {selectedChange && (
-              <span
-                className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border flex-shrink-0 ${CM[selectedChange.type].pill}`}
-              >
-                {CM[selectedChange.type].label}
-              </span>
-            )}
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {/* Edit / Preview mode toggle */}
+              {xmlContent && (
+                <div className="flex rounded-md overflow-hidden border border-slate-700/50 text-[10px]">
+                  <button
+                    onClick={() => setXmlPreviewMode("edit")}
+                    className={`px-2 py-0.5 font-semibold transition-colors ${
+                      xmlPreviewMode === "edit"
+                        ? "bg-slate-700 text-white"
+                        : "bg-slate-900 text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => setXmlPreviewMode("preview")}
+                    className={`px-2 py-0.5 font-semibold transition-colors ${
+                      xmlPreviewMode === "preview"
+                        ? "bg-slate-700 text-white"
+                        : "bg-slate-900 text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    Preview
+                  </button>
+                </div>
+              )}
+              {selectedChange && (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${CM[selectedChange.type].pill}`}
+                >
+                  {CM[selectedChange.type].label}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Line count hint */}
@@ -1815,13 +2010,25 @@ export default function ComparePanel({
             </div>
           )}
 
-          <XmlEditor
-            content={xmlContent}
-            onChange={setXmlContent}
-            canEdit={canEdit}
-            highlightText={highlightText}
-            editorRef={editorRef}
-          />
+          {xmlPreviewMode === "preview" && xmlContent ? (
+            /* ── Highlighted preview: colour-coded change positions ── */
+            <div className="flex-1 overflow-auto p-0">
+              <pre
+                className="font-mono text-[12px] leading-[1.7] text-slate-300 px-4 py-3 whitespace-pre-wrap break-words min-h-full"
+                dangerouslySetInnerHTML={{
+                  __html: buildHighlightedXml(xmlContent, changes, selectedId),
+                }}
+              />
+            </div>
+          ) : (
+            <XmlEditor
+              content={xmlContent}
+              onChange={setXmlContent}
+              canEdit={canEdit}
+              highlightText={highlightText}
+              editorRef={editorRef}
+            />
+          )}
         </div>
       </div>
 
