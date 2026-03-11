@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
+import type { PdfChunk } from "../../../components/compare/ChunkPanel";
 
 const ChunkPanel = dynamic(
   () => import("../../../components/compare/ChunkPanel"),
@@ -33,12 +34,22 @@ export default function ComparePage() {
     hasExtendedAccess ? (canChunk ? "chunk" : "compare") : "compare",
   );
 
+  // Cross-module state: chunk selected in ChunkPanel → passed to ComparePanel
+  const [selectedChunk, setSelectedChunk] = useState<PdfChunk | null>(null);
+  const [selectedChunkSourceName, setSelectedChunkSourceName] = useState<string>("");
+
   if (!canCompare && !canChunk && !canMerge) {
     return (
       <div className="h-full flex items-center justify-center text-center text-slate-500 dark:text-slate-400">
         You do not have compare access for your team policy.
       </div>
     );
+  }
+
+  function handleNavigateToCompare(chunk: PdfChunk, sourceName: string) {
+    setSelectedChunk(chunk);
+    setSelectedChunkSourceName(sourceName);
+    setActiveTab("compare");
   }
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -133,6 +144,10 @@ export default function ComparePage() {
               >
                 {tab.icon}
                 {tab.label}
+                {/* Chunk navigation indicator */}
+                {tab.id === "compare" && selectedChunk && !isActive && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                )}
                 {isActive && (
                   <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1a56f0] rounded-t-full" />
                 )}
@@ -142,7 +157,16 @@ export default function ComparePage() {
         })}
 
         {/* Role badge */}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {/* Chunk navigation hint */}
+          {selectedChunk && activeTab !== "compare" && (
+            <button
+              onClick={() => setActiveTab("compare")}
+              className="text-[10px] px-2 py-1 rounded-full bg-blue-500/15 border border-blue-500/25 text-blue-300 font-medium hover:bg-blue-500/25 transition-colors"
+            >
+              {selectedChunk.filename} ready in Compare →
+            </button>
+          )}
           {hasExtendedAccess ? (
             <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
               {user?.role === "SUPER_ADMIN"
@@ -161,8 +185,15 @@ export default function ComparePage() {
 
       {/* ── Panel content ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden p-4 min-h-0">
-        {canChunk && activeTab === "chunk" && <ChunkPanel />}
-        {activeTab === "compare" && <ComparePanel />}
+        {canChunk && activeTab === "chunk" && (
+          <ChunkPanel onNavigateToCompare={handleNavigateToCompare} />
+        )}
+        {activeTab === "compare" && (
+          <ComparePanel
+            initialChunk={selectedChunk}
+            initialSourceName={selectedChunkSourceName}
+          />
+        )}
         {canMerge && activeTab === "merge" && <MergePanel />}
       </div>
     </div>

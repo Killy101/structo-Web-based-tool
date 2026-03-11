@@ -1,6 +1,9 @@
 "use client";
 /**
- * ComparePanel — PDF Change Detection + XML Editor
+ * ComparePanel — 4-Panel PDF Change Detection + XML Editor
+ *
+ * Layout:
+ * | Change List | Old PDF | New PDF | XML Editor |
  *
  * Workflow
  * ────────
@@ -9,6 +12,7 @@
  *  3. Left sidebar lists all detected changes, grouped by type:
  *       Addition · Modification · Mismatch · Emphasis · Removal
  *  4. Click a change → XML editor scrolls to and selects that text
+ *     (PDF panels scroll to the approximate page)
  *  5. MANAGER_QA / SUPER_ADMIN : can apply changes or edit XML directly
  *     MANAGER_QC / ADMIN / USER : read-only XML view
  *
@@ -17,6 +21,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
+import type { PdfChunk } from "./ChunkPanel";
 
 const PROCESSING_URL =
   process.env.NEXT_PUBLIC_PROCESSING_URL || "http://localhost:8000";
@@ -70,17 +75,28 @@ interface DetectResponse {
   summary: DetectSummary;
 }
 
+interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+interface ComparePanelProps {
+  initialChunk?: PdfChunk | null;
+  initialSourceName?: string;
+}
+
 // ── Change-type metadata ───────────────────────────────────────────────────────
 
 const CM: Record<
   ChangeType,
-  { label: string; icon: string; bg: string; border: string; text: string; pill: string }
+  { label: string; icon: string; bg: string; border: string; text: string; pill: string; pageBg: string }
 > = {
-  addition:     { label: "Addition",     icon: "+", bg: "bg-emerald-500/10", border: "border-emerald-500/30", text: "text-emerald-400", pill: "bg-emerald-500/20 text-emerald-300" },
-  removal:      { label: "Removal",      icon: "−", bg: "bg-red-500/10",     border: "border-red-500/30",     text: "text-red-400",     pill: "bg-red-500/20 text-red-300"         },
-  modification: { label: "Modification", icon: "~", bg: "bg-amber-500/10",   border: "border-amber-500/30",   text: "text-amber-400",   pill: "bg-amber-500/20 text-amber-300"     },
-  mismatch:     { label: "Mismatch",     icon: "≠", bg: "bg-violet-500/10",  border: "border-violet-500/30",  text: "text-violet-400",  pill: "bg-violet-500/20 text-violet-300"   },
-  emphasis:     { label: "Emphasis",     icon: "★", bg: "bg-blue-500/10",    border: "border-blue-500/30",    text: "text-blue-400",    pill: "bg-blue-500/20 text-blue-300"       },
+  addition:     { label: "Addition",     icon: "+", bg: "bg-emerald-500/10", border: "border-emerald-500/30", text: "text-emerald-400", pill: "bg-emerald-500/20 text-emerald-300", pageBg: "bg-emerald-500/5"  },
+  removal:      { label: "Removal",      icon: "−", bg: "bg-red-500/10",     border: "border-red-500/30",     text: "text-red-400",     pill: "bg-red-500/20 text-red-300",         pageBg: "bg-red-500/5"      },
+  modification: { label: "Modification", icon: "~", bg: "bg-amber-500/10",   border: "border-amber-500/30",   text: "text-amber-400",   pill: "bg-amber-500/20 text-amber-300",     pageBg: "bg-amber-500/5"    },
+  mismatch:     { label: "Mismatch",     icon: "≠", bg: "bg-violet-500/10",  border: "border-violet-500/30",  text: "text-violet-400",  pill: "bg-violet-500/20 text-violet-300",   pageBg: "bg-violet-500/5"   },
+  emphasis:     { label: "Emphasis",     icon: "★", bg: "bg-blue-500/10",    border: "border-blue-500/30",    text: "text-blue-400",    pill: "bg-blue-500/20 text-blue-300",       pageBg: "bg-blue-500/5"     },
 };
 
 const CHANGE_ORDER: ChangeType[] = [
@@ -165,7 +181,91 @@ function DropZone({ label, sublabel, accept, file, onFile, color, icon }: {
   );
 }
 
-// ── ChangeItem ────────────────────────────────────────────────────────────────
+// ── PDF Viewer Panel ──────────────────────────────────────────────────────────
+
+function PdfViewer({
+  file,
+  label,
+  highlightPage,
+  color,
+}: {
+  file: File | null;
+  label: string;
+  highlightPage?: number;
+  color: "violet" | "blue";
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  useEffect(() => {
+    if (!file) { setUrl(null); return; }
+    const objectUrl = URL.createObjectURL(file);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
+
+  // Navigate PDF to approximate page when highlightPage changes
+  useEffect(() => {
+    if (!url || !highlightPage || !iframeRef.current) return;
+    // Use PDF.js fragment URL syntax if available
+    const pageUrl = `${url}#page=${highlightPage}`;
+    if (iframeRef.current.src !== pageUrl) {
+      iframeRef.current.src = pageUrl;
+    }
+  }, [highlightPage, url]);
+
+  const borderColor = color === "violet" ? "border-violet-500/30" : "border-blue-500/30";
+  const headerColor = color === "violet" ? "text-violet-400" : "text-blue-400";
+  const bgColor     = color === "violet" ? "bg-violet-500/5"  : "bg-blue-500/5";
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden rounded-xl border border-slate-700/40">
+      {/* Panel header */}
+      <div className={`flex-shrink-0 flex items-center justify-between px-3 py-2 border-b ${borderColor} ${bgColor}`}>
+        <div className="flex items-center gap-2">
+          <svg className={`w-3.5 h-3.5 ${headerColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+          </svg>
+          <span className={`text-[11px] font-bold uppercase tracking-wider ${headerColor}`}>{label}</span>
+        </div>
+        {file && (
+          <span className="text-[10px] text-slate-600 font-mono truncate max-w-[120px]">{file.name}</span>
+        )}
+        {highlightPage && (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${bgColor} ${headerColor} border ${borderColor}`}>
+            Pg {highlightPage}
+          </span>
+        )}
+      </div>
+
+      {/* PDF frame */}
+      {url ? (
+        <iframe
+          ref={iframeRef}
+          src={`${url}#page=${highlightPage ?? 1}`}
+          className="flex-1 w-full border-0"
+          title={label}
+        />
+      ) : (
+        <div className="flex-1 flex flex-col items-center justify-center text-center gap-3 p-6">
+          <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${bgColor} ${headerColor}`}>
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-400">{label}</p>
+            <p className="text-xs text-slate-600 mt-1">Upload a PDF to preview</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Change Item ───────────────────────────────────────────────────────────────
 
 function ChangeItem({ change, isSelected, canEdit, onSelect, onApply, onDismiss }: {
   change: Change; isSelected: boolean; canEdit: boolean;
@@ -200,20 +300,20 @@ function ChangeItem({ change, isSelected, canEdit, onSelect, onApply, onDismiss 
               {change.type === "modification" && change.old_text && change.new_text ? (
                 <>
                   <span className="text-red-400 line-through block truncate">
-                    {change.old_text.slice(0, 60)}{change.old_text.length > 60 ? "…" : ""}
+                    {change.old_text.slice(0, 55)}{change.old_text.length > 55 ? "…" : ""}
                   </span>
                   <span className="text-slate-500 text-[10px]">→</span>
                   <span className="text-emerald-400 block truncate">
-                    {change.new_text.slice(0, 60)}{change.new_text.length > 60 ? "…" : ""}
+                    {change.new_text.slice(0, 55)}{change.new_text.length > 55 ? "…" : ""}
                   </span>
                 </>
               ) : change.type === "removal" ? (
                 <span className="text-red-300/70 truncate block">
-                  {change.text.slice(0, 80)}{change.text.length > 80 ? "…" : ""}
+                  {change.text.slice(0, 75)}{change.text.length > 75 ? "…" : ""}
                 </span>
               ) : (
                 <span className="text-slate-300 truncate block">
-                  {change.text.slice(0, 80)}{change.text.length > 80 ? "…" : ""}
+                  {change.text.slice(0, 75)}{change.text.length > 75 ? "…" : ""}
                 </span>
               )}
             </div>
@@ -227,8 +327,8 @@ function ChangeItem({ change, isSelected, canEdit, onSelect, onApply, onDismiss 
               </div>
             )}
 
-            {/* Suggested XML for emphasis */}
-            {change.suggested_xml && change.type === "emphasis" && (
+            {/* Suggested XML */}
+            {change.suggested_xml && (
               <p className="text-[10px] text-blue-400/70 font-mono mt-1 truncate">{change.suggested_xml}</p>
             )}
           </div>
@@ -239,58 +339,135 @@ function ChangeItem({ change, isSelected, canEdit, onSelect, onApply, onDismiss 
           <p className="text-[9px] text-slate-700 font-mono mt-1 truncate pl-7">{change.xml_path}</p>
         )}
 
-        {/* Action buttons (editors only, when selected) */}
+        {/* Action buttons */}
         {isSelected && canEdit && !isDone && (
           <div className="mt-2.5 pt-2 border-t border-slate-700/40 space-y-1.5">
-            <div className="grid grid-cols-3 gap-1">
-              {/* Textual — plain text edit */}
+            {/* Apply AI Suggestion */}
+            {change.suggested_xml && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onApply(change.type === "emphasis" ? "emphasis" : "textual"); }}
+                className="w-full py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-[10px] font-semibold transition-all flex items-center justify-center gap-1"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                Apply AI Suggestion
+              </button>
+            )}
+
+            <div className="grid grid-cols-2 gap-1">
+              {/* Apply change */}
               {(change.type === "modification" || change.type === "addition" || change.type === "mismatch") && (
                 <button onClick={(e) => { e.stopPropagation(); onApply("textual"); }}
-                  className="py-1.5 rounded-lg bg-slate-700/40 hover:bg-slate-600/50 border border-slate-600/30 text-slate-300 text-[10px] font-semibold transition-all">
-                  Textual
+                  className="py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold transition-all">
+                  Apply
                 </button>
               )}
-              {/* Immod-replace — immediate replacement */}
-              {(change.type === "modification" || change.type === "mismatch" || change.type === "removal") && (
-                <button onClick={(e) => { e.stopPropagation(); onApply("replace"); }}
-                  className="py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-300 text-[10px] font-semibold transition-all">
-                  Immod
-                </button>
-              )}
-              {/* Emphasis — wrap in formatting tag */}
-              {(change.type === "emphasis" || change.new_formatting?.bold || change.new_formatting?.italic || change.new_formatting?.is_colored) && (
+              {(change.type === "emphasis") && (
                 <button onClick={(e) => { e.stopPropagation(); onApply("emphasis"); }}
                   className="py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-[10px] font-semibold transition-all">
                   Emphasis
                 </button>
               )}
+
+              {/* Reject / Skip */}
+              <button onClick={(e) => { e.stopPropagation(); onDismiss(); }}
+                className="py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600/25 border border-red-500/25 text-red-400 text-[10px] font-semibold transition-all">
+                Reject
+              </button>
             </div>
-
-            {/* Emphasis tag picker */}
-            {change.type === "emphasis" && (
-              <div className="flex items-center gap-1 flex-wrap">
-                <span className="text-[9px] text-slate-600">Tag:</span>
-                {(["b", "i", "s", "u"] as const).map((tag) => (
-                  <button key={tag} onClick={(e) => { e.stopPropagation(); onApply("emphasis"); }}
-                    className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors font-mono">
-                    &lt;{tag}&gt;
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <button onClick={(e) => { e.stopPropagation(); onDismiss(); }}
-              className="w-full py-1 rounded-lg bg-slate-800/60 hover:bg-slate-700/60 text-slate-500 hover:text-slate-400 text-[10px] font-medium transition-all">
-              Skip
-            </button>
           </div>
         )}
 
         {isDone && (
-          <p className={`text-[10px] mt-1 pl-7 ${change.applied ? "text-emerald-600" : "text-slate-700"}`}>
-            {change.applied ? "✓ Applied" : "Skipped"}
+          <p className={`text-[10px] mt-1 pl-7 ${change.applied ? "text-emerald-600" : "text-red-600"}`}>
+            {change.applied ? "✓ Applied" : "✗ Rejected"}
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Validation Modal ──────────────────────────────────────────────────────────
+
+function ValidationModal({
+  result,
+  onClose,
+  onConfirmSave,
+}: {
+  result: ValidationResult;
+  onClose: () => void;
+  onConfirmSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      <div className="w-full max-w-md rounded-2xl border border-slate-700/60 bg-slate-900 shadow-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            {result.valid ? (
+              <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+            )}
+            <h2 className="text-sm font-bold text-white">
+              {result.valid ? "XML Valid — Ready to Save" : "XML Validation Failed"}
+            </h2>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 space-y-3">
+          {result.errors.length > 0 && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-red-400 mb-1.5">Errors</p>
+              {result.errors.map((err, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mb-1">
+                  <span className="text-red-400 mt-0.5">✕</span>
+                  {err}
+                </div>
+              ))}
+            </div>
+          )}
+          {result.warnings.length > 0 && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 mb-1.5">Warnings</p>
+              {result.warnings.map((warn, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-1">
+                  <span className="text-amber-400 mt-0.5">⚠</span>
+                  {warn}
+                </div>
+              ))}
+            </div>
+          )}
+          {result.valid && result.warnings.length === 0 && (
+            <p className="text-sm text-slate-400 text-center py-2">XML structure is valid and ready to save.</p>
+          )}
+        </div>
+
+        <div className="px-6 py-4 border-t border-slate-800 flex items-center gap-2 justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+          >
+            {result.valid ? "Cancel" : "Fix Errors"}
+          </button>
+          {result.valid && (
+            <button
+              onClick={onConfirmSave}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors"
+            >
+              Save XML
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -303,7 +480,6 @@ function XmlEditor({ content, onChange, canEdit, highlightText, editorRef }: {
   canEdit: boolean; highlightText?: string | null;
   editorRef: React.RefObject<HTMLTextAreaElement>;
 }) {
-  // Scroll to + select matching text whenever highlight target changes
   useEffect(() => {
     if (!highlightText || !editorRef.current || !content) return;
     const el = editorRef.current;
@@ -327,7 +503,7 @@ function XmlEditor({ content, onChange, canEdit, highlightText, editorRef }: {
         <div>
           <p className="text-sm font-semibold text-slate-400">XML Editor</p>
           <p className="text-xs text-slate-600 mt-1 max-w-xs">
-            Upload OLD PDF, NEW PDF, and an XML file, then click{" "}
+            Upload files and click{" "}
             <span className="text-blue-400">Detect Changes</span> to begin.
           </p>
         </div>
@@ -352,9 +528,8 @@ function XmlEditor({ content, onChange, canEdit, highlightText, editorRef }: {
 
 // ── Main ComparePanel ─────────────────────────────────────────────────────────
 
-export default function ComparePanel() {
+export default function ComparePanel({ initialChunk, initialSourceName }: ComparePanelProps) {
   const { user } = useAuth();
-  // Updating Team (MANAGER_QA) and Super Admin can edit XML
   const canEdit = user?.role === "SUPER_ADMIN" || user?.role === "MANAGER_QA";
 
   const [oldPdf,   setOldPdf]   = useState<File | null>(null);
@@ -369,15 +544,28 @@ export default function ComparePanel() {
   const [filterType,  setFilterType]  = useState<ChangeType | "all">("all");
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState<string | null>(null);
+  const [highlightPage, setHighlightPage] = useState<number | undefined>(undefined);
+
+  const [validating,   setValidating]   = useState(false);
+  const [validation,   setValidation]   = useState<ValidationResult | null>(null);
+  const [showValModal, setShowValModal] = useState(false);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const isReady   = !!oldPdf && !!newPdf && !!xmlFile;
+
+  // Load initial chunk from ChunkPanel navigation
+  useEffect(() => {
+    if (initialChunk) {
+      const xmlC = initialChunk.xml_chunk_file || initialChunk.xml_content;
+      if (xmlC) setXmlContent(xmlC);
+    }
+  }, [initialChunk]);
 
   // ── Detect changes
   const handleDetect = useCallback(async () => {
     if (!isReady) return;
     setLoading(true); setError(null);
-    setChanges([]); setSummary(null); setSelectedId(null);
+    setChanges([]); setSummary(null); setSelectedId(null); setValidation(null);
     try {
       const form = new FormData();
       form.append("old_pdf",  oldPdf!);
@@ -394,9 +582,10 @@ export default function ComparePanel() {
     } finally { setLoading(false); }
   }, [isReady, oldPdf, newPdf, xmlFile]);
 
-  // ── Select a change and scroll XML editor to it
+  // ── Select a change
   const handleSelect = useCallback((change: Change) => {
     setSelectedId(change.id);
+    setHighlightPage(change.page);
     const searchText = change.old_text || change.new_text || change.text;
     if (!searchText || !editorRef.current || !xmlContent) return;
     const el  = editorRef.current;
@@ -422,8 +611,11 @@ export default function ComparePanel() {
         if (is_colored && !bold && !italic) repl = `<em>${repl}</em>`;
         xml = xml.replace(t, repl);
       }
+    } else if (change.suggested_xml) {
+      // Apply AI suggestion directly
+      const searchText = change.old_text || change.text;
+      if (searchText) xml = xml.replace(searchText, change.suggested_xml);
     } else {
-      // textual / replace
       switch (change.type) {
         case "modification": case "mismatch":
           if (change.old_text && change.new_text) xml = xml.replace(change.old_text, change.new_text);
@@ -448,11 +640,50 @@ export default function ComparePanel() {
     setChanges((prev) => prev.map((c) => c.id === change.id ? { ...c, dismissed: true } : c));
   }, []);
 
-  function handleDownload() {
+  // ── Validate and Save XML
+  const handleValidateAndSave = useCallback(async () => {
+    if (!xmlContent || !canEdit) return;
+    setValidating(true);
+    try {
+      const res = await fetch(`${PROCESSING_URL}/compare/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ xml_content: xmlContent }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setValidation(data);
+      setShowValModal(true);
+    } catch {
+      // Fallback: basic client-side validation
+      const hasXml = xmlContent.includes("<") && xmlContent.includes(">");
+      setValidation({
+        valid: hasXml,
+        errors: hasXml ? [] : ["Content does not appear to be valid XML"],
+        warnings: [],
+      });
+      setShowValModal(true);
+    } finally {
+      setValidating(false);
+    }
+  }, [xmlContent, canEdit]);
+
+  function handleConfirmSave() {
+    setShowValModal(false);
+    const filename = xmlFile?.name ?? (initialChunk?.filename ?? "output.xml");
     const blob = new Blob([xmlContent], { type: "application/xml" });
     const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href = url; a.download = xmlFile?.name ?? "output.xml"; a.click();
+    const a    = Object.assign(document.createElement("a"), { href: url, download: filename });
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleDownload() {
+    const filename = xmlFile?.name ?? (initialChunk?.filename ?? "output.xml");
+    const blob = new Blob([xmlContent], { type: "application/xml" });
+    const url  = URL.createObjectURL(blob);
+    const a    = Object.assign(document.createElement("a"), { href: url, download: filename });
+    a.click();
     URL.revokeObjectURL(url);
   }
 
@@ -465,61 +696,80 @@ export default function ComparePanel() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
 
-      {/* ── File pickers ──────────────────────────────────────── */}
-      <div className="flex-shrink-0 grid grid-cols-3 gap-2 px-4 pt-3 pb-2 border-b border-slate-800 bg-slate-900/30">
-        <DropZone label="OLD PDF"  sublabel="baseline" accept=".pdf,application/pdf"             file={oldPdf}  onFile={setOldPdf}  color="violet"  icon="pdf" />
-        <DropZone label="NEW PDF"  sublabel="updated"  accept=".pdf,application/pdf"             file={newPdf}  onFile={setNewPdf}  color="blue"    icon="pdf" />
-        <DropZone label="XML File" sublabel="reference" accept=".xml,text/xml,application/xml"  file={xmlFile} onFile={setXmlFile} color="emerald" icon="xml" />
-      </div>
+      {/* ── File pickers + action row ──────────────────────────── */}
+      <div className="flex-shrink-0 border-b border-slate-800 bg-slate-900/30">
+        {/* File pickers */}
+        <div className="grid grid-cols-3 gap-2 px-4 pt-3 pb-2">
+          <DropZone label="OLD PDF"  sublabel="baseline"  accept=".pdf,application/pdf"           file={oldPdf}  onFile={setOldPdf}  color="violet"  icon="pdf" />
+          <DropZone label="NEW PDF"  sublabel="updated"   accept=".pdf,application/pdf"           file={newPdf}  onFile={setNewPdf}  color="blue"    icon="pdf" />
+          <DropZone label="XML File" sublabel="reference" accept=".xml,text/xml,application/xml"  file={xmlFile} onFile={setXmlFile} color="emerald" icon="xml" />
+        </div>
 
-      {/* ── Action row ────────────────────────────────────────── */}
-      <div className="flex-shrink-0 flex items-center gap-3 px-4 py-2 border-b border-slate-800 flex-wrap">
-        <button onClick={handleDetect} disabled={!isReady || loading}
-          className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all
-            ${isReady && !loading
-              ? "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white shadow-lg shadow-blue-500/20"
-              : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
-        >
-          {loading ? (
-            <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>Detecting…</>
-          ) : (
-            <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>Detect Changes</>
-          )}
-        </button>
-
-        {/* Summary pills */}
-        {summary && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {CHANGE_ORDER.map((key) => summary[key] > 0 ? (
-              <span key={key} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${CM[key].bg} ${CM[key].text} ${CM[key].border}`}>
-                {summary[key]} {CM[key].label}
-              </span>
-            ) : null)}
-          </div>
-        )}
-
-        <div className="ml-auto flex items-center gap-2">
-          {canEdit && xmlContent && (
-            <button onClick={handleDownload}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Download XML
-            </button>
-          )}
-          {!canEdit && (
-            <span className="text-[10px] px-2 py-1 rounded-full bg-slate-800/80 text-slate-500">
-              Read-only · contact Updating Team to edit
+        {/* Action row */}
+        <div className="flex items-center gap-2 px-4 py-2 flex-wrap">
+          {/* Chunk info badge */}
+          {initialChunk && (
+            <span className="text-[10px] px-2 py-1 rounded-full bg-blue-500/15 border border-blue-500/25 text-blue-300 font-mono">
+              Reviewing: {initialChunk.filename}
             </span>
           )}
+
+          <button onClick={handleDetect} disabled={!isReady || loading}
+            className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all
+              ${isReady && !loading
+                ? "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white shadow-lg shadow-blue-500/20"
+                : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+          >
+            {loading ? (
+              <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>Detecting…</>
+            ) : (
+              <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>Detect Changes</>
+            )}
+          </button>
+
+          {/* Summary pills */}
+          {summary && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {CHANGE_ORDER.map((key) => summary[key] > 0 ? (
+                <span key={key} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${CM[key].bg} ${CM[key].text} ${CM[key].border}`}>
+                  {summary[key]} {CM[key].label}
+                </span>
+              ) : null)}
+            </div>
+          )}
+
+          <div className="ml-auto flex items-center gap-2">
+            {canEdit && xmlContent && (
+              <>
+                <button onClick={handleValidateAndSave} disabled={validating}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-colors disabled:opacity-50">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  {validating ? "Validating…" : "Save XML"}
+                </button>
+                <button onClick={handleDownload}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  Download
+                </button>
+              </>
+            )}
+            {!canEdit && (
+              <span className="text-[10px] px-2 py-1 rounded-full bg-slate-800/80 text-slate-500">
+                Read-only · contact Updating Team to edit
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -533,17 +783,20 @@ export default function ComparePanel() {
         </div>
       )}
 
-      {/* ── Main 2-column layout ──────────────────────────────── */}
-      <div className="flex-1 flex min-h-0">
+      {/* ── 4-panel Main Layout ────────────────────────────────── */}
+      <div className="flex-1 flex min-h-0 gap-0">
 
-        {/* ── LEFT SIDEBAR — change list ───────────────────── */}
-        <div className="w-[280px] flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/20 overflow-hidden">
-
+        {/* Panel 1: Change List */}
+        <div className="w-[240px] flex-shrink-0 flex flex-col border-r border-slate-800 bg-slate-900/20 overflow-hidden">
           {/* Filter row */}
           <div className="flex-shrink-0 px-3 pt-3 pb-2 border-b border-slate-800/60">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
               Changes{" "}
-              {changes.length > 0 && <span className="text-slate-700 font-normal normal-case tracking-normal">({changes.filter(c => !c.dismissed).length} active)</span>}
+              {changes.length > 0 && (
+                <span className="text-slate-700 font-normal normal-case tracking-normal">
+                  ({changes.filter(c => !c.dismissed).length} active)
+                </span>
+              )}
             </p>
             <div className="flex flex-wrap gap-1">
               <button onClick={() => setFilterType("all")}
@@ -563,7 +816,7 @@ export default function ComparePanel() {
             </div>
           </div>
 
-          {/* Change list */}
+          {/* Change items */}
           <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
             {filtered.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center h-full text-center py-8">
@@ -575,8 +828,8 @@ export default function ComparePanel() {
                           d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                       </svg>
                     </div>
-                    <p className="text-xs text-slate-600">No changes detected yet</p>
-                    <p className="text-[10px] text-slate-700 mt-1">Upload files and click Detect Changes</p>
+                    <p className="text-xs text-slate-600">No changes yet</p>
+                    <p className="text-[10px] text-slate-700 mt-1">Upload files and click Detect</p>
                   </>
                 ) : (
                   <p className="text-xs text-slate-600">No {filterType} changes</p>
@@ -597,8 +850,28 @@ export default function ComparePanel() {
           </div>
         </div>
 
-        {/* ── RIGHT — XML Editor ────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-w-0 bg-slate-950">
+        {/* Panel 2: Old PDF */}
+        <div className="flex-1 min-w-0 border-r border-slate-800 p-2">
+          <PdfViewer
+            file={oldPdf}
+            label="OLD PDF"
+            highlightPage={highlightPage}
+            color="violet"
+          />
+        </div>
+
+        {/* Panel 3: New PDF */}
+        <div className="flex-1 min-w-0 border-r border-slate-800 p-2">
+          <PdfViewer
+            file={newPdf}
+            label="NEW PDF"
+            highlightPage={highlightPage}
+            color="blue"
+          />
+        </div>
+
+        {/* Panel 4: XML Editor */}
+        <div className="w-[380px] flex-shrink-0 flex flex-col min-w-0 bg-slate-950">
           {/* Editor header */}
           <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/30">
             <div className="flex items-center gap-2">
@@ -607,7 +880,12 @@ export default function ComparePanel() {
                   d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               <span className="text-xs font-semibold text-slate-300">
-                XML Editor{xmlFile?.name ? <span className="text-slate-500 font-normal ml-1">— {xmlFile.name}</span> : null}
+                XML Editor
+                {(xmlFile?.name || initialChunk?.filename) && (
+                  <span className="text-slate-500 font-normal ml-1">
+                    — {xmlFile?.name ?? initialChunk?.filename}
+                  </span>
+                )}
               </span>
               {canEdit
                 ? <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">Editable</span>
@@ -616,13 +894,26 @@ export default function ComparePanel() {
             </div>
             {selectedChange && (
               <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-slate-600">Navigated to:</span>
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${CM[selectedChange.type].pill}`}>
                   {CM[selectedChange.type].label}
                 </span>
               </div>
             )}
           </div>
+
+          {/* Line count hint */}
+          {xmlContent && (
+            <div className="flex-shrink-0 flex items-center justify-between px-4 py-1 border-b border-slate-800/40 bg-slate-900/20">
+              <span className="text-[10px] text-slate-600">
+                {xmlContent.split("\n").length} lines · {xmlContent.length} chars
+              </span>
+              {changes.filter(c => c.applied).length > 0 && (
+                <span className="text-[10px] text-emerald-600">
+                  {changes.filter(c => c.applied).length} changes applied
+                </span>
+              )}
+            </div>
+          )}
 
           <XmlEditor
             content={xmlContent}
@@ -633,6 +924,15 @@ export default function ComparePanel() {
           />
         </div>
       </div>
+
+      {/* Validation Modal */}
+      {showValModal && validation && (
+        <ValidationModal
+          result={validation}
+          onClose={() => setShowValModal(false)}
+          onConfirmSave={handleConfirmSave}
+        />
+      )}
     </div>
   );
 }
