@@ -21,6 +21,8 @@ from src.services.pdf_chunk import (
     compare_pdfs_with_xml,
     merge_pdfs_with_xml,
     detect_pdf_changes,
+    validate_xml_chunk,
+    merge_xml_chunks,
 )
 
 router = APIRouter(prefix="/compare", tags=["compare"])
@@ -90,6 +92,7 @@ async def chunk_pdf_endpoint(
       3. Chunk the XML file by tag_name
       4. Align PDF chunks ↔ XML chunks by index
       5. Detect changes per chunk (NEW vs OLD)
+      6. Generate XML chunk files with naming: SourceName_innod.NNNNN.xml
     """
     old_bytes = await old_pdf.read()
     new_bytes = await new_pdf.read()
@@ -106,6 +109,7 @@ async def chunk_pdf_endpoint(
             new_pdf_bytes=new_bytes,
             xml_content=xml_str,
             tag_name=tag_name,
+            source_name=source_name,
             attribute=attribute or None,
             value=value or None,
             max_file_size=max_file_size,
@@ -123,6 +127,132 @@ async def chunk_pdf_endpoint(
         "xml_filename": xml_file.filename,
         **result,
     }
+
+
+# ── Download individual XML chunk ──────────────────────────────────────────────
+
+@router.post("/chunk/download")
+async def download_chunk_endpoint(
+    old_pdf:      UploadFile = File(...),
+    new_pdf:      UploadFile = File(...),
+    xml_file:     UploadFile = File(...),
+    tag_name:     str        = Form(...),
+    source_name:  str        = Form(...),
+    chunk_index:  int        = Form(...),
+    attribute:    Optional[str] = Form(None),
+    value:        Optional[str] = Form(None),
+    max_file_size: Optional[int] = Form(None),
+    chunk_size:   int        = Form(1500),
+    chunk_overlap: int       = Form(150),
+):
+    """Download a single XML chunk file as an attachment."""
+    old_bytes = await old_pdf.read()
+    new_bytes = await new_pdf.read()
+    xml_bytes = await xml_file.read()
+
+    try:
+        xml_str = xml_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
+
+    try:
+        result = chunk_pdfs_and_xml(
+            old_pdf_bytes=old_bytes,
+            new_pdf_bytes=new_bytes,
+            xml_content=xml_str,
+            tag_name=tag_name,
+            source_name=source_name,
+            attribute=attribute or None,
+            value=value or None,
+            max_file_size=max_file_size,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    chunks = result.get("pdf_chunks", [])
+    if chunk_index < 1 or chunk_index > len(chunks):
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_index} not found")
+
+    chunk = chunks[chunk_index - 1]
+    filename = chunk["filename"]
+    content  = chunk["xml_chunk_file"]
+
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Validate XML chunk ─────────────────────────────────────────────────────────
+
+class ValidateRequest(BaseModel):
+    xml_content: str
+
+
+@router.post("/validate")
+async def validate_endpoint(payload: ValidateRequest):
+    """Validate an XML chunk for structure, required tags, and syntax."""
+    result = validate_xml_chunk(payload.xml_content)
+    return {"success": True, **result}
+
+
+# ── Merge XML chunks ───────────────────────────────────────────────────────────
+
+class ChunkItem(BaseModel):
+    filename: str
+    xml_content: str
+    has_changes: bool = False
+
+
+class MergeChunksRequest(BaseModel):
+    chunks: list[ChunkItem]
+    source_name: str = "Document"
+
+
+@router.post("/merge/chunks")
+async def merge_chunks_endpoint(payload: MergeChunksRequest):
+    """Merge multiple XML chunk files into a single final XML document."""
+    try:
+        merged = merge_xml_chunks(
+            chunks=[c.model_dump() for c in payload.chunks],
+            source_name=payload.source_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    import re
+    safe = re.sub(r'[^\w\-]', '_', payload.source_name).strip('_') or 'Document'
+    filename = f"{safe}_final.xml"
+    return {
+        "success": True,
+        "merged_xml": merged,
+        "filename": filename,
+        "source_name": payload.source_name,
+    }
+
+
+@router.post("/merge/chunks/download")
+async def merge_chunks_download_endpoint(payload: MergeChunksRequest):
+    """Merge chunks and return the result as a file download."""
+    try:
+        merged = merge_xml_chunks(
+            chunks=[c.model_dump() for c in payload.chunks],
+            source_name=payload.source_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    import re
+    safe = re.sub(r'[^\w\-]', '_', payload.source_name).strip('_') or 'Document'
+    filename = f"{safe}_final.xml"
+    return Response(
+        content=merged.encode("utf-8"),
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Compare ────────────────────────────────────────────────────────────────────

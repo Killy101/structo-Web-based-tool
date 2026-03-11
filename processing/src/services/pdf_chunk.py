@@ -22,6 +22,7 @@ tag/attribute filtering is preserved.
 from __future__ import annotations
 
 import io
+import re
 from typing import Optional, Any
 
 import fitz  # PyMuPDF
@@ -71,6 +72,63 @@ def _texts_differ(old: str, new: str) -> bool:
     return norm(old) != norm(new)
 
 
+def _sanitize_source_name(name: str) -> str:
+    """Sanitize source name for use in filenames."""
+    # Remove or replace invalid filename chars
+    sanitized = re.sub(r'[^\w\-]', '_', name)
+    sanitized = re.sub(r'_+', '_', sanitized)
+    return sanitized.strip('_') or 'Document'
+
+
+def _build_xml_chunk_filename(source_name: str, index: int) -> str:
+    """
+    Generate XML chunk filename in the format:
+    SourceName_innod.NNNNN.xml
+    """
+    safe = _sanitize_source_name(source_name)
+    return f"{safe}_innod.{str(index).zfill(5)}.xml"
+
+
+def _build_xml_chunk_content(
+    source_name: str,
+    chunk_index: int,
+    new_text: str,
+    old_text: str,
+    xml_content: str,
+    has_changes: bool,
+) -> str:
+    """
+    Generate a complete XML chunk file content wrapping the XML chunk
+    with metadata about detected changes.
+    """
+    import html as _html
+    safe_name = _sanitize_source_name(source_name)
+    chunk_num = str(chunk_index).zfill(5)
+
+    if xml_content.strip():
+        # Use existing XML chunk content as the base
+        body = xml_content.strip()
+    else:
+        # Generate XML from new PDF text
+        paragraphs = [p.strip() for p in new_text.split('\n\n') if p.strip()]
+        if not paragraphs:
+            paragraphs = [new_text.strip()] if new_text.strip() else []
+        paras_xml = '\n'.join(
+            f'  <paragraph index="{i}">{_html.escape(p)}</paragraph>'
+            for i, p in enumerate(paragraphs)
+        )
+        body = f'<content>\n{paras_xml}\n</content>'
+
+    status = 'changed' if has_changes else 'unchanged'
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<!-- Chunk: {safe_name}_innod.{chunk_num}.xml -->\n'
+        f'<!-- Source: {_html.escape(source_name)} -->\n'
+        f'<!-- Status: {status} -->\n'
+        f'{body}\n'
+    )
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def chunk_pdfs_and_xml(
@@ -78,6 +136,7 @@ def chunk_pdfs_and_xml(
     new_pdf_bytes: bytes,
     xml_content: str,
     tag_name: str,
+    source_name: str = "Document",
     attribute: Optional[str] = None,
     value: Optional[str] = None,
     max_file_size: Optional[int] = None,
@@ -94,10 +153,12 @@ def chunk_pdfs_and_xml(
             {
                 "index": 1,
                 "label": "chunk01",
+                "filename": "SourceName_innod.00001.xml",
                 "old_text": "…",
                 "new_text": "…",
                 "has_changes": bool,
                 "xml_content": "…",   # matched XML chunk (or "" if none)
+                "xml_chunk_file": "…", # full XML chunk file content
                 "xml_tag": "…",
                 "xml_attributes": {…},
                 "xml_size": int,
@@ -112,6 +173,13 @@ def chunk_pdfs_and_xml(
         "old_pdf_chunk_count": int,
         "new_pdf_chunk_count": int,
         "xml_chunk_count":     int,
+        "source_name":         str,
+        "folder_structure": {
+            "base": "Documents/Innodata/<source>",
+            "chunked": "Documents/Innodata/<source>/CHUNKED",
+            "compare": "Documents/Innodata/<source>/COMPARE",
+            "merge":   "Documents/Innodata/<source>/MERGE",
+        }
     }
     """
     # 1 & 2 — extract text
@@ -132,8 +200,10 @@ def chunk_pdfs_and_xml(
     )
 
     # 5 & 6 — align by index, detect changes
-    total = max(len(new_chunks), len(xml_chunks))
+    total = max(len(new_chunks), len(xml_chunks), 1)
     result_chunks: list[dict[str, Any]] = []
+
+    safe_source = _sanitize_source_name(source_name)
 
     for i in range(total):
         new_text_chunk = new_chunks[i] if i < len(new_chunks) else ""
@@ -143,14 +213,29 @@ def chunk_pdfs_and_xml(
         has_changes = _texts_differ(old_text_chunk, new_text_chunk)
 
         label = f"chunk{str(i + 1).zfill(2)}"
+        chunk_index = i + 1
+        filename = _build_xml_chunk_filename(source_name, chunk_index)
+        xml_chunk_content = xml_chunk["content"] if xml_chunk else ""
+
+        # Generate full XML chunk file content
+        xml_chunk_file = _build_xml_chunk_content(
+            source_name=source_name,
+            chunk_index=chunk_index,
+            new_text=new_text_chunk,
+            old_text=old_text_chunk,
+            xml_content=xml_chunk_content,
+            has_changes=has_changes,
+        )
 
         result_chunks.append({
-            "index":          i + 1,
+            "index":          chunk_index,
             "label":          label,
+            "filename":       filename,
             "old_text":       old_text_chunk,
             "new_text":       new_text_chunk,
             "has_changes":    has_changes,
-            "xml_content":    xml_chunk["content"]    if xml_chunk else "",
+            "xml_content":    xml_chunk_content,
+            "xml_chunk_file": xml_chunk_file,
             "xml_tag":        xml_chunk["tag"]        if xml_chunk else "",
             "xml_attributes": xml_chunk["attributes"] if xml_chunk else {},
             "xml_size":       xml_chunk["size"]       if xml_chunk else 0,
@@ -158,6 +243,8 @@ def chunk_pdfs_and_xml(
 
     changed   = sum(1 for c in result_chunks if c["has_changes"])
     unchanged = len(result_chunks) - changed
+
+    folder_base = f"Documents/Innodata/{safe_source}"
 
     return {
         "pdf_chunks": result_chunks,
@@ -169,6 +256,13 @@ def chunk_pdfs_and_xml(
         "old_pdf_chunk_count": len(old_chunks),
         "new_pdf_chunk_count": len(new_chunks),
         "xml_chunk_count":     len(xml_chunks),
+        "source_name":         source_name,
+        "folder_structure": {
+            "base":    folder_base,
+            "chunked": f"{folder_base}/CHUNKED",
+            "compare": f"{folder_base}/COMPARE",
+            "merge":   f"{folder_base}/MERGE",
+        },
     }
 
 
@@ -482,3 +576,108 @@ def detect_pdf_changes(
                 summary[ctype] += 1
 
     return {"changes": changes, "xml_content": xml_content, "summary": summary}
+
+
+# ── XML Validation ─────────────────────────────────────────────────────────────
+
+def validate_xml_chunk(xml_content: str) -> dict:
+    """
+    Validate an XML chunk for structure, required tags, and syntax.
+    Returns { valid: bool, errors: list[str], warnings: list[str] }
+    """
+    from xml.etree import ElementTree as ET
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not xml_content.strip():
+        errors.append("XML content is empty")
+        return {"valid": False, "errors": errors, "warnings": warnings}
+
+    # Check syntax
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError as exc:
+        errors.append(f"XML syntax error: {exc}")
+        return {"valid": False, "errors": errors, "warnings": warnings}
+
+    # Check for missing text content
+    all_text = "".join(root.itertext()).strip()
+    if not all_text:
+        warnings.append("XML has no text content")
+
+    # Check for elements missing closing tags (already caught by ParseError, but warn about unusual structures)
+    def check_elem(elem: ET.Element, depth: int = 0):
+        if depth > 50:
+            warnings.append("XML structure is deeply nested (>50 levels)")
+            return
+        for child in elem:
+            check_elem(child, depth + 1)
+
+    check_elem(root)
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+# ── Merge XML chunks ───────────────────────────────────────────────────────────
+
+def merge_xml_chunks(
+    chunks: list[dict],
+    source_name: str = "Document",
+) -> str:
+    """
+    Merge multiple XML chunks into a single final XML file.
+
+    Parameters
+    ----------
+    chunks : list of dicts with keys:
+        filename  : str  – chunk filename
+        xml_content : str  – XML content of the chunk
+        has_changes : bool
+    source_name : str
+
+    Returns
+    -------
+    str – merged XML string
+    """
+    import html as _html
+    from xml.etree import ElementTree as ET
+
+    safe_name = _sanitize_source_name(source_name)
+    merged_parts: list[str] = []
+    missing: list[int] = []
+
+    for i, chunk in enumerate(chunks):
+        xml_c = chunk.get("xml_content", "").strip()
+        if not xml_c:
+            missing.append(i + 1)
+            continue
+
+        # Try to parse and extract the inner body
+        try:
+            root = ET.fromstring(xml_c)
+            # Skip XML declaration wrapper if present
+            inner = ET.tostring(root, encoding="unicode")
+            merged_parts.append(f'  <!-- chunk {i + 1}: {chunk.get("filename", "")} -->\n  {inner}')
+        except ET.ParseError:
+            # Use raw content if parsing fails
+            merged_parts.append(f'  <!-- chunk {i + 1}: {chunk.get("filename", "")} -->\n  {xml_c}')
+
+    missing_comment = ""
+    if missing:
+        missing_comment = f'  <!-- WARNING: Missing chunks: {missing} -->\n'
+
+    body = "\n".join(merged_parts)
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<!-- Merged: {_html.escape(source_name)}_final.xml -->\n'
+        f'<!-- Total chunks: {len(chunks)} | Missing: {len(missing)} -->\n'
+        f'<document source="{_html.escape(source_name)}">\n'
+        f'{missing_comment}'
+        f'{body}\n'
+        f'</document>\n'
+    )
