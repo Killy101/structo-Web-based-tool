@@ -54,7 +54,9 @@ function WorkflowCard({
       ? "bg-blue-500/15 text-blue-400 border-blue-500/20"
       : "bg-violet-500/15 text-violet-400 border-violet-500/20";
   const stepDot =
-    color === "blue" ? "bg-blue-500/40 text-blue-300" : "bg-violet-500/40 text-violet-300";
+    color === "blue"
+      ? "bg-blue-500/40 text-blue-300"
+      : "bg-violet-500/40 text-violet-300";
   const btnClass =
     color === "blue"
       ? "bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-500/25"
@@ -68,7 +70,11 @@ function WorkflowCard({
       {locked && (
         <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-1 rounded-full bg-rose-500/15 border border-rose-500/25 text-rose-300 text-[10px] font-semibold">
           <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd"/>
+            <path
+              fillRule="evenodd"
+              d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
+              clipRule="evenodd"
+            />
           </svg>
           Locked
         </div>
@@ -76,23 +82,31 @@ function WorkflowCard({
 
       {/* Icon + Badge */}
       <div className="flex items-center gap-3 mb-4">
-        <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${iconBg}`}>
+        <div
+          className={`w-12 h-12 rounded-xl flex items-center justify-center border ${iconBg}`}
+        >
           {icon}
         </div>
-        <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${badgeColor}`}>
+        <span
+          className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${badgeColor}`}
+        >
           {badge}
         </span>
       </div>
 
       {/* Title + Description */}
       <h3 className="text-base font-bold text-white mb-1">{title}</h3>
-      <p className="text-sm text-slate-400 leading-relaxed mb-5">{description}</p>
+      <p className="text-sm text-slate-400 leading-relaxed mb-5">
+        {description}
+      </p>
 
       {/* Steps */}
       <ol className="space-y-1.5 mb-6">
         {steps.map((step, i) => (
           <li key={i} className="flex items-start gap-2.5">
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5 ${stepDot}`}>
+            <span
+              className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5 ${stepDot}`}
+            >
               {i + 1}
             </span>
             <span className="text-xs text-slate-400">{step}</span>
@@ -107,8 +121,18 @@ function WorkflowCard({
           onClick={onClick}
         >
           Start Workflow
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 5l7 7-7 7"
+            />
           </svg>
         </button>
       )}
@@ -140,8 +164,10 @@ function PageHeader({
 
   const subtitles: Record<Workflow, string> = {
     selector: "Choose a comparison workflow to get started",
-    chunk: "Analyze documents by chunks — review changed sections before confirming updates",
-    compare: "Upload Old PDF, New PDF, and XML to detect and highlight all changes",
+    chunk:
+      "Analyze documents by chunks — review changed sections before confirming updates",
+    compare:
+      "Upload Old PDF, New PDF, and XML to detect and highlight all changes",
     merge: "Merge accepted changes into the final XML output",
   };
 
@@ -160,15 +186,27 @@ function PageHeader({
           }}
           title="Back to workflow selector"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 19l-7-7 7-7"
+            />
           </svg>
         </button>
       )}
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <h1 className="text-base font-bold text-white truncate">{titles[workflow]}</h1>
+          <h1 className="text-base font-bold text-white truncate">
+            {titles[workflow]}
+          </h1>
           {workflow !== "selector" && (
             <span
               className="text-[10px] px-2 py-0.5 rounded-full font-semibold flex-shrink-0"
@@ -178,11 +216,17 @@ function PageHeader({
                 border: "1px solid rgba(26, 143, 209, 0.2)",
               }}
             >
-              {workflow === "chunk" ? "Step 1 of 2" : workflow === "compare" ? "Upload & Detect" : "Merge"}
+              {workflow === "chunk"
+                ? "Step 1 of 2"
+                : workflow === "compare"
+                  ? "Upload & Detect"
+                  : "Merge"}
             </span>
           )}
         </div>
-        <p className="text-xs text-slate-500 mt-0.5 truncate">{subtitles[workflow]}</p>
+        <p className="text-xs text-slate-500 mt-0.5 truncate">
+          {subtitles[workflow]}
+        </p>
       </div>
 
       {/* Chunk → Compare navigation hint */}
@@ -243,14 +287,26 @@ function WorkflowSelector({
             borderColor: "rgba(26, 143, 209, 0.2)",
           }}
         >
-          <svg className="w-8 h-8 text-[#42b4f5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+          <svg
+            className="w-8 h-8 text-[#42b4f5]"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={1.5}
+              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+            />
           </svg>
         </div>
-        <h2 className="text-xl font-bold text-white mb-2">Select a Comparison Workflow</h2>
+        <h2 className="text-xl font-bold text-white mb-2">
+          Select a Comparison Workflow
+        </h2>
         <p className="text-sm text-slate-500 max-w-lg mx-auto">
-          Upload your Old PDF, New PDF, and XML file — then choose how you want to review the changes.
+          Upload your Old PDF, New PDF, and XML file — then choose how you want
+          to review the changes.
         </p>
       </div>
 
@@ -265,9 +321,18 @@ function WorkflowSelector({
           locked={!canCompare}
           onClick={() => onSelect("compare")}
           icon={
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            <svg
+              className="w-6 h-6"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+              />
             </svg>
           }
           steps={[
@@ -287,9 +352,18 @@ function WorkflowSelector({
           locked={!canChunk}
           onClick={() => onSelect("chunk")}
           icon={
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                d="M4 6h16M4 10h16M4 14h8M4 18h8" />
+            <svg
+              className="w-6 h-6"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M4 6h16M4 10h16M4 14h8M4 18h8"
+              />
             </svg>
           }
           steps={[
@@ -320,19 +394,41 @@ function WorkflowSelector({
                 color: "#34d399",
               }}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.8}
+                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                />
               </svg>
             </div>
             <div>
-              <p className="text-sm font-semibold text-emerald-300">Merge XML</p>
+              <p className="text-sm font-semibold text-emerald-300">
+                Merge XML
+              </p>
               <p className="text-xs text-slate-500 mt-0.5">
-                Manually merge accepted or rejected changes from two XML files into a final output
+                Manually merge accepted or rejected changes from two XML files
+                into a final output
               </p>
             </div>
-            <svg className="w-4 h-4 text-slate-600 ml-auto flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            <svg
+              className="w-4 h-4 text-slate-600 ml-auto flex-shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 5l7 7-7 7"
+              />
             </svg>
           </button>
         </div>
@@ -341,12 +437,22 @@ function WorkflowSelector({
       {/* No access */}
       {!canCompare && !canChunk && (
         <div className="max-w-3xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
-          <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          <svg
+            className="w-5 h-5 text-rose-400 flex-shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            />
           </svg>
           <p className="text-sm text-rose-300">
-            You don&apos;t have access to any comparison workflows. Contact your administrator to enable Compare features.
+            You don&apos;t have access to any comparison workflows. Contact your
+            administrator to enable Compare features.
           </p>
         </div>
       )}
@@ -360,15 +466,25 @@ export default function ComparePage() {
   const { user } = useAuth();
   const features = user?.effectiveFeatures ?? [];
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
-  const canCompare = isSuperAdmin || features.includes("compare-basic");
-  const canChunk = isSuperAdmin || features.includes("compare-chunk");
-  const canMerge = isSuperAdmin || features.includes("compare-merge");
+
+  // Roles that always have access regardless of feature flags
+  const isManager =
+    user?.role === "MANAGER_QA" ||
+    user?.role === "MANAGER_QC" ||
+    user?.role === "ADMIN";
+
+  const hasBaseAccess = isSuperAdmin || isManager;
+
+  const canCompare = hasBaseAccess || features.includes("compare-basic");
+  const canChunk = hasBaseAccess || features.includes("compare-chunk");
+  const canMerge = hasBaseAccess || features.includes("compare-merge");
 
   const [workflow, setWorkflow] = useState<Workflow>("selector");
 
   // Cross-module state: chunk selected in ChunkPanel → passed to ComparePanel
   const [selectedChunk, setSelectedChunk] = useState<PdfChunk | null>(null);
-  const [selectedChunkSourceName, setSelectedChunkSourceName] = useState<string>("");
+  const [selectedChunkSourceName, setSelectedChunkSourceName] =
+    useState<string>("");
 
   function handleNavigateToCompare(chunk: PdfChunk, sourceName: string) {
     setSelectedChunk(chunk);
@@ -405,13 +521,13 @@ export default function ComparePage() {
       )}
 
       {workflow === "chunk" && (
-        <div className="flex-1 overflow-hidden p-4 min-h-0">
+        <div className="flex-1 overflow-hidden min-h-0">
           <ChunkPanel onNavigateToCompare={handleNavigateToCompare} />
         </div>
       )}
 
       {workflow === "compare" && (
-        <div className="flex-1 overflow-hidden p-4 min-h-0">
+        <div className="flex-1 overflow-hidden min-h-0">
           <ComparePanel
             initialChunk={selectedChunk}
             initialSourceName={selectedChunkSourceName}

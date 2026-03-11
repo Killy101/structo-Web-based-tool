@@ -1181,7 +1181,11 @@ export default function ComparePanel({
         switch (change.type) {
           case "modification":
           case "mismatch":
-            if (change.old_text && change.new_text && xml.includes(change.old_text))
+            if (
+              change.old_text &&
+              change.new_text &&
+              xml.includes(change.old_text)
+            )
               xml = xml.replace(
                 change.old_text,
                 `<del>${change.old_text}</del><ins>${change.new_text}</ins>`,
@@ -1189,7 +1193,10 @@ export default function ComparePanel({
             break;
           case "removal":
             if (change.old_text && xml.includes(change.old_text))
-              xml = xml.replace(change.old_text, `<del>${change.old_text}</del>`);
+              xml = xml.replace(
+                change.old_text,
+                `<del>${change.old_text}</del>`,
+              );
             break;
           case "addition":
             if (change.new_text) {
@@ -1240,7 +1247,11 @@ export default function ComparePanel({
         switch (change.type) {
           case "modification":
           case "mismatch":
-            if (change.old_text && change.new_text && xml.includes(change.old_text))
+            if (
+              change.old_text &&
+              change.new_text &&
+              xml.includes(change.old_text)
+            )
               xml = xml.replace(
                 change.old_text,
                 `<del>${change.old_text}</del><ins>${change.new_text}</ins>`,
@@ -1248,7 +1259,10 @@ export default function ComparePanel({
             break;
           case "removal":
             if (change.old_text && xml.includes(change.old_text))
-              xml = xml.replace(change.old_text, `<del>${change.old_text}</del>`);
+              xml = xml.replace(
+                change.old_text,
+                `<del>${change.old_text}</del>`,
+              );
             break;
           case "addition":
             if (change.new_text) {
@@ -1268,7 +1282,9 @@ export default function ComparePanel({
 
     setXmlContent(xml);
     setChanges((prev) =>
-      prev.map((c) => (appliedIds.includes(c.id) ? { ...c, applied: true } : c)),
+      prev.map((c) =>
+        appliedIds.includes(c.id) ? { ...c, applied: true } : c,
+      ),
     );
   }, [canEdit, xmlContent, changes]);
 
@@ -1500,19 +1516,31 @@ export default function ComparePanel({
           )}
 
           {/* Highlight All — shown once changes exist and not all applied */}
-          {canEdit && changes.length > 0 && changes.some((c) => !c.applied && !c.dismissed) && (
-            <button
-              onClick={handleApplyAll}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
-              title="Apply all pending changes with bold/italic/del/ins markup"
-            >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M5 13l4 4L19 7" />
-              </svg>
-              Highlight All ({changes.filter((c) => !c.applied && !c.dismissed).length})
-            </button>
-          )}
+          {canEdit &&
+            changes.length > 0 &&
+            changes.some((c) => !c.applied && !c.dismissed) && (
+              <button
+                onClick={handleApplyAll}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
+                title="Apply all pending changes with bold/italic/del/ins markup"
+              >
+                <svg
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                Highlight All (
+                {changes.filter((c) => !c.applied && !c.dismissed).length})
+              </button>
+            )}
 
           <div className="ml-auto flex items-center gap-2">
             {/* Legend toggle */}
