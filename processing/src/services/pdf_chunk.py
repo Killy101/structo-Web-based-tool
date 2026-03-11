@@ -377,29 +377,51 @@ def _extract_pdf_spans(pdf_bytes: bytes) -> list[dict]:
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page_num, page in enumerate(doc):
-            raw = page.get_text("rawdict", flags=0)
-            for block in raw.get("blocks", []):
-                if block.get("type") != 0:        # 0 = text block
-                    continue
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        text = span.get("text", "")
-                        stripped = text.strip()
+            try:
+                raw = page.get_text("rawdict", flags=0)
+                for block in raw.get("blocks", []):
+                    if block.get("type") != 0:        # 0 = text block
+                        continue
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            text = span.get("text", "")
+                            stripped = text.strip()
+                            if not stripped:
+                                continue
+                            flags  = span.get("flags", 0)
+                            color  = span.get("color", 0)
+                            spans.append({
+                                "text":       text,
+                                "text_norm":  " ".join(stripped.split()).lower(),
+                                "bold":       bool(flags & 0x10),
+                                "italic":     bool(flags & 0x02),
+                                "color":      color,
+                                "is_colored": color not in (0, 16777215),  # not black/white
+                                "size":       round(span.get("size", 12), 1),
+                                "page":       page_num + 1,
+                                "bbox":       list(span.get("bbox", [0, 0, 0, 0])),
+                            })
+            except Exception:
+                # Fallback: plain text extraction when rawdict fails for this page
+                try:
+                    plain = page.get_text("text") or ""
+                    for line in plain.splitlines():
+                        stripped = line.strip()
                         if not stripped:
                             continue
-                        flags  = span.get("flags", 0)
-                        color  = span.get("color", 0)
                         spans.append({
-                            "text":       text,
+                            "text":       stripped,
                             "text_norm":  " ".join(stripped.split()).lower(),
-                            "bold":       bool(flags & 0x10),
-                            "italic":     bool(flags & 0x02),
-                            "color":      color,
-                            "is_colored": color not in (0, 16777215),  # not black/white
-                            "size":       round(span.get("size", 12), 1),
+                            "bold":       False,
+                            "italic":     False,
+                            "color":      0,
+                            "is_colored": False,
+                            "size":       12.0,
                             "page":       page_num + 1,
-                            "bbox":       list(span.get("bbox", [0, 0, 0, 0])),
+                            "bbox":       [0, 0, 0, 0],
                         })
+                except Exception:
+                    pass
         doc.close()
     except Exception:
         pass
@@ -515,14 +537,27 @@ def detect_pdf_changes(
         fmt_new = ({"bold": ns_["bold"], "italic": ns_["italic"],
                     "color": ns_["color"], "is_colored": ns_["is_colored"]}
                    if ns_ else None)
-        # Build suggested XML replacement
-        if ctype == "modification":
-            sug = ns_["text"].strip() if ns_ else None
+        # Build suggested XML replacement with proper diff markup
+        if ctype in ("modification", "mismatch"):
+            os_text = os_["text"].strip() if os_ else None
+            ns_text = ns_["text"].strip() if ns_ else None
+            if os_text and ns_text:
+                sug = f"<del>{os_text}</del><ins>{ns_text}</ins>"
+            elif ns_text:
+                sug = f"<ins>{ns_text}</ins>"
+            else:
+                sug = None
+        elif ctype == "removal":
+            sug = f"<del>{text}</del>"
         elif ctype == "emphasis":
             sug = _emphasis_tag(ns_) if ns_ else None
         elif ctype == "addition":
-            sug = (_emphasis_tag(ns_) if (ns_ and (ns_["bold"] or ns_["italic"] or ns_["is_colored"]))
-                   else (ns_["text"].strip() if ns_ else None))
+            ns_text = ns_["text"].strip() if ns_ else None
+            if ns_ and (ns_["bold"] or ns_["italic"] or ns_["is_colored"]):
+                base = _emphasis_tag(ns_)
+                sug = f"<ins>{base}</ins>" if base else (f"<ins>{ns_text}</ins>" if ns_text else None)
+            else:
+                sug = f"<ins>{ns_text}</ins>" if ns_text else None
         else:
             sug = None
         return {

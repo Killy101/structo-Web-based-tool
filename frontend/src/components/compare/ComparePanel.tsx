@@ -1173,26 +1173,33 @@ export default function ComparePanel({
           xml = xml.replace(t, repl);
         }
       } else if (change.suggested_xml) {
+        // Use suggested_xml (already contains proper del/ins markup from backend)
         const searchText = change.old_text || change.text;
-        if (searchText) xml = xml.replace(searchText, change.suggested_xml);
+        if (searchText && xml.includes(searchText))
+          xml = xml.replace(searchText, change.suggested_xml);
       } else {
         switch (change.type) {
           case "modification":
           case "mismatch":
-            if (change.old_text && change.new_text)
-              xml = xml.replace(change.old_text, change.new_text);
-            break;
-          case "removal":
-            if (change.old_text)
+            if (change.old_text && change.new_text && xml.includes(change.old_text))
               xml = xml.replace(
                 change.old_text,
-                `<del>${change.old_text}</del>`,
+                `<del>${change.old_text}</del><ins>${change.new_text}</ins>`,
               );
             break;
+          case "removal":
+            if (change.old_text && xml.includes(change.old_text))
+              xml = xml.replace(change.old_text, `<del>${change.old_text}</del>`);
+            break;
           case "addition":
-            if (change.new_text && xml.includes("</")) {
-              const pos = xml.lastIndexOf("</");
-              xml = `${xml.slice(0, pos)}<!-- ADD: ${change.new_text} -->\n${xml.slice(pos)}`;
+            if (change.new_text) {
+              const insTag = `<ins>${change.new_text}</ins>`;
+              if (xml.includes("</")) {
+                const pos = xml.lastIndexOf("</");
+                xml = `${xml.slice(0, pos)}${insTag}\n${xml.slice(pos)}`;
+              } else {
+                xml += `\n${insTag}`;
+              }
             }
             break;
         }
@@ -1205,6 +1212,65 @@ export default function ComparePanel({
     },
     [canEdit, xmlContent],
   );
+
+  /** Apply every pending change at once with proper diff markup */
+  const handleApplyAll = useCallback(() => {
+    if (!canEdit || !xmlContent) return;
+    let xml = xmlContent;
+    const appliedIds: string[] = [];
+
+    for (const change of changes) {
+      if (change.applied || change.dismissed) continue;
+
+      if (change.type === "emphasis") {
+        const t = change.new_text || change.text;
+        if (t && change.new_formatting && xml.includes(t)) {
+          const { bold, italic, is_colored } = change.new_formatting;
+          let repl = t;
+          if (italic) repl = `<i>${repl}</i>`;
+          if (bold) repl = `<b>${repl}</b>`;
+          if (is_colored && !bold && !italic) repl = `<em>${repl}</em>`;
+          xml = xml.replace(t, repl);
+        }
+      } else if (change.suggested_xml) {
+        const searchText = change.old_text || change.text;
+        if (searchText && xml.includes(searchText))
+          xml = xml.replace(searchText, change.suggested_xml);
+      } else {
+        switch (change.type) {
+          case "modification":
+          case "mismatch":
+            if (change.old_text && change.new_text && xml.includes(change.old_text))
+              xml = xml.replace(
+                change.old_text,
+                `<del>${change.old_text}</del><ins>${change.new_text}</ins>`,
+              );
+            break;
+          case "removal":
+            if (change.old_text && xml.includes(change.old_text))
+              xml = xml.replace(change.old_text, `<del>${change.old_text}</del>`);
+            break;
+          case "addition":
+            if (change.new_text) {
+              const insTag = `<ins>${change.new_text}</ins>`;
+              if (xml.includes("</")) {
+                const pos = xml.lastIndexOf("</");
+                xml = `${xml.slice(0, pos)}${insTag}\n${xml.slice(pos)}`;
+              } else {
+                xml += `\n${insTag}`;
+              }
+            }
+            break;
+        }
+      }
+      appliedIds.push(change.id);
+    }
+
+    setXmlContent(xml);
+    setChanges((prev) =>
+      prev.map((c) => (appliedIds.includes(c.id) ? { ...c, applied: true } : c)),
+    );
+  }, [canEdit, xmlContent, changes]);
 
   const handleDismiss = useCallback((change: Change) => {
     setChanges((prev) =>
@@ -1433,6 +1499,21 @@ export default function ComparePanel({
             </div>
           )}
 
+          {/* Highlight All — shown once changes exist and not all applied */}
+          {canEdit && changes.length > 0 && changes.some((c) => !c.applied && !c.dismissed) && (
+            <button
+              onClick={handleApplyAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
+              title="Apply all pending changes with bold/italic/del/ins markup"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M5 13l4 4L19 7" />
+              </svg>
+              Highlight All ({changes.filter((c) => !c.applied && !c.dismissed).length})
+            </button>
+          )}
+
           <div className="ml-auto flex items-center gap-2">
             {/* Legend toggle */}
             <button
@@ -1457,52 +1538,49 @@ export default function ComparePanel({
             </button>
 
             {canEdit && xmlContent && (
-              <>
-                <button
-                  onClick={handleValidateAndSave}
-                  disabled={validating}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-colors disabled:opacity-50"
+              <button
+                onClick={handleValidateAndSave}
+                disabled={validating}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                <svg
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
                 >
-                  <svg
-                    className="w-3 h-3"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  {validating ? "Validating…" : "Save XML"}
-                </button>
-                <button
-                  onClick={handleDownload}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
-                >
-                  <svg
-                    className="w-3 h-3"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                    />
-                  </svg>
-                  Download
-                </button>
-              </>
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                {validating ? "Validating…" : "Save XML"}
+              </button>
             )}
-            {!canEdit && (
-              <span className="text-[10px] px-2 py-1 rounded-full bg-slate-800/80 text-slate-500">
-                Read-only
-              </span>
+
+            {/* Download available to all users once XML is loaded */}
+            {xmlContent && (
+              <button
+                onClick={handleDownload}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+              >
+                <svg
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                  />
+                </svg>
+                Download
+              </button>
             )}
           </div>
         </div>
