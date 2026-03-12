@@ -271,8 +271,9 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       ? pathname === "/dashboard"
       : pathname.startsWith(href);
 
-  const inactiveItemClass =
-    "text-slate-400 hover:bg-[rgba(26,143,209,0.08)] hover:text-slate-100";
+  const inactiveItemClass = dark
+    ? "text-slate-400 hover:bg-[rgba(26,143,209,0.08)] hover:text-slate-100"
+    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900";
 
   return (
     <>
@@ -294,15 +295,15 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           transition-all duration-300 ease-in-out relative z-20
         `}
         style={{
-          background: "rgba(6, 13, 26, 0.92)",
+          background: dark ? "rgba(6, 13, 26, 0.92)" : "rgba(248, 250, 252, 0.97)",
           backdropFilter: "blur(16px)",
-          borderColor: "rgba(26, 143, 209, 0.1)",
+          borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)",
         }}
       >
         {/* logo */}
         <div
           className={`flex items-center h-16 border-b px-4 gap-3 overflow-hidden`}
-          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+          style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           <div
             className={`w-8 h-8 flex-shrink-0 relative transition-transform duration-300 ease-in-out ${collapsed ? "translate-x-[2px]" : "translate-x-0"}`}
@@ -318,7 +319,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             className={`overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${collapsed ? "max-w-0 opacity-0 -translate-x-1" : "max-w-[220px] opacity-100 translate-x-0"}`}
           >
             <div>
-              <p className="font-bold text-sm leading-none tracking-wide text-white">
+              <p className={`font-bold text-sm leading-none tracking-wide ${dark ? "text-white" : "text-slate-900"}`}>
                 Structo
               </p>
               <p className="text-[11px] mt-0.5 text-slate-500">
@@ -380,7 +381,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* bottom utilities */}
         <div
           className="px-2 pb-2 space-y-0.5 border-t pt-2"
-          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+          style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           {/* notifications */}
           <div className="relative">
@@ -405,7 +406,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 </svg>
                 <span
                   className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full"
-                  style={{ boxShadow: "0 0 0 2px #060d1a" }}
+                  style={{ boxShadow: dark ? "0 0 0 2px #060d1a" : "0 0 0 2px #f8fafc" }}
                 />
               </span>
               {!collapsed && (
@@ -427,16 +428,16 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <div
                   className="absolute left-full bottom-0 ml-2 z-40 w-72 rounded-xl shadow-xl border"
                   style={{
-                    background: "#0b1a2e",
-                    borderColor: "rgba(26, 143, 209, 0.15)",
+                    background: dark ? "#0b1a2e" : "#f8fafc",
+                    borderColor: dark ? "rgba(26, 143, 209, 0.15)" : "rgba(100, 116, 139, 0.2)",
                     boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
                   }}
                 >
                   <div
                     className="px-4 py-3 border-b flex items-center justify-between"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+                    style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
                   >
-                    <p className="font-semibold text-sm text-white">
+                    <p className={`font-semibold text-sm ${dark ? "text-white" : "text-slate-900"}`}>
                       Notifications
                     </p>
                     <span
@@ -451,7 +452,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   </div>
                   <div
                     className="divide-y"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
+                    style={{ borderColor: dark ? "rgba(26, 143, 209, 0.08)" : "rgba(100, 116, 139, 0.1)" }}
                   >
                     {notifications.map((n, i) => (
                       <div
@@ -463,7 +464,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                           className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.color}`}
                         />
                         <div>
-                          <p className="text-sm text-slate-300">{n.msg}</p>
+                          <p className={`text-sm ${dark ? "text-slate-300" : "text-slate-700"}`}>{n.msg}</p>
                           <p className="text-xs mt-0.5 text-slate-500">
                             {n.time}
                           </p>
@@ -473,7 +474,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   </div>
                   <div
                     className="px-4 py-3 border-t text-center"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+                    style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
                   >
                     <button
                       className="text-xs hover:underline"
@@ -580,8 +581,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           className="absolute -right-3 top-[4.5rem] border rounded-full p-1 transition-all shadow-md"
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           style={{
-            background: "#0b1a2e",
-            borderColor: "rgba(26, 143, 209, 0.2)",
+            background: dark ? "#0b1a2e" : "#f1f5f9",
+            borderColor: dark ? "rgba(26, 143, 209, 0.2)" : "rgba(100, 116, 139, 0.3)",
             color: "#64748b",
           }}
         >
@@ -603,7 +604,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* user info */}
         <div
           className={`p-3 border-t ${collapsed ? "flex justify-center" : ""}`}
-          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+          style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           {collapsed ? (
             <div
@@ -631,7 +632,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 {user?.lastName?.[0]}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate leading-none text-white">
+                <p className={`text-sm font-medium truncate leading-none ${dark ? "text-white" : "text-slate-900"}`}>
                   {user?.firstName} {user?.lastName}
                 </p>
               </div>
