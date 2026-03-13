@@ -1,20 +1,17 @@
 "use client";
 /**
- * PdfViewer — Embedded PDF viewer using the browser's native rendering.
- *
- * For production consider adding @react-pdf-viewer/core or pdfjs-dist for
- * richer controls.  This native implementation works out-of-the-box without
- * additional npm packages and supports all modern browsers.
+ * PdfViewer — Canvas-based PDF viewer using pdfjs-dist.
  *
  * Features
  * ────────
- * - Native browser PDF rendering via <object> / <embed>
- * - Blob URL created from File object (zero server round-trip)
- * - Shows extracted text snippet below the viewer for context
- * - Highlighted text panel showing relevant page range for the selected chunk
+ * - PDF rendered per-page on a <canvas> element via pdfjs-dist
+ * - Overlay canvas draws yellow highlight boxes over matching text when
+ *   highlightText prop is set
+ * - Page navigation controls
+ * - targetPage prop navigates to a specific 1-based page number
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface PdfViewerProps {
   /** PDF File object to display */
@@ -23,19 +20,45 @@ interface PdfViewerProps {
   label: string;
   /** Color accent: "blue" | "violet" */
   color?: "blue" | "violet";
-  /** Extracted text excerpt for the selected chunk (shown in text panel) */
-  textExcerpt?: string;
   /** Page range for the selected chunk (1-indexed, for display only) */
   pageStart?: number;
   pageEnd?: number;
+  /** 1-based target page to navigate when user selects a diff item */
+  targetPage?: number;
+  /** Text snippet to highlight within the rendered page */
+  highlightText?: string;
 }
+
+type StoredTextItem = {
+  str: string;
+  transform: number[];
+  width: number;
+  height: number;
+};
 
 // ── Color maps ─────────────────────────────────────────────────────────────────
 
 const COLOR_MAP = {
-  blue:   { border: "rgba(59,130,246,0.3)", bg: "rgba(59,130,246,0.05)", text: "text-blue-400",   badge: "bg-blue-500/20 text-blue-300 border-blue-500/30" },
-  violet: { border: "rgba(139,92,246,0.3)", bg: "rgba(139,92,246,0.05)", text: "text-violet-400", badge: "bg-violet-500/20 text-violet-300 border-violet-500/30" },
+  blue: {
+    border: "rgba(59,130,246,0.3)",
+    bg: "rgba(59,130,246,0.05)",
+    text: "text-blue-400",
+    badge: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+    highlightFill: "rgba(59,130,246,0.35)",
+    highlightStroke: "rgba(147,197,253,0.95)",
+  },
+  violet: {
+    border: "rgba(139,92,246,0.3)",
+    bg: "rgba(139,92,246,0.05)",
+    text: "text-violet-400",
+    badge: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+    highlightFill: "rgba(139,92,246,0.35)",
+    highlightStroke: "rgba(196,181,253,0.95)",
+  },
 };
+
+// Singleton flag — worker URL is set once for the entire app lifetime
+let pdfjsWorkerConfigured = false;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -43,47 +66,231 @@ export default function PdfViewer({
   file,
   label,
   color = "blue",
-  textExcerpt,
   pageStart,
   pageEnd,
+  targetPage,
+  highlightText,
 }: PdfViewerProps) {
-  const [blobUrl,  setBlobUrl]  = useState<string | null>(null);
-  const [showText, setShowText] = useState(false);
-  const prevUrl = useRef<string | null>(null);
-
   const styles = COLOR_MAP[color];
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const overlayRef   = useRef<HTMLCanvasElement>(null);
 
-  // Create a blob URL for the file so <object> can render it
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pdfDocRef    = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const viewportRef  = useRef<any>(null);
+  const textItemsRef = useRef<StoredTextItem[]>([]);
+
+  // Keep latest highlightText in a ref so async effects don't go stale
+  const highlightTextRef = useRef(highlightText ?? "");
+  highlightTextRef.current = highlightText ?? "";
+
+  const [pdfLoaded,   setPdfLoaded]   = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages,  setTotalPages]  = useState(0);
+  const [loading,     setLoading]     = useState(false);
+  const [loadError,   setLoadError]   = useState<string | null>(null);
+
+  // ── Load PDF from File ─────────────────────────────────────────────────────
+
   useEffect(() => {
-    if (prevUrl.current) {
-      URL.revokeObjectURL(prevUrl.current);
-      prevUrl.current = null;
+    // Destroy previous document
+    if (pdfDocRef.current) {
+      pdfDocRef.current.destroy();
+      pdfDocRef.current = null;
     }
+    setPdfLoaded(false);
+    textItemsRef.current = [];
+    viewportRef.current  = null;
 
     if (!file) {
-      setBlobUrl(null);
+      setTotalPages(0);
+      setCurrentPage(1);
+      setLoadError(null);
       return;
     }
 
-    const url = URL.createObjectURL(file);
-    prevUrl.current = url;
-    setBlobUrl(url);
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
 
-    return () => {
-      URL.revokeObjectURL(url);
-      prevUrl.current = null;
-    };
+    (async () => {
+      try {
+        const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
+
+        if (!pdfjsWorkerConfigured) {
+          GlobalWorkerOptions.workerSrc = new URL(
+            "pdfjs-dist/build/pdf.worker.min.mjs",
+            import.meta.url,
+          ).toString();
+          pdfjsWorkerConfigured = true;
+        }
+
+        const buffer = await file.arrayBuffer();
+        if (cancelled) return;
+
+        const pdf = await getDocument({ data: buffer }).promise;
+        if (cancelled) { pdf.destroy(); return; }
+
+        pdfDocRef.current = pdf;
+        setTotalPages(pdf.numPages);
+        setCurrentPage(1);
+        setPdfLoaded(true);
+      } catch (e) {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : "Failed to load PDF");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [file]);
+
+  // ── Navigate to targetPage ─────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (targetPage && targetPage >= 1 && totalPages > 0) {
+      setCurrentPage(Math.min(targetPage, totalPages));
+    }
+  }, [targetPage, totalPages]);
+
+  // ── Draw highlight overlay ─────────────────────────────────────────────────
+
+  const drawHighlights = useCallback((searchText: string) => {
+    const overlay  = overlayRef.current;
+    const canvas   = canvasRef.current;
+    const viewport = viewportRef.current;
+    if (!overlay || !canvas || !viewport) return;
+
+    // Resizing the overlay canvas also clears it
+    overlay.width  = canvas.width;
+    overlay.height = canvas.height;
+
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+
+    if (!searchText || searchText.length < 2) return;
+
+    const norm  = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const query = norm(searchText);
+    const words = (query.match(/[a-z0-9][a-z0-9'\-/]{2,}/g) ?? []).slice(0, 12);
+    if (words.length === 0 && query.length < 3) return;
+
+    for (const item of textItemsRef.current) {
+      if (!item.str.trim() || item.width <= 0) continue;
+      const itemNorm = norm(item.str);
+      const isMatch =
+        words.some((w) => itemNorm.includes(w)) ||
+        (query.length > 8 && itemNorm.includes(query.slice(0, 20)));
+
+      if (!isMatch) continue;
+
+      // Convert PDF text-origin point to canvas coordinates
+      // convertToViewportPoint handles scale + y-axis flip
+      const [vx, vy] = viewport.convertToViewportPoint(
+        item.transform[4],
+        item.transform[5],
+      ) as [number, number];
+
+      // In pdfjs-dist v5 the item dimensions are in device (canvas) pixels
+      const w = item.width;
+      const h = Math.max(item.height, 8);
+
+      ctx.fillStyle   = styles.highlightFill;
+      ctx.strokeStyle = styles.highlightStroke;
+      ctx.lineWidth   = 1;
+      ctx.fillRect  (vx, vy - h, w, h + 2);
+      ctx.strokeRect(vx, vy - h, w, h + 2);
+    }
+  }, [styles.highlightFill, styles.highlightStroke]);
+
+  // ── Render current page ────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!pdfLoaded || !pdfDocRef.current) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const pdf  = pdfDocRef.current;
+        const page = await pdf.getPage(currentPage);
+        if (cancelled) { page.cleanup(); return; }
+
+        const containerW = containerRef.current?.clientWidth || 800;
+        const base       = page.getViewport({ scale: 1 });
+        const scale      = Math.min((containerW - 8) / base.width, 2.5);
+        const viewport   = page.getViewport({ scale });
+
+        const canvas = canvasRef.current!;
+        canvas.width  = viewport.width;
+        canvas.height = viewport.height;
+
+        const ctx = canvas.getContext("2d")!;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        if (cancelled) { page.cleanup(); return; }
+
+        viewportRef.current = viewport;
+
+        // Extract text items for highlighting
+        const tc = await page.getTextContent();
+        if (!cancelled) {
+          textItemsRef.current = tc.items
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .filter((it: any) => "str" in it && it.str.trim() && it.width > 0)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((it: any) => ({
+              str:       it.str       as string,
+              transform: it.transform as number[],
+              width:     it.width     as number,
+              height:    it.height    as number,
+            }));
+        }
+
+        page.cleanup();
+
+        // Draw highlights using the latest highlight text
+        if (!cancelled) drawHighlights(highlightTextRef.current);
+      } catch (e) {
+        if (!cancelled) console.error("[PdfViewer] render error:", e);
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // drawHighlights is stable (useCallback with no deps)
+    // highlightText is read via ref to avoid re-render loop
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfLoaded, currentPage, drawHighlights]);
+
+  // ── Re-draw highlights when highlightText changes ─────────────────────────
+
+  useEffect(() => {
+    if (pdfLoaded && textItemsRef.current.length > 0) {
+      drawHighlights(highlightText ?? "");
+    }
+  }, [highlightText, drawHighlights, pdfLoaded]);
 
   const pageLabel = useMemo(() => {
     if (pageStart == null) return null;
     return `Pages ${pageStart + 1}–${pageEnd ?? pageStart + 1}`;
   }, [pageStart, pageEnd]);
 
+  // ── JSX ────────────────────────────────────────────────────────────────────
+
   return (
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
-      style={{ borderColor: styles.border, background: "rgba(6,13,26,0.6)" }}
+      style={{
+        borderColor: highlightText ? "rgba(250,204,21,0.6)" : styles.border,
+        background: "rgba(6,13,26,0.6)",
+        boxShadow: highlightText
+          ? "0 0 0 1px rgba(250,204,21,0.25), 0 0 16px rgba(250,204,21,0.08)"
+          : "none",
+        transition: "border-color 0.3s, box-shadow 0.3s",
+      }}
     >
       {/* Header */}
       <div
@@ -107,34 +314,28 @@ export default function PdfViewer({
               {pageLabel}
             </span>
           )}
-          {textExcerpt && (
-            <button
-              onClick={() => setShowText((v) => !v)}
-              title={showText ? "Show PDF" : "Show text"}
-              className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-700/40 transition-colors"
-            >
-              {showText ? (
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-              ) : (
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M4 6h16M4 12h16M4 18h7" />
-                </svg>
-              )}
-            </button>
+          {totalPages > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border font-medium border-cyan-500/35 bg-cyan-500/10 text-cyan-200">
+              p.{currentPage}/{totalPages}
+            </span>
           )}
         </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-hidden">
+      {/* Highlight banner */}
+      {highlightText && (
+        <div
+          className="px-3 py-1.5 border-b text-[10px] flex items-center gap-1.5"
+          style={{ borderColor: "rgba(250,204,21,0.25)", background: "rgba(250,204,21,0.05)" }}
+        >
+          <span className="text-yellow-400 flex-shrink-0">⚡ Highlighted:</span>
+          <span className="text-slate-200 truncate">{highlightText.slice(0, 150)}</span>
+        </div>
+      )}
+
+      {/* Canvas body */}
+      <div ref={containerRef} className="flex-1 overflow-auto" style={{ background: "#18181b" }}>
         {!file ? (
-          /* Empty state */
           <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
             <svg className="w-10 h-10 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -142,39 +343,51 @@ export default function PdfViewer({
             </svg>
             <p className="text-xs">No PDF loaded</p>
           </div>
-        ) : showText && textExcerpt ? (
-          /* Text excerpt view */
-          <div className="h-full overflow-y-auto p-3">
-            <pre className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap font-mono">
-              {textExcerpt}
-            </pre>
+        ) : loading ? (
+          <div className="flex items-center justify-center h-full gap-2 text-slate-400">
+            <div className="w-4 h-4 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin" />
+            <span className="text-xs">Loading PDF…</span>
+          </div>
+        ) : loadError ? (
+          <div className="flex items-center justify-center h-full text-xs text-red-300 p-4 text-center">
+            {loadError}
           </div>
         ) : (
-          /* Native PDF render */
-          blobUrl && (
-            <object
-              data={blobUrl}
-              type="application/pdf"
-              className="w-full h-full"
-              title={label}
-            >
-              {/* Fallback for browsers that don't render PDFs inline */}
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-400 p-4">
-                <p className="text-xs text-center">
-                  Your browser cannot display this PDF inline.
-                </p>
-                <a
-                  href={blobUrl}
-                  download={file?.name}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 transition-colors"
-                >
-                  Download PDF
-                </a>
-              </div>
-            </object>
-          )
+          /* Canvas + overlay */
+          <div className="relative inline-block min-w-full">
+            <canvas ref={canvasRef} className="block max-w-full" />
+            <canvas
+              ref={overlayRef}
+              className="absolute top-0 left-0 pointer-events-none"
+              style={{ mixBlendMode: "multiply" }}
+            />
+          </div>
         )}
       </div>
+
+      {/* Page navigation */}
+      {totalPages > 1 && !loading && !loadError && (
+        <div
+          className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-t"
+          style={{ borderColor: styles.border, background: "rgba(0,0,0,0.2)" }}
+        >
+          <button
+            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            disabled={currentPage <= 1}
+            className="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-300 disabled:opacity-30 hover:border-slate-400 transition-colors"
+          >
+            ← Prev
+          </button>
+          <span className="text-[10px] text-slate-400">Page {currentPage} of {totalPages}</span>
+          <button
+            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            disabled={currentPage >= totalPages}
+            className="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-300 disabled:opacity-30 hover:border-slate-400 transition-colors"
+          >
+            Next →
+          </button>
+        </div>
+      )}
     </div>
   );
 }

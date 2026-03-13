@@ -2,16 +2,19 @@
  * api.ts — AutoCompare API client.
  *
  * Wraps all /autocompare/* calls with typed request/response shapes.
- * All functions throw on HTTP errors so callers can handle them uniformly.
+ * Upload now accepts multiple XML files (pre-chunked).
+ * No merge endpoint — chunks are downloaded individually or as a ZIP.
  */
 
 import type {
   AutoGenerateResponse,
   ChunksResponse,
   CompareChunkResponse,
-  MergeResponse,
+  ReuploadResponse,
   SaveResponse,
+  ValidateAllResponse,
   UploadResponse,
+  ValidateResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL || "http://localhost:8000";
@@ -25,25 +28,22 @@ async function handleResponse<T>(res: Response): Promise<T> {
       const body = await res.json();
       detail = body?.detail?.message ?? body?.detail ?? detail;
     } catch {
-      // ignore JSON parse errors
+      // ignore
     }
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
 }
 
-// ── Upload ────────────────────────────────────────────────────────────────────
+// ── Upload (multiple XMLs) ────────────────────────────────────────────────────
 
 /**
- * Upload OLD PDF, NEW PDF, and XML source file.
- * Returns session_id on success.
- *
- * @param onProgress - optional XHR progress callback (0–100)
+ * Upload OLD PDF, NEW PDF, and multiple pre-chunked XML files.
  */
 export function uploadFiles(
   oldPdf: File,
   newPdf: File,
-  xmlFile: File,
+  xmlFiles: File[],
   sourceName: string,
   onProgress?: (pct: number) => void,
 ): Promise<UploadResponse> {
@@ -51,7 +51,9 @@ export function uploadFiles(
     const fd = new FormData();
     fd.append("old_pdf", oldPdf);
     fd.append("new_pdf", newPdf);
-    fd.append("xml_file", xmlFile);
+    for (const xf of xmlFiles) {
+      fd.append("xml_files", xf);
+    }
     fd.append("source_name", sourceName);
 
     const xhr = new XMLHttpRequest();
@@ -91,13 +93,12 @@ export function uploadFiles(
 
 export async function startProcessing(
   sessionId: string,
-  tagName = "section",
   batchSize = 50,
 ): Promise<{ success: boolean; status: string; message: string }> {
   const res = await fetch(`${BASE}/autocompare/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, tag_name: tagName, batch_size: batchSize }),
+    body: JSON.stringify({ session_id: sessionId, batch_size: batchSize }),
   });
   return handleResponse(res);
 }
@@ -112,7 +113,7 @@ export async function pollStatus(sessionId: string): Promise<{
   summary: unknown;
   error: string | null;
 }> {
-  const res = await fetch(`${BASE}/autocompare/status/${sessionId}`);
+  const res = await fetch(`${BASE}/autocompare/status/${encodeURIComponent(sessionId)}`);
   return handleResponse(res);
 }
 
@@ -155,8 +156,62 @@ export async function saveChunkXml(
 export async function autoGenerateXml(
   sessionId: string,
   chunkId: string | number,
+  lineContext?: {
+    diff_index?: number;
+    diff_text?: string;
+    old_text?: string;
+    new_text?: string;
+    category?: string;
+  },
 ): Promise<AutoGenerateResponse> {
   const res = await fetch(`${BASE}/autocompare/autogenerate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      chunk_id: String(chunkId),
+      ...lineContext,
+    }),
+  });
+  return handleResponse(res);
+}
+
+// ── Batch auto-generate for all changed chunks ────────────────────────────────
+
+/**
+ * Sequentially auto-generates XML for every chunk that has PDF changes.
+ * Calls onProgress(completed, total) after each chunk.
+ * Returns counts of { generated, failed }.
+ */
+export async function autoGenerateAllChanged(
+  sessionId: string,
+  changedChunkIds: (string | number)[],
+  onProgress?: (completed: number, total: number) => void,
+): Promise<{ generated: number; failed: number }> {
+  let generated = 0;
+  let failed = 0;
+  const total = changedChunkIds.length;
+
+  for (let i = 0; i < total; i++) {
+    try {
+      await autoGenerateXml(sessionId, changedChunkIds[i]);
+      generated++;
+    } catch {
+      failed++;
+    }
+    onProgress?.(i + 1, total);
+  }
+
+  return { generated, failed };
+}
+
+// ── Validate XML ──────────────────────────────────────────────────────────────
+
+export async function validateChunkXml(
+  sessionId: string,
+  chunkId: string | number,
+): Promise<ValidateResponse> {
+  const res = await fetch(`${BASE}/autocompare/validate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, chunk_id: String(chunkId) }),
@@ -164,10 +219,8 @@ export async function autoGenerateXml(
   return handleResponse(res);
 }
 
-// ── Merge all chunks ──────────────────────────────────────────────────────────
-
-export async function mergeChunks(sessionId: string): Promise<MergeResponse> {
-  const res = await fetch(`${BASE}/autocompare/merge`, {
+export async function validateAllChunks(sessionId: string): Promise<ValidateAllResponse> {
+  const res = await fetch(`${BASE}/autocompare/validate-all`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),
@@ -175,8 +228,101 @@ export async function mergeChunks(sessionId: string): Promise<MergeResponse> {
   return handleResponse(res);
 }
 
-// ── Download final XML ────────────────────────────────────────────────────────
+// ── Download single chunk XML ─────────────────────────────────────────────────
 
-export function downloadFinalXml(sessionId: string): void {
-  window.open(`${BASE}/autocompare/download/${sessionId}`, "_blank");
+export function downloadChunkXml(sessionId: string, chunkId: string | number): void {
+  window.open(`${BASE}/autocompare/download/${encodeURIComponent(sessionId)}/${chunkId}`, "_blank");
+}
+
+// ── Download ALL chunks as a ZIP ──────────────────────────────────────────────
+
+/**
+ * Downloads all chunks as a single ZIP file from the server.
+ * Falls back to sequential individual downloads if the /download-all endpoint
+ * is not available (404), so the feature degrades gracefully.
+ */
+export async function downloadAllChunks(
+  sessionId: string,
+  sourceName: string,
+  chunkIds: (string | number)[],
+): Promise<void> {
+  const zipUrl = `${BASE}/autocompare/download-all/${encodeURIComponent(sessionId)}`;
+
+  try {
+    const res = await fetch(zipUrl);
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${sourceName || "autocompare"}_chunks.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return;
+    }
+  } catch {
+    // fall through to sequential fallback
+  }
+
+  // Fallback: open each chunk download in a new tab with a small delay
+  for (let i = 0; i < chunkIds.length; i++) {
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        window.open(
+          `${BASE}/autocompare/download/${encodeURIComponent(sessionId)}/${chunkIds[i]}`,
+          "_blank",
+        );
+        resolve();
+      }, i * 300);
+    });
+  }
+}
+
+// ── Re-upload XML chunks ──────────────────────────────────────────────────────
+
+export function reuploadXmlFiles(
+  sessionId: string,
+  xmlFiles: File[],
+  onProgress?: (pct: number) => void,
+): Promise<ReuploadResponse> {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append("session_id", sessionId);
+    for (const xf of xmlFiles) {
+      fd.append("xml_files", xf);
+    }
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}/autocompare/reupload`);
+
+    if (onProgress) {
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as ReuploadResponse);
+        } catch {
+          reject(new Error("Invalid JSON response"));
+        }
+      } else {
+        let detail = `Re-upload failed: HTTP ${xhr.status}`;
+        try {
+          const body = JSON.parse(xhr.responseText);
+          detail = body?.detail?.message ?? body?.detail ?? detail;
+        } catch {
+          // ignore
+        }
+        reject(new Error(detail));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Network error during re-upload"));
+    xhr.send(fd);
+  });
 }

@@ -1,14 +1,16 @@
 "use client";
 /**
- * FileUploadPanel — Upload OLD PDF, NEW PDF, and XML with drag-and-drop support.
+ * FileUploadPanel — Upload OLD PDF, NEW PDF, and multiple pre-chunked XMLs.
  *
  * Features
  * ────────
- * - Drag-and-drop or click-to-browse for each of the three file slots
+ * - Drag-and-drop or click-to-browse for each file slot
+ * - Multi-file XML upload (pre-chunked XML files)
  * - Real-time upload progress bar (XHR-based, separate from processing progress)
  * - Visual file previews with size and name
  * - Source name input for project identification
  * - Calls parent `onUploaded` callback with the session_id when done
+ * - Also passes File objects to parent so PDFs can be rendered in viewers
  */
 
 import React, { useCallback, useRef, useState } from "react";
@@ -100,6 +102,101 @@ function DropZone({ label, accept, file, onFile, icon, color }: DropZoneProps) {
   );
 }
 
+// ── Multi-file DropZone (for XML) ──────────────────────────────────────────────
+
+interface MultiDropZoneProps {
+  label: string;
+  accept: string;
+  files: File[];
+  onFiles: (files: File[]) => void;
+  icon: React.ReactNode;
+  color: string;
+}
+
+function MultiDropZone({ label, accept, files, onFiles, icon, color }: MultiDropZoneProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const borderClass = dragOver
+    ? `border-${color}-400 bg-${color}-500/10`
+    : files.length > 0
+    ? `border-${color}-500/50 bg-${color}-500/5`
+    : `border-slate-600/50 bg-slate-800/30 hover:border-${color}-500/40 hover:bg-${color}-500/5`;
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      const dropped = Array.from(e.dataTransfer.files).filter((f) =>
+        f.name.toLowerCase().endsWith(".xml"),
+      );
+      if (dropped.length > 0) onFiles(dropped);
+    },
+    [onFiles],
+  );
+
+  const formatBytes = (n: number) => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+
+  return (
+    <div
+      className={`relative flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-5 transition-all duration-150 cursor-pointer ${borderClass}`}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      onClick={() => inputRef.current?.click()}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const selected = Array.from(e.target.files ?? []);
+          if (selected.length > 0) onFiles(selected);
+        }}
+      />
+
+      {/* Icon */}
+      <div className={`w-10 h-10 rounded-lg flex items-center justify-center bg-${color}-500/15 text-${color}-400`}>
+        {icon}
+      </div>
+
+      {/* Label */}
+      <p className="text-xs font-semibold text-slate-300 text-center">{label}</p>
+
+      {/* File info or placeholder */}
+      {files.length > 0 ? (
+        <div className="text-center">
+          <p className={`text-xs font-medium text-${color}-300`}>
+            {files.length} file{files.length > 1 ? "s" : ""} selected
+          </p>
+          <p className="text-[10px] text-slate-500 mt-0.5">{formatBytes(totalSize)}</p>
+        </div>
+      ) : (
+        <p className="text-[10px] text-slate-500 text-center">
+          Drag & drop or click to select multiple files
+        </p>
+      )}
+
+      {/* Checkmark overlay */}
+      {files.length > 0 && (
+        <div className={`absolute top-2 right-2 w-5 h-5 rounded-full bg-${color}-500 flex items-center justify-center`}>
+          <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Progress bar ──────────────────────────────────────────────────────────────
 
 function ProgressBar({ value, label }: { value: number; label: string }) {
@@ -127,19 +224,19 @@ function ProgressBar({ value, label }: { value: number; label: string }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface FileUploadPanelProps {
-  onUploaded: (response: UploadResponse) => void;
+  onUploaded: (response: UploadResponse, oldPdf: File, newPdf: File) => void;
 }
 
 export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
   const [oldPdf,     setOldPdf]     = useState<File | null>(null);
   const [newPdf,     setNewPdf]     = useState<File | null>(null);
-  const [xmlFile,    setXmlFile]    = useState<File | null>(null);
+  const [xmlFiles,   setXmlFiles]   = useState<File[]>([]);
   const [sourceName, setSourceName] = useState("");
   const [uploading,  setUploading]  = useState(false);
   const [uploadPct,  setUploadPct]  = useState(0);
   const [error,      setError]      = useState<string | null>(null);
 
-  const canUpload = oldPdf && newPdf && xmlFile && sourceName.trim();
+  const canUpload = oldPdf && newPdf && xmlFiles.length > 0 && sourceName.trim();
 
   const handleUpload = async () => {
     if (!canUpload) return;
@@ -151,11 +248,11 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
       const response = await uploadFiles(
         oldPdf!,
         newPdf!,
-        xmlFile!,
+        xmlFiles,
         sourceName.trim(),
         (pct) => setUploadPct(pct),
       );
-      onUploaded(response);
+      onUploaded(response, oldPdf!, newPdf!);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -176,7 +273,7 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
       <div>
         <h2 className="text-base font-semibold text-white">Upload Files</h2>
         <p className="text-xs text-slate-400 mt-0.5">
-          Upload your OLD PDF, NEW PDF, and XML source file to begin the comparison.
+          Upload your OLD PDF, NEW PDF, and pre-chunked XML files to begin the comparison.
         </p>
       </div>
 
@@ -226,11 +323,11 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
             </svg>
           }
         />
-        <DropZone
-          label="XML Source"
+        <MultiDropZone
+          label="XML Chunks"
           accept=".xml"
-          file={xmlFile}
-          onFile={setXmlFile}
+          files={xmlFiles}
+          onFiles={setXmlFiles}
           color="emerald"
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
