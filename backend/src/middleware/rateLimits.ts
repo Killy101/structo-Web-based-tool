@@ -1,4 +1,4 @@
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 /**
  * Strict limiter for login — already exists on auth route,
@@ -21,7 +21,7 @@ export const uploadLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: any) => req.user?.userId?.toString() ?? req.ip,
+  keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
   message: { error: "Upload limit reached. Please wait before uploading more files." },
 });
 
@@ -34,7 +34,7 @@ export const processingLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: any) => req.user?.userId?.toString() ?? req.ip,
+  keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
   message: { error: "Processing limit reached. Please wait before making more requests." },
 });
 
@@ -59,6 +59,6 @@ export const mutationLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: any) => req.user?.userId?.toString() ?? req.ip,
+  keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
   message: { error: "Too many modification requests. Please wait." },
 });
