@@ -21,7 +21,11 @@ export const uploadLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+<<<<<<< Updated upstream
   keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
+=======
+ keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
+>>>>>>> Stashed changes
   message: { error: "Upload limit reached. Please wait before uploading more files." },
 });
 
@@ -34,7 +38,11 @@ export const processingLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+<<<<<<< Updated upstream
   keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
+=======
+ keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
+>>>>>>> Stashed changes
   message: { error: "Processing limit reached. Please wait before making more requests." },
 });
 
@@ -59,6 +67,10 @@ export const mutationLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+<<<<<<< Updated upstream
   keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
+=======
+ keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
+>>>>>>> Stashed changes
   message: { error: "Too many modification requests. Please wait." },
 });
