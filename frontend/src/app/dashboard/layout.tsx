@@ -8,7 +8,6 @@ import Sidebar from "../../components/layout/Sidebar";
 import Unauthorized from "../../components/layout/Unauthorized";
 import { Spinner, Button } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
-import NotificationBell from "../../components/notifications/NotificationBell";
 import { getToken } from "../../services/api";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
 import type { Role } from "../../types";
@@ -219,7 +218,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
       <div className="flex-1 flex flex-col overflow-hidden">
         {!isBrdRoute && (
-          <header className="flex-shrink-0 flex items-center justify-between gap-4 px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+          <header className="flex-shrink-0 flex items-center px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
             <div>
               <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-none">
                 {PAGE_META[pathname]?.title ?? "Dashboard"}
@@ -230,7 +229,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 </p>
               )}
             </div>
-            <NotificationBell />
           </header>
         )}
         <main

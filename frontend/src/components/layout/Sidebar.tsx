@@ -5,6 +5,8 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemContext";
+import { useNotifications } from "../../hooks";
+import { formatTimeAgo } from "../../utils";
 import { Role } from "../../types";
 
 interface NavItem {
@@ -154,15 +156,12 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-const notifications = [
-  { msg: "3 files pending review", time: "5m ago", color: "bg-amber-500" },
-  {
-    msg: "New user has been registered",
-    time: "1h ago",
-    color: "bg-[#1a8fd1]",
-  },
-  { msg: "Batch export approved", time: "2h ago", color: "bg-emerald-500" },
-];
+const TYPE_DOT: Record<string, string> = {
+  TASK_ASSIGNED: "bg-[#1a8fd1]",
+  TASK_UPDATED:  "bg-amber-500",
+  BRD_STATUS:    "bg-emerald-500",
+  SYSTEM:        "bg-slate-400",
+};
 
 interface SidebarProps {
   collapsed: boolean;
@@ -247,6 +246,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { dark, toggle } = useTheme();
   const [showNotif, setShowNotif] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const { notifications, unreadCount, markRead, markAllRead, remove } =
+    useNotifications();
   const hasFeature = (feature?: string | string[]) => {
     if (!feature) return true;
     if (user?.role === "SUPER_ADMIN") return true;
@@ -403,17 +404,19 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
                   />
                 </svg>
-                <span
-                  className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full"
-                  style={{ boxShadow: "0 0 0 2px #060d1a" }}
-                />
+                {unreadCount > 0 && (
+                  <span
+                    className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full"
+                    style={{ boxShadow: "0 0 0 2px #060d1a" }}
+                  />
+                )}
               </span>
               {!collapsed && (
                 <span className="text-sm font-medium">Notifications</span>
               )}
-              {!collapsed && (
+              {!collapsed && unreadCount > 0 && (
                 <span className="ml-auto text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded-full">
-                  {notifications.length}
+                  {unreadCount > 9 ? "9+" : unreadCount}
                 </span>
               )}
             </button>
@@ -432,6 +435,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
                   }}
                 >
+                  {/* header */}
                   <div
                     className="px-4 py-3 border-b flex items-center justify-between"
                     style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
@@ -439,48 +443,53 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     <p className="font-semibold text-sm text-white">
                       Notifications
                     </p>
-                    <span
-                      className="text-xs px-2 py-0.5 rounded-full"
-                      style={{
-                        color: "#d4862e",
-                        background: "rgba(212, 134, 46, 0.12)",
-                      }}
-                    >
-                      {notifications.length} new
-                    </span>
-                  </div>
-                  <div
-                    className="divide-y"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
-                  >
-                    {notifications.map((n, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer"
-                        style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
+                    {unreadCount > 0 && (
+                      <button
+                        onClick={markAllRead}
+                        className="text-xs hover:underline"
+                        style={{ color: "#d4862e" }}
                       >
-                        <div
-                          className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.color}`}
-                        />
-                        <div>
-                          <p className="text-sm text-slate-300">{n.msg}</p>
-                          <p className="text-xs mt-0.5 text-slate-500">
-                            {n.time}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
+                        Mark all read
+                      </button>
+                    )}
                   </div>
-                  <div
-                    className="px-4 py-3 border-t text-center"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
-                  >
-                    <button
-                      className="text-xs hover:underline"
-                      style={{ color: "#d4862e" }}
-                    >
-                      View all notifications
-                    </button>
+
+                  {/* list */}
+                  <div className="max-h-72 overflow-y-auto divide-y" style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}>
+                    {notifications.length === 0 ? (
+                      <p className="px-4 py-5 text-sm text-center text-slate-500">
+                        No notifications yet
+                      </p>
+                    ) : (
+                      notifications.map((n) => (
+                        <div
+                          key={n.id}
+                          onClick={() => { if (!n.isRead) markRead(n.id); }}
+                          className="flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer"
+                          style={{
+                            borderColor: "rgba(26, 143, 209, 0.08)",
+                            background: n.isRead ? undefined : "rgba(26, 143, 209, 0.05)",
+                          }}
+                        >
+                          <div
+                            className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${TYPE_DOT[n.type] ?? "bg-slate-400"}`}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-slate-300 truncate">{n.title}</p>
+                            <p className="text-xs mt-0.5 text-slate-500 line-clamp-2">{n.message}</p>
+                            <p className="text-[11px] mt-1 text-slate-600">
+                              {formatTimeAgo(n.createdAt)}
+                            </p>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); remove(n.id); }}
+                            className="text-slate-600 hover:text-red-400 transition-colors flex-shrink-0 text-base leading-none"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </>
