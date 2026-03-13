@@ -10,6 +10,13 @@ import tasksRoutes from "./routes/task";
 import userLogsRoutes from "./routes/user-logs";
 import brdRouter from "./routes/brd";
 import uploadRoute from "./routes/brd/upload";
+import notificationsRoutes from "./routes/notifications";
+import {
+  generalLimiter,
+  uploadLimiter,
+  processingLimiter,
+  mutationLimiter,
+} from "./middleware/rateLimits";
 
 
 dotenv.config();
@@ -25,15 +32,20 @@ app.use(
 );
 app.use(express.json());
 
+// ── Global rate limiter ────────────────────────────────────────────────────────
+app.use(generalLimiter);
+
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use("/auth",       authRoutes);
-app.use("/users",      usersRoutes);
-app.use("/dashboard",  dashboardRoutes);
-app.use("/teams",      teamsRoutes);
-app.use("/roles",      rolesRoutes);
-app.use("/tasks",      tasksRoutes);
-app.use("/user-logs",  userLogsRoutes);
-app.use("/brd",        brdRouter);  // handles /brd/upload, /brd/:id/scope, etc.
+app.use("/auth",           authRoutes);
+app.use("/users",          usersRoutes);
+app.use("/dashboard",      dashboardRoutes);
+app.use("/teams",          teamsRoutes);
+app.use("/roles",          rolesRoutes);
+app.use("/tasks",          tasksRoutes);
+app.use("/user-logs",      userLogsRoutes);
+app.use("/brd",            brdRouter);  // handles /brd/upload, /brd/:id/scope, etc.
+app.use("/notifications",  notificationsRoutes);
+
 
 // ── Health Check ──────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {

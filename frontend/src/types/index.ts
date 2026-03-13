@@ -174,9 +174,37 @@ export interface DashboardStats {
   pendingValidation: number;
   approvedTasks: number;
   totalTeams: number;
+  totalTasks: number;
+  totalBrds: number;
+  recentUploads7d: number;
   usersByRole: { role: Role; count: number }[];
   filesByStatus: { status: TaskStatus; count: number }[];
+  tasksByStatus: { status: AssignmentStatus; count: number }[];
+  brdsByStatus: { status: string; count: number }[];
   recentActivity: FileUpload[];
+}
+
+export type NotificationType = "TASK_ASSIGNED" | "TASK_UPDATED" | "BRD_STATUS" | "SYSTEM";
+
+export interface Notification {
+  id: number;
+  userId: number;
+  type: NotificationType;
+  title: string;
+  message: string;
+  isRead: boolean;
+  meta?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface TaskComment {
+  id: number;
+  assignmentId: number;
+  authorId: number;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  author?: Pick<User, "id" | "userId" | "firstName" | "lastName">;
 }
 
 export interface BrdSourceItem {

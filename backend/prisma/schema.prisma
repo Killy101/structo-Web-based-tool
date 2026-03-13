@@ -52,6 +52,8 @@ model User {
   userLogs          UserLog[]
   validations       Validation[]
   createdBrds       Brd[]             @relation("BrdCreatedBy")
+  notifications     Notification[]
+  taskComments      TaskComment[]
 }
 
 model TaskAssignment {
@@ -67,6 +69,7 @@ model TaskAssignment {
   createdById Int
   brdFileId   Int?
   assignees   TaskAssignee[]
+  comments    TaskComment[]
   brdFile     FileUpload?      @relation(fields: [brdFileId], references: [id])
   createdBy   User             @relation("CreatedByUser", fields: [createdById], references: [id])
   team        Team             @relation(fields: [teamId], references: [id])
@@ -167,6 +170,29 @@ enum AssignmentStatus {
   PENDING
   IN_PROGRESS
   COMPLETED
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  type      String   // TASK_ASSIGNED | TASK_UPDATED | BRD_STATUS | SYSTEM
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  meta      Json?    // optional payload (taskId, brdId, etc.)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TaskComment {
+  id           Int            @id @default(autoincrement())
+  assignmentId Int
+  authorId     Int
+  body         String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  assignment   TaskAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  author       User           @relation(fields: [authorId], references: [id])
 }
 
 // ── BRD ───────────────────────────────────────────────────────────────────────

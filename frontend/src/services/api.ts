@@ -14,6 +14,8 @@ import {
   BrdSourceItem,
   TaskAssignment,
   UserLog,
+  Notification,
+  TaskComment,
 } from "../types";
 
 export const getToken = () =>
@@ -178,4 +180,36 @@ export const filesApi = {
 export const dashboardApi = {
   getStats: () =>
     api.get<DashboardStats>("/dashboard/stats").then((r) => r.data),
+};
+
+export const notificationsApi = {
+  getAll: () =>
+    api
+      .get<{ notifications: Notification[]; unreadCount: number }>("/notifications")
+      .then((r) => r.data),
+  markRead: (id: number) =>
+    api
+      .patch<{ notification: Notification }>(`/notifications/${id}/read`)
+      .then((r) => r.data),
+  markAllRead: () =>
+    api
+      .patch<{ message: string }>("/notifications/read-all")
+      .then((r) => r.data),
+  delete: (id: number) =>
+    api.delete<{ message: string }>(`/notifications/${id}`).then((r) => r.data),
+};
+
+export const taskCommentsApi = {
+  getAll: (taskId: number) =>
+    api
+      .get<{ comments: TaskComment[] }>(`/tasks/${taskId}/comments`)
+      .then((r) => r.data),
+  create: (taskId: number, body: string) =>
+    api
+      .post<{ comment: TaskComment }>(`/tasks/${taskId}/comments`, { body })
+      .then((r) => r.data),
+  delete: (taskId: number, commentId: number) =>
+    api
+      .delete<{ message: string }>(`/tasks/${taskId}/comments/${commentId}`)
+      .then((r) => r.data),
 };

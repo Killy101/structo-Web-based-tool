@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { processingLimiter } from "../../middleware/rateLimits";
 
 const router = Router();
 
@@ -965,7 +966,7 @@ router.post("/generate", async (_req: Request, res: Response) => {
 });
 
 // ── POST /generate/metajson ────────────────────────────────────────────────────
-router.post("/generate/metajson", async (req: Request, res: Response) => {
+router.post("/generate/metajson", processingLimiter, async (req: Request, res: Response) => {
   try {
     const body = req.body as {
       brdId?: string;
