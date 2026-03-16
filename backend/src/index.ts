@@ -31,6 +31,10 @@ app.use(
   }),
 );
 
+// ── Body parsers (MUST be before routes) ──────────────────────────────────────
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
 // ── Global rate limiter ────────────────────────────────────────────────────────
 app.use(generalLimiter);
 

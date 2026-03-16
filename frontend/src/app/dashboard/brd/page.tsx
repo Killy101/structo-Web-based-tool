@@ -151,6 +151,7 @@ export default function BrdPage() {
   const [deleteTarget,    setDeleteTarget]    = useState<Brd | null>(null);
   const [deleteLoading,   setDeleteLoading]   = useState(false);
   const [bulkDeleteOpen,  setBulkDeleteOpen]  = useState(false);
+  const [sortOrder,       setSortOrder]       = useState<"asc" | "desc" | null>(null);
 
   const fetchBrds = useCallback(async () => {
     try {
@@ -203,10 +204,19 @@ export default function BrdPage() {
     return matchSearch && matchStatus && matchContinent;
   });
 
+  // Sort
+  const sorted = sortOrder
+    ? [...filtered].sort((a, b) => {
+        const nameA = displayTitle(a).toLowerCase();
+        const nameB = displayTitle(b).toLowerCase();
+        return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
+      })
+    : filtered;
+
   // Pagination
-  const totalPages = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
+  const totalPages = Math.max(1, Math.ceil(sorted.length / rowsPerPage));
   const safePage = Math.min(page, totalPages);
-  const paginated = filtered.slice((safePage - 1) * rowsPerPage, safePage * rowsPerPage);
+  const paginated = sorted.slice((safePage - 1) * rowsPerPage, safePage * rowsPerPage);
 
   // Selection
   const allPageSelected = paginated.length > 0 && paginated.every(b => selected.has(b.id));
@@ -311,6 +321,21 @@ export default function BrdPage() {
             <option value="COMPLETED">Completed</option>
             <option value="APPROVED">Approved</option>
             <option value="ON_HOLD">On Hold</option>
+          </select>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
+          </span>
+        </div>
+
+        {/* Sort A-Z / Z-A */}
+        <div className="relative">
+          <select
+            value={sortOrder ?? ""}
+            onChange={e => { setSortOrder((e.target.value as "asc" | "desc") || null); setPage(1); }}
+            className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
+            <option value="">Sort by Name</option>
+            <option value="asc">A → Z</option>
+            <option value="desc">Z → A</option>
           </select>
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
@@ -486,7 +511,7 @@ export default function BrdPage() {
             className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs focus:outline-none focus:border-blue-400">
             {ROWS_PER_PAGE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
-          <span>out of <strong className="text-slate-700 dark:text-slate-200">{filtered.length}</strong></span>
+          <span>out of <strong className="text-slate-700 dark:text-slate-200">{sorted.length}</strong></span>
         </div>
 
         {/* Page numbers */}

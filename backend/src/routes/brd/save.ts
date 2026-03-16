@@ -66,6 +66,16 @@ function toJsonValue(val: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNu
 // ── POST /brd/save ─────────────────────────────────────────────────────────
 router.post("/save", async (req: Request, res: Response) => {
   try {
+    // Guard: ensure body was parsed correctly as JSON.
+    // If the frontend sends FormData or forgets Content-Type: application/json,
+    // req.body will be undefined and destructuring will throw.
+    if (!req.body || typeof req.body !== "object") {
+      return res.status(400).json({
+        error:  "Request body is missing or not JSON.",
+        hint:   "Set Content-Type: application/json and send a JSON body.",
+      });
+    }
+
     const {
       brdId,
       title,
