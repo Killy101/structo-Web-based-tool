@@ -5,3 +5,5 @@ tmp/*
 !tmp/.gitkeep
 /src/generated/prisma
 **/temp.sql
+temp.sql
+
