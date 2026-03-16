@@ -94,59 +94,61 @@ export default function PdfViewer({
 
   // ── Load PDF from File ─────────────────────────────────────────────────────
 
-  useEffect(() => {
-    // Destroy previous document
-    if (pdfDocRef.current) {
-      pdfDocRef.current.destroy();
-      pdfDocRef.current = null;
-    }
-    setPdfLoaded(false);
-    textItemsRef.current = [];
-    viewportRef.current  = null;
+ useEffect(() => {
+  // Destroy previous document
+  if (pdfDocRef.current) {
+    pdfDocRef.current.destroy();
+    pdfDocRef.current = null;
+  }
 
-    if (!file) {
-      setTotalPages(0);
-      setCurrentPage(1);
-      setLoadError(null);
-      return;
-    }
+  setPdfLoaded(false);
+  textItemsRef.current = [];
+  viewportRef.current = null;
 
-    let cancelled = false;
-    setLoading(true);
+  if (!file) {
+    setTotalPages(0);
+    setCurrentPage(1);
     setLoadError(null);
+    return;
+  }
 
-    (async () => {
-      try {
-        const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
+  let cancelled = false;
+  setLoading(true);
+  setLoadError(null);
 
-        if (!pdfjsWorkerConfigured) {
-          GlobalWorkerOptions.workerSrc = new URL(
-            "pdfjs-dist/build/pdf.worker.min.mjs",
-            import.meta.url,
-          ).toString();
-          pdfjsWorkerConfigured = true;
-        }
+  (async () => {
+    try {
+      const pdfjs = await import("pdfjs-dist");
+const { getDocument, GlobalWorkerOptions } = pdfjs;
 
-        const buffer = await file.arrayBuffer();
-        if (cancelled) return;
+if (!pdfjsWorkerConfigured) {
+  GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  pdfjsWorkerConfigured = true;
+}
 
-        const pdf = await getDocument({ data: buffer }).promise;
-        if (cancelled) { pdf.destroy(); return; }
-
-        pdfDocRef.current = pdf;
-        setTotalPages(pdf.numPages);
-        setCurrentPage(1);
-        setPdfLoaded(true);
-      } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : "Failed to load PDF");
-      } finally {
-        if (!cancelled) setLoading(false);
+const buffer = await file.arrayBuffer();
+const pdf = await getDocument({ data: buffer }).promise;
+      if (cancelled) {
+        pdf.destroy();
+        return;
       }
-    })();
 
-    return () => { cancelled = true; };
-  }, [file]);
+      pdfDocRef.current = pdf;
+      setTotalPages(pdf.numPages);
+      setCurrentPage(1);
+      setPdfLoaded(true);
+    } catch (e) {
+      if (!cancelled)
+        setLoadError(e instanceof Error ? e.message : "Failed to load PDF");
+    } finally {
+      if (!cancelled) setLoading(false);
+    }
+  })();
 
+  return () => {
+    cancelled = true;
+  };
+}, [file]);
   // ── Navigate to targetPage ─────────────────────────────────────────────────
 
   useEffect(() => {
