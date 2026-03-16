@@ -42,6 +42,7 @@ import {
   downloadChunkXml,
   fetchChunkDetail,
   fetchChunks,
+  getPdfUrl,
   pollStatus,
   reuploadXmlFiles,
   saveChunkXml,
@@ -566,6 +567,8 @@ export default function AutoComparePage() {
   const [sourceName, setSourceName] = useState("");
   const [oldPdfFile, setOldPdfFile] = useState<File | null>(null);
   const [newPdfFile, setNewPdfFile] = useState<File | null>(null);
+  const [oldPdfUrl, setOldPdfUrl] = useState<string | null>(null);
+  const [newPdfUrl, setNewPdfUrl] = useState<string | null>(null);
 
   // Processing
   const [progress,   setProgress]   = useState(0);
@@ -611,6 +614,10 @@ export default function AutoComparePage() {
   const [batchGenGenerated, setBatchGenGenerated] = useState(0);
   const [batchGenFailed,    setBatchGenFailed]    = useState(0);
 
+  // Session expiry
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [sessionWarning, setSessionWarning] = useState(false);
+
   // Toast
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
@@ -621,6 +628,14 @@ export default function AutoComparePage() {
   // ── Derived ──────────────────────────────────────────────────────────────
 
   const selectedChunkIdx   = selected ? chunks.findIndex((c) => c.index === selected.index) : -1;
+
+  // Similarity → heatmap color (0 = red, 1 = green)
+  const similarityColor = (sim: number): string => {
+    if (sim >= 0.95) return "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
+    if (sim >= 0.80) return "bg-amber-500/15 text-amber-300 border-amber-500/25";
+    if (sim >= 0.60) return "bg-orange-500/15 text-orange-300 border-orange-500/25";
+    return "bg-red-500/15 text-red-300 border-red-500/25";
+  };
   const selectedChunkRow   = selectedChunkIdx >= 0 ? chunks[selectedChunkIdx] : null;
   const selectedChunkTitle = selectedChunkRow ? `${selectedChunkRow.label} (#${selectedChunkRow.index})` : null;
 
@@ -640,6 +655,9 @@ export default function AutoComparePage() {
           setSourceName(chunksResp.source_name);
           setChunks(chunksResp.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
           setSummary(chunksResp.summary);
+          // Restore PDF URLs for viewer fallback (File objects are not persisted).
+          setOldPdfUrl(getPdfUrl(saved, "old"));
+          setNewPdfUrl(getPdfUrl(saved, "new"));
           setStage("review");
           showToast(`Session restored: ${chunksResp.source_name}`);
         } else {
@@ -703,6 +721,8 @@ export default function AutoComparePage() {
     setSourceName(response.source_name);
     setOldPdfFile(oldPdf);
     setNewPdfFile(newPdf);
+    setOldPdfUrl(null);
+    setNewPdfUrl(null);
     setStage("processing");
 
     try {
@@ -717,6 +737,7 @@ export default function AutoComparePage() {
       try {
         const status = await pollStatus(response.session_id);
         setProgress(status.progress);
+        if ((status as { expires_at?: number }).expires_at) setExpiresAt((status as { expires_at?: number }).expires_at ?? null);
         if (status.status === "done") {
           clearInterval(pollRef.current!);
           setSummary(status.summary as SessionSummary);
@@ -740,6 +761,18 @@ export default function AutoComparePage() {
   }, [showToast]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // Session expiry countdown
+  useEffect(() => {
+    if (!expiresAt) return;
+    const check = () => {
+      const remaining = expiresAt - Date.now() / 1000;
+      setSessionWarning(remaining > 0 && remaining < 300); // warn in last 5 min
+    };
+    check();
+    const t = setInterval(check, 30_000);
+    return () => clearInterval(t);
+  }, [expiresAt]);
 
   // ── Select chunk → load full detail ───────────────────────────────────────
 
@@ -999,12 +1032,26 @@ export default function AutoComparePage() {
 
   const handleDownloadAll = useCallback(async () => {
     if (!sessionId) return;
-    showToast("Preparing download…");
+    showToast("Preparing ZIP download…");
     try {
-      await downloadAllChunks(sessionId, sourceName, chunks.map((c) => c.index));
-      showToast("Download started");
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Download failed", "error");
+      // Prefer the server-side ZIP endpoint for reliability
+      const base = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const url = `${base}/autocompare/download-all/${sessionId}`;
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${sourceName || "chunks"}_chunks.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast("ZIP download started");
+    } catch {
+      // Fallback to sequential download
+      try {
+        await downloadAllChunks(sessionId, sourceName, chunks.map((c) => c.index));
+        showToast("Download started");
+      } catch (err2: unknown) {
+        showToast(err2 instanceof Error ? err2.message : "Download failed", "error");
+      }
     }
   }, [sessionId, sourceName, chunks, showToast]);
 
@@ -1073,6 +1120,10 @@ export default function AutoComparePage() {
     setXmlHighlightText("");
     setOldPdfFile(null);
     setNewPdfFile(null);
+    setOldPdfUrl(null);
+    setNewPdfUrl(null);
+    setExpiresAt(null);
+    setSessionWarning(false);
     setValidateResult(null);
   }, []);
 
@@ -1274,6 +1325,21 @@ export default function AutoComparePage() {
         </div>
       </header>
 
+      {/* ── Session expiry warning ────────────────────────────────────────────── */}
+      {sessionWarning && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 text-xs font-medium text-amber-200 border-b border-amber-500/20"
+          style={{ background: "rgba(245,158,11,0.08)" }}>
+          <svg className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          Session expires soon — please download your work or it will be lost.
+          <button onClick={handleDownloadAll} className="ml-auto underline text-amber-300 hover:text-white">
+            Download All Now
+          </button>
+          <button onClick={() => setSessionWarning(false)} className="text-amber-500 hover:text-amber-300 ml-2">✕</button>
+        </div>
+      )}
+
       {/* ── Upload stage ──────────────────────────────────────────────────────── */}
       {stage === "upload" && (
         <div className="flex-1 flex items-center justify-center p-6 overflow-y-auto">
@@ -1291,6 +1357,7 @@ export default function AutoComparePage() {
       {/* ── Review stage ──────────────────────────────────────────────────────── */}
       {stage === "review" && (
         <div className="flex-1 flex overflow-hidden">
+
           {/* Main panels area */}
           {selected ? (
             loadingChunk ? (
@@ -1316,44 +1383,101 @@ export default function AutoComparePage() {
                 <div className="flex-1 min-w-0 flex flex-col gap-1 overflow-hidden">
                   <div className="flex-[1.05] min-h-0 flex gap-1 overflow-hidden">
                     {/* Panel: Old PDF */}
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <PdfViewer
-                        file={oldPdfFile}
-                        label="Old PDF"
-                        color="blue"
-                        pageStart={selected.page_start}
-                        pageEnd={selected.page_end}
-                        targetPage={oldPdfTargetPage ?? undefined}
-                        highlightText={oldHighlightText || undefined}
-                      />
+                    <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+                      {oldPdfFile || oldPdfUrl ? (
+                        <PdfViewer
+                          file={oldPdfFile}
+                          src={oldPdfUrl ?? undefined}
+                          label="Old PDF"
+                          color="blue"
+                          pageStart={selected.page_start}
+                          pageEnd={selected.page_end}
+                          targetPage={oldPdfTargetPage ?? undefined}
+                          highlightText={oldHighlightText || undefined}
+                        />
+                      ) : (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border text-slate-500 text-xs"
+                          style={{ borderColor: "rgba(26,143,209,0.15)", background: "rgba(6,13,26,0.6)" }}>
+                          <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          <span className="text-[11px] text-slate-400 font-medium">Old PDF</span>
+                          <span className="text-[10px] text-slate-600 px-4 text-center">
+                            Upload a session to view. PDF loads automatically on upload.
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Panel: New PDF */}
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <PdfViewer
-                        file={newPdfFile}
-                        label="New PDF"
-                        color="violet"
-                        pageStart={selected.page_start}
-                        pageEnd={selected.page_end}
-                        targetPage={newPdfTargetPage ?? undefined}
-                        highlightText={newHighlightText || undefined}
-                      />
+                    <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+                      {newPdfFile || newPdfUrl ? (
+                        <PdfViewer
+                          file={newPdfFile}
+                          src={newPdfUrl ?? undefined}
+                          label="New PDF"
+                          color="violet"
+                          pageStart={selected.page_start}
+                          pageEnd={selected.page_end}
+                          targetPage={newPdfTargetPage ?? undefined}
+                          highlightText={newHighlightText || undefined}
+                        />
+                      ) : (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border text-slate-500 text-xs"
+                          style={{ borderColor: "rgba(139,92,246,0.15)", background: "rgba(6,13,26,0.6)" }}>
+                          <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          <span className="text-[11px] text-slate-400 font-medium">New PDF</span>
+                          <span className="text-[10px] text-slate-600 px-4 text-center">
+                            Upload a session to view. PDF loads automatically on upload.
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Panel: XML Editor */}
-                  <div className="flex-[0.95] min-h-0 overflow-hidden">
-                    <XmlEditor
-                      value={xmlDraft}
-                      onChange={setXmlDraft}
-                      onSave={handleSave}
-                      onAutoSave={handleAutoSave}
-                      focusLine={xmlFocusLine}
-                      focusRequestId={xmlFocusRequestId}
-                      highlightText={xmlHighlightText || undefined}
-                      height="100%"
-                    />
+                  {/* Panel: XML Editor with Generate bar */}
+                  <div className="flex-[0.95] min-h-0 overflow-hidden flex flex-col gap-0.5">
+                    {/* Inline generate bar */}
+                    <div className="flex-shrink-0 flex items-center gap-1.5 px-1">
+                      <button
+                        onClick={() => void handleAutoGenerate()}
+                        disabled={isGenerating || !selected?.has_changes}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-semibold text-violet-200 border border-violet-500/30 hover:bg-violet-500/10 transition-all disabled:opacity-40"
+                        title="Auto-generate XML update from PDF diff"
+                      >
+                        {isGenerating ? (
+                          <div className="w-3 h-3 rounded-full border border-t-transparent border-violet-300 animate-spin" />
+                        ) : (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                        )}
+                        {isGenerating ? "Generating…" : "Auto-Generate"}
+                      </button>
+                      {selected && (
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${similarityColor(selected.similarity ?? 1)}`}>
+                          {Math.round((selected.similarity ?? 1) * 100)}% similar
+                        </span>
+                      )}
+                      <span className="flex-1" />
+                      <span className="text-[9px] text-slate-600 italic">
+                        Right-click diff line → Generate from line
+                      </span>
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      <XmlEditor
+                        value={xmlDraft}
+                        onChange={setXmlDraft}
+                        onSave={handleSave}
+                        onAutoSave={handleAutoSave}
+                        focusLine={xmlFocusLine}
+                        focusRequestId={xmlFocusRequestId}
+                        highlightText={xmlHighlightText || undefined}
+                        height="100%"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

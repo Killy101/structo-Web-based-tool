@@ -607,17 +607,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <span className="text-sm font-medium">
                   Theme: {dark ? "Dark" : "Light"}
                 </span>
-                <span
-                  className="ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                  style={{
-                    background: dark
-                      ? "rgba(26, 143, 209, 0.14)"
-                      : "rgba(15, 23, 42, 0.08)",
-                    color: dark ? "#7dd3fc" : "#334155",
-                  }}
-                >
-                  Switch
-                </span>
+               
               </>
             )}
           </button>

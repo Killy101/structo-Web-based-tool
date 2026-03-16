@@ -181,6 +181,7 @@ async def status_endpoint(session_id: str):
         "progress":   session["progress"],
         "summary":    session.get("summary"),
         "error":      session.get("error"),
+        "expires_at": session.get("expires_at"),
     }
 
 
@@ -293,8 +294,10 @@ async def autogenerate_endpoint(payload: AutoGenerateRequest):
     if not chunk:
         raise HTTPException(status_code=404, detail=f"Chunk {payload.chunk_id} not found")
 
+    # Use the saved (user-edited) XML as the base, falling back to original
+    base_xml = chunk.get("xml_saved") or chunk.get("xml_content", "")
     suggested = _generate_xml_suggestion(
-        xml_chunk=chunk.get("xml_content", ""),
+        xml_chunk=base_xml,
         old_pdf_text=chunk.get("old_text", ""),
         new_pdf_text=chunk.get("new_text", ""),
         focus_old_text=payload.old_text,
@@ -372,6 +375,40 @@ async def validate_all_endpoint(payload: ValidateAllRequest):
     }
 
 
+
+
+# ── 10b. SERVE ORIGINAL PDF (for session-restore PDF viewer) ─────────────────
+
+@router.get("/pdf/{session_id}/{which}")
+async def serve_pdf_endpoint(session_id: str, which: str):
+    """
+    Serve the original old or new PDF for a session.
+    `which` must be "old" or "new".
+    Used by the frontend PdfViewer when the local File object is unavailable
+    (e.g. after page refresh / session restore).
+    """
+    if which not in ("old", "new"):
+        raise HTTPException(status_code=400, detail="which must be 'old' or 'new'")
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    from pathlib import Path as _Path
+    pdf_path = _Path(session["storage"]["original"]) / f"{which}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail=f"{which}.pdf not found for this session")
+
+    pdf_bytes = pdf_path.read_bytes()
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{which}.pdf"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
 # ── 9. DOWNLOAD SINGLE CHUNK XML ─────────────────────────────────────────────
 
 @router.get("/download/{session_id}/{chunk_id}")
@@ -434,7 +471,43 @@ async def reupload_endpoint(
     }
 
 
-# ── 11. CLEANUP ───────────────────────────────────────────────────────────────
+
+
+# ── 11b. DOWNLOAD ALL CHUNKS AS ZIP ──────────────────────────────────────────
+
+@router.get("/download-all/{session_id}")
+async def download_all_endpoint(session_id: str):
+    """Stream all chunk XMLs as a ZIP archive."""
+    import io
+    import zipfile as _zip
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    chunks = session.get("chunks", [])
+    if not chunks:
+        raise HTTPException(status_code=404, detail="No chunks available")
+
+    buf = io.BytesIO()
+    with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
+        for chunk in chunks:
+            chunk_id = str(chunk.get("index"))
+            try:
+                filename, xml_content = get_chunk_xml_content(session_id, chunk_id)
+                zf.writestr(filename, xml_content.encode("utf-8"))
+            except Exception:
+                pass
+    buf.seek(0)
+
+    safe_name = re.sub(r"[^\w.\-]", "_", session.get("source_name", "chunks"))
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_chunks.zip"'},
+    )
+
+# ── 12. CLEANUP ───────────────────────────────────────────────────────────────
 
 @router.delete("/cleanup")
 async def cleanup_endpoint(ttl: int = 3600):
