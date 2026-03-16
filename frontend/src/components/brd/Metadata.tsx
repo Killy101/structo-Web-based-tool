@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from "react";
+import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import React, { useEffect, useState, useRef } from "react";
+import api from "@/app/lib/api";
 
 type Format = "new" | "old";
 
@@ -8,6 +10,7 @@ interface Props {
   title?: string;
   onComplete?: () => void;
   initialData?: Record<string, unknown>;
+  onDataChange?: (data: Record<string, unknown>) => void;
 }
 
 interface FieldConfig {
@@ -18,30 +21,44 @@ interface FieldConfig {
   icon: string;
 }
 
+interface CellImageMeta {
+  id: number;
+  tableIndex: number;
+  rowIndex: number;
+  colIndex: number;
+  rid: string;
+  mediaName: string;
+  mimeType: string;
+  cellText: string;
+  section: string;
+  fieldLabel: string;
+}
+
 const OLD_FIELDS: FieldConfig[] = [
-  { key: "sourceName",      label: "Source Name",       type: "text", placeholder: "e.g., Federal Register",   icon: "◈" },
-  { key: "sourceType",      label: "Source Type",       type: "text", placeholder: "Type",                    icon: "⬡" },
-  { key: "publicationDate", label: "Publication Date",  type: "text", placeholder: "Publication date",        icon: "◎" },
-  { key: "lastUpdatedDate", label: "Last Updated Date", type: "text", placeholder: "Last updated date",       icon: "◎" },
-  { key: "processingDate",  label: "Processing Date",   type: "text", placeholder: "Processing date",         icon: "◎" },
-  { key: "issuingAgency",   label: "Issuing Agency",    type: "text", placeholder: "e.g., EPA, FDA, OSHA",   icon: "≡" },
-  { key: "contentUrl",      label: "Content URL",       type: "url",  placeholder: "https://",               icon: "↑" },
-  { key: "geography",       label: "Geography",         type: "text", placeholder: "e.g., United States, EU",icon: "✦" },
-  { key: "language",        label: "Language",          type: "text", placeholder: "Language",               icon: "≡" },
-  { key: "payloadSubtype",  label: "Payload Subtype",   type: "text", placeholder: "Subtype",                icon: "⬡" },
-  { key: "status",          label: "Status",            type: "text", placeholder: "Status",                 icon: "◈" },
+  { key: "sourceName",           label: "Source Name",           type: "text", placeholder: "e.g., Federal Register",    icon: "◈" },
+  { key: "authoritativeSource",  label: "Authoritative Source",  type: "text", placeholder: "e.g., Code of Federal Regulations", icon: "≡" },
+  { key: "sourceType",           label: "Source Type",           type: "text", placeholder: "Type",                     icon: "⬡" },
+  { key: "publicationDate",      label: "Publication Date",      type: "text", placeholder: "Publication date",         icon: "◎" },
+  { key: "lastUpdatedDate",      label: "Last Updated Date",     type: "text", placeholder: "Last updated date",        icon: "◎" },
+  { key: "processingDate",       label: "Processing Date",       type: "text", placeholder: "Processing date",          icon: "◎" },
+  { key: "issuingAgency",        label: "Issuing Agency",        type: "text", placeholder: "e.g., EPA, FDA, OSHA",    icon: "≡" },
+  { key: "contentUrl",           label: "Content URL",           type: "url",  placeholder: "https://",                icon: "↑" },
+  { key: "geography",            label: "Geography",             type: "text", placeholder: "e.g., United States, EU", icon: "✦" },
+  { key: "language",             label: "Language",              type: "text", placeholder: "Language",                icon: "≡" },
+  { key: "payloadSubtype",       label: "Payload Subtype",       type: "text", placeholder: "Subtype",                 icon: "⬡" },
+  { key: "status",               label: "Status",                type: "text", placeholder: "Status",                  icon: "◈" },
 ];
 
 const NEW_FIELDS: FieldConfig[] = [
-  { key: "contentCategoryName",    label: "Content Category Name",    type: "text", placeholder: "e.g., Environmental Compliance", icon: "⬡" },
-  { key: "publicationDate",        label: "Publication Date",         type: "text", placeholder: "Publication date",               icon: "◎" },
-  { key: "lastUpdatedDate",        label: "Last Updated Date",        type: "text", placeholder: "Last updated date",              icon: "◎" },
-  { key: "processingDate",         label: "Processing Date",          type: "text", placeholder: "ISO 8601 e.g. 2016-06-07T15:10:00Z", icon: "◎" },
-  { key: "issuingAgency",          label: "Issuing Agency",           type: "text", placeholder: "e.g., EPA, FDA, OSHA",          icon: "≡" },
-  { key: "relatedGovernmentAgency",label: "Related Government Agency",type: "text", placeholder: "e.g., Department of Energy",    icon: "≡" },
-  { key: "contentUri",             label: "Content URI",              type: "url",  placeholder: "https://",                      icon: "↑" },
-  { key: "geography",              label: "Geography",                type: "text", placeholder: "e.g., China, Australia",        icon: "✦" },
-  { key: "language",               label: "Language",                 type: "text", placeholder: "e.g., English, Chinese",        icon: "≡" },
+  { key: "contentCategoryName",     label: "Content Category Name",     type: "text", placeholder: "e.g., Environmental Compliance",    icon: "⬡" },
+  { key: "publicationDate",         label: "Publication Date",          type: "text", placeholder: "Publication date",                  icon: "◎" },
+  { key: "lastUpdatedDate",         label: "Last Updated Date",         type: "text", placeholder: "Last updated date",                 icon: "◎" },
+  { key: "processingDate",          label: "Processing Date",           type: "text", placeholder: "ISO 8601 e.g. 2016-06-07T15:10:00Z",icon: "◎" },
+  { key: "issuingAgency",           label: "Issuing Agency",            type: "text", placeholder: "e.g., EPA, FDA, OSHA",             icon: "≡" },
+  { key: "relatedGovernmentAgency", label: "Related Government Agency", type: "text", placeholder: "e.g., Department of Energy",       icon: "≡" },
+  { key: "contentUri",              label: "Content URI",               type: "url",  placeholder: "https://",                         icon: "↑" },
+  { key: "geography",               label: "Geography",                 type: "text", placeholder: "e.g., China, Australia",           icon: "✦" },
+  { key: "language",                label: "Language",                  type: "text", placeholder: "e.g., English, Chinese",           icon: "≡" },
 ];
 
 function FieldInput({
@@ -66,15 +83,108 @@ function FieldInput({
   );
 }
 
-export default function Metadata({ format, brdId, title, onComplete, initialData }: Props) {
+export default function Metadata({ format, brdId, title, onComplete, initialData, onDataChange }: Props) {
   const fields = format === "old" ? OLD_FIELDS : NEW_FIELDS;
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [saved, setSaved] = useState(false);
+  const [values, setValues]               = useState<Record<string, string>>({});
+  const [saved, setSaved]                 = useState(false);
+  const [images, setImages]               = useState<CellImageMeta[]>([]);
+  const isInitializing = useRef(false);
+  const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
+  function getFieldImgsUploaded(key: string): UploadedCellImage[] { return cellImages[key] ?? []; }
+  function onFieldUploaded(key: string, img: UploadedCellImage) { setCellImages(prev => ({ ...prev, [key]: [...(prev[key] ?? []), img] })); }
+  function onFieldDeleted(key: string, id: number) { setCellImages(prev => ({ ...prev, [key]: (prev[key] ?? []).filter(i => i.id !== id) })); }
+
+  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
+    isInitializing.current = true;
     setValues(buildMetadataValues(format, initialData));
     setSaved(false);
   }, [format, initialData]);
+
+  useEffect(() => {
+    if (!onDataChange) return;
+    // Skip firing during initialData resets to avoid infinite loop
+    if (isInitializing.current) {
+      isInitializing.current = false;
+      return;
+    }
+    // Map display values back to snake_case keys for upstream
+    const out: Record<string, string> = format === "old" ? {
+      content_category_name: values.sourceName ?? "",
+      authoritative_source:  values.authoritativeSource ?? "",
+      source_type:           values.sourceType ?? "",
+      publication_date:      values.publicationDate ?? "",
+      last_updated_date:     values.lastUpdatedDate ?? "",
+      processing_date:       values.processingDate ?? "",
+      issuing_agency:        values.issuingAgency ?? "",
+      content_uri:           values.contentUrl ?? "",
+      geography:             values.geography ?? "",
+      language:              values.language ?? "",
+      payload_subtype:       values.payloadSubtype ?? "",
+      status:                values.status ?? "",
+    } : {
+      content_category_name:     values.contentCategoryName ?? "",
+      publication_date:          values.publicationDate ?? "",
+      last_updated_date:         values.lastUpdatedDate ?? "",
+      processing_date:           values.processingDate ?? "",
+      issuing_agency:            values.issuingAgency ?? "",
+      related_government_agency: values.relatedGovernmentAgency ?? "",
+      content_uri:               values.contentUri ?? "",
+      geography:                 values.geography ?? "",
+      language:                  values.language ?? "",
+    };
+    onDataChange(out);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values]);
+
+  useEffect(() => {
+    if (!brdId) return;
+    const fetchImages = async () => {
+      try {
+        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`);
+        const all: CellImageMeta[] = response.data.images ?? [];
+        // section="metadata" for new records; tableIndex=5 fallback for stale DB records
+        setImages(all.filter(img =>
+          img.section === "metadata" ||
+          img.section === "unknown" && img.tableIndex === 5 ||
+          !img.section && img.tableIndex === 5
+        ));
+        // Restore manually uploaded images keyed by fieldLabel (= field.key)
+        const manualImgs = all.filter(img => img.section === "metadata" && img.rid?.startsWith("manual-"));
+        const restored: Record<string, UploadedCellImage[]> = {};
+        manualImgs.forEach(img => {
+          const key = img.fieldLabel ?? "";
+          if (!key) return;
+          if (!restored[key]) restored[key] = [];
+          restored[key].push({ id: img.id, mediaName: img.mediaName, mimeType: img.mimeType, cellText: img.cellText, section: img.section, fieldLabel: img.fieldLabel });
+        });
+        setCellImages(restored);
+      } catch (err) {
+        console.error("[Metadata] Error fetching images:", err);
+      }
+    };
+    fetchImages();
+  }, [brdId]);
+
+  // Returns images for a specific field row.
+  // Primary: fieldLabel match (e.g. "Last Updated Date") — new DB records.
+  // Fallback: rowIndex match (1-based, row 0 = header) — stale DB records.
+  function getFieldImages(field: FieldConfig, fieldArrayIndex: number): CellImageMeta[] {
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const labelNorm = norm(field.label);
+
+    const byLabel = images.filter(img => {
+      const fl = norm(img.fieldLabel || "");
+      return fl && (fl === labelNorm || fl.includes(labelNorm) || labelNorm.includes(fl));
+    });
+    if (byLabel.length > 0) return byLabel;
+
+    // Fallback: metadata header = row 0, data starts at row 1
+    return images.filter(img =>
+      img.rowIndex === fieldArrayIndex + 1 && (!img.fieldLabel || img.fieldLabel.trim() === "")
+    );
+  }
 
   function setValue(key: string, val: string) {
     setValues((prev) => ({ ...prev, [key]: val }));
@@ -95,10 +205,10 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
             Metadata
           </p>
           <div className="flex items-center gap-2.5">
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider border ${format === "new" ? "bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-700/40" : "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700/40"}`}>
-            <span className="text-[9px]">{format === "new" ? "◉" : "◈"}</span>
-            {format === "new" ? "New Format" : "Legacy Format"}
-          </span>
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider border ${format === "new" ? "bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-700/40" : "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700/40"}`}>
+              <span className="text-[9px]">{format === "new" ? "◉" : "◈"}</span>
+              {format === "new" ? "New Format" : "Legacy Format"}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -163,24 +273,47 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
           </p>
         </div>
         <div className="px-4 py-3 space-y-3">
-          {fields.map((field) => (
-            <div key={field.key} className="space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-black dark:text-slate-400">{field.icon}</span>
-                <label className="text-[10px] font-semibold uppercase tracking-widest text-black dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-                  {field.label}
-                </label>
-                {values[field.key]?.trim() && (
-                  <span className="ml-auto text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/30">✓</span>
-                )}
+          {fields.map((field, fieldIdx) => {
+            const fieldImgs = brdId ? getFieldImages(field, fieldIdx) : [];
+            return (
+              <div key={field.key} className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-black dark:text-slate-400">{field.icon}</span>
+                  <label className="text-[10px] font-semibold uppercase tracking-widest text-black dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+                    {field.label}
+                  </label>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {brdId && (
+                      <CellImageUploader
+                        brdId={brdId}
+                        section="metadata"
+                        fieldLabel={field.key}
+                        existingImages={getFieldImgsUploaded(field.key)}
+                        onUploaded={img => onFieldUploaded(field.key, img)}
+                        onDeleted={id => onFieldDeleted(field.key, id)}
+                      />
+                    )}
+                    {values[field.key]?.trim() && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/30">✓</span>
+                    )}
+                  </div>
+                </div>
+                <FieldInput
+                  field={field}
+                  value={values[field.key] ?? ""}
+                  onChange={(v) => setValue(field.key, v)}
+                />
+                {/* DB-extracted images */}
+                {fieldImgs.map(img => (
+                  <img key={img.id} src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                ))}
+                {/* Manually uploaded images */}
+                {getFieldImgsUploaded(field.key).map(img => (
+                  <img key={`m-${img.id}`} src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                ))}
               </div>
-              <FieldInput
-                field={field}
-                value={values[field.key] ?? ""}
-                onChange={(v) => setValue(field.key, v)}
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -212,27 +345,28 @@ function buildMetadataValues(
 ): Record<string, string> {
   if (!initialData) return {};
 
-  // Helper: safely get a string field, stripping surrounding quotes
   const t = (key: string): string =>
     typeof initialData[key] === "string" ? stripQuotes(initialData[key] as string) : "";
 
   if (format === "old") {
     return {
-      sourceName:      t("content_category_name") || t("document_title"),
-      sourceType:      t("source_type"),
-      publicationDate: t("publication_date"),
-      lastUpdatedDate: t("last_updated_date"),
-      processingDate:  t("processing_date"),
-      issuingAgency:   t("issuing_agency"),
-      contentUrl:      t("content_uri"),
-      geography:       t("geography"),
-      language:        t("language"),
-      payloadSubtype:  t("payload_subtype"),
-      status:          t("status"),
+      // "Source Name" in legacy doc → stored as content_category_name by extractor
+      sourceName:           t("content_category_name") || t("source_name") || t("document_title"),
+      // "Authoritative Source" → stored directly as authoritative_source
+      authoritativeSource:  t("authoritative_source") || t("issuing_agency"),
+      sourceType:           t("source_type"),
+      publicationDate:      t("publication_date"),
+      lastUpdatedDate:      t("last_updated_date"),
+      processingDate:       t("processing_date"),
+      issuingAgency:        t("issuing_agency"),
+      contentUrl:           t("content_uri"),
+      geography:            t("geography"),
+      language:             t("language"),
+      payloadSubtype:       t("payload_subtype"),
+      status:               t("status"),
     };
   }
 
-  // NEW format — keys match NEW_FIELDS exactly
   return {
     contentCategoryName:     t("content_category_name") || t("document_title"),
     publicationDate:         t("publication_date"),

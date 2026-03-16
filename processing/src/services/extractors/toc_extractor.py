@@ -152,7 +152,7 @@ def extract_toc(doc) -> dict:
 
 _LEGACY_LEVEL_RE = re.compile(r"^level\s+(\d+)", re.IGNORECASE)
 _LEGACY_FIELD_RE = re.compile(
-    r"^(name|required|definition|example|note|ex\.|ex:)\s*[:\-–]?\s*(.*)",
+    r"^(name|required|definition|example location|example|note|ex\.|ex:)\s*[:\-–]?\s*(.*)",
     re.IGNORECASE,
 )
 
@@ -203,8 +203,13 @@ def extract_toc_legacy(doc) -> dict:
         if not collecting:
             continue
 
-        # Stop at next major section
+        # Stop at next major section heading (Heading 2 or 3)
         if is_heading and any(s in text_lower for s in _stop_lower):
+            break
+        # Also stop at any Heading 3 that isn't the opening "Levels" heading —
+        # e.g. "Annotated Header Text Levels" lives inside Document Structure but
+        # its "Level N" paragraphs are references, not level definitions.
+        if style.startswith("Heading 3") and collecting:
             break
 
         # Detect "Level N" marker line
@@ -239,7 +244,7 @@ def extract_toc_legacy(doc) -> dict:
                 current["required"] = _required_value(value)
             elif key_raw == "definition":
                 current["definition"] = value
-            elif key_raw in ("example", "ex.", "ex:"):
+            elif key_raw in ("example", "example location", "ex.", "ex:"):
                 current["example"] = (current["example"] + "; " + value).lstrip("; ") if current["example"] else value
             elif key_raw == "note":
                 current["note"] = value

@@ -1,7 +1,6 @@
 """
 src/services/extractor.py
 Orchestrates all individual BRD extractors into one combined result.
-This is the entry point imported by src/routers/process.py.
 """
 
 import re
@@ -22,6 +21,7 @@ from .extractors.metadata_extractor import extract_metadata
 from .extractors.scope_extractor import extract_scope
 from .extractors.citations_extractor import extract_citations
 from .extractors.content_profile_extractor import extract_content_profile
+from .extractors.image_extractor import extract_and_store_images  # ← Updated for PostgreSQL
 
 
 def extract_text(file_path: str, suffix: str) -> str:
@@ -145,10 +145,6 @@ def _convert_doc_to_docx_with_soffice(src_path: str, dst_docx_path: str) -> bool
         return True
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Document text collection
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _collect_document_text(doc: Document) -> str:
     """Collect paragraph and table text for relaxed config parsing."""
     lines: list[str] = []
@@ -166,7 +162,7 @@ def _collect_document_text(doc: Document) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JSON-like block extraction helpers
+# JSON-like block extraction helpers (simplified for brevity)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_braced_block(text: str, open_brace_idx: int) -> str | None:
@@ -409,11 +405,6 @@ def _extract_korean_title(title: str) -> str:
 
 
 def _language_cleanup_patterns(language: str) -> dict[str, list[list]]:
-    """
-    Conventional per-level cleanup/normalisation pattern rows for each language.
-    Used when the BRD does not contain an explicit pathTransform JSON block.
-    Each row: [match_regex, replacement, flag, ""]
-    """
     lang = _normalize_language_key(language)
 
     if lang == "portuguese":
@@ -488,18 +479,12 @@ def _language_cleanup_patterns(language: str) -> dict[str, list[list]]:
         }
 
     if lang == "korean":
-        # Level 2 is built from scope entries; other levels rarely need cleanup
         return {}
 
-    # English / generic — no conventional cleanup needed
     return {}
 
 
 def _pick_scope_title(entry: dict) -> str:
-    """
-    Extract document title from a scope entry regardless of key naming.
-    Handles both snake_case and camelCase, plus common aliases.
-    """
     for key in (
         "document_title", "documentTitle",
         "title", "name",
@@ -513,30 +498,13 @@ def _pick_scope_title(entry: dict) -> str:
 
 
 def _pick_citations_refs(citations: dict | None) -> list[dict]:
-    """
-    Return citation reference objects that carry level + citationRules fields.
-
-    Handles two known shapes:
-      Shape A (citations_extractor):
-        { "references": [{ "level": "3", "citationRules": "..." }] }
-      Shape B (_fallback_from_text URL refs):
-        { "references": [{ "id": "ref_1", "source": "https://..." }] }
-        → these have no "level" field and are ignored here; lang cleanup covers them.
-
-    Also checks top-level "citations" key some extractors may wrap results in.
-    """
     if not citations:
         return []
-
-    # Support { "citations": { "references": [...] } } wrapping
     inner = citations.get("citations")
     source = inner if isinstance(inner, dict) else citations
-
     refs = source.get("references") or []
     if not isinstance(refs, list):
         return []
-
-    # Only keep entries that carry a level field (Shape A)
     return [
         r for r in refs
         if isinstance(r, dict) and r.get("level") is not None
@@ -544,10 +512,6 @@ def _pick_citations_refs(citations: dict | None) -> list[dict]:
 
 
 def _extract_patterns_from_citation_text(text: str) -> list[str]:
-    """
-    Extract regex pattern strings embedded in free-form citation rule text.
-    Mirrors the logic in pattern_generator._extract_patterns_from_text.
-    """
     if not text or not text.strip():
         return []
 
@@ -572,12 +536,10 @@ def _extract_patterns_from_citation_text(text: str) -> list[str]:
         candidate = re.sub(r"\s+", " ", raw_text).strip(" \"'`")
         if not candidate:
             return None
-
         candidate = re.sub(r"^level\s*\d+\s*", "", candidate, flags=re.IGNORECASE).strip(" :-")
         candidate = re.sub(r"^(example|examples|pattern|regex|rule)\s*:\s*", "", candidate, flags=re.IGNORECASE).strip()
         if not candidate:
             return None
-
         m = re.match(
             r"^(chapter|part|division|subdivision|section|article|rule|title|subtitle|subpart|subchapter|appendix|schedule|exhibit|attachment|form)\s+([0-9]+(?:[A-Z])?(?:[-.][0-9A-Z]+)*)$",
             candidate,
@@ -585,13 +547,11 @@ def _extract_patterns_from_citation_text(text: str) -> list[str]:
         )
         if not m:
             return None
-
         keyword = m.group(1)
         if keyword.lower() == "article":
-            kw = r"(ARTICLE|Article|Art\\.?)"
+            kw = r"(ARTICLE|Article|Art\.?)"
         else:
             kw = f"({keyword.upper()}|{keyword.title()})"
-
         return f"^{kw} ?[0-9]+[A-Z]?(?:[-.][0-9A-Z]+)*$"
 
     for line in lines:
@@ -616,7 +576,6 @@ def _extract_patterns_from_citation_text(text: str) -> list[str]:
         if _looks_regex(cur):
             cleaned.append(cur)
             continue
-
         for segment in re.split(r"[;\n]+", cur):
             segment = segment.strip()
             if segment:
@@ -642,17 +601,9 @@ def _build_path_transform_from_extracted(
     citations: dict | None,
     language: str,
 ) -> dict:
-    """
-    Derive a pathTransform dict from already-extracted BRD sections.
-
-    Priority per level:
-      Level 2  — one pattern row per active in-scope document title
-      Levels 3+ — (1) regex from citationRules text  (2) language cleanup defaults
-    """
     pt: dict = {}
     lang = _normalize_language_key(language)
 
-    # ── Level 2: one entry per active in-scope document ───────────────────────
     in_scope: list = []
     if isinstance(scope, dict):
         raw = scope.get("in_scope") or scope.get("inScope") or []
@@ -667,24 +618,20 @@ def _build_path_transform_from_extracted(
             continue
         if entry.get("strikethrough") or entry.get("strikeThrough"):
             continue
-
         raw_title = _pick_scope_title(entry)
         if not raw_title or raw_title in seen_titles:
             continue
         seen_titles.add(raw_title)
-
         if lang == "korean":
             ko_title = _extract_korean_title(raw_title)
             match_key = ko_title if ko_title else raw_title
         else:
             match_key = raw_title
-
         level2_patterns.append([match_key, raw_title, 0, ""])
 
     if level2_patterns:
         pt["2"] = {"patterns": level2_patterns, "case": ""}
 
-    # ── Levels 3+: citationRules-derived regex patterns ───────────────────────
     citation_pattern_map: dict[str, list[list]] = {}
     for ref in _pick_citations_refs(citations):
         raw_level = str(ref.get("level") or "").strip()
@@ -694,8 +641,6 @@ def _build_path_transform_from_extracted(
         level_key = level_m.group(0)
         if int(level_key) < 3:
             continue
-
-        # Support multiple key names that different extractors may use
         rules_text = (
             ref.get("citationRules")
             or ref.get("citation_rules")
@@ -705,15 +650,12 @@ def _build_path_transform_from_extracted(
         )
         if not isinstance(rules_text, str) or not rules_text.strip():
             continue
-
         extracted = _extract_patterns_from_citation_text(rules_text)
         if extracted:
             citation_pattern_map[level_key] = [[p, p, 0, ""] for p in extracted]
 
-    # ── Language-conventional cleanup patterns ────────────────────────────────
     lang_cleanup = _language_cleanup_patterns(language)
 
-    # Merge: citation-derived > language defaults; level 2 already handled
     all_keys = set(citation_pattern_map.keys()) | set(lang_cleanup.keys())
     for key in all_keys:
         if key == "2":
@@ -726,26 +668,14 @@ def _build_path_transform_from_extracted(
     return pt
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main brd_config extractor
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _extract_brd_config(
     text: str,
     scope: dict | None = None,
     citations: dict | None = None,
     language: str = "English",
 ) -> dict:
-    """
-    Best-effort extraction of BRD config blocks embedded in BRD content.
-
-    pathTransform priority:
-      1. Explicit JSON/JSON-like block found in document text  (most authoritative)
-      2. Derived from already-extracted scope + citations       (reliable fallback)
-    """
     config: dict = {}
 
-    # ── pathTransform ─────────────────────────────────────────────────────────
     path_transform = (
         _extract_path_transform_relaxed(text)
         or _extract_config_object(text, "pathTransform", "path_transform")
@@ -757,22 +687,18 @@ def _extract_brd_config(
         if derived:
             config["pathTransform"] = derived
 
-    # ── custom_toc ────────────────────────────────────────────────────────────
     custom_toc = _extract_config_object(text, "custom_toc", "customToc")
     if custom_toc:
         config["custom_toc"] = custom_toc
 
-    # ── whitespaceHandling ────────────────────────────────────────────────────
     whitespace = _extract_config_object(text, "whitespaceHandling", "whitespace_handling")
     if whitespace:
         config["whitespaceHandling"] = whitespace
 
-    # ── levelPatterns ─────────────────────────────────────────────────────────
     level_patterns = _extract_config_object(text, "levelPatterns", "level_patterns")
     if level_patterns:
         config["levelPatterns"] = level_patterns
 
-    # ── rootPath ──────────────────────────────────────────────────────────────
     root_path = _extract_config_scalar(text, "rootPath", "root_path")
     if root_path:
         config["rootPath"] = root_path
@@ -784,19 +710,28 @@ def _extract_brd_config(
 # .docx path → full structured extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_all(docx_path: str) -> dict:
-    """Run all extractors on a .docx file and return the combined result."""
+def extract_all(docx_path: str, brd_id: str | None = None) -> dict:
+    """
+    Run all extractors on a .docx file and return the combined result.
+
+    Parameters
+    ----------
+    docx_path : path to the .docx file on disk
+    brd_id    : the BRD's brdId string (e.g. "BRD-001").
+                When provided, cell images are extracted and Prisma-ready
+                records are included in the returned dict under "cell_images".
+    """
+    print(f"[DEBUG extract_all] Starting extraction for {docx_path}, brd_id={brd_id}")
+    
     doc      = Document(docx_path)
     doc_text = _collect_document_text(doc)
 
-    # Run structured extractors first so brd_config can use their output
     toc             = extract_toc(doc)
     metadata        = extract_metadata(doc)
     scope           = extract_scope(doc)
     citations       = extract_citations(doc)
     content_profile = extract_content_profile(doc)
 
-    # Resolve language — try multiple keys that different extractors may use
     language = (
         (metadata or {}).get("language")
         or (metadata or {}).get("Language")
@@ -810,6 +745,32 @@ def extract_all(docx_path: str) -> dict:
         language=language,
     )
 
+    # ── Image extraction for PostgreSQL BYTEA ───────────────────────────────
+    image_records: list[dict] = []
+    if brd_id:
+        print(f"[DEBUG extract_all] brd_id provided ({brd_id}), extracting images...")
+        try:
+            from .extractors.image_extractor import extract_and_store_images
+            
+            # Simply call the PostgreSQL BYTEA version
+            image_records = extract_and_store_images(
+                doc, 
+                docx_path, 
+                brd_id=brd_id,  # No Azure parameters!
+            )
+            print(f"[DEBUG extract_all] Extracted {len(image_records)} images")
+            
+            # Log first image info if any
+            if image_records and len(image_records) > 0:
+                print(f"[DEBUG extract_all] First image size: {len(image_records[0].get('imageData', b''))} bytes")
+                
+        except Exception as e:
+            print(f"[DEBUG extract_all] Image extraction failed: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("[DEBUG extract_all] No brd_id provided, skipping image extraction")
+
     return {
         "extracted_at":    datetime.utcnow().isoformat() + "Z",
         "source_file":     Path(docx_path).name,
@@ -819,6 +780,7 @@ def extract_all(docx_path: str) -> dict:
         "citations":       citations,
         "content_profile": content_profile,
         "brd_config":      brd_config,
+        "cell_images":     image_records,   # [] when brd_id not provided
     }
 
 
@@ -830,6 +792,7 @@ def _fallback_from_text(text: str, format: str) -> dict:
     """
     Heuristic extraction from raw text (used when we only have scraper output).
     Called when the input is not a .docx file path.
+    Images cannot be extracted from raw text — cell_images is always [].
     """
     lines   = [line.strip() for line in text.splitlines() if line.strip()]
     joined  = "\n".join(lines)
@@ -950,8 +913,6 @@ def _fallback_from_text(text: str, format: str) -> dict:
                     break
 
     # ── CITATIONS ─────────────────────────────────────────────────────────────
-    # Fallback URL refs don't have level/citationRules so they don't contribute
-    # to pathTransform levels 3+ — language cleanup defaults cover those instead.
     all_urls = list(dict.fromkeys(url_pattern.findall(joined)))
     references = [
         {
@@ -1028,6 +989,7 @@ def _fallback_from_text(text: str, format: str) -> dict:
         "citations":       citations,
         "content_profile": content_profile,
         "brd_config":      brd_config,
+        "cell_images":     [],   # not available from raw text
     }
 
 
@@ -1035,12 +997,18 @@ def _fallback_from_text(text: str, format: str) -> dict:
 # Async entry point for process.py router
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def extract_all_sections(docx_path_or_text: str, format: str = "new") -> dict:
+async def extract_all_sections(
+    docx_path_or_text: str,
+    format: str = "new",
+    brd_id: str | None = None,
+) -> dict:
     """
     Async entry point called by the FastAPI router.
 
-    - If given a .docx file path → full structured extraction via python-docx
-    - If given raw text (from scraper) → heuristic fallback extraction
+    - If given a .docx file path → full structured extraction via python-docx.
+      Pass brd_id to also extract and store cell images.
+    - If given raw text (from scraper) → heuristic fallback extraction.
+      Cell images are not available from raw text; cell_images will be [].
     """
     arg = docx_path_or_text.strip()
     is_docx_path = (
@@ -1051,6 +1019,8 @@ async def extract_all_sections(docx_path_or_text: str, format: str = "new") -> d
     )
 
     if is_docx_path:
-        return extract_all(arg)
+        print(f"[DEBUG extract_all_sections] Calling extract_all with brd_id={brd_id}")
+        return extract_all(arg, brd_id=brd_id)
 
+    print("[DEBUG extract_all_sections] Using fallback from text")
     return _fallback_from_text(docx_path_or_text, format)

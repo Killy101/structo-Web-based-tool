@@ -4,6 +4,9 @@ Shared helper functions used by all individual extractors.
 """
 
 import re
+import zipfile
+import mimetypes
+from pathlib import Path
 
 
 def iter_paragraphs(doc):
@@ -78,3 +81,75 @@ def extract_url_from_cell(cell) -> str:
         return max(candidates, key=rank)
 
     return text.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Image-in-cell helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cell_has_image(cell) -> bool:
+    """Return True if the cell contains at least one inline drawing."""
+    return "w:drawing" in cell._tc.xml
+
+
+def get_cell_image_rids(cell) -> list[str]:
+    """
+    Return all r:embed relationship IDs found in a cell's drawing elements.
+    These IDs can be resolved against doc.part.rels to get the image file.
+    """
+    return re.findall(r'r:embed="([^"]+)"', cell._tc.xml)
+
+
+def extract_image_bytes_from_docx(docx_path: str, media_name: str) -> bytes:
+    """
+    Read raw bytes for a single media file directly from the .docx ZIP.
+
+    Parameters
+    ----------
+    docx_path  : path to the .docx file on disk
+    media_name : filename inside word/media/, e.g. "image3.png"
+
+    Returns
+    -------
+    Raw bytes of the image, or b"" if not found.
+    """
+    zip_key = f"word/media/{media_name}"
+    with zipfile.ZipFile(docx_path) as zf:
+        if zip_key in zf.namelist():
+            return zf.read(zip_key)
+    return b""
+
+
+def resolve_cell_images(cell, doc_part, docx_path: str) -> list[dict]:
+    """
+    For a cell that contains drawings, return a list of image metadata dicts:
+        { "rId", "media_name", "mime_type", "image_bytes" }
+
+    Parameters
+    ----------
+    cell      : python-docx Cell
+    doc_part  : doc.part  (carries .rels)
+    docx_path : filesystem path to the .docx (for ZIP byte extraction)
+    """
+    rids = get_cell_image_rids(cell)
+    if not rids:
+        return []
+
+    results = []
+    for rId in rids:
+        rel = doc_part.rels.get(rId)
+        if not rel or "image" not in rel.reltype:
+            continue
+        target_ref: str = rel.target_ref          # e.g. "media/image3.png"
+        media_name = Path(target_ref).name         # e.g. "image3.png"
+        mime, _ = mimetypes.guess_type(media_name)
+        img_bytes = extract_image_bytes_from_docx(docx_path, media_name)
+        if img_bytes:
+            results.append({
+                "rId":         rId,
+                "media_name":  media_name,
+                "mime_type":   mime or "application/octet-stream",
+                "image_bytes": img_bytes,
+            })
+
+    return results

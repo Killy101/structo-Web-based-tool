@@ -1,20 +1,20 @@
-# Python bytecode
+# Python cache files
 __pycache__/
+*.pyc
 *.py[cod]
-*.pyo
+*$py.class
 
-# Virtual environment
-.venv/
+# Virtual environments
 venv/
-env/
+.venv/
+processing/venv/
 
-# Distribution / packaging
-*.egg-info/
-dist/
-build/
+# Node / JS
+**/node_modules/
 
-# Environment variables
-.env
+# Build artifacts
+frontend/.next/
+backend/dist/
 
 # Temporary files
 *.tmp

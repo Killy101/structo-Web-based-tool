@@ -6,28 +6,46 @@ function cn(...classes: (string | false | undefined)[]): string {
   return classes.filter(Boolean).join(" ");
 }
 
-type Format = "new" | "old" | null;
-type Stage  = "idle" | "checking" | "duplicate" | "validating" | "validated" | "processing" | "done" | "error";
+type Stage =
+  | "idle"
+  | "duplicate"
+  | "title_duplicate"
+  | "processing"
+  | "done"
+  | "error";
+
+interface ImageMeta {
+  tableIndex: number;
+  rowIndex:   number;
+  colIndex:   number;
+  rid:        string;
+  mediaName:  string;
+  mimeType:   string;
+  cellText:   string;
+  blobUrl:    string | null;
+}
 
 interface ExtractedResult {
-  brdId: string;
-  title: string;
-  format: string;
-  status: string;
-  scope: Record<string, unknown>;
-  metadata: Record<string, unknown>;
-  toc: Record<string, unknown>;
-  citations: Record<string, unknown>;
+  brdId:          string;
+  title:          string;
+  format:         string;
+  status:         string;
+  scope:          Record<string, unknown>;
+  metadata:       Record<string, unknown>;
+  toc:            Record<string, unknown>;
+  citations:      Record<string, unknown>;
   contentProfile: Record<string, unknown>;
-  brdConfig?: Record<string, unknown>;
+  brdConfig?:     Record<string, unknown>;
+  imageMetadata?: ImageMeta[];
 }
 
 // Shape returned by GET /brd/check-duplicate
 interface DuplicateCheckResponse {
-  exists:  boolean;
-  brdId?:  string;
-  title?:  string;
-  status?: string;
+  exists:     boolean;
+  brdId?:     string;
+  title?:     string;
+  status?:    string;
+  matchType?: "exact" | "fuzzy";
 }
 
 interface Props {
@@ -44,7 +62,7 @@ const PIPELINE_STEPS = [
   { key: "profile",   label: "Content Profiling",   icon: "✦" },
 ];
 
-// ── Duplicate blocked modal ───────────────────────────────────────────────────
+// ── Filename duplicate blocked modal ─────────────────────────────────────────
 function DuplicateBlockedModal({
   fileName,
   dupInfo,
@@ -58,7 +76,6 @@ function DuplicateBlockedModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div className="relative z-10 w-full max-w-md bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
-        {/* Red header stripe */}
         <div className="bg-red-500 px-5 py-4 flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -70,55 +87,125 @@ function DuplicateBlockedModal({
             <p className="text-xs text-red-100 mt-0.5">This file has already been processed</p>
           </div>
         </div>
-
-        {/* Body */}
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-slate-700 dark:text-slate-300">
             <span className="font-semibold text-slate-900 dark:text-white">"{fileName}"</span> already
             exists in the BRD registry. You cannot re-upload a file that has already been ingested.
           </p>
+          {dupInfo.brdId && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 divide-y divide-slate-200 dark:divide-slate-700 overflow-hidden">
+              {[
+                { label: "BRD ID", value: dupInfo.brdId },
+                { label: "Title",  value: dupInfo.title  ?? "—" },
+                { label: "Status", value: dupInfo.status ?? "—" },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex items-center gap-3 px-4 py-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 w-14 flex-shrink-0 font-mono">{label}</span>
+                  <span className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-5 pb-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-700 transition-all"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-          {/* Existing record details */}
-          {(dupInfo.brdId || dupInfo.title || dupInfo.status) && (
-            <div className="rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 p-3.5 space-y-2">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
-                Existing Record
-              </p>
-              <div className="space-y-1.5">
-                {dupInfo.brdId && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 w-14">BRD ID</span>
-                    <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 px-2 py-0.5 rounded-md">{dupInfo.brdId}</span>
-                  </div>
-                )}
-                {dupInfo.title && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 w-14">Title</span>
-                    <span className="text-xs text-slate-700 dark:text-slate-300 font-medium">{dupInfo.title}</span>
-                  </div>
-                )}
-                {dupInfo.status && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 w-14">Status</span>
-                    <span className="text-xs text-slate-700 dark:text-slate-300 font-medium capitalize">{dupInfo.status}</span>
-                  </div>
-                )}
+// ── Title duplicate warning modal ─────────────────────────────────────────────
+// Shown after extraction when the resolved title closely matches an existing BRD.
+// The user can choose to discard (go back) or proceed anyway.
+function TitleDuplicateModal({
+  extractedTitle,
+  dupInfo,
+  onDiscard,
+  onProceed,
+}: {
+  extractedTitle: string;
+  dupInfo: DuplicateCheckResponse;
+  onDiscard: () => void;
+  onProceed: () => void;
+}) {
+  const isFuzzy = dupInfo.matchType === "fuzzy";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onDiscard} />
+      <div className="relative z-10 w-full max-w-md bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
+        {/* Amber header — warning, not hard block */}
+        <div className="bg-amber-500 px-5 py-4 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-bold text-white">
+              {isFuzzy ? "Similar BRD Already Exists" : "Duplicate BRD Detected"}
+            </p>
+            <p className="text-xs text-amber-100 mt-0.5">
+              {isFuzzy
+                ? "A BRD with a very similar title was found"
+                : "A BRD with the same title already exists"}
+            </p>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-slate-700 dark:text-slate-300">
+            The extracted title{" "}
+            <span className="font-semibold text-slate-900 dark:text-white">
+              "{extractedTitle}"
+            </span>{" "}
+            {isFuzzy ? "closely matches" : "is the same as"} an existing BRD in the registry.
+          </p>
+
+          {/* Existing BRD details */}
+          {dupInfo.brdId && (
+            <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/10 divide-y divide-amber-100 dark:divide-amber-800/30 overflow-hidden">
+              <div className="px-3 py-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-600 dark:text-amber-400 font-mono">
+                  Existing BRD (already in registry)
+                </p>
               </div>
+              {[
+                { label: "BRD ID", value: dupInfo.brdId   },   // ← existing BRD's ID
+                { label: "Title",  value: dupInfo.title  ?? "—" },
+                { label: "Status", value: dupInfo.status ?? "—" },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex items-center gap-3 px-4 py-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 w-14 flex-shrink-0 font-mono">{label}</span>
+                  <span className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">{value}</span>
+                </div>
+              ))}
             </div>
           )}
 
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            To update this BRD, please use the <span className="font-semibold text-slate-700 dark:text-slate-300">Edit</span> action from the registry instead.
+            You can discard this upload and open the existing BRD, or proceed to save it as a new entry.
           </p>
         </div>
 
-        {/* Footer */}
-        <div className="px-5 pb-5 flex justify-end">
+        <div className="px-5 pb-5 flex items-center gap-3">
           <button
-            onClick={onClose}
-            className="px-5 py-2.5 rounded-lg text-sm font-semibold bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-100 transition-all"
+            onClick={onDiscard}
+            className="flex-1 px-4 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
           >
-            Got it
+            Discard upload
+          </button>
+          <button
+            onClick={onProceed}
+            className="flex-1 px-4 py-2 rounded-lg text-xs font-medium bg-amber-500 hover:bg-amber-600 text-white transition-all"
+          >
+            Save anyway
           </button>
         </div>
       </div>
@@ -127,14 +214,16 @@ function DuplicateBlockedModal({
 }
 
 export default function Upload({ onComplete }: Props) {
-  const [format,       setFormat]       = useState<Format>(null);
   const [file,         setFile]         = useState<File | null>(null);
-  const [dragging,     setDragging]     = useState(false);
   const [stage,        setStage]        = useState<Stage>("idle");
+  const [dragging,     setDragging]     = useState(false);
   const [result,       setResult]       = useState<ExtractedResult | null>(null);
-  const [pipelineStep, setPipelineStep] = useState(-1);
   const [errorMsg,     setErrorMsg]     = useState<string>("");
+  const [pipelineStep, setPipelineStep] = useState<number>(-1);
   const [dupInfo,      setDupInfo]      = useState<DuplicateCheckResponse | null>(null);
+  // Holds the fully-extracted result while we wait for the user to decide
+  // what to do about a title duplicate.
+  const [pendingResult, setPendingResult] = useState<ExtractedResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   function handleFile(f: File) {
@@ -142,8 +231,8 @@ export default function Upload({ onComplete }: Props) {
     setStage("idle");
     setResult(null);
     setPipelineStep(-1);
-    setErrorMsg("");
     setDupInfo(null);
+    setPendingResult(null);
   }
 
   function handleDrop(e: React.DragEvent) {
@@ -153,79 +242,74 @@ export default function Upload({ onComplete }: Props) {
     if (f) handleFile(f);
   }
 
-  /** Validate: check for duplicate in DB first — BLOCK if found */
-  async function handleValidate() {
-    if (!file || !format) return;
-
-    setStage("checking");
-    setDupInfo(null);
-
+  // ── Shared: save draft + finish ────────────────────────────────────────────
+  async function saveDraftAndFinish(data: ExtractedResult) {
     try {
-      const res = await api.get<DuplicateCheckResponse>("/brd/check-duplicate", {
-        params: { filename: file.name },
+      await api.post("/brd/save", {
+        brdId:          data.brdId,
+        title:          data.title,
+        format:         data.format,
+        status:         "DRAFT",
+        scope:          data.scope,
+        metadata:       data.metadata,
+        toc:            data.toc,
+        citations:      data.citations,
+        contentProfile: data.contentProfile,
+        brdConfig:      data.brdConfig ?? null,
       });
-
-      if (res.data.exists) {
-        setDupInfo(res.data);
-        setStage("duplicate"); // shows the blocking modal
-        return;
-      }
-    } catch {
-      // If endpoint doesn't exist yet, fall through gracefully
+    } catch (saveErr) {
+      console.warn("[Upload] Draft save failed:", saveErr);
     }
-
-    setStage("validated");
+    setTimeout(() => {
+      setResult(data);
+      setStage("done");
+    }, 400);
   }
 
-  /** Process = POST to backend, animate pipeline steps while waiting */
+  // ── Step 2: Process — extract then title-check ─────────────────────────────
   async function handleProcess() {
-    if (!file || !format) return;
+    if (!file) return;
     setStage("processing");
-    setErrorMsg("");
+    setPipelineStep(0);
 
     let step = 0;
     const stepInterval = setInterval(() => {
-      step++;
+      step = Math.min(step + 1, PIPELINE_STEPS.length - 1);
       setPipelineStep(step);
-      if (step >= PIPELINE_STEPS.length - 1) clearInterval(stepInterval);
     }, 900);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("format", format);
 
       const res = await api.post<ExtractedResult>("/brd/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
       clearInterval(stepInterval);
-
       const data = res.data;
       setPipelineStep(PIPELINE_STEPS.length);
 
-      // ── Write a "DRAFT" (on going) record to the registry immediately ─────
+      // ── Title-level duplicate check (uses the real extracted title) ────────
+      // Exclude the BRD we just created (data.brdId) so a new upload never
+      // falsely matches itself.
       try {
-        await api.post("/brd/save", {
-          brdId:          data.brdId,
-          title:          data.title,
-          format:         data.format,
-          status:         "DRAFT",
-          scope:          data.scope,
-          metadata:       data.metadata,
-          toc:            data.toc,
-          citations:      data.citations,
-          contentProfile: data.contentProfile,
-          brdConfig:      data.brdConfig ?? null,
-        });
-      } catch (saveErr) {
-        console.warn("[Upload] Draft save failed:", saveErr);
+        const titleCheck = await api.get<DuplicateCheckResponse>(
+          `/brd/check-duplicate-title?title=${encodeURIComponent(data.title)}&excludeId=${encodeURIComponent(data.brdId)}`
+        );
+        if (titleCheck.data.exists) {
+          // Stash the result and surface the warning modal — user decides
+          setPendingResult(data);
+          setDupInfo(titleCheck.data);
+          setStage("title_duplicate");
+          return;
+        }
+      } catch {
+        // If the check itself errors, just proceed — don't block the user
       }
 
-      setTimeout(() => {
-        setResult(data);
-        setStage("done");
-      }, 400);
+      // No duplicate found — save and finish normally
+      await saveDraftAndFinish(data);
     } catch (err) {
       clearInterval(stepInterval);
       const apiError =
@@ -241,6 +325,35 @@ export default function Upload({ onComplete }: Props) {
     }
   }
 
+  // User chose to discard the upload after seeing the title duplicate warning
+  // User chose to discard — the BRD was already saved to DB by upload.ts,
+  // so we must delete it before resetting state, otherwise it stays in the list.
+  async function handleTitleDupDiscard() {
+    const brdIdToDelete = pendingResult?.brdId;
+    setPendingResult(null);
+    setDupInfo(null);
+    setStage("idle");
+    setFile(null);
+    setPipelineStep(-1);
+    if (brdIdToDelete) {
+      try {
+        await api.delete(`/brd/${brdIdToDelete}`);
+      } catch (err) {
+        console.warn("[Upload] Failed to delete orphaned BRD on discard:", err);
+      }
+    }
+  }
+
+  // User chose to save anyway despite the title duplicate warning
+  async function handleTitleDupProceed() {
+    if (!pendingResult) return;
+    const data = pendingResult;
+    setPendingResult(null);
+    setDupInfo(null);
+    setStage("processing"); // briefly show pipeline while saving
+    await saveDraftAndFinish(data);
+  }
+
   return (
     <>
       <div className="w-full max-w-2xl mx-auto px-6 py-8 space-y-8 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30">
@@ -254,49 +367,11 @@ export default function Upload({ onComplete }: Props) {
             BRD Intake
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            Choose a format and attach your file to start processing
+            Attach your file to start processing
           </p>
         </div>
 
-        {/* 1. Format Selection */}
-        <div className="space-y-3 rounded-xl border border-slate-300/90 dark:border-slate-600 bg-slate-50/60 dark:bg-slate-900/40 p-4">
-          <label className="text-xs font-semibold uppercase tracking-widest text-black dark:text-slate-100 font-mono">
-            Document Format
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            {(["new", "old"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => { setFormat(f); setStage("idle"); setResult(null); setPipelineStep(-1); setDupInfo(null); }}
-                className={cn(
-                  "group relative px-4 py-4 rounded-lg border transition-all duration-200 text-left overflow-hidden",
-                  format === f
-                    ? "border-blue-500 dark:border-blue-500 bg-blue-50/40 dark:bg-blue-500/10"
-                    : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 hover:border-blue-300 dark:hover:border-blue-500 hover:-translate-y-0.5"
-                )}
-              >
-                <div className="relative space-y-2">
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all duration-200",
-                      format === f ? "border-blue-500 bg-blue-500" : "border-slate-300 dark:border-slate-600 bg-transparent"
-                    )}>
-                      {format === f && <div className="w-2 h-2 rounded-full bg-white" />}
-                    </div>
-                    <p className={cn("text-sm font-semibold", format === f ? "text-blue-600 dark:text-blue-400" : "text-slate-900 dark:text-slate-100")}>
-                      {f === "new" ? "New Format" : "Legacy Format"}
-                    </p>
-                  </div>
-                  <p className="text-xs text-slate-500 ml-8">
-                    {f === "new" ? "Current standard template" : "Old template"}
-                  </p>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 2. Drop Zone */}
+        {/* 1. Drop Zone */}
         <div className="space-y-3 rounded-xl border border-slate-300/90 dark:border-slate-600 bg-slate-50/60 dark:bg-slate-900/40 p-4">
           <label className="text-xs font-semibold uppercase tracking-widest text-black dark:text-slate-100 font-mono">
             Upload File
@@ -350,45 +425,12 @@ export default function Upload({ onComplete }: Props) {
           </div>
         </div>
 
-        {/* 3. Validate Button */}
-        {file && format && stage === "idle" && (
+        {/* 3. Process Button */}
+        {file && stage === "idle" && (
           <div className="flex justify-end pt-2">
-            <button onClick={handleValidate} className="px-6 py-2.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 hover:shadow-md active:scale-95">
-              Validate
+            <button onClick={handleProcess} className="px-6 py-2.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 hover:shadow-md active:scale-95">
+              Process
             </button>
-          </div>
-        )}
-
-        {/* Checking spinner */}
-        {stage === "checking" && (
-          <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
-            <svg className="animate-spin w-4 h-4 text-blue-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
-              <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
-            </svg>
-            <p className="text-sm text-slate-600 dark:text-slate-400">Checking for existing records…</p>
-          </div>
-        )}
-
-        {/* 4. Validated: show meta + Process */}
-        {stage === "validated" && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              {[
-                { label: "File",   value: file?.name ?? "" },
-                { label: "Format", value: format === "new" ? "New Format" : "Legacy Format" },
-              ].map(({ label, value }) => (
-                <div key={label} className="px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 font-mono mb-1">{label}</p>
-                  <p className="text-sm font-medium truncate text-slate-900 dark:text-slate-100">{value}</p>
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-end pt-2">
-              <button onClick={handleProcess} className="px-6 py-2.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 hover:shadow-md active:scale-95">
-                Process
-              </button>
-            </div>
           </div>
         )}
 
@@ -445,7 +487,7 @@ export default function Upload({ onComplete }: Props) {
               <p className="text-sm font-medium text-red-800 dark:text-red-400">Processing failed</p>
               <p className="text-xs text-red-600 dark:text-red-500 mt-0.5">{errorMsg}</p>
             </div>
-            <button onClick={() => setStage("validated")} className="ml-auto text-xs text-red-700 underline hover:no-underline">Retry</button>
+            <button onClick={() => setStage("idle")} className="ml-auto text-xs text-red-700 underline hover:no-underline">Retry</button>
           </div>
         )}
 
@@ -457,7 +499,12 @@ export default function Upload({ onComplete }: Props) {
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <p className="text-sm font-medium text-emerald-800 dark:text-emerald-400">
-                Processing complete — <span className="font-semibold">{result.brdId}</span> is On Going
+                Processing complete — <span className="font-semibold">{result.brdId}</span> is ready
+                {result.imageMetadata && result.imageMetadata.length > 0 && (
+                  <span className="ml-2 text-[11px] px-1.5 py-0.5 rounded bg-emerald-200 dark:bg-emerald-700/40 text-emerald-800 dark:text-emerald-300 font-mono">
+                    {result.imageMetadata.length} image{result.imageMetadata.length !== 1 ? "s" : ""} extracted
+                  </span>
+                )}
               </p>
             </div>
 
@@ -465,8 +512,8 @@ export default function Upload({ onComplete }: Props) {
               {[
                 { label: "BRD ID",     value: result.brdId },
                 { label: "Title",      value: result.title },
-                { label: "Complexity", value: (result.contentProfile as any)?.complexity ?? "—" },
-                { label: "Domain",     value: (result.contentProfile as any)?.primary_domain ?? "—" },
+                { label: "Format",     value: result.format === "old" ? "Legacy Format" : "New Format" },
+                { label: "Complexity", value: (result.contentProfile as Record<string,unknown>)?.complexity as string ?? "—" },
               ].map(({ label, value }) => (
                 <div key={label} className="px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
                   <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 font-mono mb-1">{label}</p>
@@ -487,12 +534,13 @@ export default function Upload({ onComplete }: Props) {
         )}
       </div>
 
-      {/* Duplicate blocked modal — rendered outside the card so it overlays everything */}
-      {stage === "duplicate" && dupInfo && file && (
-        <DuplicateBlockedModal
-          fileName={file.name}
+      {/* Title duplicate warning modal — shown after extraction */}
+      {stage === "title_duplicate" && dupInfo && pendingResult && (
+        <TitleDuplicateModal
+          extractedTitle={pendingResult.title}
           dupInfo={dupInfo}
-          onClose={() => { setStage("idle"); setDupInfo(null); }}
+          onDiscard={handleTitleDupDiscard}
+          onProceed={handleTitleDupProceed}
         />
       )}
     </>

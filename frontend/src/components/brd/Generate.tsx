@@ -3,6 +3,62 @@ import api from "@/app/lib/api";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
 
+// ── Cell image types ───────────────────────────────────────────────────────────
+interface CellImageMeta {
+  id:         number;
+  tableIndex: number;
+  rowIndex:   number;
+  colIndex:   number;
+  rid:        string;
+  mediaName:  string;
+  mimeType:   string;
+  cellText:   string;
+  blobUrl:    string | null;
+  section:    string;
+  fieldLabel: string;
+}
+
+// ── useCellImages hook ─────────────────────────────────────────────────────────
+function useCellImages(brdId?: string) {
+  const [images,  setImages]  = useState<CellImageMeta[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!brdId) return;
+    setLoading(true);
+    setError(null);
+    api
+      .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
+      .then(r => {
+        console.log(`[useCellImages] Fetched ${r.data.images?.length || 0} images for BRD ${brdId}`);
+        setImages(r.data.images ?? []);
+      })
+      .catch((err) => {
+        console.error("[useCellImages] Error fetching images:", err);
+        setError("Could not load images");
+      })
+      .finally(() => setLoading(false));
+  }, [brdId]);
+
+  return { images, loading, error };
+}
+
+// ── InlineImageCell component for displaying images in table cells ────────────
+function InlineImageCell({ brdId, image }: { brdId?: string; image: CellImageMeta }) {
+  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+  if (!brdId) return null;
+  const imgSrc = image.blobUrl || `${API_BASE}/brd/${brdId}/images/${image.id}/blob`;
+  return (
+    <img
+      src={imgSrc}
+      alt={image.cellText || image.mediaName}
+      className="mt-1 max-w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#1a1f35]"
+      onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+    />
+  );
+}
+
 interface Props {
   brdId?: string;
   title?: string;
@@ -58,11 +114,25 @@ function asString(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
-// ── Title from metadata (content_category_name > source_name > document_title > fallback) ──
 function deriveTitle(metadata: Record<string, unknown> | undefined, fallback: string | undefined): string {
   if (!metadata) return fallback || "Untitled BRD";
   const t = (k: string) => (typeof metadata[k] === "string" ? (metadata[k] as string).trim() : "");
-  return t("content_category_name") || t("source_name") || t("document_title") || fallback || "Untitled BRD";
+
+  const catName  = t("content_category_name") || t("source_name");
+  const docTitle = t("document_title");
+
+  if (catName && docTitle) {
+    const catL = catName.toLowerCase();
+    const docL = docTitle.toLowerCase();
+    // If one contains the other, use the longer (more specific) one
+    const isRedundant = catL === docL || catL.includes(docL) || docL.includes(catL);
+    if (isRedundant) {
+      return catName.length >= docTitle.length ? catName : docTitle;
+    }
+    return `${catName} - ${docTitle}`;
+  }
+
+  return catName || docTitle || fallback || "Untitled BRD";
 }
 
 function buildTemplateMetadataValues(format: Format, metadata?: Record<string, unknown>): Record<string, string> {
@@ -70,17 +140,20 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
   const t = (key: string): string => (typeof metadata[key] === "string" ? String(metadata[key]).trim() : "");
   if (format === "old") {
     return {
-      sourceName:      t("source_name") || t("content_category_name") || t("document_title"),
-      sourceType:      t("source_type"),
-      publicationDate: t("publication_date"),
-      lastUpdatedDate: t("last_updated_date"),
-      processingDate:  t("processing_date"),
-      issuingAgency:   t("issuing_agency"),
-      contentUrl:      t("content_uri"),
-      geography:       t("geography"),
-      language:        t("language"),
-      payloadSubtype:  t("payload_subtype"),
-      status:          t("status"),
+      // Legacy "Source Name" label → stored as content_category_name by extractor
+      sourceName:           t("content_category_name") || t("source_name") || t("document_title"),
+      // Legacy "Authoritative Source" label → stored as authoritative_source (and mirrored to issuing_agency)
+      authoritativeSource:  t("authoritative_source") || t("issuing_agency"),
+      sourceType:           t("source_type"),
+      publicationDate:      t("publication_date"),
+      lastUpdatedDate:      t("last_updated_date"),
+      processingDate:       t("processing_date"),
+      issuingAgency:        t("issuing_agency"),
+      contentUrl:           t("content_uri"),
+      geography:            t("geography"),
+      language:             t("language"),
+      payloadSubtype:       t("payload_subtype"),
+      status:               t("status"),
     };
   }
   return {
@@ -131,8 +204,6 @@ function buildTocRows(d?: Record<string, unknown>): TocRow[] {
       let level = String(asString(s.level) || asString(s.id) || i + 1);
       const m = level.match(/\*\*?(\d+)\*\*?|\b(\d+)\b/);
       if (m) level = m[1] || m[2] || level;
-      // CRITICAL: always `${ts}-${i}` — never s.id (extractor sets id = level number,
-      // causing duplicate React keys when two sections share the same level).
       return {
         id: `${ts}-${i}`,
         level: level.trim(),
@@ -214,6 +285,30 @@ const GenBtnIcons: Record<string, React.ReactNode> = {
   content: (<svg viewBox="0 0 20 20" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="16" height="14" rx="2" /><path d="M6 8h8M6 11h5" strokeLinecap="round" /><circle cx="14" cy="13" r="2.5" /><path d="M16 15l1.5 1.5" strokeLinecap="round" /></svg>),
 };
 
+// ── Helper: find the app's actual scroll container ──────────────────────────
+function getScrollContainer(): HTMLElement {
+  const explicit = document.querySelector<HTMLElement>("[data-scroll-container]");
+  if (explicit) return explicit;
+
+  const overflowScrollable = (el: HTMLElement) => {
+    const style = window.getComputedStyle(el);
+    const overflow = style.overflow + style.overflowY;
+    return /(auto|scroll)/.test(overflow) && el.scrollHeight > el.clientHeight + 1;
+  };
+
+  for (const sel of ["main", "article", "#__next > div", "#root > div", "body > div"]) {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (el && overflowScrollable(el)) return el;
+  }
+
+  const allDivs = Array.from(document.querySelectorAll<HTMLElement>("div"));
+  for (const el of allDivs) {
+    if (overflowScrollable(el)) return el;
+  }
+
+  return document.scrollingElement as HTMLElement || document.documentElement;
+}
+
 function AssistiveTouch() {
   const [open, setOpen]             = useState(false);
   const [activeId, setActiveId]     = useState<string>("");
@@ -226,11 +321,16 @@ function AssistiveTouch() {
   const menuRef   = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    function getScrollTop() { if (window.scrollY > 0) return window.scrollY; const el = document.scrollingElement || document.documentElement; return el.scrollTop; }
-    function onScroll() { setShowScrollTop(getScrollTop() > 200); }
+    const scrollEl = getScrollContainer();
+    function onScroll() {
+      setShowScrollTop(scrollEl.scrollTop > 200);
+    }
+    scrollEl.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("scroll", onScroll, { passive: true });
-    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
-    return () => { window.removeEventListener("scroll", onScroll); document.removeEventListener("scroll", onScroll, { capture: true } as any); };
+    return () => {
+      scrollEl.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scroll", onScroll);
+    };
   }, []);
 
   useEffect(() => {
@@ -245,6 +345,10 @@ function AssistiveTouch() {
   useEffect(() => {
     const ids = NAV_ITEMS.map(n => n.id);
     const visibleMap: Record<string, number> = {};
+    const scrollEl = getScrollContainer();
+    const root = scrollEl === document.documentElement || scrollEl === document.body
+      ? null
+      : scrollEl;
     const observers = ids.map(id => {
       const el = document.getElementById(id);
       if (!el) return null;
@@ -252,7 +356,7 @@ function AssistiveTouch() {
         visibleMap[id] = entry.intersectionRatio;
         const best = Object.entries(visibleMap).sort((a, b) => b[1] - a[1])[0];
         if (best && best[1] > 0) setActiveId(best[0]);
-      }, { threshold: [0, 0.1, 0.5, 1] });
+      }, { root, threshold: [0, 0.1, 0.5, 1] });
       obs.observe(el);
       return obs;
     });
@@ -280,11 +384,27 @@ function AssistiveTouch() {
     return () => document.removeEventListener("mousedown", handle);
   }, [open]);
 
-  function scrollTo(id: string) { document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }); setActiveId(id); setOpen(false); }
+  function scrollTo(id: string) {
+    const scrollEl = getScrollContainer();
+    const target = document.getElementById(id);
+    if (target) {
+      const containerRect = scrollEl === document.documentElement
+        ? { top: 0 }
+        : scrollEl.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const offset = scrollEl.scrollTop + (targetRect.top - containerRect.top) - 80;
+      scrollEl.scrollTo({ top: Math.max(0, offset), behavior: "smooth" });
+    }
+    setActiveId(id);
+    setOpen(false);
+  }
+
   function scrollToTop() {
-    window.scrollTo({ top: 0, behavior: "smooth" }); document.documentElement.scrollTo({ top: 0, behavior: "smooth" }); document.body.scrollTo({ top: 0, behavior: "smooth" });
-    const scrollingEl = document.scrollingElement; if (scrollingEl) scrollingEl.scrollTo({ top: 0, behavior: "smooth" });
-    setShowScrollTop(false); setOpen(false);
+    const scrollEl = getScrollContainer();
+    scrollEl.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    setShowScrollTop(false);
+    setOpen(false);
   }
 
   const SZ = 52; const onRight = pos.x + SZ / 2 > window.innerWidth / 2;
@@ -391,33 +511,80 @@ const TBL_WRAP = "tbl-scroll -mx-8 border-t border-b border-slate-200 dark:borde
 const TH = "px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] last:border-r-0 bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap";
 const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0 text-[11.5px] text-slate-700 dark:text-slate-300";
 
-function ScopeTable({ scopeData }: { scopeData?: Record<string, unknown> }) {
+function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildScopeRows(scopeData); const extra = hasExtraCols(rows);
   if (rows.length === 0) return <Empty />;
+  
+  // Group scope images by fieldLabel for direct cell matching
+  const imagesByLabel = new Map<string, CellImageMeta[]>();
+  images.filter(img => img.section === "scope").forEach(img => {
+    const key = (img.fieldLabel || img.cellText || "").toLowerCase().trim();
+    if (!key) return;
+    const arr = imagesByLabel.get(key) || [];
+    arr.push(img);
+    imagesByLabel.set(key, arr);
+  });
+  const getScopeImgs = (...texts: string[]) => {
+    for (const t of texts) {
+      const key = t.toLowerCase().trim();
+      const found = imagesByLabel.get(key);
+      if (found?.length) return found;
+    }
+    return [];
+  };
+  
   return (
     <div className={TBL_WRAP}>
-      <table className="w-full text-[11.5px]" style={{ minWidth: 840 }}>
+      <table className="w-full text-[11.5px]" style={{ minWidth: 860, tableLayout: "fixed" }}>
+        <colgroup>
+          <col style={{ width: 180 }} />
+          <col style={{ width: 110 }} />
+          <col style={{ width: 130 }} />
+          <col style={{ width: 160 }} />
+          <col style={{ width: 80 }} />
+          <col style={{ width: 200 }} />
+          {extra.evergreen && <col style={{ width: 80 }} />}
+          {extra.ingestion && <col style={{ width: 100 }} />}
+        </colgroup>
         <thead><tr>
-          <th className={TH} style={{width:180}}>Document Title</th>
-          <th className={TH} style={{width:120}}>Reference Link</th>
-          <th className={TH} style={{width:160}}>Content URL</th>
-          <th className={TH} style={{width:160}}>Issuing Authority</th>
-          <th className={TH} style={{width:90}}>ASRB ID</th>
+          <th className={TH}>Document Title</th>
+          <th className={TH}>Reference Link</th>
+          <th className={TH}>Content URL</th>
+          <th className={TH}>Issuing Authority</th>
+          <th className={TH}>ASRB ID</th>
           <th className={TH}>SME Comments</th>
-          {extra.evergreen && <th className={TH} style={{width:90}}>Evergreen</th>}
-          {extra.ingestion && <th className={TH} style={{width:110}}>Date of Ingestion</th>}
+          {extra.evergreen && <th className={TH}>Evergreen</th>}
+          {extra.ingestion && <th className={TH}>Date of Ingestion</th>}
         </tr></thead>
         <tbody>
           {rows.map((row, i) => {
             const oos = row.isOutOfScope;
+            const rowImages = getScopeImgs(row.title, row.smeComments);
             return (
               <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"} style={{opacity:oos?0.55:1}}>
-                <td className={TD}><span className={oos?"line-through":""}>{row.title||<Nil/>}</span></td>
-                <td className={TD}>{row.referenceLink?<a href={row.referenceLink} target="_blank" rel="noreferrer" className={`text-blue-600 dark:text-blue-400 hover:underline break-all text-[11px] ${oos?"line-through":""}`}>{row.referenceLink}</a>:<Nil/>}</td>
-                <td className={TD}>{row.contentUrl?<a href={row.contentUrl} target="_blank" rel="noreferrer" className={`text-blue-600 dark:text-blue-400 hover:underline break-all text-[11px] ${oos?"line-through":""}`}>{row.contentUrl}</a>:<Nil/>}</td>
-                <td className={TD}><span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span></td>
+                <td className={TD} style={{wordBreak:"break-word"}}>
+                  <span className={oos?"line-through":""}>{row.title||<Nil/>}</span>
+                  {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+                <td className={TD}>
+                  {row.referenceLink
+                    ? <a href={row.referenceLink} target="_blank" rel="noreferrer"
+                        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
+                        title={row.referenceLink}>{row.referenceLink}</a>
+                    : <Nil/>}
+                </td>
+                <td className={TD}>
+                  {row.contentUrl
+                    ? <a href={row.contentUrl} target="_blank" rel="noreferrer"
+                        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
+                        title={row.contentUrl}>{row.contentUrl}</a>
+                    : <Nil/>}
+                </td>
+                <td className={TD} style={{wordBreak:"break-word"}}><span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span></td>
                 <td className={TD}>{row.asrbId?<span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>:<Nil/>}</td>
-                <td className={TD}><span className={oos?"line-through":""}>{row.smeComments||<Nil/>}</span></td>
+                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
+                  <span className={oos?"line-through":""}>{row.smeComments||<Nil/>}</span>
+                </td>
                 {extra.evergreen && <td className={TD}>{row.initialEvergreen||"—"}</td>}
                 {extra.ingestion && <td className={TD}>{row.dateOfIngestion||"—"}</td>}
               </tr>
@@ -433,27 +600,75 @@ function ScopeTable({ scopeData }: { scopeData?: Record<string, unknown> }) {
   );
 }
 
-function MetaGrid({ values, format }: { values: Record<string, string>; format: Format }) {
+function MetaGrid({ values, format, brdId, images }: { values: Record<string, string>; format: Format; brdId?: string; images: CellImageMeta[] }) {
   const fields = format === "old"
     ? [{label:"Source Name",key:"sourceName"},{label:"Source Type",key:"sourceType"},{label:"Publication Date",key:"publicationDate"},{label:"Last Updated Date",key:"lastUpdatedDate"},{label:"Processing Date",key:"processingDate"},{label:"Issuing Agency",key:"issuingAgency"},{label:"Content URL",key:"contentUrl"},{label:"Geography",key:"geography"},{label:"Language",key:"language"},{label:"Payload Subtype",key:"payloadSubtype"},{label:"Status",key:"status"}]
     : [{label:"Content Category Name",key:"contentCategoryName"},{label:"Publication Date",key:"publicationDate"},{label:"Last Updated Date",key:"lastUpdatedDate"},{label:"Processing Date",key:"processingDate"},{label:"Issuing Agency",key:"issuingAgency"},{label:"Related Government Agency",key:"relatedGovernmentAgency"},{label:"Content URI",key:"contentUri"},{label:"Geography",key:"geography"},{label:"Language",key:"language"}];
+
+  // tableIndex=5 is the metadata table: col0=label, col1=value(Document Location)
+  const metaImgs = images.filter(img =>
+    img.section === "metadata" ||
+    ((!img.section || img.section === "unknown") && img.tableIndex === 5)
+  );
+  const imagesByLabel = new Map<string, CellImageMeta[]>();
+  const imagesByMetaRow = new Map<number, CellImageMeta[]>();
+  metaImgs.forEach(img => {
+    // New records: keyed by fieldLabel
+    const fl = (img.fieldLabel || "").toLowerCase().trim();
+    if (fl) {
+      const arr = imagesByLabel.get(fl) || [];
+      arr.push(img);
+      imagesByLabel.set(fl, arr);
+    }
+    // Old records: keyed by rowIndex
+    const ri = imagesByMetaRow.get(img.rowIndex) || [];
+    ri.push(img);
+    imagesByMetaRow.set(img.rowIndex, ri);
+  });
+
   return (
     <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
       <table className="w-full text-[11.5px]"><tbody>
-        {fields.map((f, i) => (
-          <tr key={f.key} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-            <td className="px-3 py-2 w-36 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
-            <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300">{values[f.key]||<span className="text-slate-300 dark:text-slate-600 italic">—</span>}</td>
-          </tr>
-        ))}
+        {fields.map((f, i) => {
+          // Try fieldLabel first, then rowIndex fallback (metadata header = row 0, data from row 1)
+          const byLabel = imagesByLabel.get(f.label.toLowerCase()) || [];
+          const rowImages = byLabel.length > 0 ? byLabel : (imagesByMetaRow.get(i + 1) || []);
+          return (
+            <tr key={f.key} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+              <td className="px-3 py-2 w-36 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300">
+                {values[f.key] || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+                {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+              </td>
+            </tr>
+          );
+        })}
       </tbody></table>
     </div>
   );
 }
 
-function TocTable({ tocData }: { tocData?: Record<string, unknown> }) {
+function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildTocRows(tocData);
   if (rows.length === 0) return <Empty />;
+  
+  const TOC_COL_MAP: Record<number,string> = {0:"level",1:"name",2:"required",3:"definition",4:"example",5:"note",6:"tocRequirements",7:"smeComments"};
+  // Include section="toc" (new records) OR tableIndex=2 with unknown section (old records)
+  const tocImgs = images.filter(img =>
+    img.section === "toc" ||
+    ((!img.section || img.section === "unknown") && img.tableIndex === 2)
+  );
+  // Build lookup: "levelStr__colKey" → images[]  (fieldLabel match for new records)
+  const imagesByLevelCol = new Map<string, CellImageMeta[]>();
+  tocImgs.forEach(img => {
+    const colKey = TOC_COL_MAP[img.colIndex] ?? "note";
+    const fl = (img.fieldLabel || "").trim();
+    const key = fl ? `${fl}__${colKey}` : `__row_${img.rowIndex}__${colKey}`;
+    const arr = imagesByLevelCol.get(key) || [];
+    arr.push(img);
+    imagesByLevelCol.set(key, arr);
+  });
+  
   return (
     <div className={TBL_WRAP}>
       <table className="w-full border-collapse" style={{ minWidth: 1080 }}>
@@ -463,18 +678,36 @@ function TocTable({ tocData }: { tocData?: Record<string, unknown> }) {
           ))}
         </tr></thead>
         <tbody>
-          {rows.map((row, i) => (
-            <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-              <td className={TD}><LevelBadge val={row.level}/></td>
-              <td className={TD}>{row.name||<Nil/>}</td>
-              <td className={TD}><RequiredBadge val={row.required}/></td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{row.definition||<Nil/>}</td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{row.example||<Nil/>}</td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{row.note||<Nil/>}</td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{row.tocRequirements||<Nil/>}</td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{row.smeComments||<Nil/>}</td>
-            </tr>
-          ))}
+          {rows.map((row, i) => {
+            const lvl = (row.level||"").trim();
+            const getImgs = (col: string) => {
+              // Try fieldLabel match first, then rowIndex fallback for old DB records
+              const byLabel = imagesByLevelCol.get(`${lvl}__${col}`) || [];
+              if (byLabel.length > 0) return byLabel;
+              return imagesByLevelCol.get(`__row_${i + 1}__${col}`) || [];
+            };
+            return (
+              <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                <td className={TD}><LevelBadge val={row.level}/></td>
+                <td className={TD}>{row.name||<Nil/>}</td>
+                <td className={TD}><RequiredBadge val={row.required}/></td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>{row.definition||<Nil/>}</td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {row.example||<Nil/>}
+                  {getImgs("example").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {row.note||<Nil/>}
+                  {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>{row.tocRequirements||<Nil/>}</td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {row.smeComments||<Nil/>}
+                  {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147]">
@@ -494,34 +727,77 @@ function formatDisplay(value: string) {
   });
 }
 
-function CitationTable({ citationsData }: { citationsData?: Record<string, unknown> }) {
+function CitationTable({ citationsData, brdId, images }: { citationsData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const citations = asRecordArray(citationsData?.references);
   if (citations.length === 0) return <Empty />;
+  
+  const CIT_COL_MAP: Record<number,string> = {0:"level",1:"citationRules",2:"sourceOfLaw",3:"smeComments"};
+  // tableIndex=4 is the citation rules table (col1=citationRules, col3=smeComments)
+  const citImgs = images.filter(img =>
+    img.section === "citations" ||
+    ((!img.section || img.section === "unknown") && img.tableIndex === 4)
+  );
+  const imagesByLevelCol = new Map<string, CellImageMeta[]>();
+  citImgs.forEach(img => {
+    const colKey = CIT_COL_MAP[img.colIndex] ?? "smeComments";
+    const fl = (img.fieldLabel || "").trim();
+    const key = fl ? `${fl}__${colKey}` : `__row_${img.rowIndex}__${colKey}`;
+    const arr = imagesByLevelCol.get(key) || [];
+    arr.push(img);
+    imagesByLevelCol.set(key, arr);
+  });
+  
   return (
     <div className={TBL_WRAP}>
       <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 600 }}>
         <thead><tr>{["Lvl","Citation Rules","Source of Law","SME Comments"].map(h=><th key={h} className={TH}>{h}</th>)}</tr></thead>
         <tbody>
-          {citations.map((row, i) => (
-            <tr key={i} className={i%2===0?"bg-white dark:bg-transparent":"bg-slate-50/40 dark:bg-[#1a1f35]/40"}>
-              <td className={`w-14 ${TD}`}><LevelBadge val={asString(row.level)}/></td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{formatDisplay(asString(row.citationRules))||"—"}</td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{asString(row.sourceOfLaw)||"—"}</td>
-              <td className={`${TD} whitespace-pre-wrap break-words`}>{formatDisplay(asString(row.smeComments))}</td>
-            </tr>
-          ))}
+          {citations.map((row, i) => {
+            const lvl = `Level ${asString(row.level)}`;
+            const getImgs = (col: string) => {
+              const byLabel = imagesByLevelCol.get(`${lvl}__${col}`) || [];
+              if (byLabel.length > 0) return byLabel;
+              return imagesByLevelCol.get(`__row_${i + 1}__${col}`) || [];
+            };
+            return (
+              <tr key={i} className={i%2===0?"bg-white dark:bg-transparent":"bg-slate-50/40 dark:bg-[#1a1f35]/40"}>
+                <td className={`w-14 ${TD}`}><LevelBadge val={asString(row.level)}/></td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {formatDisplay(asString(row.citationRules))||"—"}
+                  {getImgs("citationRules").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>{asString(row.sourceOfLaw)||"—"}</td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {formatDisplay(asString(row.smeComments))}
+                  {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
+function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const levels = useMemo(() => asExtractedLevels(cpData), [cpData]);
   const hardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
   const rcFilename = String(cpData?.rc_filename ?? "");
   const headingAnnotation = String(cpData?.heading_annotation ?? "");
   const wsRows = useMemo(() => { const e = asExtractedWhitespace(cpData); return e.length > 0 ? e : DEFAULT_WHITESPACE_ROWS; }, [cpData]);
+  
+  // Group images by fieldLabel (= level number) and colIndex
+  const TOC_COL_MAP2: Record<number,string> = {0:"levelNumber",1:"name",3:"definition",4:"example",5:"note"};
+  const imagesByLevelCol = new Map<string, CellImageMeta[]>();
+  images.filter(img => img.section === "toc").forEach(img => {
+    const colKey = TOC_COL_MAP2[img.colIndex] ?? "note";
+    const key = `${(img.fieldLabel||"").trim()}__${colKey}`;
+    const arr = imagesByLevelCol.get(key) || [];
+    arr.push(img);
+    imagesByLevelCol.set(key, arr);
+  });
+  
   return (
     <div className="space-y-5">
       <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
@@ -544,15 +820,23 @@ function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
             <tbody>
               {levels.length===0
                 ?<tr><td colSpan={5} className="py-6 text-center text-[12px] text-slate-400 italic">No levels defined</td></tr>
-                :levels.map((row,i)=>(
-                  <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-                    <td className={TD}><span className="font-mono text-[11px]">{row.levelNumber||"—"}</span></td>
-                    <td className={`${TD} whitespace-pre-line`}>{row.description||<Nil/>}</td>
-                    <td className={TD}><span className={`text-[11px] font-mono whitespace-pre-line select-all ${row.redjayXmlTag==="Hardcoded"?"text-amber-700 dark:text-amber-400 font-semibold":"text-sky-700 dark:text-sky-400"}`}>{row.redjayXmlTag||<Nil/>}</span></td>
-                    <td className={TD}><span className="font-mono text-[11px]">{row.path||<Nil/>}</span></td>
-                    <td className={TD}>{row.remarksNotes||<Nil/>}</td>
-                  </tr>
-                ))}
+                :levels.map((row,i)=>{
+                    // levelNumber is "Level N", fieldLabel from extractor is just "N"
+                    const lvlNum = (row.levelNumber||"").replace(/^Level\s*/i,"").trim();
+                    const getImgs = (col: string) => imagesByLevelCol.get(`${lvlNum}__${col}`) || [];
+                    return (
+                      <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                        <td className={TD}><span className="font-mono text-[11px]">{row.levelNumber||"—"}</span></td>
+                        <td className={`${TD} whitespace-pre-line`}>{row.description||<Nil/>}</td>
+                        <td className={TD}>
+                          <span className={`text-[11px] font-mono whitespace-pre-line select-all ${row.redjayXmlTag==="Hardcoded"?"text-amber-700 dark:text-amber-400 font-semibold":"text-sky-700 dark:text-sky-400"}`}>{row.redjayXmlTag||<Nil/>}</span>
+                          {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                        </td>
+                        <td className={TD}><span className="font-mono text-[11px]">{row.path||<Nil/>}</span></td>
+                        <td className={TD}>{row.remarksNotes||<Nil/>}</td>
+                      </tr>
+                    );
+                  })}
             </tbody>
           </table>
         </div>
@@ -600,6 +884,8 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   const doneResetTimers   = useRef<Record<string, number>>({});
   const docPageRef        = useRef<HTMLDivElement>(null);
   const contentProfileRef = useRef<HTMLDivElement>(null);
+  
+  const { images } = useCellImages(brdId);
 
   useEffect(() => { return () => { Object.values(doneResetTimers.current).forEach(t => window.clearTimeout(t)); }; }, []);
 
@@ -612,7 +898,6 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
 
   const activeFormat: Format   = format === "old" ? "old" : "new";
   const metadataValues         = buildTemplateMetadataValues(activeFormat, metadataData);
-  // Title: prefer metadata fields over the prop title
   const displayTitle           = deriveTitle(metadataData, title);
 
   function markDone(key: string, ms = 1600) {
@@ -636,7 +921,8 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null);
     try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "COMPLETED", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });      setSavedToDB(true);
+      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "COMPLETED", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      setSavedToDB(true);
     } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
     finally { setSaving(false); }
   }
@@ -645,7 +931,33 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
     setGenerating(p=>({...p,brd:true}));
     try {
       const page = docPageRef.current; if (!page) throw new Error("BRD content not found");
-      const clone = page.cloneNode(true) as HTMLElement; clone.querySelector("#section-generate")?.remove();
+      const clone = page.cloneNode(true) as HTMLElement;
+      clone.querySelector("#section-generate")?.closest("[style*='paddingTop']")?.remove();
+      clone.querySelector("#section-generate")?.remove();
+      const cpBlock = clone.querySelector("#section-content-profile");
+      cpBlock?.parentElement?.remove();
+      clone.querySelectorAll("button").forEach(btn => btn.remove());
+      clone.querySelectorAll("div").forEach(div => {
+        const style = div.getAttribute("style") ?? "";
+        if ((style.includes("borderBottom") || style.includes("border-bottom")) && div.querySelector("span")) {
+          const labelEl = Array.from(div.querySelectorAll("span")).find(s =>
+            (s.getAttribute("style") ?? "").includes("serif") || (s.getAttribute("style") ?? "").includes("Georgia")
+          );
+          const label = labelEl?.textContent?.trim();
+          if (label) {
+            const replacement = document.createElement("div");
+            replacement.style.cssText = "font-weight:700;font-size:13pt;padding-bottom:6px;margin-bottom:10px;border-bottom:2px solid #1e293b;font-family:Georgia,serif;letter-spacing:-0.01em;";
+            replacement.textContent = label;
+            div.replaceWith(replacement);
+          }
+        }
+      });
+      clone.querySelectorAll("div").forEach(div => {
+        if (/^\s*\d+\s+(document|section|rule)/i.test(div.textContent ?? "") && div.children.length <= 3) {
+          div.remove();
+        }
+      });
+      clone.querySelectorAll("[style*='linear-gradient']").forEach(d => d.remove());
       downloadExcelFile(`${brdId||"BRD"}_BRD`, `${brdId||"BRD"} - BRD`, clone);
       setCompleted(p=>({...p,brd:true})); markDone("brd");
     } catch { window.alert("Failed to generate BRD Excel."); setDone(p=>({...p,brd:false})); setCompleted(p=>({...p,brd:false})); }
@@ -666,20 +978,56 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
     setGenerating(p=>({...p,metajson:true}));
     try {
       const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:displayTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
-      setMetajsonModal({open:true,data:r.data.metajson,filename:r.data.filename||`${brdId||"metajson"}.json`});
+      // Load any previously saved version and merge — saved takes priority as initial value
+      let initialData = r.data.metajson;
+      if (brdId) {
+        try {
+          const saved = await api.get<{simpleMetajson: Record<string,unknown>|null}>(`/brd/${brdId}/sections/simpleMetajson`);
+          if (saved.data.simpleMetajson) initialData = saved.data.simpleMetajson;
+        } catch { /* no saved version yet, use generated */ }
+      }
+      setMetajsonModal({open:true,data:initialData,filename:r.data.filename||`${brdId||"metajson"}.json`});
       setCompleted(p=>({...p,metajson:true})); markDone("metajson");
     } catch { window.alert("Failed to generate Metajson."); setDone(p=>({...p,metajson:false})); setCompleted(p=>({...p,metajson:false})); }
     finally { setGenerating(p=>({...p,metajson:false})); }
+  }
+
+  async function handleSaveSimpleMetajson(json: Record<string, unknown>) {
+    if (!brdId) return;
+    try {
+      await api.put(`/brd/${brdId}/sections/simpleMetajson`, { data: json });
+    } catch (err) {
+      console.error("[handleSaveSimpleMetajson]", err);
+      window.alert("Failed to save Metajson to database.");
+    }
   }
 
   async function runGenerateInnod() {
     setGenerating(p=>({...p,innod:true}));
     try {
       const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:displayTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
-      setInnodModal({open:true,data:r.data.metajson,filename:r.data.filename||`${brdId||"innod"}_metajson.json`});
+      // Load any previously saved version — saved takes priority as initial value
+      let initialData = r.data.metajson;
+      if (brdId) {
+        try {
+          const saved = await api.get<{innodMetajson: Record<string,unknown>|null}>(`/brd/${brdId}/sections/innodMetajson`);
+          if (saved.data.innodMetajson) initialData = saved.data.innodMetajson;
+        } catch { /* no saved version yet, use generated */ }
+      }
+      setInnodModal({open:true,data:initialData,filename:r.data.filename||`${brdId||"innod"}_metajson.json`});
       setCompleted(p=>({...p,innod:true})); markDone("innod");
     } catch { window.alert("Failed to generate Innod Metajson."); setDone(p=>({...p,innod:false})); setCompleted(p=>({...p,innod:false})); }
     finally { setGenerating(p=>({...p,innod:false})); }
+  }
+
+  async function handleSaveInnodMetajson(json: Record<string, unknown>) {
+    if (!brdId) return;
+    try {
+      await api.put(`/brd/${brdId}/sections/innodMetajson`, { data: json });
+    } catch (err) {
+      console.error("[handleSaveInnodMetajson]", err);
+      window.alert("Failed to save Innod Metajson to database.");
+    }
   }
 
   const allDone = completed["brd"] && completed["metajson"] && completed["innod"] && completed["content"];
@@ -703,16 +1051,35 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
           </div>
         </div>
 
-        <DocBlock id="section-scope"><DocSectionHeader idx={0} onEdit={onEdit??noop} canEdit={canEdit}/><ScopeTable scopeData={scopeData}/></DocBlock>
+        <DocBlock id="section-scope">
+          <DocSectionHeader idx={0} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <ScopeTable scopeData={scopeData} brdId={brdId} images={images} />
+        </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        <DocBlock id="section-metadata"><DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/><MetaGrid values={metadataValues} format={activeFormat}/></DocBlock>
+        
+        <DocBlock id="section-metadata">
+          <DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <MetaGrid values={metadataValues} format={activeFormat} brdId={brdId} images={images} />
+        </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        <DocBlock id="section-toc"><DocSectionHeader idx={2} onEdit={onEdit??noop} canEdit={canEdit}/><TocTable tocData={tocData}/></DocBlock>
+        
+        <DocBlock id="section-toc">
+          <DocSectionHeader idx={2} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <TocTable tocData={tocData} brdId={brdId} images={images} />
+        </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        <DocBlock id="section-citations"><DocSectionHeader idx={3} onEdit={onEdit??noop} canEdit={canEdit}/><CitationTable citationsData={citationsData}/></DocBlock>
+        
+        <DocBlock id="section-citations">
+          <DocSectionHeader idx={3} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <CitationTable citationsData={citationsData} brdId={brdId} images={images} />
+        </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
+        
         <div ref={contentProfileRef}>
-          <DocBlock id="section-content-profile"><DocSectionHeader idx={4} onEdit={onEdit??noop} canEdit={canEdit}/><ContentProfile cpData={contentProfileData}/></DocBlock>
+          <DocBlock id="section-content-profile">
+            <DocSectionHeader idx={4} onEdit={onEdit??noop} canEdit={canEdit}/>
+            <ContentProfile cpData={contentProfileData} brdId={brdId} images={images} />
+          </DocBlock>
         </div>
 
         {/* Generate Outputs */}
@@ -805,8 +1172,8 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
           </div>
         </div>
       </div>
-      <SimpleMetajson open={metajsonModal.open} onClose={()=>setMetajsonModal(p=>({...p,open:false}))} metajson={metajsonModal.data} filename={metajsonModal.filename}/>
-      <InnodMetajson open={innodModal.open} onClose={()=>setInnodModal(p=>({...p,open:false}))} metajson={innodModal.data} filename={innodModal.filename}/>
+      <SimpleMetajson open={metajsonModal.open} onClose={()=>setMetajsonModal(p=>({...p,open:false}))} metajson={metajsonModal.data} filename={metajsonModal.filename} onSave={handleSaveSimpleMetajson}/>
+      <InnodMetajson open={innodModal.open} onClose={()=>setInnodModal(p=>({...p,open:false}))} metajson={innodModal.data} filename={innodModal.filename} onSave={handleSaveInnodMetajson}/>
     </>
   );
 }

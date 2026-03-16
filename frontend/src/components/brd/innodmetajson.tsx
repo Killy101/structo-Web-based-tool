@@ -6,6 +6,7 @@ interface InnodMetajsonProps {
   metajson: Record<string, unknown> | null;
   filename?: string;
   onDownload?: (json: Record<string, unknown>, filename: string) => void;
+  onSave?: (json: Record<string, unknown>) => void;
 }
 
 const MONO = { fontFamily: "'DM Mono', monospace" } as const;
@@ -37,6 +38,14 @@ function formatJson(obj: Record<string, unknown>): string {
     );
   };
 
+  // Compact inline array: all items are short strings (level numbers like "2","3",...)
+  const isCompactStringArray = (value: unknown): value is string[] => {
+    return (
+      Array.isArray(value) &&
+      value.every((v) => typeof v === "string" && v.length <= 4)
+    );
+  };
+
   const print = (value: unknown, depth: number): string => {
     const pad = INDENT.repeat(depth);
     const nextPad = INDENT.repeat(depth + 1);
@@ -50,6 +59,9 @@ function formatJson(obj: Record<string, unknown>): string {
         return `[${JSON.stringify(value[0])}, ${JSON.stringify(value[1])}, ${value[2]}, ${JSON.stringify(value[3])}]`;
       }
       if (value.length === 0) return "[]";
+      if (isCompactStringArray(value)) {
+        return `[${value.map((v) => JSON.stringify(v)).join(", ")}]`;
+      }
       return `[
 ${value.map((item) => `${nextPad}${print(item, depth + 1)}`).join(",\n")}
 ${pad}]`;
@@ -112,12 +124,15 @@ export default function InnodMetajson({
   metajson,
   filename = "innod_metajson.json",
   onDownload,
+  onSave,
 }: InnodMetajsonProps) {
   const [activeTab, setActiveTab] = useState<"preview" | "edit">("edit");
   const [raw, setRaw] = useState("");
   const [parseError, setParseError] = useState<string | null>(null);
   const [liveJson, setLiveJson] = useState<Record<string, unknown> | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [savedJson, setSavedJson] = useState<Record<string, unknown> | null>(null);
+  const [saveFlash, setSaveFlash] = useState(false);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -129,11 +144,13 @@ export default function InnodMetajson({
       setRaw("{}");
       setLiveJson(null);
       setParseError(null);
+      setSavedJson(null);
       return;
     }
     setRaw(formatJson(metajson));
     setLiveJson(metajson);
     setParseError(null);
+    setSavedJson(null);
   }, [open, metajson]);
 
   // Focus textarea when switching to edit tab
@@ -181,6 +198,15 @@ export default function InnodMetajson({
     setRaw(formatJson(liveJson));
   }
 
+  function handleSave() {
+    const json = liveJson ?? metajson;
+    if (!json || parseError) return;
+    setSavedJson(json);
+    setSaveFlash(true);
+    setTimeout(() => setSaveFlash(false), 2000);
+    if (onSave) onSave(json);
+  }
+
   function handleDownload() {
     const json = liveJson ?? metajson;
     if (!json) return;
@@ -201,9 +227,10 @@ export default function InnodMetajson({
 
   if (!open) return null;
 
-  const displayJson = liveJson ?? metajson;
+  const displayJson = savedJson ?? liveJson ?? metajson;
   const rawLines = raw.split("\n");
   const lineCount = rawLines.length;
+  const hasUnsavedChanges = !!liveJson && liveJson !== savedJson && !parseError;
 
   return (
     <>
@@ -292,6 +319,24 @@ export default function InnodMetajson({
                   style={MONO}
                 >
                   Format
+                </button>
+              )}
+              {activeTab === "edit" && (
+                <button
+                  onClick={handleSave}
+                  disabled={!!parseError || !hasUnsavedChanges}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-medium border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                    saveFlash
+                      ? "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-700/50 text-emerald-700 dark:text-emerald-400"
+                      : "bg-white dark:bg-[#252d45] border-slate-300 dark:border-[#3a4460] text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-[#2e3a55]"
+                  }`}
+                  style={MONO}
+                >
+                  {saveFlash ? (
+                    <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Saved</>
+                  ) : (
+                    <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>Save</>
+                  )}
                 </button>
               )}
               <CopyButton text={raw} />
@@ -414,16 +459,21 @@ export default function InnodMetajson({
                 ? "Read-only preview — switch to Edit JSON to modify"
                 : parseError
                   ? <span className="text-rose-500">{parseError}</span>
-                  : <><span className="text-emerald-500 mr-1">✓</span>Valid JSON</>
+                  : savedJson
+                    ? <><span className="text-emerald-500 mr-1">✓</span>Saved</>
+                    : hasUnsavedChanges
+                      ? <span className="text-amber-500">Unsaved changes</span>
+                      : <><span className="text-emerald-500 mr-1">✓</span>Valid JSON</>
               }
             </div>
             <div className="flex items-center gap-2">
               {activeTab === "edit" && (
                 <button
                   onClick={() => {
-                    if (metajson) {
-                      setRaw(formatJson(metajson));
-                      setLiveJson(metajson);
+                    const base = savedJson ?? metajson;
+                    if (base) {
+                      setRaw(formatJson(base));
+                      setLiveJson(base);
                       setParseError(null);
                     }
                   }}

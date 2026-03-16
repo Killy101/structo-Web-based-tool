@@ -1,4 +1,6 @@
-import React, { useEffect, useState, useMemo } from "react";
+import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import React, { useEffect, useState, useMemo, useRef } from "react";
+import api from "@/app/lib/api";
 
 interface LevelRow {
   id: string;
@@ -15,8 +17,21 @@ interface WhitespaceRow {
   innodReplace: string;
 }
 
+interface CellImageMeta {
+  id: number;
+  tableIndex: number;
+  rowIndex: number;
+  colIndex: number;
+  rid: string;
+  mediaName: string;
+  mimeType: string;
+  cellText: string;
+}
+
 interface Props {
   initialData?: Record<string, unknown>;
+  brdId?: string;
+  onDataChange?: (data: Record<string, unknown>) => void;
 }
 
 const HARDCODED_LEVELS = new Set(["0", "1"]);
@@ -31,6 +46,19 @@ const DEFAULT_WHITESPACE_ROWS: WhitespaceRow[] = [
   { id: "ws-def-5", tags: "<p> within <li>",  innodReplace: `</innodReplace><ul><innodReplace>\n  </innodReplace><li><innodReplace></innodReplace><p>(text)</p><innodReplace text="&#10;&#10;">\n  </innodReplace><li><innodReplace>...\n</innodReplace></ul><innodReplace>` },
   { id: "ws-def-6", tags: "table\n<td>\n<th>",innodReplace: `</innodReplace><innodTd><td><innodReplace></innodReplace><p>...</p><innodReplace>\n                   </innodReplace><p>...</p><innodReplace>\n                   </innodReplace><p>...</p><innodReplace>\n</innodReplace></td></innodTd>\n</innodReplace></tr><innodTr><innodReplace>` },
 ];
+
+/* ─────────────── Shared image helpers ─────────────── */
+const API_BASE_CP = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+const CP_KW = ["rc filename", "hardcoded path", "heading annotation", "level number", "level", "redjay", "whitespace", "innodreplace", "tags", "description", "path"];
+function normCP(s: string) { return s.toLowerCase().replace(/\s+/g, " ").trim(); }
+function matchCPImgs(pool: CellImageMeta[], ...texts: string[]): CellImageMeta[] {
+  const normed = texts.map(normCP).filter(Boolean);
+  if (!normed.length) return [];
+  return pool.filter(img => {
+    const t = normCP(img.cellText || "");
+    return normed.some(rt => t.includes(rt) || rt.includes(t));
+  });
+}
 
 function splitExamples(example: string): string[] {
   let s = example.trim().replace(/^["\u201c\u201d']+|["\u201c\u201d']+$/g, "");
@@ -205,30 +233,107 @@ const WS_COLUMNS = [
   { key: "innodReplace", label: "InnodReplace", width: "flex-1" },
 ];
 
-export default function ContentProfile({ initialData }: Props) {
+
+function LevelCellEditor({ value, rows, onChange, onClose }: {
+  value: string; rows: number; onChange: (v: string) => void; onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { taRef.current?.focus(); }, []);
+  useEffect(() => {
+    function onMD(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onChange(draft);
+        onClose();
+      }
+    }
+    document.addEventListener("mousedown", onMD);
+    return () => document.removeEventListener("mousedown", onMD);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+  return (
+    <div ref={containerRef}>
+      <textarea ref={taRef} value={draft} rows={rows}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === "Escape") { onClose(); }
+        }}
+        className="w-full text-[11px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-y text-slate-700 dark:text-slate-200 leading-snug font-mono"
+      />
+    </div>
+  );
+}
+
+export default function ContentProfile({ initialData, brdId, onDataChange }: Props) {
   const [rcFilename,        setRcFilename]        = useState("");
   const [headingAnnotation, setHeadingAnnotation] = useState("Level 2");
-
   const [levels,       setLevels]       = useState<LevelRow[]>([]);
   const [levelEditing, setLevelEditing] = useState<{ rowId: string; col: string } | null>(null);
-
   const [whitespace, setWhitespace] = useState<WhitespaceRow[]>(() => DEFAULT_WHITESPACE_ROWS);
   const [wsEditing,  setWsEditing]  = useState<{ rowId: string; col: string } | null>(null);
-
   const [saved, setSaved] = useState(false);
+  const [contentImages, setContentImages] = useState<CellImageMeta[]>([]);
+  const [expandedImage, setExpandedImage] = useState<CellImageMeta | null>(null);
+  const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
+  const API_BASE_CP2 = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+  function cellKey(a: string, b: string) { return `${a}-${b}`; }
+  function getCellImgs(a: string, b: string): UploadedCellImage[] { return cellImages[cellKey(a, b)] ?? []; }
+  function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
+  function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
+  const isInitializing = useRef(false);
 
   const hardcodedPath = useMemo(() => deriveHardcodedPathFromLevels(levels), [levels]);
 
   useEffect(() => {
+    isInitializing.current = true;
     setRcFilename(String(initialData?.rc_filename ?? ""));
     setHeadingAnnotation(String(initialData?.heading_annotation ?? "Level 2"));
     setLevels(asExtractedLevels(initialData));
-    // asExtractedWhitespace now falls back to DEFAULT_WHITESPACE_ROWS when empty
     setWhitespace(asExtractedWhitespace(initialData));
     setLevelEditing(null);
     setWsEditing(null);
     setSaved(false);
   }, [initialData]);
+
+  useEffect(() => {
+    if (!onDataChange) return;
+    if (isInitializing.current) { isInitializing.current = false; return; }
+    onDataChange({
+      rc_filename:        rcFilename,
+      heading_annotation: headingAnnotation,
+      levels:    levels.map(r => ({ levelNumber: r.levelNumber, description: r.description, redjayXmlTag: r.redjayXmlTag, path: r.path, remarksNotes: r.remarksNotes })),
+      whitespace: whitespace.map(r => ({ tags: r.tags, innodReplace: r.innodReplace })),
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rcFilename, headingAnnotation, levels, whitespace]);
+
+  useEffect(() => {
+    if (!brdId) return;
+    
+    const fetchImages = async () => {
+      try {
+        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`);
+        const all: CellImageMeta[] = response.data.images ?? [];
+        const cpImgs = all.filter(img => { const t = normCP(img.cellText || ""); return CP_KW.some(kw => t.includes(kw)); });
+        setContentImages(cpImgs.length > 0 ? cpImgs : all);
+        // Restore manually uploaded images into cellImages
+        const manualImgs = all.filter((img: any) => img.section === "contentProfile" && img.rid?.startsWith("manual-"));
+        const restored: Record<string, UploadedCellImage[]> = {};
+        manualImgs.forEach((img: any) => {
+          const key = img.fieldLabel ?? "";
+          if (!key) return;
+          if (!restored[key]) restored[key] = [];
+          restored[key].push({ id: img.id, mediaName: img.mediaName, mimeType: img.mimeType, cellText: img.cellText, section: img.section, fieldLabel: img.fieldLabel });
+        });
+        setCellImages(restored);
+      } catch (err) {
+        console.error("[ContentProfile] Error fetching images:", err);
+      }
+    };
+    
+    fetchImages();
+  }, [brdId]);
 
   function updateLevel(id: string, col: string, value: string) {
     setLevels((prev) =>
@@ -277,54 +382,20 @@ export default function ContentProfile({ initialData }: Props) {
 
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
 
-  function renderLevelCell(row: LevelRow, col: string) {
+
+  function renderLevelCell(row: LevelRow, col: string, rowIndex: number) {
     const isEditing = levelEditing?.rowId === row.id && levelEditing?.col === col;
     const value     = row[col as keyof LevelRow] as string;
-
     if (col === "redjayXmlTag") {
       const isHardcoded = value === "Hardcoded";
-      return (
-        <div
-          className={`min-h-[24px] text-[11px] leading-snug whitespace-pre-line select-all font-mono
-            ${isHardcoded
-              ? "text-amber-700 dark:text-amber-400 font-semibold"
-              : "text-sky-700 dark:text-sky-400"
-            }`}
-          title="Auto-generated from Example in Description"
-        >
-          {value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}
-        </div>
-      );
+      return (<div className={`min-h-[24px] text-[11px] leading-snug whitespace-pre-line select-all font-mono ${isHardcoded ? "text-amber-700 dark:text-amber-400 font-semibold" : "text-sky-700 dark:text-sky-400"}`} title="Auto-generated from Example in Description">{value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}</div>);
     }
-
     if (isEditing) {
-      return (
-        <textarea
-          autoFocus
-          value={value}
-          rows={col === "description" ? 4 : 2}
-          onChange={(e) => updateLevel(row.id, col, e.target.value)}
-          onBlur={() => setLevelEditing(null)}
-          className="w-full text-[11px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-y text-slate-700 dark:text-slate-200 leading-snug font-mono"
-        />
-      );
+      return (<LevelCellEditor value={value} rows={col === "description" ? 4 : 2} onChange={v => updateLevel(row.id, col, v)} onClose={() => setLevelEditing(null)}/>);
     }
-
-    const isMono     = col === "path";
+    const isMono = col === "path";
     const isRequired = col === "description" && value.startsWith("Required: True");
-
-    return (
-      <div
-        onClick={() => setLevelEditing({ rowId: row.id, col })}
-        className={`cursor-pointer min-h-[24px] text-[11px] leading-snug whitespace-pre-line
-          hover:text-slate-900 dark:hover:text-slate-100 transition-colors
-          ${isMono ? "font-mono" : ""}
-          ${isRequired ? "text-emerald-700 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"}`}
-        title={value}
-      >
-        {value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}
-      </div>
-    );
+    return (<div onClick={() => setLevelEditing({ rowId: row.id, col })} className={`cursor-pointer min-h-[24px] text-[11px] leading-snug whitespace-pre-line hover:text-slate-900 dark:hover:text-slate-100 transition-colors ${isMono ? "font-mono" : ""} ${isRequired ? "text-emerald-700 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"}`} title={value}>{value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}</div>);
   }
 
   function renderWsCell(row: WhitespaceRow, col: string) {
@@ -332,11 +403,11 @@ export default function ContentProfile({ initialData }: Props) {
     const value     = row[col as keyof WhitespaceRow] as string;
     if (isEditing) {
       return (
-        <textarea
-          autoFocus value={value} rows={2}
-          onChange={(e) => updateWs(row.id, col, e.target.value)}
-          onBlur={() => setWsEditing(null)}
-          className="w-full text-[11px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-y text-slate-700 dark:text-slate-200 leading-snug font-mono"
+        <LevelCellEditor
+          value={value}
+          rows={2}
+          onChange={v => updateWs(row.id, col, v)}
+          onClose={() => setWsEditing(null)}
         />
       );
     }
@@ -424,17 +495,53 @@ export default function ContentProfile({ initialData }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]">
-                {levels.map((row, idx) => (
-                  <tr key={row.id}
-                      className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
-                    {LEVEL_COLUMNS.map((col) => (
-                      <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
-                        {renderLevelCell(row, col.key)}
-                      </td>
-                    ))}
-                    <td className="w-8 px-2 py-2 align-top"><DeleteBtn onClick={() => deleteLevel(row.id)} /></td>
-                  </tr>
-                ))}
+                {levels.map((row, idx) => {
+                  const rowImgs = matchCPImgs(contentImages, row.levelNumber, row.description, row.path);
+                  return (
+                    <React.Fragment key={row.id}>
+                      <tr className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
+                        {LEVEL_COLUMNS.map((col) => (
+                          <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                            <div className="group">
+                            {renderLevelCell(row, col.key, idx)}
+                            {getCellImgs(row.id, col.key).map(img => (
+                              <img key={`m-${img.id}`} src={`${API_BASE_CP2}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            ))}
+                            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
+                          </div>
+                          </td>
+                        ))}
+                        <td className="w-8 px-2 py-2 align-top"><DeleteBtn onClick={() => deleteLevel(row.id)} /></td>
+                      </tr>
+                      {rowImgs.length > 0 && (
+                        <tr className={`${idx % 2 === 0 ? "bg-amber-50/30 dark:bg-amber-900/10" : "bg-amber-50/20 dark:bg-amber-900/5"} border-t border-dashed border-amber-300 dark:border-amber-700/40`}>
+                          <td colSpan={LEVEL_COLUMNS.length + 1} className="px-4 py-2">
+                            <div className="flex flex-wrap gap-3 items-center">
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400" style={{ fontFamily: "'DM Mono', monospace" }}>◆ Images ({row.levelNumber})</span>
+                              {rowImgs.map(img => (
+                                <div key={img.id} className="group/img inline-flex items-center gap-2 cursor-pointer" onClick={() => setExpandedImage(img)}>
+                                  <div className="relative rounded overflow-hidden border border-amber-200 dark:border-amber-700/40 bg-white dark:bg-[#1a1f35]" style={{width:72,height:52}}>
+                                    <img
+                                      src={`${API_BASE_CP}/brd/${brdId}/images/${img.id}/blob`}
+                                      alt={img.cellText || img.mediaName}
+                                      className="w-full h-full object-contain group-hover/img:scale-105 transition-transform"
+                                      onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                    />
+                                    <span className="absolute top-0.5 right-0.5 text-[7px] font-mono px-1 rounded bg-black/40 text-white/80">{img.mediaName.split(".").pop()?.toUpperCase()}</span>
+                                  </div>
+                                  <div>
+                                    {img.cellText && <p className="text-[10px] text-slate-500 dark:text-slate-400 max-w-[90px] truncate">{img.cellText}</p>}
+                                    <p className="text-[8.5px] text-emerald-500 group-hover/img:underline">expand ↗</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
                 {levels.length === 0 && (
                   <tr>
                     <td colSpan={LEVEL_COLUMNS.length + 1} className="py-10 text-center">
@@ -453,7 +560,13 @@ export default function ContentProfile({ initialData }: Props) {
       <div className="space-y-2">
         <SectionLabel>Heading Annotation</SectionLabel>
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
-          <FieldRow label="Heading Annotation" value={headingAnnotation} onChange={setHeadingAnnotation} placeholder="e.g. Level 2" />
+          <div className="flex items-center gap-2">
+            <div className="flex-1"><FieldRow label="Heading Annotation" value={headingAnnotation} onChange={setHeadingAnnotation} placeholder="e.g. Level 2" /></div>
+            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel="headingAnnotation" existingImages={getCellImgs("headingAnnotation", "value")} onUploaded={img => onCellUploaded("headingAnnotation", "value", img)} onDeleted={id => onCellDeleted("headingAnnotation", "value", id)}/>}
+          </div>
+          {getCellImgs("headingAnnotation", "value").map(img => (
+            <img key={`m-${img.id}`} src={`${API_BASE_CP2}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-2 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+          ))}
         </div>
       </div>
 
@@ -492,7 +605,13 @@ export default function ContentProfile({ initialData }: Props) {
                       className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
                     {WS_COLUMNS.map((col) => (
                       <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                        <div className="group">
                         {renderWsCell(row, col.key)}
+                        {getCellImgs(row.id, col.key).map(img => (
+                          <img key={`m-${img.id}`} src={`${API_BASE_CP2}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                        ))}
+                        {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
+                      </div>
                       </td>
                     ))}
                     <td className="w-8 px-2 py-2 align-top"><DeleteBtn onClick={() => deleteWs(row.id)} /></td>
@@ -512,6 +631,26 @@ export default function ContentProfile({ initialData }: Props) {
         </div>
       </div>
 
+
+      {/* Lightbox */}
+      {expandedImage && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setExpandedImage(null)}>
+          <div className="relative max-w-3xl w-full mx-4 rounded-2xl overflow-hidden bg-white dark:bg-[#1e2235] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-[#2a3147]">
+              <div>
+                <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">{expandedImage.cellText || expandedImage.mediaName}</p>
+                <p className="text-[9px] text-slate-400 font-mono mt-0.5">T{expandedImage.tableIndex} · R{expandedImage.rowIndex} · C{expandedImage.colIndex}</p>
+              </div>
+              <button onClick={() => setExpandedImage(null)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-[#252d45] transition-all">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="p-4 flex items-center justify-center bg-slate-50 dark:bg-[#161b2e] max-h-[70vh]">
+              <img src={`${API_BASE_CP}/brd/${brdId}/images/${expandedImage.id}/blob`} alt={expandedImage.mediaName} className="max-w-full max-h-[65vh] object-contain rounded"/>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

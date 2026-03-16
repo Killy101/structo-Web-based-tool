@@ -9,6 +9,7 @@ interface SimpleMetajsonProps {
   metajson: Record<string, unknown> | null;
   filename?: string;
   onDownload?: (json: Record<string, unknown>, filename: string) => void;
+  onSave?: (json: Record<string, unknown>) => void;
 }
 
 interface ParseError {
@@ -92,13 +93,15 @@ function highlightJson(raw: string): string {
     );
 }
 
+const STRIPPED_KEYS = new Set(["levelPatterns", "pathTransform"]);
+
 function stripLevelPatterns(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripLevelPatterns);
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     const next: Record<string, unknown> = {};
     Object.entries(obj).forEach(([key, val]) => {
-      if (key === "levelPatterns") return;
+      if (STRIPPED_KEYS.has(key)) return;
       next[key] = stripLevelPatterns(val);
     });
     return next;
@@ -156,6 +159,7 @@ export default function SimpleMetajson({
   metajson,
   filename = "metajson.json",
   onDownload,
+  onSave,
 }: SimpleMetajsonProps) {
   const [editMode, setEditMode]     = useState(false);
   const [raw, setRaw]               = useState("");
@@ -163,6 +167,8 @@ export default function SimpleMetajson({
   const [liveJson, setLiveJson]     = useState<Record<string, unknown> | null>(null);
   const [validated, setValidated]   = useState<boolean | null>(null);
   const [scrollTop, setScrollTop]   = useState(0);
+  const [savedJson, setSavedJson]   = useState<Record<string, unknown> | null>(null);
+  const [saveFlash, setSaveFlash]   = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef  = useRef<HTMLDivElement>(null);
@@ -177,6 +183,7 @@ export default function SimpleMetajson({
       setParseError(null);
       setValidated(null);
       setScrollTop(0);
+      setSavedJson(null);
     }
   }, [metajson]);
 
@@ -252,6 +259,15 @@ export default function SimpleMetajson({
     setValidated(null);
   }
 
+  function handleSave() {
+    const json = liveJson ?? (metajson ? sanitizeSimpleMetajson(metajson) : null);
+    if (!json || parseError) return;
+    setSavedJson(json);
+    setSaveFlash(true);
+    setTimeout(() => setSaveFlash(false), 2000);
+    if (onSave) onSave(json);
+  }
+
   function handleDownload() {
     const json = liveJson ?? (metajson ? sanitizeSimpleMetajson(metajson) : null);
     if (!json) return;
@@ -266,10 +282,11 @@ export default function SimpleMetajson({
 
   if (!open) return null;
 
-  const displayJson = liveJson ?? metajson;
+  const displayJson = savedJson ?? liveJson ?? metajson;
   const rawLines    = raw.split("\n");
   const lineCount   = rawLines.length;
   const errorLine   = parseError?.line ?? null;
+  const hasUnsavedChanges = !!liveJson && liveJson !== savedJson && !parseError;
 
   return (
     <>
@@ -364,6 +381,26 @@ export default function SimpleMetajson({
                     <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>Invalid</>
                   ) : (
                     <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>Validate</>
+                  )}
+                </button>
+              )}
+
+              {editMode && (
+                <button
+                  onClick={handleSave}
+                  disabled={!!parseError || !hasUnsavedChanges}
+                  title="Save changes"
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-medium border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                    saveFlash
+                      ? "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-700/50 text-emerald-700 dark:text-emerald-400"
+                      : "bg-white dark:bg-[#252d45] border-slate-300 dark:border-[#3a4460] text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-[#2e3a55]"
+                  }`}
+                  style={MONO}
+                >
+                  {saveFlash ? (
+                    <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>Saved</>
+                  ) : (
+                    <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>Save</>
                   )}
                 </button>
               )}
@@ -520,7 +557,11 @@ export default function SimpleMetajson({
                     <span className="text-emerald-600 dark:text-emerald-400">Valid JSON</span>
                   </>
                 ) : editMode ? (
-                  <span>Click Validate to check for errors</span>
+                  savedJson
+                    ? <><svg className="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg><span className="text-emerald-600 dark:text-emerald-400">Saved</span></>
+                    : hasUnsavedChanges
+                      ? <span className="text-amber-500 dark:text-amber-400">Unsaved changes — click Save to keep edits</span>
+                      : <span>Click Validate to check for errors</span>
                 ) : (
                   <span>Read-only preview — switch to Edit tab to modify</span>
                 )}
@@ -531,10 +572,10 @@ export default function SimpleMetajson({
               {editMode && (
                 <button
                   onClick={() => {
-                    if (metajson) {
-                      const s = sanitizeSimpleMetajson(metajson);
-                      setRaw(formatJson(s));
-                      setLiveJson(s);
+                    const base = savedJson ?? (metajson ? sanitizeSimpleMetajson(metajson) : null);
+                    if (base) {
+                      setRaw(formatJson(base as Record<string, unknown>));
+                      setLiveJson(base as Record<string, unknown>);
                       setParseError(null);
                       setValidated(null);
                       setScrollTop(0);

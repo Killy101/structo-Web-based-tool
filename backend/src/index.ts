@@ -30,7 +30,6 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
 
 // ── Global rate limiter ────────────────────────────────────────────────────────
 app.use(generalLimiter);
@@ -47,7 +46,7 @@ app.use("/brd",            brdRouter);  // handles /brd/upload, /brd/:id/scope, 
 app.use("/notifications",  notificationsRoutes);
 
 
-// ── Health Check ──────────────────────────────────────────────────────────────
+// Health Check
 app.get("/health", (_req, res) => {
   res.json({
     status: "Server is running",
