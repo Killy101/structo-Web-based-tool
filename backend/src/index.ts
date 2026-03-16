@@ -9,8 +9,6 @@ import rolesRoutes from "./routes/roles";
 import tasksRoutes from "./routes/task";
 import userLogsRoutes from "./routes/user-logs";
 import brdRouter from "./routes/brd";
-import uploadRoute from "./routes/brd/upload";
-
 
 dotenv.config();
 
@@ -23,9 +21,13 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// Remove the limit entirely (unlimited) or set to a very high value
+// ✅ Set an explicit high limit
+app.use(express.json({ limit: "500mb" }));
+app.use(express.urlencoded({ limit: "500mb", extended: true }));
+
+// Routes
 app.use("/auth",       authRoutes);
 app.use("/users",      usersRoutes);
 app.use("/dashboard",  dashboardRoutes);
@@ -33,9 +35,9 @@ app.use("/teams",      teamsRoutes);
 app.use("/roles",      rolesRoutes);
 app.use("/tasks",      tasksRoutes);
 app.use("/user-logs",  userLogsRoutes);
-app.use("/brd",        brdRouter);  // handles /brd/upload, /brd/:id/scope, etc.
+app.use("/brd",        brdRouter);
 
-// ── Health Check ──────────────────────────────────────────────────────────────
+// Health Check
 app.get("/health", (_req, res) => {
   res.json({
     status: "Server is running",

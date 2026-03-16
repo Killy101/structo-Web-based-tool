@@ -1,9 +1,9 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form
 from pydantic import BaseModel
-from typing import Any
+from typing import Any, Optional
 from src.services.extractor import extract_all_sections, extract_text
 from src.services.pattern_generator import generate_level_patterns
-import tempfile, os, shutil
+import tempfile, os, shutil, base64, httpx
 import re
 
 router = APIRouter()
@@ -142,13 +142,31 @@ def _extract_pattern_lines(rule: str) -> list[str]:
     return dedup
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /process
+# Now returns base64 encoded images to Node.js
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.post("/process")
-async def process_document(file: UploadFile = File(...), format: str = "new"):
+async def process_document(
+    file: UploadFile = File(...),
+    format: str = Query(default="new"),
+    brd_id: Optional[str] = Query(default=None, alias="brd_id"),
+):
     """
     Receives a BRD file (.doc, .docx, or .pdf) and extracts:
     Scope, Metadata, TOC, Citation Rules, Content Profile.
+    
+    Images are returned as base64 encoded strings to be saved by Node.js.
     """
     suffix = os.path.splitext(file.filename)[1].lower()
+    
+    print(f"[DEBUG] Processing file: {file.filename}, format: {format}, brd_id: {brd_id}, suffix: {suffix}")
+
+    # Make sure brd_id is not the string "None"
+    if brd_id and brd_id.lower() == "none":
+        brd_id = None
+        print("[DEBUG] brd_id was string 'None', setting to None")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         shutil.copyfileobj(file.file, tmp)
@@ -156,7 +174,8 @@ async def process_document(file: UploadFile = File(...), format: str = "new"):
 
     try:
         if suffix == ".docx":
-            result = await extract_all_sections(tmp_path, format)
+            print(f"[DEBUG] Calling extract_all_sections for DOCX with brd_id={brd_id}...")
+            result = await extract_all_sections(tmp_path, format, brd_id=brd_id)
         else:
             try:
                 raw_text = extract_text(tmp_path, suffix)
@@ -168,14 +187,73 @@ async def process_document(file: UploadFile = File(...), format: str = "new"):
                     status_code=422,
                     detail="Could not extract text from document"
                 )
-            result = await extract_all_sections(raw_text, format)
+            result = await extract_all_sections(raw_text, format, brd_id=brd_id)
 
         result["filename"] = file.filename
+
+        # ── Hoist detected_format from metadata blob to top-level ────────────
+        # extract_metadata() stores "_format": "old"|"new" inside result["metadata"].
+        # Surface it here so Node.js upload.ts can read result["detected_format"].
+        meta_blob = result.get("metadata") or {}
+        result["detected_format"] = meta_blob.get("_format", "new")
+        print(f"[DEBUG] detected_format: {result['detected_format']}")
+
+        # ── Image extraction - returns base64 encoded images ─────────────────
+        image_metadata: list[dict] = []
+
+        if brd_id and suffix == ".docx":
+            print(f"[DEBUG] Starting image extraction for brd_id: {brd_id}")
+            try:
+                from docx import Document
+                from src.services.extractors.image_extractor import (
+                    extract_and_store_images,
+                )
+
+                doc = Document(tmp_path)
+                print(f"[DEBUG] Document loaded, has {len(doc.tables)} tables")
+                
+                # Extract images - get records with base64 encoded image data
+                image_records = extract_and_store_images(
+                    doc, 
+                    tmp_path, 
+                    brd_id=brd_id,
+                )
+                
+                print(f"[DEBUG] extract_and_store_images returned: {len(image_records)} images")
+                image_metadata = image_records  # Will be sent to Node.js
+
+                # ── Persist images to DB via Node.js API (delete-then-insert) ──
+                # This ensures section + fieldLabel are always fresh in the DB.
+                try:
+                    node_base = os.environ.get("NODE_API_URL", "http://localhost:4000")
+                    resp = httpx.post(
+                        f"{node_base}/brd/{brd_id}/images",
+                        json={"images": image_records},
+                        timeout=30,
+                    )
+                    print(f"[DEBUG] Saved {len(image_records)} images to DB: {resp.status_code}")
+                except Exception as save_err:
+                    print(f"[WARN] Could not persist images to DB: {save_err}")
+
+            except Exception as img_exc:
+                print(f"[DEBUG] Image extraction failed with exception:")
+                import traceback
+                traceback.print_exc()
+                image_metadata = []  # Empty on error
+        else:
+            print(f"[DEBUG] Skipping image extraction: brd_id={brd_id}, suffix={suffix}")
+
+        result["image_metadata"] = image_metadata
+        print(f"[DEBUG] Final result has {len(image_metadata)} images")
         return result
 
     finally:
         os.unlink(tmp_path)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /patterns/level-patterns
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/patterns/level-patterns")
 async def build_level_patterns(payload: LevelPatternRequest):
@@ -255,6 +333,10 @@ async def build_level_patterns(payload: LevelPatternRequest):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /generate/metajson
+# ─────────────────────────────────────────────────────────────────────────────
+
 class GenerateMetajsonRequest(BaseModel):
     brdId:          str | None = None
     title:          str | None = None
@@ -290,7 +372,6 @@ def _normalize_scope_match_string(doc_title: str) -> str:
 
 
 def _build_scope_entries(scope: dict[str, Any] | None) -> list[str]:
-    """Extract document title match strings from scope payload."""
     if not scope:
         return []
 
@@ -347,7 +428,6 @@ def _build_levels_from_toc(
     toc: dict[str, Any] | None,
     citations: dict[str, Any] | None,
 ) -> list[dict]:
-    """Convert TOC sections + citation references into level dicts for assemble_metajson."""
     if not toc:
         return []
     sections = toc.get("sections") or []
@@ -490,11 +570,9 @@ def _sanitize_path_transform_output(metajson: dict[str, Any]) -> None:
             if cleaned_rows:
                 pt[level_key] = {"patterns": cleaned_rows, "case": str(value.get("case") or "")}
 
-    # Ensure level 2 always exists.
     if "2" not in pt:
         pt["2"] = {"patterns": [["^.*$", "", 0, ""]], "case": ""}
 
-    # Backfill missing levels from levelPatterns with regex find rows.
     if isinstance(raw_lp, dict):
         for key, pats in raw_lp.items():
             level_key = str(key)
@@ -524,7 +602,6 @@ async def generate_metajson(payload: GenerateMetajsonRequest):
     language = (metadata.get("Language") or "Korean").strip()
     levels   = _build_levels_from_toc(payload.toc, payload.citations)
 
-    # Build scope_entries for back-compat (used as level-2 pattern match strings)
     scope_entries = _build_scope_entries(payload.scope)
 
     whitespace_handling: dict | None = None
@@ -536,27 +613,56 @@ async def generate_metajson(payload: GenerateMetajsonRequest):
             if isinstance(vals, list)
         }
 
-    # ── KEY FIX: pass full scope + citations dicts so assemble_metajson
-    #    can build pathTransform levels 3+ from citation rules and apply
-    #    language-conventional cleanup patterns. ──────────────────────────────
     metajson, filename = assemble_metajson(
         metadata=metadata,
         levels=levels,
         language=language,
-        scope=payload.scope,            # ← full scope dict (new)
-        citations=payload.citations,    # ← full citations dict (new)
+        scope=payload.scope,
+        citations=payload.citations,
         content_profile=payload.contentProfile,
         scope_entries=scope_entries,
         whitespace_handling=whitespace_handling,
         brd_config=payload.brdConfig,
     )
 
-    # Final safety net: remove template/noise rows and ensure level-backed
-    # pathTransform rows are emitted even when upstream config is noisy.
     _sanitize_path_transform_output(metajson)
 
     return {
         "success":  True,
         "metajson": metajson,
         "filename": filename,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /test-brd-id - Debug endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/test-brd-id")
+async def test_brd_id(
+    file: UploadFile = File(...),
+    brd_id: Optional[str] = Query(None, alias="brd_id"),
+    document_id: Optional[str] = Query(None, alias="document_id"),
+    format: str = Query("new"),
+):
+    """
+    Simple test endpoint to debug parameter passing.
+    """
+    print("\n" + "="*50)
+    print("TEST ENDPOINT CALLED")
+    print("="*50)
+    print(f"Query parameters received:")
+    print(f"  - brd_id: {brd_id}")
+    print(f"  - document_id: {document_id}")
+    print(f"  - format: {format}")
+    print(f"File received: {file.filename}")
+    print("="*50 + "\n")
+    
+    return {
+        "received": {
+            "brd_id": brd_id,
+            "document_id": document_id,
+            "format": format,
+            "filename": file.filename
+        }
     }

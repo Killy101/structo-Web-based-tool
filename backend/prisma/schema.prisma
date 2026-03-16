@@ -212,9 +212,39 @@ model BrdSections {
   citations      Json?   // { references: [] }
   contentProfile Json?   // { rc_filename, heading_annotation, levels: [], whitespace: [] }
   brdConfig      Json?   // catch-all for extractor extras
+  innodMetajson Json?   // original innod metadata JSON blob (for debugging)
+  simpleMetajson Json?   // simplified metadata JSON blob (for easier frontend use)
+
+  cellImages BrdCellImage[] 
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("brd_sections")
+}
+model BrdCellImage {
+  id          Int         @id @default(autoincrement())
+  brdId       String
+  brdSections BrdSections @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
+
+  tableIndex  Int
+  rowIndex    Int
+  colIndex    Int
+  rid         String
+  mediaName   String
+  mimeType    String
+  cellText    String      @default("")
+
+  // ── NEW: semantic location fields (populated by updated image_extractor.py)
+  section     String      @default("unknown") 
+  fieldLabel  String      @default("")        
+
+  imageData   Bytes?     
+  blobUrl     String?     
+  extractedAt DateTime    @default(now())
+
+  @@unique([brdId, tableIndex, rowIndex, colIndex, rid])
+  @@index([brdId])
+  @@index([brdId, section])   
+  @@map("brd_cell_images")
 }

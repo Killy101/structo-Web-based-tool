@@ -65,10 +65,32 @@ _BOILERPLATE_MARKERS: list[str] = [
     "ecfr is updated", "electronic code of federal", "officially maintained",
     "smes to check", "check if weblink", "up-to-date on a rolling",
     "url for the title", "url for the source", "parent url for the source",
+    # ── Intro/preamble sentences that appear before real data rows ────────
+    "please reference", "relevant sections for us states",
+    "the following titles are currently in scope",
+    "titles are currently in scope",
+    "currently in scope",
+    "for most up to date",
+    "most up to date relevant",
+    "the following",
+    # ── "The scope of the source is:" preamble ────────────────────────────
+    "the scope of the source is",
 ]
 
 _URL_RE = re.compile(r"https?://")
 _ASRB_RE = re.compile(r"ASRB\d+")
+
+# Matches multi-sentence intro blobs: long text with no URL that ends with
+# "in scope:" or "in scope" — a common preamble pattern.
+# Also matches "The scope of the source is:" preamble rows.
+_INTRO_BLOB_RE = re.compile(
+    r"(following\s+titles\s+are\s+currently\s+in\s+scope"
+    r"|titles\s+are\s+currently\s+in\s+scope"
+    r"|currently\s+in\s+scope\s*:?"
+    r"|please\s+reference\b"
+    r"|the\s+scope\s+of\s+the\s+source\s+is\s*:?)",
+    re.IGNORECASE,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,6 +190,52 @@ def _score_table(table) -> int:
     score += url_rows * 5
 
     return score
+
+
+
+def _find_scope_section_table(doc):
+    """
+    Some BRDs (e.g. Alaska Statutes) list scope titles in a plain single-column
+    table placed directly under the "Scope" heading, with no header row and no
+    URLs — just raw title strings like "Title 06", "Title 09", etc.
+
+    Walks the document body in order; as soon as a Heading 2/3 containing
+    "scope" is seen, collects any immediately-following single-column table
+    before the next heading arrives.  Returns that table, or None.
+    """
+    body_els = list(doc.element.body)
+    in_scope_section = False
+
+    for el in body_els:
+        tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+
+        if tag == "p":
+            from docx.text.paragraph import Paragraph
+            p = Paragraph(el, doc)
+            style = p.style.name if p.style else ""
+            text_lower = p.text.strip().lower()
+            if style.startswith("Heading"):
+                if "scope" in text_lower:
+                    in_scope_section = True
+                elif in_scope_section:
+                    # Hit next heading — scope section is over
+                    break
+
+        elif tag == "tbl" and in_scope_section:
+            from docx.table import Table as DocxTable
+            t = DocxTable(el, doc)
+            # Accept single-column tables with at least 2 rows of title-like text
+            if len(t.columns) == 1 and len(t.rows) >= 2:
+                # Verify rows look like title entries (non-empty, no boilerplate)
+                titles = [row.cells[0].text.strip() for row in t.rows if row.cells[0].text.strip()]
+                real = [tt for tt in titles if not any(m in tt.lower() for m in _BOILERPLATE_MARKERS)]
+                if len(real) >= 2:
+                    return t
+            # Multi-col table inside scope section — stop looking for single-col table
+            elif len(t.columns) > 1:
+                break
+
+    return None
 
 
 def _find_scope_table(doc):
@@ -338,10 +406,14 @@ def _find_data_start_row(table, col_map: dict) -> int:
         title_text   = cells[title_col].text.strip()   if title_col is not None and title_col < n else ""
         content_text = cells[content_col].text.strip() if content_col is not None and content_col < n else ""
         ref_text     = cells[ref_col].text.strip()     if ref_col is not None and ref_col < n else ""
-        title_lower  = title_text.lower()
+        title_lower  = _normalise(title_text)
 
-        # Skip boilerplate rows
+        # Skip boilerplate rows (includes "the scope of the source is")
         if any(m in title_lower for m in _BOILERPLATE_MARKERS):
+            continue
+
+        # Skip intro/preamble blobs (includes "The scope of the source is:")
+        if _INTRO_BLOB_RE.search(title_lower):
             continue
 
         # Skip rows whose title cell starts with "*"
@@ -351,6 +423,9 @@ def _find_data_start_row(table, col_map: dict) -> int:
         # Skip long prose rows with no URL (instruction text, not document titles)
         has_url = bool(_URL_RE.search(content_text) or _URL_RE.search(ref_text))
         if not has_url and len(title_lower) > 80:
+            continue
+
+        if _is_non_data_scope_row(title_text, ref_text, content_text, ""):
             continue
 
         if has_url:
@@ -369,7 +444,9 @@ def _find_data_start_row(table, col_map: dict) -> int:
 def _normalise(text: str) -> str:
     """Normalise typography so markers match regardless of dash/quote variant."""
     s = re.sub(r"[‐‑‒–—−]+", "-", text.lower())
-    s = re.sub(r"[\u2018\u2019\u201c\u201d]", "'", s)
+    # Collapse all smart/curly quotes and apostrophes to plain ASCII
+    s = re.sub(r"[\u2018\u2019\u201a\u201b\u2032\u2035]", "'", s)
+    s = re.sub(r"[\u201c\u201d\u201e\u201f\u2033\u2036]", '"', s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -382,6 +459,17 @@ _NON_DATA_MARKERS: list[str] = [
     "document title as appearing on regulator weblink",
     "url for the title under the source",
     "checkpoint", "appearing on regulator weblink",
+    # ── Intro/preamble sentences ──────────────────────────────────────────
+    "please reference",
+    "relevant sections for us states",
+    "the following titles are currently in scope",
+    "titles are currently in scope",
+    "currently in scope",
+    "for most up to date",
+    "most up to date relevant sections",
+    "the following",
+    # ── "The scope of the source is:" preamble ────────────────────────────
+    "the scope of the source is",
 ]
 
 
@@ -403,6 +491,11 @@ def _is_non_data_scope_row(
         return True
     if any(m in sme_n for m in _NON_DATA_MARKERS):
         return True
+
+    # ── Intro/preamble blob: always reject regardless of whether a URL is present ──
+    if _INTRO_BLOB_RE.search(title_n):
+        return True
+
     if re.match(r"^\*", title_n.strip()):
         return True
     if re.search(r"\bsme\s*check[-\s]*point\b", title_n):
@@ -425,20 +518,94 @@ def _is_non_data_scope_row(
 
 def _is_legacy_format(doc) -> bool:
     """
-    True only when the document has a Scope heading but NO scope table.
-    (Older BRDs listed scope documents as plain paragraphs.)
+    True when the document lists scope as plain paragraphs rather than a table.
+
+    Two conditions must both be true:
+      1. A heading containing "scope" exists in the document.
+      2. No scope TABLE exists — OR the best-scoring scope table produces zero
+         usable data rows (i.e. the "table" found is really a metadata/citations
+         table that happened to score > 0, not a real scope table).
+
+    Condition 2b catches docs like Alaska Statutes where scope entries are
+    plain paragraphs but the doc still contains other tables (metadata, etc.)
+    that would otherwise prevent the legacy path from being taken.
     """
     has_scope_heading = any(
         p.style and p.style.name.startswith("Heading") and "scope" in p.text.lower()
         for p in doc.paragraphs
     )
-    has_scope_table = _find_scope_table(doc) is not None
-    return has_scope_heading and not has_scope_table
+    if not has_scope_heading:
+        return False
+
+    scope_table = _find_scope_table(doc)
+    if scope_table is None:
+        return True  # no table at all → definitely legacy
+
+    # A table was found — check if it actually produces any data rows with
+    # real document titles. If it yields nothing useful, treat as legacy.
+    total_rows = len(scope_table.rows)
+    header_rows = scope_table.rows[:min(4, total_rows)]
+    col_map = _detect_column_map(header_rows)
+    data_start = _find_data_start_row(scope_table, col_map)
+
+    title_col = col_map.get("title", 0)
+    useful_rows = 0
+    for row in scope_table.rows[data_start:]:
+        cells = row.cells
+        if title_col is not None and title_col < len(cells):
+            title = cells[title_col].text.strip()
+            if title and not _is_non_data_scope_row(title, "", "", ""):
+                useful_rows += 1
+
+    # If the "scope table" has no useful rows, the real scope is in paragraphs
+    return useful_rows == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public extractor
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_scope_single_col_table(table, ref_url: str = "") -> dict:
+    """
+    Extract scope entries from a single-column table where each row is just
+    a document title (e.g. "Title 06", "Title 09").
+
+    ref_url is taken from the Source section URL if available.
+    """
+    in_scope = []
+    seen: set[str] = set()
+    for row in table.rows:
+        title = row.cells[0].text.strip().replace("\xa0", " ")
+        if not title:
+            continue
+        title_lower = title.lower()
+        if any(m in title_lower for m in _BOILERPLATE_MARKERS):
+            continue
+        if _INTRO_BLOB_RE.search(title_lower):
+            continue
+        if title in seen:
+            continue
+        seen.add(title)
+        in_scope.append({
+            "document_title":         title,
+            "regulator_url":          ref_url,
+            "content_url":            "",
+            "issuing_authority":      "",
+            "issuing_authority_code": "",
+            "geography":              "",
+            "asrb_id":                "",
+            "sme_comments":           "",
+            "initial_evergreen":      "",
+            "date_of_ingestion":      "",
+            "strikethrough":          False,
+        })
+    return {
+        "in_scope":     in_scope,
+        "out_of_scope": [],
+        "summary":      f"Scope covers {len(in_scope)} active documents (single-column table format).",
+    }
+
 
 def extract_scope(doc) -> dict:
     """
@@ -457,11 +624,31 @@ def extract_scope(doc) -> dict:
         asrb_id, sme_comments, initial_evergreen, date_of_ingestion,
         strikethrough.
 
-    Falls back to extract_scope_legacy() for paragraph-based legacy BRDs.
+    Extraction priority:
+      1. Single-column table directly under the Scope heading (e.g. Alaska)
+      2. Legacy paragraph-based format (no table at all)
+      3. Standard scored multi-column scope table
     """
+    # ── Path 1: single-column table under Scope heading (e.g. Alaska) ──────
+    single_col_table = _find_scope_section_table(doc)
+    if single_col_table is not None:
+        # Grab the shared reference URL from the Source section
+        url_re = re.compile(r"https?://\S+")
+        ref_url = ""
+        for p in _legacy_paragraphs_in_section(
+            doc, "Source", ["Scope", "How to Identify", "Document Structure"]
+        ):
+            m = url_re.search(p.text)
+            if m:
+                ref_url = m.group(0).rstrip(".,;")
+                break
+        return _extract_scope_single_col_table(single_col_table, ref_url)
+
+    # ── Path 2: legacy paragraph-based format ────────────────────────────
     if _is_legacy_format(doc):
         return extract_scope_legacy(doc)
 
+    # ── Path 3: standard scored multi-column scope table ─────────────────
     scope_table = _find_scope_table(doc)
     if scope_table is None:
         return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}
@@ -611,15 +798,33 @@ def extract_scope_legacy(doc) -> dict:
             break
 
     # ── Collect raw paragraphs from the Scope section ─────────────────────────
-    intro_prefixes = ("the following",)
+    intro_prefixes = (
+        "the following",
+        "please reference",
+        "please note",
+        "note:",
+        "for most up to date",
+        "titles are currently in scope",
+        # ── "The scope of the source is:" preamble ────────────────────────
+        "the scope of the source is",
+    )
     raw_paras: list[str] = []
     for p in _legacy_paragraphs_in_section(
-        doc, "Scope", ["How to Identify", "Document Structure", "Metadata", "References"]
+        doc, "Scope", [
+            "How to Identify", "Document Structure", "Metadata", "References",
+            "Citation", "Levels", "Structuring", "Source", "Delivery",
+            "Assumptions", "Exceptions", "File", "Appendix",
+        ]
     ):
         text = p.text.replace("\xa0", " ").strip()
         if not text:
             continue
-        if any(text.lower().startswith(pfx) for pfx in intro_prefixes):
+        text_norm = _normalise(text)
+        if any(text_norm.startswith(pfx) for pfx in intro_prefixes):
+            continue
+        # Also skip any preamble blob containing "the scope of the source is"
+        # or other known intro patterns anywhere in the text (not just prefix).
+        if _INTRO_BLOB_RE.search(text_norm):
             continue
         raw_paras.append(text)
 

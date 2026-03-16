@@ -23,7 +23,8 @@ interface UploadFlowData {
   title: string;
   scope?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
-  toc?: Record<string, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  toc?: Record<string, unknown> | any;
   citations?: Record<string, unknown>;
   contentProfile?: Record<string, unknown>;
   brdConfig?: Record<string, unknown>;
@@ -139,7 +140,7 @@ export default function BrdFlow({
   finalStepMode = "generate",
 }: Props) {
   const isEditMode = !!initialMeta?.brdId;
-  const cameFromGenerate = isEditMode && initialStep >= 1 && initialStep <= 5;
+  const cameFromGenerate = isEditMode; // always show "Back to Generate" in edit mode
 
   const toEditStep   = (s: number) => Math.max(0, s - 1);
   const fromEditStep = (s: number) => s + 1;
@@ -262,92 +263,90 @@ export default function BrdFlow({
     setStep(isEditMode ? toEditStep(targetFullStep) : targetFullStep);
   }
 
-  function renderStepContent() {
-    const fullStep = isEditMode ? fromEditStep(step) : step;
+// In BrdFlow.tsx, update the renderStepContent function
 
-    switch (fullStep) {
-      case 0:
-        return (
-          <Upload
-            onComplete={(data) => {
-              setUploadMeta(data as UploadFlowData);
-              next();
-            }}
-          />
-        );
+function renderStepContent() {
+  const fullStep = isEditMode ? fromEditStep(step) : step;
 
-      case 1:
-        return <Scope initialData={uploadMeta?.scope} />;
+  switch (fullStep) {
+    case 0:
+      return (
+        <Upload
+          onComplete={(data) => {
+            setUploadMeta(data as UploadFlowData);
+            next();
+          }}
+        />
+      );
 
-      case 2:
-        return (
-          <Metadata
-            format={uploadMeta?.format ?? "new"}
-            brdId={uploadMeta?.brdId}
-            title={getBestTitle()}
-            initialData={uploadMeta?.metadata}
-          />
-        );
+    case 1:
+      return <Scope 
+        initialData={uploadMeta?.scope}
+        brdId={uploadMeta?.brdId}
+        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, scope: data } : prev)}
+      />;
 
-      case 3:
-        return <Toc initialData={uploadMeta?.toc as { sections?: { id?: string; level?: string; name?: string; required?: string; definition?: string; example?: string; note?: string; tocRequirements?: string; smeComments?: string }[] } | undefined} />;
+    case 2:
+      return (
+        <Metadata
+          format={uploadMeta?.format ?? "new"}
+          title={getBestTitle()}
+          initialData={uploadMeta?.metadata}
+          brdId={uploadMeta?.brdId}
+          onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, metadata: data } : prev)}
+        />
+      );
 
-      case 4:
-        return <Citation initialData={uploadMeta?.citations} />;
-
-      case 5:
-        return <ContentProfile initialData={uploadMeta?.contentProfile} />;
-
-      case 6: {
-        if (viewLoading) {
-          return (
-            <div className="flex items-center justify-center py-24 gap-3">
-              <svg className="animate-spin w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24">
-                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
-                <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
-              </svg>
-              <span className="text-sm font-medium text-slate-500">Loading BRD data…</span>
-            </div>
-          );
-        }
-        if (viewError) {
-          return (
-            <div className="flex flex-col items-center justify-center py-24 gap-4">
-              <p className="text-sm text-red-600 font-medium">{viewError}</p>
-              <button
-                onClick={onClose}
-                className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 transition-all"
-              >
-                Close
-              </button>
-            </div>
-          );
-        }
-        return (
-          <Generate
-            brdId={uploadMeta?.brdId}
-            title={getBestTitle()}
-            format={uploadMeta?.format ?? initialMeta?.format ?? "new"}
-            initialData={{
-              scope:          uploadMeta?.scope,
-              metadata:       uploadMeta?.metadata,
-              toc:            uploadMeta?.toc,
-              citations:      uploadMeta?.citations,
-              contentProfile: uploadMeta?.contentProfile,
-              brdConfig:      uploadMeta?.brdConfig,
-            }}
-            canEdit={finalStepMode !== "view"}
-            onEdit={handleEditFromGenerate}
-            onComplete={onClose}
-          />
-        );
-      }
-
-      default:
-        return null;
+    case 3: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tocData = uploadMeta?.toc as any;
+      return <Toc
+        initialData={tocData}
+        brdId={uploadMeta?.brdId}
+        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, toc: data } : prev)}
+      />;
     }
-  }
 
+    case 4:
+      return <Citation 
+        initialData={uploadMeta?.citations}
+        brdId={uploadMeta?.brdId}
+        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, citations: data } : prev)}
+      />;
+
+    case 5:
+      return <ContentProfile 
+        initialData={uploadMeta?.contentProfile}
+        brdId={uploadMeta?.brdId}
+        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, contentProfile: data } : prev)}
+      />;
+
+    case 6: {
+      // ... rest of the code
+      return (
+        <Generate
+          brdId={uploadMeta?.brdId}
+          title={getBestTitle()}
+          format={uploadMeta?.format ?? initialMeta?.format ?? "new"}
+          initialData={{
+            scope:          uploadMeta?.scope,
+            metadata:       uploadMeta?.metadata,
+            toc:            uploadMeta?.toc,
+            citations:      uploadMeta?.citations,
+            contentProfile: uploadMeta?.contentProfile,
+            brdConfig:      uploadMeta?.brdConfig,
+          }}
+          canEdit={finalStepMode !== "view"}
+          onEdit={handleEditFromGenerate}
+          onComplete={onClose}
+        />
+      );
+    }
+
+    default:
+      return null;
+  }
+}
   function StepIndicator() {
     return (
       <div className="flex items-center justify-center gap-0 px-4 py-3 overflow-x-auto">

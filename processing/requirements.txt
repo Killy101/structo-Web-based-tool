@@ -6,6 +6,7 @@ click==8.3.1
 colorama==0.4.6
 distro==1.9.0
 dnspython==2.8.0
+docx2txt==0.8
 email-validator==2.3.0
 fastapi==0.135.1
 fastapi-cli==0.0.24
@@ -18,6 +19,9 @@ httpx==0.28.1
 idna==3.11
 Jinja2==3.1.6
 jiter==0.13.0
+langchain==1.2.10
+langchain-core==1.2.17
+langchain-text-splitters==1.1.1
 lxml==6.0.2
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
@@ -48,7 +52,5 @@ urllib3==2.6.3
 uvicorn==0.41.0
 watchfiles==1.1.1
 websockets==16.0
-docx2txt==0.8
-langchain==1.2.10
-langchain-text-splitters==1.1.1
-langchain-core==1.2.17
+boto3==1.37.0
+azure-storage-blob==12.26.0

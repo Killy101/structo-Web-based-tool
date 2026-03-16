@@ -6,6 +6,7 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import prisma from "../../lib/prisma";
+import { Prisma } from "@prisma/client"; 
 
 const router = Router();
 
@@ -23,19 +24,30 @@ const upload = multer({
 });
 
 interface ProcessingResult {
-  filename:        string;
-  char_count:      number;
-  scope:           Record<string, unknown>;
-  metadata:        Record<string, unknown>;
-  toc:             Record<string, unknown>;
-  citations:       Record<string, unknown>;
-  content_profile: Record<string, unknown>;
-  brd_config?:     Record<string, unknown>;
-  brdConfig?:      Record<string, unknown>;
+  filename:         string;
+  char_count:       number;
+  detected_format?: string;   // "new" | "old" — auto-detected by Python
+  scope:            Record<string, unknown>;
+  metadata:         Record<string, unknown>;
+  toc:              Record<string, unknown>;
+  citations:        Record<string, unknown>;
+  content_profile:  Record<string, unknown>;
+  brd_config?:      Record<string, unknown>;
+  brdConfig?:       Record<string, unknown>;
+  image_metadata?:  ImageMeta[];
 }
 
-/** Strip surrounding curly/straight quotes that the Python extractor sometimes
- *  leaves on values it reads from the Word doc (e.g. `"United States"`). */
+interface ImageMeta {
+  tableIndex: number;
+  rowIndex:   number;
+  colIndex:   number;
+  rid:        string;
+  mediaName:  string;
+  mimeType:   string;
+  cellText:   string;
+  imageData:  string; // base64 encoded
+}
+
 function stripQuotes(s: string): string {
   return s
     .trim()
@@ -43,10 +55,6 @@ function stripQuotes(s: string): string {
     .trim();
 }
 
-/**
- * Boilerplate H1 headings that should never be used as a document title.
- * These are generic section names that appear in BRD templates.
- */
 const BOILERPLATE_TITLES = new Set([
   "structuring requirements",
   "content structure",
@@ -73,24 +81,6 @@ function isBoilerplate(title: string): boolean {
   return BOILERPLATE_TITLES.has(t) || [...BOILERPLATE_TITLES].some(b => t.includes(b));
 }
 
-/**
- * Build the best human-readable title from extracted metadata + filename.
- *
- * Rules:
- *   1. If both content_category_name and document_title exist, document_title
- *      is not boilerplate, and it adds specificity beyond content_category_name,
- *      combine them: "{content_category_name} - {document_title}"
- *      e.g. "Code of Federal Regulations" + "Title 12: Banks and Banking"
- *           → "Code of Federal Regulations - Title 12: Banks and Banking"
- *
- *   2. If document_title is boilerplate or redundant, just use content_category_name.
- *
- *   3. If only content_category_name exists, use it.
- *
- *   4. If neither exists, fall back to issuing_agency.
- *
- *   5. Last resort: clean up the filename.
- */
 function buildTitle(
   meta: Record<string, string>,
   originalName: string
@@ -102,7 +92,6 @@ function buildTitle(
   let rawTitle = "";
 
   if (categoryName && documentTitle && !isBoilerplate(documentTitle)) {
-    // Check if document_title adds specificity beyond content_category_name
     const catLower = categoryName.toLowerCase();
     const docLower = documentTitle.toLowerCase();
 
@@ -112,12 +101,10 @@ function buildTitle(
       docLower.includes(catLower);
 
     if (isRedundant) {
-      // They overlap — just use the longer/more specific one
       rawTitle = categoryName.length >= documentTitle.length
         ? categoryName
         : documentTitle;
     } else {
-      // document_title adds new info — combine them
       rawTitle = `${categoryName} - ${documentTitle}`;
     }
   } else if (categoryName) {
@@ -127,87 +114,220 @@ function buildTitle(
   } else if (issuingAgency) {
     rawTitle = issuingAgency;
   } else {
-    // Filename fallback: "Code_of_Federal_Regulations_-_Title_12__Banks_and_Banking.docx"
-    // → "Code of Federal Regulations - Title 12 Banks and Banking"
     rawTitle = originalName
       .replace(/\.(pdf|doc|docx)$/i, "")
-      .replace(/_{2,}/g, " ")        // double underscores → space
-      .replace(/_/g, " ")            // remaining underscores → space
-      .replace(/\s{2,}/g, " ")       // collapse multiple spaces
+      .replace(/_{2,}/g, " ")
+      .replace(/_/g, " ")
+      .replace(/\s{2,}/g, " ")
       .trim();
   }
 
   return rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
 }
 
+// routes/brd/upload.ts - CORRECTED VERSION
+
 router.post(
   "/upload",
   upload.single("file"),
   async (req: Request, res: Response) => {
-    const file   = req.file;
-    const format = typeof req.body?.format === "string" && req.body.format.length > 0
-      ? req.body.format
-      : "new";
+    const file = req.file;
 
-    if (!file) return res.status(400).json({ error: "No file uploaded" });
+    if (!file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
 
     try {
-      // ── 1. Forward to Python processor ───────────────────────────────────
+      // ── 1. Generate BRD ID FIRST (before calling Python) ─────────────────
+      // IMPORTANT: Must use MAX numeric suffix, NOT count().
+      // count() produces collisions when any BRD has ever been deleted —
+      // e.g. 9 rows exist but the highest id is BRD-010, so count+1 = BRD-010
+      // which already exists and the upsert silently overwrites it.
+      const allBrdIds = await prisma.brd.findMany({ select: { brdId: true } });
+      const maxNum = allBrdIds.reduce((max, { brdId }) => {
+        const n = parseInt(brdId.replace("BRD-", ""), 10);
+        return isNaN(n) ? max : Math.max(max, n);
+      }, 0);
+      const brdId = `BRD-${String(maxNum + 1).padStart(3, "0")}`;
+      
+      console.log("\n" + "=".repeat(80));
+      console.log("🚀 UPLOAD PROCESS STARTED");
+      console.log("=".repeat(80));
+      console.log(`📄 File: ${file.originalname}`);
+      console.log(`🆔 Generated BRD ID: ${brdId}`);
+      console.log(`🎯 Format: auto-detecting…`);
+      console.log(`🔗 Processing URL: ${PROCESSING_URL}`);
+
+      // ── 2. Forward to Python processor WITH brd_id query param ───────────
       const form = new FormData();
       form.append("file", fs.createReadStream(file.path), {
-        filename:    file.originalname,
+        filename: file.originalname,
         contentType: file.mimetype,
       });
 
-      const pyRes = await fetch(`${PROCESSING_URL}/process`, {
-        method:  "POST",
-        body:    form,
+      const processUrl = `${PROCESSING_URL}/process?brd_id=${encodeURIComponent(brdId)}`;
+      console.log(`📡 URL: ${processUrl}`);
+
+      const pyRes = await fetch(processUrl, {
+        method: "POST",
+        body: form,
         headers: form.getHeaders(),
       });
 
+      console.log(`📡 Response status: ${pyRes.status} ${pyRes.statusText}`);
+
       if (!pyRes.ok) {
         const errText = await pyRes.text();
+        console.error(`❌ Processing service error:`, errText);
         throw new Error(`Processing service error [${pyRes.status}]: ${errText}`);
       }
 
       const extracted = (await pyRes.json()) as ProcessingResult;
+      
+      console.log(`\n✅ Processing successful!`);
+      console.log(`   📊 Images extracted: ${extracted.image_metadata?.length || 0}`);
 
-      // ── 2. Generate BRD ID (lightweight — just a count query) ────────────
-      const count = await prisma.brd.count();
-      const brdId = `BRD-${String(count + 1).padStart(3, "0")}`;
-
-      // ── 3. Derive a human-readable title ─────────────────────────────────
-      const meta  = (extracted.metadata ?? {}) as Record<string, string>;
+      // ── 3. Create the BRD record ─────────────────────────────────────────
+      const meta = (extracted.metadata ?? {}) as Record<string, string>;
       const title = buildTitle(meta, file.originalname);
 
-      // ── 4. NO DB WRITE HERE ───────────────────────────────────────────────
-      // We only return the extracted data + generated brdId to the frontend.
-      // The actual DB save happens when the user clicks "Save BRD" in Generate.tsx
-      // via POST /brd/save — this avoids double-writing and removes the
-      // pgBouncer timeout risk entirely. Upload is now pure Python → response.
+      // Use format auto-detected by Python; fall back to "new"
+      const detectedFormat = extracted.detected_format === "old" ? "old" : "new";
 
+      console.log(`   📝 Creating BRD record: ${brdId} (format: ${detectedFormat})`);
+      
+      // Create BRD record in a transaction
+      await prisma.$transaction(async (tx) => {
+        // Create the BRD record
+        const brd = await tx.brd.upsert({
+          where: { brdId: brdId },
+          create: {
+            brdId: brdId,
+            title: title,
+            format: detectedFormat === "old" ? "OLD" : "NEW",
+            status: "DRAFT",
+            createdById: 1,
+          },
+          update: {
+            title: title,
+            format: detectedFormat === "old" ? "OLD" : "NEW",
+          }
+        });
+        console.log(`   ✅ BRD record created/updated: ${brd.brdId}`);
+
+        // ── 4. Create BrdSections record (THIS IS CRITICAL!) ───────────────
+        // The BrdCellImage foreign key points to BrdSections, not Brd!
+        const brdSections = await tx.brdSections.upsert({
+          where: { brdId: brdId },
+          create: {
+            brdId: brdId,
+            scope: (extracted.scope as any) || Prisma.JsonNull,
+            metadata: (extracted.metadata as any) || Prisma.JsonNull,
+            toc: (extracted.toc as any) || Prisma.JsonNull,
+            citations: (extracted.citations as any) || Prisma.JsonNull,
+            contentProfile: (extracted.content_profile as any) || Prisma.JsonNull,
+            brdConfig: (extracted.brd_config || extracted.brdConfig as any) || Prisma.JsonNull,
+          },
+          update: {
+            scope: (extracted.scope as any) || Prisma.JsonNull,
+            metadata: (extracted.metadata as any) || Prisma.JsonNull,
+            toc: (extracted.toc as any) || Prisma.JsonNull,
+            citations: (extracted.citations as any) || Prisma.JsonNull,
+            contentProfile: (extracted.content_profile as any) || Prisma.JsonNull,
+            brdConfig: (extracted.brd_config || extracted.brdConfig as any) || Prisma.JsonNull,
+          }
+        });
+        console.log(`   ✅ BrdSections record created/verified: ${brdSections.brdId}`);
+
+        // ── 5. NOW save images (foreign key to BrdSections exists!) ────────
+        if (extracted.image_metadata && extracted.image_metadata.length > 0) {
+          console.log(`   🔍 First image metadata:`, {
+            tableIndex: extracted.image_metadata[0].tableIndex,
+            rowIndex: extracted.image_metadata[0].rowIndex,
+            colIndex: extracted.image_metadata[0].colIndex,
+            mediaName: extracted.image_metadata[0].mediaName,
+            mimeType: extracted.image_metadata[0].mimeType,
+            imageDataLength: extracted.image_metadata[0].imageData?.length || 0,
+          });
+
+          console.log(`   💾 Attempting to save ${extracted.image_metadata.length} images to PostgreSQL...`);
+          
+          // Convert base64 strings to Buffer for Prisma
+          const imageRecords = extracted.image_metadata.map((img: ImageMeta, index: number) => {
+            const buffer = Buffer.from(img.imageData, 'base64');
+            console.log(`      Image ${index}: ${img.mediaName} -> base64 length: ${img.imageData.length}, buffer length: ${buffer.length} bytes`);
+            
+            return {
+              brdId: brdId,  // This now references brdId in BrdSections
+              tableIndex: img.tableIndex,
+              rowIndex: img.rowIndex,
+              colIndex: img.colIndex,
+              rid: img.rid,
+              mediaName: img.mediaName,
+              mimeType: img.mimeType,
+              cellText: img.cellText || "",
+              imageData: buffer,
+              blobUrl: null,
+            };
+          });
+
+          // Delete any existing images for this BRD
+          const deleteResult = await tx.brdCellImage.deleteMany({
+            where: { brdId: brdId }
+          });
+          console.log(`      Deleted ${deleteResult.count} existing images`);
+
+          // Save new images
+          if (imageRecords.length > 0) {
+            console.log(`      Creating ${imageRecords.length} new images...`);
+            
+            const saved = await tx.brdCellImage.createMany({
+              data: imageRecords
+            });
+            console.log(`   ✅ SUCCESS: Saved ${saved.count} images to PostgreSQL`);
+            
+            // Verify count
+            const verifyCount = await tx.brdCellImage.count({
+              where: { brdId: brdId }
+            });
+            console.log(`      Verified: ${verifyCount} images in database for ${brdId}`);
+          }
+        } else {
+          console.log("   ℹ️ No images to save");
+        }
+      });
+
+      console.log("=".repeat(80) + "\n");
+
+      // ── 6. Return the extracted data + image metadata to the frontend ────
+      const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || [];
+      
       return res.json({
         brdId,
         title,
-        format,
-        filename:       extracted.filename,
-        scope:          extracted.scope,
-        metadata:       extracted.metadata,
-        toc:            extracted.toc,
-        citations:      extracted.citations,
+        format: detectedFormat,
+        filename: extracted.filename,
+        scope: extracted.scope,
+        metadata: extracted.metadata,
+        toc: extracted.toc,
+        citations: extracted.citations,
         contentProfile: extracted.content_profile,
-        brdConfig:      extracted.brd_config || extracted.brdConfig || null,
+        brdConfig: extracted.brd_config || extracted.brdConfig || null,
+        imageMetadata: responseImageMetadata,
       });
 
     } catch (err) {
-      console.error("[brd/upload] error:", err);
+      console.error("\n❌ Upload error:", err);
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Upload processing failed",
       });
     } finally {
-      if (file?.path) fs.unlink(file.path, () => {});
+      // Clean up temp file
+      if (file?.path) {
+        fs.unlink(file.path, () => {});
+        console.log(`🧹 Cleaned up temp file: ${file.path}`);
+      }
     }
   }
 );
-
 export default router;

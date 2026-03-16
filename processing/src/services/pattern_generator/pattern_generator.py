@@ -88,11 +88,20 @@ def _extract_patterns_from_text(text: str) -> list[str]:
         if not candidate:
             return None
 
+        number_tail = r"[0-9A-Za-z]+(?:[-.][0-9A-Za-z]+)*"
+
         # Drop boilerplate labels that frequently wrap real examples.
         candidate = re.sub(r"^level\s*\d+\s*", "", candidate, flags=re.IGNORECASE).strip(" :-")
         candidate = re.sub(r"^(example|examples|pattern|regex|rule)\s*:\s*", "", candidate, flags=re.IGNORECASE).strip()
         if not candidate:
             return None
+
+        # Support section-sign citation styles used by many BRDs, including
+        # mixed forms like "Section § 12", "§§ 12-1", and "Pattern: § 12(a)".
+        if "§" in candidate:
+            if re.search(r"[0-9A-Za-z]", candidate):
+                return rf"^(?:SECTION|Section|Sec\.?\s*)?\s*§{{1,2}}\s*{number_tail}(?:\([0-9A-Za-z]+\))*$"
+            return rf"^§{{1,2}}\s*{number_tail}(?:\([0-9A-Za-z]+\))*$"
 
         m = re.match(
             r"^(chapter|part|division|subdivision|section|article|rule|title|subtitle|subpart|subchapter|appendix|schedule|exhibit|attachment|form)\s+([0-9]+(?:[A-Z])?(?:[-.][0-9A-Z]+)*)$",
@@ -666,7 +675,7 @@ def _sanitize_path_transform_config(raw: dict | None) -> dict:
             find = str(row[0] if row[0] is not None else "").strip()
             if not find or _is_template_noise_pattern(find):
                 continue
-            replace = str(row[1] if row[1] is not None else "")
+            replace = str(row[1] if row[1] is not None else "").strip()
 
             # For levels 3+, discard plain literal identity rows such as
             # ["Level", "Level", 0, ""] or ["Part 1", "Part 1", 0, ""].
@@ -724,7 +733,7 @@ def _build_path_transform(
     # Always emit "2". Use real scope titles when available; fall back to a
     # single identity catch-all so the key is never absent.
     if scope_entries:
-        level2_patterns = [[name, name, 0, ""] for name in scope_entries if name]
+        level2_patterns = [[name.strip(), name.strip(), 0, ""] for name in scope_entries if name and name.strip()]
     else:
         level2_patterns = [["^.*$", "", 0, ""]]
     pt["2"] = {"patterns": level2_patterns, "case": ""}
@@ -769,7 +778,7 @@ def _build_path_transform(
                 continue
             extracted = _extract_patterns_from_text(rules_text)
             if extracted:
-                pt[level_key] = {"patterns": [[p, p, 0, ""] for p in extracted], "case": ""}
+                pt[level_key] = {"patterns": [[p.strip(), p.strip(), 0, ""] for p in extracted], "case": ""}
 
     # ── Language cleanup defaults — fill any level not yet populated ──────────
     # Note: level "2" is intentionally excluded here — it is always set above
@@ -1028,7 +1037,7 @@ def assemble_metajson(
     if new_schema:
         meta["Content Category Name"] = source_name
         meta["Publication Date"] = publication_date
-        meta["Last Updated Date"] = last_updated_date
+        meta["Last Updated Date"] = last_updated_date if (last_updated_date and not last_updated_date.startswith("{")) else ""
         meta["Processing Date"] = processing_date
         meta["Issuing Agency"] = issuing_agency
         meta["Content URI"] = content_uri
@@ -1041,7 +1050,7 @@ def assemble_metajson(
         meta["Source Name"] = source_name
         meta["Source Type"] = source_type
         meta["Publication Date"] = publication_date
-        meta["Last Updated Date"] = last_updated_date
+        meta["Last Updated Date"] = last_updated_date if (last_updated_date and not last_updated_date.startswith("{")) else ""
         meta["Effective Date"] = effective_date
         meta["Processing Date"] = processing_date
         meta["Issuing Agency"] = issuing_agency

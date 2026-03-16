@@ -18,7 +18,7 @@ import prisma from "../../lib/prisma";
 
 const router = Router();
 
-type SectionName = "scope" | "metadata" | "toc" | "citations" | "contentProfile" | "brdConfig";
+type SectionName = "scope" | "metadata" | "toc" | "citations" | "contentProfile" | "brdConfig" | "innodMetajson" | "simpleMetajson";
 
 const VALID_SECTIONS: SectionName[] = [
   "scope",
@@ -27,6 +27,8 @@ const VALID_SECTIONS: SectionName[] = [
   "citations",
   "contentProfile",
   "brdConfig",
+  "innodMetajson",
+  "simpleMetajson",
 ];
 
 function isValidSection(name: string): name is SectionName {
@@ -45,6 +47,7 @@ router.get("/:brdId/sections", async (req: Request, res: Response) => {
       return res.json({
         scope: null, metadata: null, toc: null,
         citations: null, contentProfile: null, brdConfig: null,
+        innodMetajson: null, simpleMetajson: null,
       });
     }
 
@@ -55,6 +58,8 @@ router.get("/:brdId/sections", async (req: Request, res: Response) => {
       citations:      row.citations,
       contentProfile: row.contentProfile,
       brdConfig:      row.brdConfig,
+      innodMetajson:  row.innodMetajson  ?? null,
+      simpleMetajson: row.simpleMetajson ?? null,
     });
   } catch (err) {
     console.error("[GET /brd/:brdId/sections]", err);
