@@ -16,6 +16,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 interface PdfViewerProps {
   /** PDF File object to display */
   file: File | null;
+  /**
+   * Fallback URL to load the PDF from when `file` is null.
+   * Used when a session is restored from localStorage (File objects are
+   * not serialisable) — the browser fetches the PDF from the backend.
+   */
+  src?: string;
   /** Label shown in the header, e.g. "Old PDF" or "New PDF" */
   label: string;
   /** Color accent: "blue" | "violet" */
@@ -64,6 +70,7 @@ let pdfjsWorkerConfigured = false;
 
 export default function PdfViewer({
   file,
+  src,
   label,
   color = "blue",
   pageStart,
@@ -94,7 +101,7 @@ export default function PdfViewer({
 
   // ── Load PDF from File ─────────────────────────────────────────────────────
 
- useEffect(() => {
+useEffect(() => {
   // Destroy previous document
   if (pdfDocRef.current) {
     pdfDocRef.current.destroy();
@@ -105,7 +112,8 @@ export default function PdfViewer({
   textItemsRef.current = [];
   viewportRef.current = null;
 
-  if (!file) {
+  // Nothing to load when neither a File nor a URL is provided
+  if (!file && !src) {
     setTotalPages(0);
     setCurrentPage(1);
     setLoadError(null);
@@ -119,15 +127,19 @@ export default function PdfViewer({
   (async () => {
     try {
       const pdfjs = await import("pdfjs-dist");
-const { getDocument, GlobalWorkerOptions } = pdfjs;
+      const { getDocument, GlobalWorkerOptions } = pdfjs;
 
-if (!pdfjsWorkerConfigured) {
-  GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-  pdfjsWorkerConfigured = true;
-}
+      if (!pdfjsWorkerConfigured) {
+        GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        pdfjsWorkerConfigured = true;
+      }
 
-const buffer = await file.arrayBuffer();
-const pdf = await getDocument({ data: buffer }).promise;
+      // Load from File object when available (fresh upload), otherwise
+      // load from URL (session restored from localStorage).
+      const pdf = file
+        ? await getDocument({ data: await file.arrayBuffer() }).promise
+        : await getDocument({ url: src! }).promise;
+
       if (cancelled) {
         pdf.destroy();
         return;
@@ -148,7 +160,7 @@ const pdf = await getDocument({ data: buffer }).promise;
   return () => {
     cancelled = true;
   };
-}, [file]);
+}, [file, src]);
   // ── Navigate to targetPage ─────────────────────────────────────────────────
 
   useEffect(() => {
@@ -262,9 +274,6 @@ const pdf = await getDocument({ data: buffer }).promise;
     })();
 
     return () => { cancelled = true; };
-    // drawHighlights is stable (useCallback with no deps)
-    // highlightText is read via ref to avoid re-render loop
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfLoaded, currentPage, drawHighlights]);
 
   // ── Re-draw highlights when highlightText changes ─────────────────────────
@@ -337,7 +346,7 @@ const pdf = await getDocument({ data: buffer }).promise;
 
       {/* Canvas body */}
       <div ref={containerRef} className="flex-1 overflow-auto" style={{ background: "#18181b" }}>
-        {!file ? (
+        {!file && !src ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
             <svg className="w-10 h-10 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}

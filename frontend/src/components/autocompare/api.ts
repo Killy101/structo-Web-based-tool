@@ -234,6 +234,17 @@ export function downloadChunkXml(sessionId: string, chunkId: string | number): v
   window.open(`${BASE}/autocompare/download/${encodeURIComponent(sessionId)}/${chunkId}`, "_blank");
 }
 
+// ── PDF viewer URL helper ────────────────────────────────────────────────────
+
+/**
+ * Returns the URL to fetch the original old/new PDF from the backend.
+ * Used by PdfViewer when the session was restored from localStorage and
+ * the File objects are no longer available in memory.
+ */
+export function getPdfUrl(sessionId: string, which: "old" | "new"): string {
+  return `${BASE}/autocompare/pdf/${encodeURIComponent(sessionId)}/${which}`;
+}
+
 // ── Download ALL chunks as a ZIP ──────────────────────────────────────────────
 
 /**
