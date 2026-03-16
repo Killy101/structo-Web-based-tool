@@ -5,6 +5,8 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemContext";
+import { useNotifications } from "../../hooks";
+import { formatTimeAgo } from "../../utils";
 import { Role } from "../../types";
 
 interface NavItem {
@@ -154,15 +156,12 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-const notifications = [
-  { msg: "3 files pending review", time: "5m ago", color: "bg-amber-500" },
-  {
-    msg: "New user has been registered",
-    time: "1h ago",
-    color: "bg-[#1a8fd1]",
-  },
-  { msg: "Batch export approved", time: "2h ago", color: "bg-emerald-500" },
-];
+const TYPE_DOT: Record<string, string> = {
+  TASK_ASSIGNED: "bg-[#1a8fd1]",
+  TASK_UPDATED:  "bg-amber-500",
+  BRD_STATUS:    "bg-emerald-500",
+  SYSTEM:        "bg-slate-400",
+};
 
 interface SidebarProps {
   collapsed: boolean;
@@ -247,6 +246,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { dark, toggle } = useTheme();
   const [showNotif, setShowNotif] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const { notifications, unreadCount, markRead, markAllRead, remove } =
+    useNotifications();
   const hasFeature = (feature?: string | string[]) => {
     if (!feature) return true;
     if (user?.role === "SUPER_ADMIN") return true;
@@ -412,9 +413,9 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               {!collapsed && (
                 <span className="text-sm font-medium">Notifications</span>
               )}
-              {!collapsed && (
+              {!collapsed && unreadCount > 0 && (
                 <span className="ml-auto text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded-full">
-                  {notifications.length}
+                  {unreadCount > 9 ? "9+" : unreadCount}
                 </span>
               )}
             </button>
@@ -433,6 +434,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
                   }}
                 >
+                  {/* header */}
                   <div
                     className="px-4 py-3 border-b flex items-center justify-between"
                     style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
@@ -460,6 +462,19 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                         className="flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer"
                         style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
                       >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+
+                  {/* list */}
+                  <div className="max-h-72 overflow-y-auto divide-y" style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}>
+                    {notifications.length === 0 ? (
+                      <p className="px-4 py-5 text-sm text-center text-slate-500">
+                        No notifications yet
+                      </p>
+                    ) : (
+                      notifications.map((n) => (
                         <div
                           className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.color}`}
                         />

@@ -53,8 +53,10 @@ export default function DashboardPage() {
   const statCards = [
     { label: "Users", value: stats?.totalUsers ?? 0 },
     { label: "Documents", value: stats?.totalFiles ?? 0 },
-    { label: "BRD Sources", value: brds.length },
+    { label: "BRD Sources", value: stats?.totalBrds ?? brds.length },
     { label: "Pending", value: stats?.pendingValidation ?? 0 },
+    { label: "Tasks", value: stats?.totalTasks ?? 0 },
+    { label: "Uploads (7d)", value: stats?.recentUploads7d ?? 0 },
   ];
 
   const totalUsers = stats?.usersByRole.reduce((a, b) => a + b.count, 0) ?? 0;
@@ -125,7 +127,7 @@ export default function DashboardPage() {
 
   return (
     <div className="w-full max-w-screen-2xl space-y-6">
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
         {statCards.map((s) => (
           <Card
             key={s.label}
@@ -260,13 +262,13 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <Card>
           <CardHeader
             title="Processing Overview"
             subtitle="File status across the pipeline"
           />
-          <div className="p-6 grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="p-6 grid grid-cols-2 gap-3">
             {(stats?.filesByStatus ?? []).map((item) => (
               <div
                 key={item.status}
@@ -280,6 +282,79 @@ export default function DashboardPage() {
                 </Badge>
               </div>
             ))}
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="Task Overview" subtitle="Task status breakdown" />
+          <div className="p-6 grid grid-cols-1 gap-3">
+            {(stats?.tasksByStatus ?? []).length === 0 ? (
+              <EmptyState icon="✅" title="No tasks yet" />
+            ) : (
+              (stats?.tasksByStatus ?? []).map((item) => {
+                const total = (stats?.tasksByStatus ?? []).reduce(
+                  (a, b) => a + b.count,
+                  0,
+                );
+                const pct = total > 0 ? Math.round((item.count / total) * 100) : 0;
+                const colors: Record<string, string> = {
+                  PENDING: "#f59e0b",
+                  IN_PROGRESS: "#3b82f6",
+                  COMPLETED: "#10b981",
+                };
+                return (
+                  <div key={item.status}>
+                    <div className="flex justify-between mb-1">
+                      <span className="text-xs text-slate-500 capitalize">
+                        {item.status.replace("_", " ")}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        {item.count}
+                      </span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-2 rounded-full transition-all duration-700"
+                        style={{
+                          width: `${pct}%`,
+                          backgroundColor: colors[item.status] ?? "#94a3b8",
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="BRD Status" subtitle="BRD document states" />
+          <div className="p-6 grid grid-cols-2 gap-3">
+            {(stats?.brdsByStatus ?? []).length === 0 ? (
+              <EmptyState icon="📄" title="No BRDs yet" />
+            ) : (
+              (stats?.brdsByStatus ?? []).map((item) => {
+                const brdColors: Record<string, string> = {
+                  DRAFT: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+                  PAUSED: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+                  COMPLETED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+                  APPROVED: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+                  ON_HOLD: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+                };
+                return (
+                  <div
+                    key={item.status}
+                    className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-800"
+                  >
+                    <span className="text-xs text-slate-500">{item.status}</span>
+                    <Badge className={brdColors[item.status] ?? "bg-slate-100 text-slate-700"}>
+                      {item.count}
+                    </Badge>
+                  </div>
+                );
+              })
+            )}
           </div>
         </Card>
 

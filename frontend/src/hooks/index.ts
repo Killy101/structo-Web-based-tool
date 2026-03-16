@@ -15,6 +15,8 @@ import {
   BrdSourceItem,
   TaskAssignment,
   UserLog,
+  Notification,
+  TaskComment,
 } from "../types";
 import {
   usersApi,
@@ -26,6 +28,8 @@ import {
   userLogsApi,
   brdApi,
   authApi,
+  notificationsApi,
+  taskCommentsApi,
 } from "../services/api";
 
 function getErrorMessage(e: unknown): string {
@@ -445,6 +449,101 @@ export function useDashboard() {
     refetch();
   }, [refetch]);
   return { stats, isLoading, error, refetch };
+}
+
+// ─── useNotifications ──────────────────────────────────────
+export function useNotifications() {
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await notificationsApi.getAll();
+      setNotifications(data.notifications);
+      setUnreadCount(data.unreadCount);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  const markRead = async (id: number) => {
+    await notificationsApi.markRead(id);
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
+    );
+    setUnreadCount((c) => Math.max(0, c - 1));
+  };
+
+  const markAllRead = async () => {
+    await notificationsApi.markAllRead();
+    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    setUnreadCount(0);
+  };
+
+  const remove = async (id: number) => {
+    const notif = notifications.find((n) => n.id === id);
+    await notificationsApi.delete(id);
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    if (notif && !notif.isRead) setUnreadCount((c) => Math.max(0, c - 1));
+  };
+
+  return {
+    notifications,
+    unreadCount,
+    isLoading,
+    error,
+    refetch,
+    markRead,
+    markAllRead,
+    remove,
+  };
+}
+
+// ─── useTaskComments ───────────────────────────────────────
+export function useTaskComments(taskId: number) {
+  const [comments, setComments] = useState<TaskComment[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await taskCommentsApi.getAll(taskId);
+      setComments(data.comments);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  const addComment = async (body: string) => {
+    const { comment } = await taskCommentsApi.create(taskId, body);
+    setComments((prev) => [...prev, comment]);
+    return comment;
+  };
+
+  const deleteComment = async (commentId: number) => {
+    await taskCommentsApi.delete(taskId, commentId);
+    setComments((prev) => prev.filter((c) => c.id !== commentId));
+  };
+
+  return { comments, isLoading, error, refetch, addComment, deleteComment };
 }
 
 // ─── useToast ──────────────────────────────────────────────

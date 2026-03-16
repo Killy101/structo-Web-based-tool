@@ -6,6 +6,7 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import prisma from "../../lib/prisma";
+import { uploadLimiter, processingLimiter } from "../../middleware/rateLimits";
 
 const router = Router();
 
@@ -142,6 +143,7 @@ function buildTitle(
 
 router.post(
   "/upload",
+  uploadLimiter,
   upload.single("file"),
   async (req: Request, res: Response) => {
     const file   = req.file;
