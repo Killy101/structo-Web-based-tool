@@ -36,6 +36,16 @@ router.get("/stats", authenticate, async (req: AuthRequest, res: Response) => {
         ? { teamId: currentUser.teamId, status: "ACTIVE" as const }
         : { status: "ACTIVE" as const };
 
+    // Task filter based on role
+    let taskFilter: any = {};
+    if (actorRole === "ADMIN" && currentUser?.teamId) {
+      taskFilter = { teamId: currentUser.teamId };
+    }
+
+    // Last 7 days for trend data
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
     const [
       totalUsers,
       totalFiles,
@@ -45,6 +55,11 @@ router.get("/stats", authenticate, async (req: AuthRequest, res: Response) => {
       filesByStatusRaw,
       recentActivity,
       totalTeams,
+      tasksByStatusRaw,
+      totalTasks,
+      totalBrds,
+      brdsByStatusRaw,
+      recentUploads7d,
     ] = await Promise.all([
       prisma.user.count({ where: userCountFilter }),
       prisma.fileUpload.count({ where: teamFilter }),
@@ -81,6 +96,26 @@ router.get("/stats", authenticate, async (req: AuthRequest, res: Response) => {
         },
       }),
       prisma.team.count(),
+      // Task stats
+      prisma.taskAssignment.groupBy({
+        by: ["status"],
+        where: taskFilter,
+        _count: { status: true },
+      }),
+      prisma.taskAssignment.count({ where: taskFilter }),
+      // BRD stats
+      prisma.brd.count(),
+      prisma.brd.groupBy({
+        by: ["status"],
+        _count: { status: true },
+      }),
+      // Upload trend: last 7 days
+      prisma.fileUpload.count({
+        where: {
+          uploadedAt: { gte: sevenDaysAgo },
+          ...teamFilter,
+        },
+      }),
     ]);
 
     res.json({
@@ -90,11 +125,22 @@ router.get("/stats", authenticate, async (req: AuthRequest, res: Response) => {
       pendingValidation,
       approvedTasks,
       totalTeams,
+      totalTasks,
+      totalBrds,
+      recentUploads7d,
       usersByRole: usersByRoleRaw.map((r) => ({
         role: r.role,
         count: r._count.role,
       })),
       filesByStatus: filesByStatusRaw.map((r) => ({
+        status: r.status,
+        count: r._count.status,
+      })),
+      tasksByStatus: tasksByStatusRaw.map((r) => ({
+        status: r.status,
+        count: r._count.status,
+      })),
+      brdsByStatus: brdsByStatusRaw.map((r) => ({
         status: r.status,
         count: r._count.status,
       })),

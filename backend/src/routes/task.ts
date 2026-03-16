@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import prisma from "../lib/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { authorize } from "../middleware/authorize";
+import { notifyMany } from "../lib/notify";
 
 const router = Router();
 
@@ -163,6 +164,15 @@ router.post(
         },
       });
 
+      // Notify all assignees
+      await notifyMany(
+        assigneeIds,
+        "TASK_ASSIGNED",
+        "New Task Assigned",
+        `You have been assigned to task: "${title.trim()}"`,
+        { taskId: task.id },
+      );
+
       res.status(201).json({ message: "Task created", task });
     } catch (error) {
       console.error("Create task error:", error);
@@ -232,6 +242,121 @@ router.patch(
       res.json({ message: "Task updated", task: updated });
     } catch (error) {
       console.error("Update task error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── GET /tasks/:id/comments ───────────────────────────────
+router.get(
+  "/:id/comments",
+  authenticate,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const taskId = parseInt(req.params.id as string);
+
+      const task = await prisma.taskAssignment.findUnique({ where: { id: taskId } });
+      if (!task) return res.status(404).json({ error: "Task not found" });
+
+      const comments = await prisma.taskComment.findMany({
+        where: { assignmentId: taskId },
+        orderBy: { createdAt: "asc" },
+        include: {
+          author: {
+            select: { id: true, userId: true, firstName: true, lastName: true },
+          },
+        },
+      });
+
+      res.json({ comments });
+    } catch (error) {
+      console.error("Get comments error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── POST /tasks/:id/comments ──────────────────────────────
+router.post(
+  "/:id/comments",
+  authenticate,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const taskId = parseInt(req.params.id as string);
+      const actorId = req.user!.userId;
+      const { body } = req.body;
+
+      if (!body || !body.trim()) {
+        return res.status(400).json({ error: "Comment body is required" });
+      }
+
+      const task = await prisma.taskAssignment.findUnique({
+        where: { id: taskId },
+        include: { assignees: true },
+      });
+      if (!task) return res.status(404).json({ error: "Task not found" });
+
+      const comment = await prisma.taskComment.create({
+        data: { assignmentId: taskId, authorId: actorId, body: body.trim() },
+        include: {
+          author: {
+            select: { id: true, userId: true, firstName: true, lastName: true },
+          },
+        },
+      });
+
+      // Notify assignees (except author)
+      const assigneeUserIds = task.assignees
+        .map((a) => a.userId)
+        .filter((uid) => uid !== actorId);
+
+      if (assigneeUserIds.length > 0) {
+        const { notifyMany: nm } = await import("../lib/notify");
+        await nm(
+          assigneeUserIds,
+          "TASK_UPDATED",
+          "New Comment on Task",
+          `A comment was added to task: "${task.title}"`,
+          { taskId },
+        );
+      }
+
+      res.status(201).json({ comment });
+    } catch (error) {
+      console.error("Create comment error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── DELETE /tasks/:taskId/comments/:commentId ─────────────
+router.delete(
+  "/:id/comments/:commentId",
+  authenticate,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const commentId = parseInt(req.params.commentId as string);
+      const actorId = req.user!.userId;
+      const actorRole = req.user!.role;
+
+      const comment = await prisma.taskComment.findUnique({
+        where: { id: commentId },
+      });
+      if (!comment) return res.status(404).json({ error: "Comment not found" });
+
+      const canDelete =
+        comment.authorId === actorId ||
+        actorRole === "ADMIN" ||
+        actorRole === "SUPER_ADMIN";
+
+      if (!canDelete) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      await prisma.taskComment.delete({ where: { id: commentId } });
+      res.json({ message: "Comment deleted" });
+    } catch (error) {
+      console.error("Delete comment error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   },

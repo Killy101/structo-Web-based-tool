@@ -233,7 +233,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
       <div className="flex-1 flex flex-col overflow-hidden">
         {!isBrdRoute && (
-          <header className="flex-shrink-0 flex items-center gap-4 px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+          <header className="flex-shrink-0 flex items-center px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
             <div>
               <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-none">
                 {PAGE_META[pathname]?.title ?? "Dashboard"}

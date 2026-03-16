@@ -5,6 +5,8 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemContext";
+import { useNotifications } from "../../hooks";
+import { formatTimeAgo } from "../../utils";
 import { Role } from "../../types";
 
 interface NavItem {
@@ -175,15 +177,12 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-const notifications = [
-  { msg: "3 files pending review", time: "5m ago", color: "bg-amber-500" },
-  {
-    msg: "New user has been registered",
-    time: "1h ago",
-    color: "bg-[#1a8fd1]",
-  },
-  { msg: "Batch export approved", time: "2h ago", color: "bg-emerald-500" },
-];
+const TYPE_DOT: Record<string, string> = {
+  TASK_ASSIGNED: "bg-[#1a8fd1]",
+  TASK_UPDATED:  "bg-amber-500",
+  BRD_STATUS:    "bg-emerald-500",
+  SYSTEM:        "bg-slate-400",
+};
 
 interface SidebarProps {
   collapsed: boolean;
@@ -193,6 +192,7 @@ interface SidebarProps {
 function LogoutModal({
   onConfirm,
   onCancel,
+  dark,
 }: {
   onConfirm: () => void;
   onCancel: () => void;
@@ -207,8 +207,10 @@ function LogoutModal({
       <div
         className="relative z-10 w-80 rounded-2xl overflow-hidden border"
         style={{
-          background: "#0b1a2e",
-          borderColor: "rgba(26, 143, 209, 0.15)",
+          background: dark ? "#0b1a2e" : "#ffffff",
+          borderColor: dark
+            ? "rgba(26, 143, 209, 0.15)"
+            : "rgba(100, 116, 139, 0.25)",
           boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
         }}
       >
@@ -234,7 +236,9 @@ function LogoutModal({
               />
             </svg>
           </div>
-          <h2 className="font-semibold text-base text-center leading-snug text-white">
+          <h2
+            className={`font-semibold text-base text-center leading-snug ${dark ? "text-white" : "text-slate-900"}`}
+          >
             Signing out of Structo?
           </h2>
         </div>
@@ -243,9 +247,13 @@ function LogoutModal({
             onClick={onCancel}
             className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all duration-150"
             style={{
-              background: "rgba(26, 143, 209, 0.08)",
-              color: "#94a3b8",
-              borderColor: "rgba(26, 143, 209, 0.15)",
+              background: dark
+                ? "rgba(26, 143, 209, 0.08)"
+                : "rgba(100, 116, 139, 0.08)",
+              color: dark ? "#94a3b8" : "#334155",
+              borderColor: dark
+                ? "rgba(26, 143, 209, 0.15)"
+                : "rgba(100, 116, 139, 0.2)",
             }}
           >
             Cancel
@@ -268,6 +276,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { dark, toggle } = useTheme();
   const [showNotif, setShowNotif] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const { notifications, unreadCount, markRead, markAllRead, remove } =
+    useNotifications();
   const hasFeature = (feature?: string | string[]) => {
     if (!feature) return true;
     if (user?.role === "SUPER_ADMIN") return true;
@@ -292,8 +302,9 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       ? pathname === "/dashboard"
       : pathname.startsWith(href);
 
-  const inactiveItemClass =
-    "text-slate-400 hover:bg-[rgba(26,143,209,0.08)] hover:text-slate-100";
+  const inactiveItemClass = dark
+    ? "text-slate-400 hover:bg-[rgba(26,143,209,0.08)] hover:text-slate-100"
+    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900";
 
   return (
     <>
@@ -315,15 +326,15 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           transition-all duration-300 ease-in-out relative z-20
         `}
         style={{
-          background: "rgba(6, 13, 26, 0.92)",
+          background: dark ? "rgba(6, 13, 26, 0.92)" : "rgba(248, 250, 252, 0.97)",
           backdropFilter: "blur(16px)",
-          borderColor: "rgba(26, 143, 209, 0.1)",
+          borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)",
         }}
       >
         {/* logo */}
         <div
           className={`flex items-center h-16 border-b px-4 gap-3 overflow-hidden`}
-          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+          style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           <div
             className={`w-8 h-8 flex-shrink-0 relative transition-transform duration-300 ease-in-out ${collapsed ? "translate-x-[2px]" : "translate-x-0"}`}
@@ -339,7 +350,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             className={`overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${collapsed ? "max-w-0 opacity-0 -translate-x-1" : "max-w-[220px] opacity-100 translate-x-0"}`}
           >
             <div>
-              <p className="font-bold text-sm leading-none tracking-wide text-white">
+              <p className={`font-bold text-sm leading-none tracking-wide ${dark ? "text-white" : "text-slate-900"}`}>
                 Structo
               </p>
               <p className="text-[11px] mt-0.5 text-slate-500">
@@ -401,7 +412,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* bottom utilities */}
         <div
           className="px-2 pb-2 space-y-0.5 border-t pt-2"
-          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+          style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           {/* notifications */}
           <div className="relative">
@@ -426,15 +437,15 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 </svg>
                 <span
                   className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full"
-                  style={{ boxShadow: "0 0 0 2px #060d1a" }}
+                  style={{ boxShadow: dark ? "0 0 0 2px #060d1a" : "0 0 0 2px #f8fafc" }}
                 />
               </span>
               {!collapsed && (
                 <span className="text-sm font-medium">Notifications</span>
               )}
-              {!collapsed && (
+              {!collapsed && unreadCount > 0 && (
                 <span className="ml-auto text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded-full">
-                  {notifications.length}
+                  {unreadCount > 9 ? "9+" : unreadCount}
                 </span>
               )}
             </button>
@@ -448,59 +459,105 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <div
                   className="absolute left-full bottom-0 ml-2 z-40 w-72 rounded-xl shadow-xl border"
                   style={{
-                    background: "#0b1a2e",
-                    borderColor: "rgba(26, 143, 209, 0.15)",
+                    background: dark ? "#0b1a2e" : "#f8fafc",
+                    borderColor: dark ? "rgba(26, 143, 209, 0.15)" : "rgba(100, 116, 139, 0.2)",
                     boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
                   }}
                 >
+                  {/* header */}
                   <div
                     className="px-4 py-3 border-b flex items-center justify-between"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+                    style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
                   >
-                    <p className="font-semibold text-sm text-white">
+                    <p className={`font-semibold text-sm ${dark ? "text-white" : "text-slate-900"}`}>
                       Notifications
                     </p>
-                    <span
-                      className="text-xs px-2 py-0.5 rounded-full"
-                      style={{
-                        color: "#d4862e",
-                        background: "rgba(212, 134, 46, 0.12)",
-                      }}
-                    >
-                      {notifications.length} new
-                    </span>
+                    {unreadCount > 0 ? (
+                      <button
+                        onClick={markAllRead}
+                        className="text-xs hover:underline"
+                        style={{ color: "#d4862e" }}
+                      >
+                        Mark all read
+                      </button>
+                    ) : (
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full"
+                        style={{
+                          color: "#d4862e",
+                          background: "rgba(212, 134, 46, 0.12)",
+                        }}
+                      >
+                        0 unread
+                      </span>
+                    )}
                   </div>
+
+                  {/* list */}
                   <div
-                    className="divide-y"
+                    className="max-h-72 overflow-y-auto divide-y"
                     style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
                   >
-                    {notifications.map((n, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer"
-                        style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
-                      >
+                    {notifications.length === 0 ? (
+                      <p className="px-4 py-5 text-sm text-center text-slate-500">
+                        No notifications yet
+                      </p>
+                    ) : (
+                      notifications.map((n) => (
                         <div
-                          className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.color}`}
-                        />
-                        <div>
-                          <p className="text-sm text-slate-300">{n.msg}</p>
-                          <p className="text-xs mt-0.5 text-slate-500">
-                            {n.time}
-                          </p>
+                          key={n.id}
+                          onClick={() => !n.isRead && markRead(n.id)}
+                          className={`flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer ${
+                            n.isRead
+                              ? dark
+                                ? "hover:bg-slate-900/40"
+                                : "hover:bg-slate-100"
+                              : dark
+                                ? "bg-[#102742] hover:bg-[#16345a]"
+                                : "bg-sky-50 hover:bg-sky-100"
+                          }`}
+                        >
+                          <div
+                            className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${TYPE_DOT[n.type] ?? TYPE_DOT.SYSTEM}`}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className={`text-sm font-medium truncate ${dark ? "text-slate-100" : "text-slate-800"}`}
+                            >
+                              {n.title}
+                            </p>
+                            <p
+                              className={`text-xs mt-0.5 line-clamp-2 ${dark ? "text-slate-300" : "text-slate-700"}`}
+                            >
+                              {n.message}
+                            </p>
+                            <p className="text-[11px] mt-1 text-slate-500">
+                              {formatTimeAgo(n.createdAt)}
+                            </p>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              remove(n.id);
+                            }}
+                            className="text-slate-400 hover:text-red-400 transition-colors ml-1"
+                            aria-label="Delete notification"
+                          >
+                            ×
+                          </button>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                   <div
                     className="px-4 py-3 border-t text-center"
-                    style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+                    style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
                   >
                     <button
                       className="text-xs hover:underline"
                       style={{ color: "#d4862e" }}
                     >
-                      View all notifications
+                      {unreadCount} unread notifications
                     </button>
                   </div>
                 </div>
@@ -546,9 +603,22 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               )}
             </span>
             {!collapsed && (
-              <span className="text-sm font-medium">
-                {dark ? "Light Mode" : "Dark Mode"}
-              </span>
+              <>
+                <span className="text-sm font-medium">
+                  Theme: {dark ? "Dark" : "Light"}
+                </span>
+                <span
+                  className="ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                  style={{
+                    background: dark
+                      ? "rgba(26, 143, 209, 0.14)"
+                      : "rgba(15, 23, 42, 0.08)",
+                    color: dark ? "#7dd3fc" : "#334155",
+                  }}
+                >
+                  Switch
+                </span>
+              </>
             )}
           </button>
 
@@ -601,8 +671,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           className="absolute -right-3 top-[4.5rem] border rounded-full p-1 transition-all shadow-md"
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           style={{
-            background: "#0b1a2e",
-            borderColor: "rgba(26, 143, 209, 0.2)",
+            background: dark ? "#0b1a2e" : "#f1f5f9",
+            borderColor: dark ? "rgba(26, 143, 209, 0.2)" : "rgba(100, 116, 139, 0.3)",
             color: "#64748b",
           }}
         >
@@ -624,7 +694,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* user info */}
         <div
           className={`p-3 border-t ${collapsed ? "flex justify-center" : ""}`}
-          style={{ borderColor: "rgba(26, 143, 209, 0.1)" }}
+          style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           {collapsed ? (
             <div
@@ -652,7 +722,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 {user?.lastName?.[0]}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate leading-none text-white">
+                <p className={`text-sm font-medium truncate leading-none ${dark ? "text-white" : "text-slate-900"}`}>
                   {user?.firstName} {user?.lastName}
                 </p>
               </div>
