@@ -15,6 +15,12 @@
 
 import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
+import {
+  downloadJsonObject,
+  extractStoragePath,
+  makeStoragePointer,
+  uploadJsonObject,
+} from "../../lib/supabase-storage";
 
 const router = Router();
 
@@ -35,6 +41,16 @@ function isValidSection(name: string): name is SectionName {
   return VALID_SECTIONS.includes(name as SectionName);
 }
 
+function storagePathForSection(brdId: string, name: SectionName): string {
+  return `brd/${brdId}/sections/${name}.json`;
+}
+
+async function resolveSectionValue(raw: unknown): Promise<unknown> {
+  const storagePath = extractStoragePath(raw);
+  if (!storagePath) return raw ?? null;
+  return downloadJsonObject(storagePath);
+}
+
 // ── GET /brd/:brdId/sections — all blobs ──────────────────────────────────
 router.get("/:brdId/sections", async (req: Request, res: Response) => {
   try {
@@ -51,15 +67,26 @@ router.get("/:brdId/sections", async (req: Request, res: Response) => {
       });
     }
 
+    const [scope, metadata, toc, citations, contentProfile, brdConfig, innodMetajson, simpleMetajson] = await Promise.all([
+      resolveSectionValue(row.scope),
+      resolveSectionValue(row.metadata),
+      resolveSectionValue(row.toc),
+      resolveSectionValue(row.citations),
+      resolveSectionValue(row.contentProfile),
+      resolveSectionValue(row.brdConfig),
+      resolveSectionValue(row.innodMetajson),
+      resolveSectionValue(row.simpleMetajson),
+    ]);
+
     return res.json({
-      scope:          row.scope,
-      metadata:       row.metadata,
-      toc:            row.toc,
-      citations:      row.citations,
-      contentProfile: row.contentProfile,
-      brdConfig:      row.brdConfig,
-      innodMetajson:  row.innodMetajson  ?? null,
-      simpleMetajson: row.simpleMetajson ?? null,
+      scope,
+      metadata,
+      toc,
+      citations,
+      contentProfile,
+      brdConfig,
+      innodMetajson,
+      simpleMetajson,
     });
   } catch (err) {
     console.error("[GET /brd/:brdId/sections]", err);
@@ -80,7 +107,7 @@ router.get("/:brdId/sections/:name", async (req: Request, res: Response) => {
       select: { [name]: true },
     });
 
-    return res.json({ [name]: row?.[name] ?? null });
+    return res.json({ [name]: await resolveSectionValue(row?.[name] ?? null) });
   } catch (err) {
     console.error(`[GET /brd/:brdId/sections/${name}]`, err);
     return res.status(500).json({ error: "Internal server error" });
@@ -94,7 +121,7 @@ router.put("/:brdId/sections/:name", async (req: Request, res: Response) => {
   const name   = String(req.params.name);
   const brdId  = String(req.params.brdId);
 
-  if (!isValidSection(String(name))) {
+  if (!isValidSection(name)) {
     return res.status(400).json({ error: `Unknown section: ${name}` });
   }
 
@@ -104,10 +131,14 @@ router.put("/:brdId/sections/:name", async (req: Request, res: Response) => {
   }
 
   try {
+    const storagePath = storagePathForSection(brdId, name);
+    await uploadJsonObject(storagePath, data);
+    const pointer = makeStoragePointer(storagePath);
+
     await prisma.brdSections.upsert({
       where:  { brdId },
-      create: { brdId, [name]: data },
-      update: { [name]: data },
+      create: { brdId, [name]: pointer },
+      update: { [name]: pointer },
     });
 
     return res.json({ success: true, brdId, section: name });

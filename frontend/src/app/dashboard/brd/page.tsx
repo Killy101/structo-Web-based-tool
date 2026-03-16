@@ -5,6 +5,8 @@ import BrdFlow from "@/components/brd/BrdFlow";
 import api from "@/app/lib/api";
 
 type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
+type SortField = "name" | "date";
+type SortDirection = "asc" | "desc";
 
 interface Brd {
   id:           string;
@@ -151,7 +153,8 @@ export default function BrdPage() {
   const [deleteTarget,    setDeleteTarget]    = useState<Brd | null>(null);
   const [deleteLoading,   setDeleteLoading]   = useState(false);
   const [bulkDeleteOpen,  setBulkDeleteOpen]  = useState(false);
-  const [sortOrder,       setSortOrder]       = useState<"asc" | "desc" | null>(null);
+  const [sortField,       setSortField]       = useState<SortField>("name");
+  const [sortDirection,   setSortDirection]   = useState<SortDirection>("asc");
 
   const fetchBrds = useCallback(async () => {
     try {
@@ -205,13 +208,17 @@ export default function BrdPage() {
   });
 
   // Sort
-  const sorted = sortOrder
-    ? [...filtered].sort((a, b) => {
-        const nameA = displayTitle(a).toLowerCase();
-        const nameB = displayTitle(b).toLowerCase();
-        return sortOrder === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
-      })
-    : filtered;
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortField === "date") {
+      const dateA = new Date(a.lastUpdated).getTime();
+      const dateB = new Date(b.lastUpdated).getTime();
+      return sortDirection === "asc" ? dateA - dateB : dateB - dateA;
+    }
+
+    const nameA = displayTitle(a).toLowerCase();
+    const nameB = displayTitle(b).toLowerCase();
+    return sortDirection === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
+  });
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(sorted.length / rowsPerPage));
@@ -327,15 +334,27 @@ export default function BrdPage() {
           </span>
         </div>
 
-        {/* Sort A-Z / Z-A */}
+        {/* Sort controls */}
         <div className="relative">
           <select
-            value={sortOrder ?? ""}
-            onChange={e => { setSortOrder((e.target.value as "asc" | "desc") || null); setPage(1); }}
+            value={sortField}
+            onChange={e => { setSortField(e.target.value as SortField); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
-            <option value="">Sort by Name</option>
-            <option value="asc">A → Z</option>
-            <option value="desc">Z → A</option>
+            <option value="name">Sort by Name</option>
+            <option value="date">Sort by Date</option>
+          </select>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
+          </span>
+        </div>
+
+        <div className="relative">
+          <select
+            value={sortDirection}
+            onChange={e => { setSortDirection(e.target.value as SortDirection); setPage(1); }}
+            className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
           </select>
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>

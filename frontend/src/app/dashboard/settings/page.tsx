@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
@@ -12,12 +12,42 @@ import {
 } from "../../../components/ui";
 import Unauthorized from "../../../components/layout/Unauthorized";
 import { useAuth } from "../../../context/AuthContext";
-import { useTeams, useRoles, useTeamPolicies, useToast } from "../../../hooks";
-import { Team, TeamRoleFeaturePolicyItem, UserRole } from "../../../types";
+import {
+  useGovernanceSettings,
+  useTeams,
+  useRoles,
+  useTeamPolicies,
+  useToast,
+} from "../../../hooks";
+import {
+  OperationsPolicyState,
+  SecurityPolicyState,
+  Team,
+  TeamRoleFeaturePolicyItem,
+  UserRole,
+} from "../../../types";
 import { FEATURE_LABELS } from "../../../utils";
 
 // ─── Available features for role configuration ──────────────────────────────
 const ALL_FEATURES = Object.entries(FEATURE_LABELS);
+
+const DEFAULT_SECURITY_POLICY: SecurityPolicyState = {
+  minPasswordLength: 15,
+  requireUppercase: true,
+  requireNumber: true,
+  minSpecialChars: 1,
+  rememberedCount: 24,
+  minPasswordAgeDays: 7,
+  maxPasswordAgeDays: 90,
+  sessionTimeoutMinutes: 30,
+  enforceMfaForAdmins: false,
+};
+
+const DEFAULT_OPERATIONS_POLICY: OperationsPolicyState = {
+  maintenanceMode: false,
+  strictRateLimitMode: false,
+  auditDigestEnabled: true,
+};
 
 // ─── Add Team Modal ───────────────────────────────────────────────────────────
 function AddTeamModal({
@@ -448,6 +478,12 @@ function DeleteRoleModal({
 export default function SettingsPage() {
   const { user } = useAuth();
   const {
+    settings: governanceSettings,
+    isLoading: governanceLoading,
+    isSaving: governanceSaving,
+    saveSettings: saveGovernanceSettings,
+  } = useGovernanceSettings();
+  const {
     teams,
     isLoading: teamsLoading,
     createTeam,
@@ -481,6 +517,25 @@ export default function SettingsPage() {
     null,
   );
   const [savingPolicyKey, setSavingPolicyKey] = useState<string | null>(null);
+  const [securityPolicy, setSecurityPolicy] =
+    useState<SecurityPolicyState>(DEFAULT_SECURITY_POLICY);
+  const [operationsPolicy, setOperationsPolicy] =
+    useState<OperationsPolicyState>(DEFAULT_OPERATIONS_POLICY);
+  const [activeSection, setActiveSection] = useState<
+    "governance" | "teams" | "team-policies" | "roles"
+  >("governance");
+
+  useEffect(() => {
+    if (!governanceSettings) return;
+    setSecurityPolicy(governanceSettings.securityPolicy);
+    setOperationsPolicy(governanceSettings.operationsPolicy);
+  }, [governanceSettings]);
+
+  useEffect(() => {
+    if (!governanceLoading && !governanceSettings) {
+      show("Failed to load governance settings; defaults are shown", "warning");
+    }
+  }, [governanceLoading, governanceSettings, show]);
 
   // ─── Team handlers ──────────────────────────────────────────
   const handleCreateTeam = async (name: string) => {
@@ -563,6 +618,20 @@ export default function SettingsPage() {
       show(msg, "error");
     } finally {
       setSavingPolicyKey(null);
+    }
+  };
+
+  const persistGovernanceConfig = async () => {
+    try {
+      await saveGovernanceSettings({ securityPolicy, operationsPolicy });
+      show("Governance settings saved", "success");
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to save governance settings");
+      show(msg, "error");
     }
   };
 
@@ -825,63 +894,304 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* ─── Teams Section ─────────────────────────────────────── */}
-      <Card>
-        <CardHeader
-          title="Teams"
-          subtitle="Manage organization teams. Only Super Admins can create or delete teams."
-          action={
-            <Button size="sm" onClick={() => setShowAddTeam(true)}>
-              + Add Team
-            </Button>
-          }
-        />
-        <Table
-          columns={teamColumns}
-          data={teams}
-          keyExtractor={(row) => row.id}
-          isLoading={teamsLoading}
-          emptyMessage="No teams yet. Create the first one."
-          emptyIcon="👥"
-        />
-      </Card>
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div className="w-full lg:w-64 shrink-0 lg:sticky lg:top-6">
+          <Card>
+            <div className="p-2 space-y-1">
+              {[
+                {
+                  key: "governance" as const,
+                  title: "Governance Controls",
+                  subtitle: "Security and operations",
+                  icon: "⚙️",
+                },
+                {
+                  key: "teams" as const,
+                  title: "Teams",
+                  subtitle: "Manage organization teams",
+                  icon: "👥",
+                },
+                {
+                  key: "team-policies" as const,
+                  title: "Team Feature Access",
+                  subtitle: "Configure Admin/User access",
+                  icon: "🧩",
+                },
+                {
+                  key: "roles" as const,
+                  title: "User Roles",
+                  subtitle: "Manage custom feature profiles",
+                  icon: "🛡️",
+                },
+              ].map((item) => {
+                const isActive = activeSection === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setActiveSection(item.key)}
+                    className={`w-full rounded-lg border px-3 py-3 text-left transition ${
+                      isActive
+                        ? "border-blue-200 bg-blue-50 dark:border-blue-800/70 dark:bg-blue-900/20"
+                        : "border-transparent hover:border-slate-200 hover:bg-slate-50 dark:hover:border-slate-700 dark:hover:bg-slate-800/50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="text-base leading-none mt-0.5">{item.icon}</span>
+                      <div className="min-w-0">
+                        <p
+                          className={`text-sm font-semibold ${
+                            isActive
+                              ? "text-blue-700 dark:text-blue-300"
+                              : "text-slate-800 dark:text-slate-100"
+                          }`}
+                        >
+                          {item.title}
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          {item.subtitle}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
 
-      {/* ─── Team Role Policies Section ─────────────────────────── */}
-      <Card>
-        <CardHeader
-          title="Team Feature Access"
-          subtitle="Configure feature access per team for Admin and User. New teams get default policies automatically and can be edited here."
-        />
-        <Table
-          columns={teamPolicyColumns}
-          data={teamPolicies}
-          keyExtractor={(row) => row.team.id}
-          isLoading={teamPoliciesLoading}
-          emptyMessage="No team policies found"
-          emptyIcon="🧩"
-        />
-      </Card>
+        <div className="flex-1 space-y-6">
+          {activeSection === "governance" && (
+            <Card>
+              <CardHeader
+                title="Governance Controls"
+                subtitle="Security and operations baselines for Super Admin oversight."
+                action={
+                  <Button
+                    size="sm"
+                    onClick={() => void persistGovernanceConfig()}
+                    loading={governanceSaving}
+                  >
+                    Save Governance Settings
+                  </Button>
+                }
+              />
+              {governanceLoading && (
+                <div className="px-6 pb-2 text-xs text-slate-500 dark:text-slate-400">
+                  Loading saved governance settings...
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-6 p-6 lg:grid-cols-2">
+                <div className="space-y-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                  <h4 className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Security Policy
+                  </h4>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <Input
+                      label="Min Password Length"
+                      type="number"
+                      value={String(securityPolicy.minPasswordLength)}
+                      onChange={(e) =>
+                        setSecurityPolicy((prev) => ({
+                          ...prev,
+                          minPasswordLength: Math.max(15, Number(e.target.value || 15)),
+                        }))
+                      }
+                    />
+                    <Input
+                      label="Min Special Characters"
+                      type="number"
+                      value={String(securityPolicy.minSpecialChars)}
+                      onChange={(e) =>
+                        setSecurityPolicy((prev) => ({
+                          ...prev,
+                          minSpecialChars: Math.max(1, Number(e.target.value || 1)),
+                        }))
+                      }
+                    />
+                    <Input
+                      label="Remember Last Passwords"
+                      type="number"
+                      value={String(securityPolicy.rememberedCount)}
+                      onChange={(e) =>
+                        setSecurityPolicy((prev) => ({
+                          ...prev,
+                          rememberedCount: Math.max(1, Number(e.target.value || 1)),
+                        }))
+                      }
+                    />
+                    <Input
+                      label="Min Password Age (days)"
+                      type="number"
+                      value={String(securityPolicy.minPasswordAgeDays)}
+                      onChange={(e) =>
+                        setSecurityPolicy((prev) => {
+                          const minDays = Math.max(0, Number(e.target.value || 0));
+                          return {
+                            ...prev,
+                            minPasswordAgeDays: minDays,
+                            maxPasswordAgeDays: Math.max(prev.maxPasswordAgeDays, minDays),
+                          };
+                        })
+                      }
+                    />
+                    <Input
+                      label="Max Password Age (days)"
+                      type="number"
+                      value={String(securityPolicy.maxPasswordAgeDays)}
+                      onChange={(e) =>
+                        setSecurityPolicy((prev) => ({
+                          ...prev,
+                          maxPasswordAgeDays: Math.max(
+                            prev.minPasswordAgeDays,
+                            Number(e.target.value || prev.minPasswordAgeDays),
+                          ),
+                        }))
+                      }
+                    />
+                    <Input
+                      label="Session Timeout (minutes)"
+                      type="number"
+                      value={String(securityPolicy.sessionTimeoutMinutes)}
+                      onChange={(e) =>
+                        setSecurityPolicy((prev) => ({
+                          ...prev,
+                          sessionTimeoutMinutes: Math.max(5, Number(e.target.value || 5)),
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    {[
+                      ["requireUppercase", "Require uppercase character"],
+                      ["requireNumber", "Require numeric character"],
+                      ["enforceMfaForAdmins", "Enforce MFA for admins"],
+                    ].map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(
+                            securityPolicy[key as keyof SecurityPolicyState],
+                          )}
+                          onChange={(e) =>
+                            setSecurityPolicy((prev) => ({
+                              ...prev,
+                              [key]: e.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4"
+                        />
+                        <span className="text-slate-700 dark:text-slate-300">
+                          {label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
 
-      {/* ─── User Roles Section ────────────────────────────────── */}
-      <Card>
-        <CardHeader
-          title="User Roles"
-          subtitle="Manage feature access profiles. Assign these roles to Admin and User accounts from User Management."
-          action={
-            <Button size="sm" onClick={() => setShowAddRole(true)}>
-              + Add Role
-            </Button>
-          }
-        />
-        <Table
-          columns={roleColumns}
-          data={roles}
-          keyExtractor={(row) => row.id}
-          isLoading={rolesLoading}
-          emptyMessage="No custom roles yet. Create one to assign specific feature access to users."
-          emptyIcon="🛡️"
-        />
-      </Card>
+                <div className="space-y-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                  <h4 className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Operations Policy
+                  </h4>
+                  <div className="space-y-2">
+                    {[
+                      ["maintenanceMode", "Enable maintenance mode"],
+                      ["strictRateLimitMode", "Enable strict rate-limit mode"],
+                      ["auditDigestEnabled", "Enable daily audit digest"],
+                    ].map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(
+                            operationsPolicy[key as keyof OperationsPolicyState],
+                          )}
+                          onChange={(e) =>
+                            setOperationsPolicy((prev) => ({
+                              ...prev,
+                              [key]: e.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4"
+                        />
+                        <span className="text-slate-700 dark:text-slate-300">
+                          {label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {activeSection === "teams" && (
+            <Card>
+              <CardHeader
+                title="Teams"
+                subtitle="Manage organization teams. Only Super Admins can create or delete teams."
+                action={
+                  <Button size="sm" onClick={() => setShowAddTeam(true)}>
+                    + Add Team
+                  </Button>
+                }
+              />
+              <Table
+                columns={teamColumns}
+                data={teams}
+                keyExtractor={(row) => row.id}
+                isLoading={teamsLoading}
+                emptyMessage="No teams yet. Create the first one."
+                emptyIcon="👥"
+              />
+            </Card>
+          )}
+
+          {activeSection === "team-policies" && (
+            <Card>
+              <CardHeader
+                title="Team Feature Access"
+                subtitle="Configure feature access per team for Admin and User. New teams get default policies automatically and can be edited here."
+              />
+              <Table
+                columns={teamPolicyColumns}
+                data={teamPolicies}
+                keyExtractor={(row) => row.team.id}
+                isLoading={teamPoliciesLoading}
+                emptyMessage="No team policies found"
+                emptyIcon="🧩"
+              />
+            </Card>
+          )}
+
+          {activeSection === "roles" && (
+            <Card>
+              <CardHeader
+                title="User Roles"
+                subtitle="Manage feature access profiles. Assign these roles to Admin and User accounts from User Management."
+                action={
+                  <Button size="sm" onClick={() => setShowAddRole(true)}>
+                    + Add Role
+                  </Button>
+                }
+              />
+              <Table
+                columns={roleColumns}
+                data={roles}
+                keyExtractor={(row) => row.id}
+                isLoading={rolesLoading}
+                emptyMessage="No custom roles yet. Create one to assign specific feature access to users."
+                emptyIcon="🛡️"
+              />
+            </Card>
+          )}
+        </div>
+      </div>
 
       {/* ─── Team Modals ──────────────────────────────────────── */}
       <AddTeamModal

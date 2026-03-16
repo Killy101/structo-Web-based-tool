@@ -274,3 +274,13 @@ model BrdCellImage {
   @@index([brdId, section])   
   @@map("brd_cell_images")
 }
+
+model AppSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
+}

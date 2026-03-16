@@ -12,7 +12,9 @@
     "start": "node dist/index.js",
    "test": "npx jest",
 "test:watch": "npx jest --watch",
-"test:coverage": "npx jest --coverage"
+"test:coverage": "npx jest --coverage",
+"migrate:brd-storage:dry-run": "tsx src/scripts/migrate-brd-storage-to-supabase.ts --dry-run",
+"migrate:brd-storage": "tsx src/scripts/migrate-brd-storage-to-supabase.ts"
 
   },
   "keywords": [],
