@@ -171,6 +171,7 @@ interface SidebarProps {
 function LogoutModal({
   onConfirm,
   onCancel,
+  dark,
 }: {
   onConfirm: () => void;
   onCancel: () => void;
@@ -185,8 +186,10 @@ function LogoutModal({
       <div
         className="relative z-10 w-80 rounded-2xl overflow-hidden border"
         style={{
-          background: "#0b1a2e",
-          borderColor: "rgba(26, 143, 209, 0.15)",
+          background: dark ? "#0b1a2e" : "#ffffff",
+          borderColor: dark
+            ? "rgba(26, 143, 209, 0.15)"
+            : "rgba(100, 116, 139, 0.25)",
           boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
         }}
       >
@@ -212,7 +215,9 @@ function LogoutModal({
               />
             </svg>
           </div>
-          <h2 className="font-semibold text-base text-center leading-snug text-white">
+          <h2
+            className={`font-semibold text-base text-center leading-snug ${dark ? "text-white" : "text-slate-900"}`}
+          >
             Signing out of Structo?
           </h2>
         </div>
@@ -221,9 +226,13 @@ function LogoutModal({
             onClick={onCancel}
             className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all duration-150"
             style={{
-              background: "rgba(26, 143, 209, 0.08)",
-              color: "#94a3b8",
-              borderColor: "rgba(26, 143, 209, 0.15)",
+              background: dark
+                ? "rgba(26, 143, 209, 0.08)"
+                : "rgba(100, 116, 139, 0.08)",
+              color: dark ? "#94a3b8" : "#334155",
+              borderColor: dark
+                ? "rgba(26, 143, 209, 0.15)"
+                : "rgba(100, 116, 139, 0.2)",
             }}
           >
             Cancel
@@ -442,33 +451,32 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     <p className={`font-semibold text-sm ${dark ? "text-white" : "text-slate-900"}`}>
                       Notifications
                     </p>
-                    <span
-                      className="text-xs px-2 py-0.5 rounded-full"
-                      style={{
-                        color: "#d4862e",
-                        background: "rgba(212, 134, 46, 0.12)",
-                      }}
-                    >
-                      {notifications.length} new
-                    </span>
-                  </div>
-                  <div
-                    className="divide-y"
-                    style={{ borderColor: dark ? "rgba(26, 143, 209, 0.08)" : "rgba(100, 116, 139, 0.1)" }}
-                  >
-                    {notifications.map((n, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer"
-                        style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
+                    {unreadCount > 0 ? (
+                      <button
+                        onClick={markAllRead}
+                        className="text-xs hover:underline"
+                        style={{ color: "#d4862e" }}
                       >
                         Mark all read
                       </button>
+                    ) : (
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full"
+                        style={{
+                          color: "#d4862e",
+                          background: "rgba(212, 134, 46, 0.12)",
+                        }}
+                      >
+                        0 unread
+                      </span>
                     )}
                   </div>
 
                   {/* list */}
-                  <div className="max-h-72 overflow-y-auto divide-y" style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}>
+                  <div
+                    className="max-h-72 overflow-y-auto divide-y"
+                    style={{ borderColor: "rgba(26, 143, 209, 0.08)" }}
+                  >
                     {notifications.length === 0 ? (
                       <p className="px-4 py-5 text-sm text-center text-slate-500">
                         No notifications yet
@@ -476,16 +484,49 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     ) : (
                       notifications.map((n) => (
                         <div
-                          className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.color}`}
-                        />
-                        <div>
-                          <p className={`text-sm ${dark ? "text-slate-300" : "text-slate-700"}`}>{n.msg}</p>
-                          <p className="text-xs mt-0.5 text-slate-500">
-                            {n.time}
-                          </p>
+                          key={n.id}
+                          onClick={() => !n.isRead && markRead(n.id)}
+                          className={`flex items-start gap-3 px-4 py-3 transition-colors cursor-pointer ${
+                            n.isRead
+                              ? dark
+                                ? "hover:bg-slate-900/40"
+                                : "hover:bg-slate-100"
+                              : dark
+                                ? "bg-[#102742] hover:bg-[#16345a]"
+                                : "bg-sky-50 hover:bg-sky-100"
+                          }`}
+                        >
+                          <div
+                            className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${TYPE_DOT[n.type] ?? TYPE_DOT.SYSTEM}`}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className={`text-sm font-medium truncate ${dark ? "text-slate-100" : "text-slate-800"}`}
+                            >
+                              {n.title}
+                            </p>
+                            <p
+                              className={`text-xs mt-0.5 line-clamp-2 ${dark ? "text-slate-300" : "text-slate-700"}`}
+                            >
+                              {n.message}
+                            </p>
+                            <p className="text-[11px] mt-1 text-slate-500">
+                              {formatTimeAgo(n.createdAt)}
+                            </p>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              remove(n.id);
+                            }}
+                            className="text-slate-400 hover:text-red-400 transition-colors ml-1"
+                            aria-label="Delete notification"
+                          >
+                            ×
+                          </button>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                   <div
                     className="px-4 py-3 border-t text-center"
@@ -495,7 +536,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       className="text-xs hover:underline"
                       style={{ color: "#d4862e" }}
                     >
-                      View all notifications
+                      {unreadCount} unread notifications
                     </button>
                   </div>
                 </div>
@@ -541,9 +582,22 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               )}
             </span>
             {!collapsed && (
-              <span className="text-sm font-medium">
-                {dark ? "Light Mode" : "Dark Mode"}
-              </span>
+              <>
+                <span className="text-sm font-medium">
+                  Theme: {dark ? "Dark" : "Light"}
+                </span>
+                <span
+                  className="ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                  style={{
+                    background: dark
+                      ? "rgba(26, 143, 209, 0.14)"
+                      : "rgba(15, 23, 42, 0.08)",
+                    color: dark ? "#7dd3fc" : "#334155",
+                  }}
+                >
+                  Switch
+                </span>
+              </>
             )}
           </button>
 
