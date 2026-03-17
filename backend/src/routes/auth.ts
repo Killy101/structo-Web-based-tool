@@ -9,6 +9,7 @@ import {
   validatePasswordPolicy,
   generateCompliantPassword,
 } from "../lib/password-policy";
+import { getSecurityPolicy } from "../lib/get-security-policy";
 
 const router = Router();
 
@@ -166,9 +167,9 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid User ID or password" });
     }
 
-    // Max password age: 90 days
+    const secPolicy = await getSecurityPolicy();
     const expiresAt = new Date(user.passwordChangedAt);
-    expiresAt.setDate(expiresAt.getDate() + PASSWORD_POLICY.maxAgeDays);
+    expiresAt.setDate(expiresAt.getDate() + secPolicy.maxPasswordAgeDays);
     if (new Date() > expiresAt) {
       return res.status(403).json({
         error: "Password expired. Please contact your administrator.",
@@ -282,7 +283,8 @@ router.post(
         return res.status(400).json({ error: "Target user ID is required" });
       }
 
-      const policyError = validatePasswordPolicy(String(newPassword ?? ""));
+      const secPolicy = await getSecurityPolicy();
+      const policyError = validatePasswordPolicy(String(newPassword ?? ""), secPolicy);
       if (policyError) {
         return res.status(400).json({ error: policyError });
       }
@@ -312,7 +314,7 @@ router.post(
       // Check against current password
       if (await bcrypt.compare(newPassword, target.password)) {
         return res.status(400).json({
-          error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
+          error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.`,
         });
       }
 
@@ -320,13 +322,13 @@ router.post(
       const recentHistory = await prisma.passwordHistory.findMany({
         where: { userId: target.id },
         orderBy: { createdAt: "desc" },
-        take: PASSWORD_POLICY.rememberedCount,
+        take: secPolicy.rememberedCount,
       });
 
       for (const h of recentHistory) {
         if (await bcrypt.compare(newPassword, h.hash)) {
           return res.status(400).json({
-            error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
+            error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.`,
           });
         }
       }
@@ -394,7 +396,8 @@ router.post(
         });
       }
 
-      const newPassword = generateCompliantPassword();
+      const resetPolicy = await getSecurityPolicy();
+      const newPassword = generateCompliantPassword(resetPolicy.minPasswordLength);
       const hash = await bcrypt.hash(newPassword, 10);
       const now = new Date();
 
