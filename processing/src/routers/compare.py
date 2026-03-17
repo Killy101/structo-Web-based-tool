@@ -26,6 +26,8 @@ from typing import Optional
 import json
 import uuid
 import re
+import csv
+import io
 
 from src.services.xml_compare import (
     chunk_xml,
@@ -747,3 +749,73 @@ async def detect_changes_endpoint(
         "xml_filename": xml_file.filename,
         **result,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16. EXPORT DIFF REPORT — download CSV report of all chunk changes for a job
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/export/diff")
+async def export_diff_report(job_id: str):
+    """
+    Export a CSV diff report for a completed comparison job.
+
+    GET /compare/export/diff?job_id=<uuid>
+
+    Returns a CSV file with columns:
+        Chunk Index | Chunk Label | Filename | Has Changes | XML Size (bytes)
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if job.get("status") not in ("done",):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is not yet complete (status: {job.get('status')}). "
+                   "Please wait until chunking finishes before exporting.",
+        )
+
+    chunks      = job.get("chunks", [])
+    source_name = job.get("source_name", "Document")
+    safe_name   = re.sub(r'[^\w\-]', '_', source_name).strip('_') or 'Document'
+    filename    = f"{safe_name}_diff_report.csv"
+
+    # Build CSV in memory
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+
+    # Header rows
+    writer.writerow(["Diff Report"])
+    writer.writerow(["Source Name", source_name])
+    writer.writerow(["Job ID", job_id])
+    writer.writerow(["Old File", job.get("old_filename", "")])
+    writer.writerow(["New File", job.get("new_filename", "")])
+    writer.writerow(["XML File", job.get("xml_filename", "")])
+    writer.writerow([])
+
+    # Summary
+    changed_count = sum(1 for c in chunks if c.get("has_changes", False))
+    writer.writerow(["Total Chunks", len(chunks), "Chunks with Changes", changed_count])
+    writer.writerow([])
+
+    # Column headers
+    writer.writerow(["Chunk Index", "Label", "Filename", "Has Changes", "XML Size (bytes)", "XML Tag"])
+
+    for chunk in chunks:
+        writer.writerow([
+            chunk.get("index",       ""),
+            chunk.get("label",       ""),
+            chunk.get("filename",    ""),
+            "Yes" if chunk.get("has_changes", False) else "No",
+            chunk.get("xml_size",    ""),
+            chunk.get("xml_tag",     ""),
+        ])
+
+    csv_bytes = buf.getvalue().encode("utf-8-sig")  # UTF-8 BOM for Excel
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

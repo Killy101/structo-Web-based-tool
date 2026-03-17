@@ -65,6 +65,7 @@ model TaskAssignment {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
   dueDate     DateTime?
+  deletedAt   DateTime?
   teamId      Int
   createdById Int
   brdFileId   Int?
@@ -218,6 +219,7 @@ model Brd {
   status      BrdStatus @default(DRAFT)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
   createdById Int
   uploadId    Int?      @unique
 
