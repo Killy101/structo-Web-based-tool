@@ -92,6 +92,51 @@ router.get("/", async (_req: Request, res: Response) => {
   }
 });
 
+// ── GET /brd/deleted — list soft-deleted BRDs ─────────────────────────────
+router.get("/deleted", async (_req: Request, res: Response) => {
+  try {
+    const brds = await prisma.brd.findMany({
+      where: { deletedAt: { not: null } },
+      orderBy: { deletedAt: "desc" },
+      select: {
+        id:        true,
+        brdId:     true,
+        title:     true,
+        format:    true,
+        status:    true,
+        deletedAt: true,
+        sections: { select: { metadata: true } },
+      },
+    });
+
+    const data = await Promise.all(brds.map(async (b) => {
+      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
+      const geography = (meta?.geography as string) ?? "—";
+      const storedFormat = (meta?._format as string) ?? "";
+      const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
+      const derivedFormat: "old" | "new" =
+        storedFormat === "old" ? "old" :
+        storedFormat === "new" ? "new" :
+        hasLegacyKeys           ? "old" :
+        b.format === "OLD"      ? "old" : "new";
+
+      return {
+        id:        b.brdId,
+        title:     b.title.charAt(0).toUpperCase() + b.title.slice(1),
+        format:    derivedFormat,
+        status:    b.status,
+        geography,
+        deletedAt: b.deletedAt!.toISOString().split("T")[0],
+      };
+    }));
+
+    return res.json(data);
+  } catch (err) {
+    console.error("[GET /brd/deleted]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── GET /brd/next-id ───────────────────────────────────────────────────────
 router.get("/next-id", async (_req: Request, res: Response) => {
   try {
