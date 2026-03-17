@@ -33,6 +33,16 @@ api.interceptors.response.use(
         : "Too many requests. Please slow down and try again shortly.";
       return Promise.reject(new Error(msg));
     }
+    if (error?.response?.status === 503) {
+      const serverMsg = error.response.data?.error ?? "";
+      const isMaintenance =
+        serverMsg.toLowerCase().includes("maintenance") ||
+        error.response.headers?.["x-maintenance-mode"] === "1";
+      const msg = isMaintenance
+        ? "The system is currently in maintenance mode. Write operations are temporarily unavailable. Please try again later."
+        : "Service temporarily unavailable (503). Please try again in a moment.";
+      return Promise.reject(new Error(msg));
+    }
     return Promise.reject(error);
   },
 );
