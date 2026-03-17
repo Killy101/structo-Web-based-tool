@@ -5,11 +5,9 @@ import {
   Card,
   Badge,
   Button,
-  DashboardListHeader,
   Modal,
   Input,
   Select,
-  SortChipBar,
   EmptyState,
   ToastContainer,
 } from "../../../components/ui";
@@ -540,6 +538,98 @@ function TeamAssignIcon() {
 }
 
 /* ──────────────────────────────────────────────────────────
+   USER ACTIONS MENU (dots dropdown for table rows)
+   ────────────────────────────────────────────────────────── */
+
+function UserActionsMenu({
+  user,
+  actorRole,
+  currentUserId,
+  onChangePassword,
+  onChangeRole,
+  onAssignTeam,
+  onToggleStatus,
+}: {
+  user: User;
+  actorRole: Role;
+  currentUserId: number | undefined;
+  onChangePassword: (u: User) => void;
+  onChangeRole: (u: User) => void;
+  onAssignTeam: (u: User) => void;
+  onToggleStatus: (u: User) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const isActive = user.status === "ACTIVE";
+  const isSelf = user.id === currentUserId;
+
+  const canManagePassword = canChangePassword(actorRole, user.role);
+  const canManageRole =
+    actorRole === "SUPER_ADMIN"
+      ? user.role !== "SUPER_ADMIN"
+      : actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role);
+  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
+
+  if (!canManagePassword && !canManageRole && !canManageTeam && !canToggle)
+    return null;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        title="Actions"
+        className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+      >
+        <DotsIcon />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1.5 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 p-1.5">
+            {canManagePassword && (
+              <button
+                onClick={() => { setOpen(false); onChangePassword(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <KeyIcon /> Change Password
+              </button>
+            )}
+            {canManageRole && (
+              <button
+                onClick={() => { setOpen(false); onChangeRole(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <ShieldIcon /> Change Role
+              </button>
+            )}
+            {canManageTeam && (
+              <button
+                onClick={() => { setOpen(false); onAssignTeam(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <UsersGroupIcon /> Assign Team
+              </button>
+            )}
+            {canToggle && (
+              <>
+                <div className="mx-2 my-1 h-px bg-slate-100 dark:bg-slate-700" />
+                <button
+                  onClick={() => { setOpen(false); onToggleStatus(user); }}
+                  className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center gap-2 ${isActive ? "text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}
+                >
+                  <ToggleIcon active={isActive} />
+                  {isActive ? "Deactivate" : "Activate"}
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
    AVATAR PALETTES
    ────────────────────────────────────────────────────────── */
 
@@ -648,6 +738,11 @@ function SortableTable({
   onSort,
   currentUserId,
   onViewDetails,
+  onChangePassword,
+  onChangeRole,
+  onAssignTeam,
+  onToggleStatus,
+  actorRole,
   selectedUserIds,
   allPageSelected,
   somePageSelected,
@@ -661,6 +756,11 @@ function SortableTable({
   onSort: (k: SortKey) => void;
   currentUserId: number | undefined;
   onViewDetails: (u: User) => void;
+  onChangePassword: (u: User) => void;
+  onChangeRole: (u: User) => void;
+  onAssignTeam: (u: User) => void;
+  onToggleStatus: (u: User) => void;
+  actorRole: Role;
   selectedUserIds: Set<number>;
   allPageSelected: boolean;
   somePageSelected: boolean;
@@ -839,13 +939,25 @@ function SortableTable({
                     </span>
                   </td>
 
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => onViewDetails(u)}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white text-xs font-semibold shadow-sm hover:shadow-md transition-all"
-                    >
-                      <EyeIcon /> View Details
-                    </button>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => onViewDetails(u)}
+                        title="View profile"
+                        className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all"
+                      >
+                        <EyeIcon />
+                      </button>
+                      <UserActionsMenu
+                        user={u}
+                        actorRole={actorRole}
+                        currentUserId={currentUserId}
+                        onChangePassword={onChangePassword}
+                        onChangeRole={onChangeRole}
+                        onAssignTeam={onAssignTeam}
+                        onToggleStatus={onToggleStatus}
+                      />
+                    </div>
                   </td>
                 </tr>
               );
@@ -870,7 +982,6 @@ function UserDetailModal({
   onChangePassword,
   onChangeRole,
   onAssignTeam,
-  onAssignCustomRole,
   onToggleStatus,
 }: {
   isOpen: boolean;
@@ -881,22 +992,10 @@ function UserDetailModal({
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
-  onAssignCustomRole: (u: User) => void;
   onToggleStatus: (u: User) => void;
 }) {
   if (!user) return null;
 
-  const canManagePassword = canChangePassword(actorRole, user.role);
-  // FIX: consistent permission check — SUPER_ADMIN and ADMIN can both manage roles within their scope
-  const canManageRole =
-    actorRole === "SUPER_ADMIN" ||
-    (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
-  // FIX: consistent with UserCard — SUPER_ADMIN can assign any team, ADMIN can reassign within their scope
-  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
-  const canToggle =
-    canDeactivate(actorRole, user.role) && user.id !== currentUserId;
-  const showRoleChange =
-    actorRole === "SUPER_ADMIN" ? user.role !== "SUPER_ADMIN" : canManageRole;
   const isActive = user.status === "ACTIVE";
   const isSelf = user.id === currentUserId;
 
@@ -983,197 +1082,6 @@ function UserDetailModal({
               )}
             </div>
           )}
-        </div>
-
-        {/* Actions */}
-        <div className="space-y-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            Actions
-          </p>
-          <div className="grid grid-cols-1 gap-2">
-            {canManagePassword && (
-              <button
-                onClick={() => {
-                  onChangePassword(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-amber-600 dark:text-amber-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Change Password
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Reset or set a new password
-                  </p>
-                </div>
-              </button>
-            )}
-            {showRoleChange && (
-              <button
-                onClick={() => {
-                  onChangeRole(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-indigo-600 dark:text-indigo-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Change Role
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Update user permissions
-                  </p>
-                </div>
-              </button>
-            )}
-            {canManageTeam && (
-              <button
-                onClick={() => {
-                  onAssignTeam(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-teal-600 dark:text-teal-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Assign Team
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Move to a different team
-                  </p>
-                </div>
-              </button>
-            )}
-            {actorRole === "SUPER_ADMIN" && user.role !== "SUPER_ADMIN" && (
-              <button
-                onClick={() => {
-                  onAssignCustomRole(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-violet-600 dark:text-violet-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L9.568 3z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M6 6h.008v.008H6V6z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Assign Custom Role
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Override feature permissions
-                  </p>
-                </div>
-              </button>
-            )}
-            {canToggle && (
-              <button
-                onClick={() => {
-                  onToggleStatus(user);
-                  onClose();
-                }}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left group ${isActive ? "border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-900/20" : "border-emerald-200 dark:border-emerald-900/50 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}
-              >
-                <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center group-hover:scale-105 transition-transform ${isActive ? "bg-red-100 dark:bg-red-900/30" : "bg-emerald-100 dark:bg-emerald-900/30"}`}
-                >
-                  <svg
-                    className={`w-4 h-4 ${isActive ? "text-red-500" : "text-emerald-600"}`}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    {isActive ? (
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                      />
-                    ) : (
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    )}
-                  </svg>
-                </div>
-                <div>
-                  <p
-                    className={`text-sm font-semibold ${isActive ? "text-red-500 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}
-                  >
-                    {isActive ? "Deactivate User" : "Activate User"}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {isActive ? "Disable access" : "Re-enable access"}
-                  </p>
-                </div>
-              </button>
-            )}
-          </div>
         </div>
 
         <Button
@@ -2841,48 +2749,149 @@ export default function UsersPage() {
     );
   };
 
-  const filterSelectClasses =
-    "px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 hover:border-slate-300 dark:hover:border-slate-600 transition-all cursor-pointer";
+  const chevronDown = (
+    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+      </svg>
+    </span>
+  );
+
+  const dropdownCls =
+    "appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer";
 
   return (
-    <div className="h-full w-full min-h-0 px-6 py-5 text-xs flex flex-col gap-5">
-      <DashboardListHeader
-        title={headerTitle}
-       
-        searchValue={search}
-        onSearchChange={handleSearchChange}
-        searchPlaceholder="Search by ID, name, or role..."
-        controls={
-          <>
-            <button
-              onClick={refetch}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+    <div className="h-full w-full min-h-0 flex flex-col text-xs">
+      {/* ── BRD-style flat toolbar ── */}
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        {/* Left: Refresh + Export */}
+        <button
+          onClick={refetch}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+        >
+          <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
+        </button>
+        <button
+          onClick={handleExportCSV}
+          disabled={filtered.length === 0}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <DownloadIcon /> <span className="hidden sm:inline">Export CSV</span>
+        </button>
+
+        {/* Filters */}
+        {actorRole !== "ADMIN" && (
+          <div className="relative">
+            <select
+              value={roleFilter}
+              onChange={(e) => handleRoleChange(e.target.value)}
+              className={dropdownCls}
             >
-              <RefreshIcon /> Refresh
-            </button>
-            <button
-              onClick={handleExportCSV}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-emerald-600 transition-all hover:border-emerald-300 hover:bg-emerald-50 dark:border-slate-700 dark:text-emerald-400 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/20"
+              <option value="ALL">All Roles</option>
+              <option value="ADMIN">Admin</option>
+              <option value="USER">User</option>
+              {customRoles.map((r) => (
+                <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            {chevronDown}
+          </div>
+        )}
+        {actorRole === "SUPER_ADMIN" && (
+          <div className="relative">
+            <select
+              value={teamFilter}
+              onChange={(e) => handleTeamChange(e.target.value)}
+              className={dropdownCls}
             >
-              <DownloadIcon />
-              Export CSV
-            </button>
-            {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
-              <Button onClick={() => setShowCreate(true)}>
-                <PlusIcon /> Add User
-              </Button>
+              <option value="ALL">All Teams</option>
+              <option value="NONE">No Team</option>
+              {teams.map((t) => (
+                <option key={t.id} value={String(t.id)}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            {chevronDown}
+          </div>
+        )}
+        <div className="relative">
+          <select
+            value={statusFilter}
+            onChange={(e) => handleStatusChange(e.target.value as StatusFilterChip)}
+            className={dropdownCls}
+          >
+            <option value="ALL">All Status</option>
+            <option value="ACTIVE">Active</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
+          {chevronDown}
+        </div>
+        <div className="relative">
+          <select
+            value={sortKey === "created" ? "created" : "name"}
+            onChange={(e) => handleToolbarSortChange(e.target.value as ToolbarSortKey)}
+            className={dropdownCls}
+          >
+            <option value="name">Sort by Name</option>
+            <option value="created">Sort by Date</option>
+          </select>
+          {chevronDown}
+        </div>
+        <div className="relative">
+          <select
+            value={sortDir}
+            onChange={(e) => handleSortDirectionChange(e.target.value as SortDir)}
+            className={dropdownCls}
+          >
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+          {chevronDown}
+        </div>
+        {isFiltering && (
+          <button
+            onClick={handleClearFilters}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+          >
+            <XIcon /> Clear
+          </button>
+        )}
+
+        {/* Right: search + add */}
+        <div className="ml-auto flex items-center gap-2">
+          <div className="relative flex items-center">
+            <span className="absolute left-2.5 text-slate-400 pointer-events-none">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+              </svg>
+            </span>
+            <input
+              value={search}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Search by ID, name…"
+              className="pl-8 pr-7 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors"
+            />
+            {search && (
+              <button
+                onClick={() => handleSearchChange("")}
+                className="absolute right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <XIcon />
+              </button>
             )}
-          </>
-        }
-        presets={[
-          { key: "default", label: "All Users", count: users.length },
-          { key: "newest", label: "Newest First" },
-          { key: "active", label: "Active", count: activeCount },
-          { key: "inactive", label: "Inactive", count: inactiveCount },
-        ]}
-        activePreset={activePreset}
-        onPresetChange={(key) => applyPreset(key as UserPresetKey)}
-      />
+          </div>
+          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
+            <Button onClick={() => setShowCreate(true)}>
+              <PlusIcon /> Add User
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 px-6 py-5 flex flex-col gap-5 overflow-auto">
 
       {selectedUsers.length > 0 && (
         <Card className="p-3 border-blue-200/70 dark:border-blue-800/40 bg-blue-50/50 dark:bg-blue-900/10">
@@ -2945,101 +2954,6 @@ export default function UsersPage() {
         ))}
       </div>
 
-      {/* ── Status Chips + Sort ── */}
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          {STATUS_FILTER_CHIPS.map((chip) => {
-            const count =
-              chip === "ALL"
-                ? users.length
-                : users.filter((u) => u.status === chip).length;
-            const active = statusFilter === chip;
-            const styles = STATUS_FILTER_STYLES[chip];
-            return (
-              <button
-                key={chip}
-                onClick={() => handleStatusChange(chip)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 whitespace-nowrap ${active ? styles.active : styles.base}`}
-              >
-                <span className="font-mono font-bold">{count}</span>
-                {chip === "ALL"
-                  ? "All"
-                  : chip === "ACTIVE"
-                    ? "Active"
-                    : "Inactive"}
-              </button>
-            );
-          })}
-          {actorTeamName && (
-            <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 dark:border-blue-800/40 dark:bg-blue-900/30 dark:text-blue-400">
-              Team: {actorTeamName}
-            </span>
-          )}
-        </div>
-        <SortChipBar
-          options={[
-            { key: "name", label: "Name" },
-            { key: "created", label: "Date" },
-          ]}
-          activeKey={sortKey === "created" ? "created" : "name"}
-          onChange={(key) => handleToolbarSortChange(key as ToolbarSortKey)}
-          direction={sortDir}
-          onDirectionChange={handleSortDirectionChange}
-        />
-      </div>
-
-      {/* ── Filter Controls ── */}
-      <Card className="p-3">
-        <div className="flex flex-wrap items-center gap-2.5">
-          {actorRole !== "ADMIN" && (
-            <select
-              value={roleFilter}
-              onChange={(e) => handleRoleChange(e.target.value)}
-              className={filterSelectClasses}
-            >
-              <option value="ALL">All Roles</option>
-              <option value="ADMIN">Admin</option>
-              <option value="USER">User</option>
-              {customRoles.map((r) => (
-                <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          )}
-          {actorRole === "SUPER_ADMIN" && (
-            <select
-              value={teamFilter}
-              onChange={(e) => handleTeamChange(e.target.value)}
-              className={filterSelectClasses}
-            >
-              <option value="ALL">All Teams</option>
-              <option value="NONE">No Team</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {/* NEW: result count + clear filters button */}
-          {isFiltering && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
-                {filtered.length} result{filtered.length !== 1 ? "s" : ""}
-              </span>
-              <button
-                onClick={handleClearFilters}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 border border-slate-200 dark:border-slate-700 hover:border-red-200 dark:hover:border-red-800 transition-all"
-              >
-                <XIcon /> Clear filters
-              </button>
-            </div>
-          )}
-        </div>
-      </Card>
-
       {/* ── Content: List or Grid ── */}
       {error ? (
         <Card className="overflow-hidden">
@@ -3060,6 +2974,11 @@ export default function UsersPage() {
             onSort={handleSort}
             currentUserId={currentUser?.id}
             onViewDetails={handleOpenViewDetails}
+            onChangePassword={handleOpenChangePassword}
+            onChangeRole={handleOpenChangeRole}
+            onAssignTeam={handleOpenAssignTeam}
+            onToggleStatus={handleToggle}
+            actorRole={actorRole}
             selectedUserIds={selectedUserIds}
             allPageSelected={allPageSelected}
             somePageSelected={somePageSelected}
@@ -3119,6 +3038,8 @@ export default function UsersPage() {
         </Card>
       )}
 
+      </div>{/* end inner content div */}
+
       {/* ── Modals ── */}
       <CreateUserModal
         isOpen={showCreate}
@@ -3149,7 +3070,6 @@ export default function UsersPage() {
         onChangePassword={handleOpenChangePassword}
         onChangeRole={handleOpenChangeRole}
         onAssignTeam={handleOpenAssignTeam}
-        onAssignCustomRole={handleOpenAssignCustomRole}
         onToggleStatus={handleToggle}
       />
       <ChangePasswordModal
