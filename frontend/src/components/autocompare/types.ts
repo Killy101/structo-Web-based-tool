@@ -1,5 +1,5 @@
 /**
- * Shared TypeScript types for the AutoCompare module.
+ * types.ts — AutoCompare shared TypeScript types v2.
  */
 
 export type SessionStatus = "idle" | "uploaded" | "processing" | "done" | "error";
@@ -16,14 +16,14 @@ export interface SessionSummary {
 export type ChangeType = "added" | "removed" | "modified" | "unchanged";
 
 /**
- * Review status for a chunk — tracked locally in the browser.
- *   pending   — not yet opened
- *   reviewed  — user has opened and inspected the chunk
- *   saved     — user has saved an XML edit for this chunk
+ * Review status tracked locally in the browser.
+ *   pending  — not yet opened
+ *   reviewed — user opened the chunk
+ *   saved    — user saved an XML edit
  */
 export type ReviewStatus = "pending" | "reviewed" | "saved";
 
-/** Lightweight row in the chunk list panel */
+/** Lightweight row shown in ChunkList */
 export interface ChunkRow {
   index: number;
   label: string;
@@ -35,66 +35,78 @@ export interface ChunkRow {
   xml_size: number;
   page_start: number;
   page_end: number;
+  /** XML structural tag, e.g. "section" | "chapter" | "article" */
+  section_tag?: string;
+  source_file_index?: number;
+  /** Locally tracked, never sent to backend */
   reviewStatus?: ReviewStatus;
 }
 
-// ── Diff line typing ───────────────────────────────────────────────────────────
+// ── Diff types ────────────────────────────────────────────────────────────────
 
 /**
- * The five Modify sub-sections shown in the DiffPanel.
+ * Diff category — maps to a collapsible section in DiffPanel.
  *
- *   addition     — text present in NEW but not OLD            (green)
- *   removal      — text present in OLD but not NEW            (red)
- *   modification — text present in both, content changed      (amber)
- *   mismatch     — structural / line-count mismatch           (orange)
- *   emphasis     — line contains emphasis/formatting XML tags  (fuchsia)
+ *   addition     — text in NEW but not OLD                  (emerald)
+ *   removal      — text in OLD but not NEW                  (red)
+ *   modification — text in both, content changed            (amber)
+ *   emphasis     — bold / italic formatting changed         (fuchsia)
+ *   mismatch     — structural / block-count mismatch        (orange)
  */
-export type DiffCategory = "addition" | "removal" | "modification" | "mismatch" | "emphasis";
+export type DiffCategory =
+  | "addition"
+  | "removal"
+  | "modification"
+  | "emphasis"
+  | "mismatch";
 
 /**
- * XML operation sub-type tag shown as a badge on every diff line.
+ * Operation sub-type badge shown on each diff line.
  *
- *   edit          — short word/phrase edit
- *   textual       — full sentence or paragraph replacement
- *   innodreplace  — structured XML element swap (innod-specific)
- *   emphasis      — emphasis/formatting tag change
+ *   edit         — short word / phrase change
+ *   textual      — full sentence or paragraph replacement
+ *   innodreplace — structured XML element swap (innod-specific)
+ *   emphasis     — formatting tag change
  */
 export type DiffSubType = "edit" | "textual" | "innodreplace" | "emphasis";
 
-/** A single diff line enriched with category and sub_type */
+/** A single word-level span for inline highlighting. Pre-computed by backend. */
+export interface InlineSpan {
+  text: string;
+  changed: boolean;
+}
+
+/** A single diff line — word spans pre-computed by the backend. */
 export interface DiffLine {
-  /** Legacy field kept for backwards compat with existing DiffPanel usage */
   type: "added" | "removed" | "modified";
-  /** Richer Modify-section category */
   category: DiffCategory;
-  /** XML operation sub-type */
   sub_type: DiffSubType;
   text: string;
-  /** For modification lines: original old-side text (before " -> ") */
   old_text?: string;
-  /** For modification lines: new-side text (after " -> ") */
   new_text?: string;
   line: number;
   old_page?: number | null;
   new_page?: number | null;
+  /** Pre-computed by backend — zero LCS work in the browser */
+  old_spans?: InlineSpan[];
+  new_spans?: InlineSpan[];
+  /** Only present on emphasis lines */
+  emphasis_change?: "bold_added" | "bold_removed";
 }
 
-/**
- * A grouped section inside the Modify panel.
- * One DiffGroup per DiffCategory that has at least one line.
- */
+/** A grouped section for the DiffPanel — pre-grouped by the backend. */
 export interface DiffGroup {
   category: DiffCategory;
-  label: string;        // human-readable section heading
+  label: string;
   lines: DiffLine[];
 }
 
-/** Full chunk detail (returned by /compare/{chunk_id}) */
+/** Full chunk detail returned by /autocompare/compare/{chunk_id} */
 export interface ChunkDetail extends ChunkRow {
   old_text: string;
   new_text: string;
   diff_lines: DiffLine[];
-  /** Pre-grouped view — one entry per non-empty DiffCategory */
+  /** Pre-grouped by backend — use directly, no client grouping needed */
   diff_groups: DiffGroup[];
   xml_content: string;
   xml_suggested: string;
@@ -149,7 +161,12 @@ export interface AutoGenerateResponse {
   generation_scope?: "chunk" | "line";
 }
 
-export type ValidateStatus = "no_changes" | "updated" | "saved_unchanged" | "needs_review" | "pending";
+export type ValidateStatus =
+  | "no_changes"
+  | "updated"
+  | "saved_unchanged"
+  | "needs_review"
+  | "pending";
 
 export interface ValidateResponse {
   success: boolean;

@@ -30,7 +30,10 @@ async function handleResponse<T>(res: Response): Promise<T> {
     } catch {
       // ignore
     }
-    throw new Error(detail);
+    // Attach HTTP status so callers can detect 404 (session gone after restart)
+    const err = new Error(detail) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return res.json() as Promise<T>;
 }
