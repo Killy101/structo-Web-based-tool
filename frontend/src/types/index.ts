@@ -91,6 +91,7 @@ export interface Team {
 export interface User {
   id: number;
   userId: string;
+  email?: string | null;
   firstName?: string | null;
   lastName?: string | null;
   role: Role;
@@ -242,6 +243,7 @@ export interface BrdSourceItem {
 
 export interface CreateUserPayload {
   userId: string;
+  email: string;
   firstName: string;
   lastName: string;
   role: Role;
@@ -252,6 +254,7 @@ export interface CreateUserPayload {
 export interface CreateUserResponse {
   message: string;
   generatedPassword: string;
+  emailSent?: boolean;
   id: number;
   userIdStr: string;
 }

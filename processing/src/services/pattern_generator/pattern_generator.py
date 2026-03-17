@@ -446,6 +446,7 @@ def _to_iso_date(val: str | None) -> str:
             return datetime.fromisoformat(candidate).strftime("%Y-%m-%d")
     except (ValueError, TypeError):
         return "{iso-date}"
+    return "{iso-date}"
 
 
 def _looks_instructional(text: str) -> bool:

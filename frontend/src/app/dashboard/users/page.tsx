@@ -1289,7 +1289,7 @@ function CreateUserModal({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (password: string, user: Partial<User>) => void;
+  onSuccess: (password: string, user: Partial<User>, emailSent?: boolean) => void;
   actorRole: Role;
   teams: { id: number; name: string }[];
   actorTeamId: number | null;
@@ -1298,6 +1298,7 @@ function CreateUserModal({
   const { createUser } = useUsers();
   const [form, setForm] = useState({
     userId: "",
+    email: "",
     firstName: "",
     lastName: "",
     role: "USER" as Role,
@@ -1321,6 +1322,11 @@ function CreateUserModal({
     } else if (!/^[a-zA-Z0-9]{3,6}$/.test(form.userId.trim())) {
       e.userId = "Must be 3–6 alphanumeric characters";
     }
+    if (!form.email.trim()) {
+      e.email = "Required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      e.email = "Invalid email address";
+    }
     if (!form.firstName.trim()) e.firstName = "Required";
     if (!form.lastName.trim()) e.lastName = "Required";
     setErrors(e);
@@ -1333,6 +1339,7 @@ function CreateUserModal({
     try {
       const payload: CreateUserPayload = {
         userId: form.userId.trim().toUpperCase(),
+        email: form.email.trim().toLowerCase(),
         firstName: form.firstName.trim(),
         lastName: form.lastName.trim(),
         role: form.role,
@@ -1341,12 +1348,14 @@ function CreateUserModal({
       const result = await createUser(payload);
       onSuccess(result.generatedPassword, {
         userId: payload.userId,
+        email: payload.email,
         firstName: payload.firstName,
         lastName: payload.lastName,
         role: payload.role,
-      });
+      }, result.emailSent);
       setForm({
         userId: "",
+        email: "",
         firstName: "",
         lastName: "",
         role: "USER",
@@ -1379,6 +1388,17 @@ function CreateUserModal({
           <p className="text-[11px] text-slate-400 mt-1">
             3–6 alphanumeric characters
           </p>
+        </div>
+        <div>
+          <Input
+            label="Email"
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            placeholder="name@company.com"
+            error={errors.email}
+            required
+          />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Input
@@ -1605,6 +1625,7 @@ function ChangePasswordModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [resetResult, setResetResult] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Derive active requirements from policy (fall back to safe defaults while loading)
@@ -1672,6 +1693,11 @@ function ChangePasswordModal({
     try {
       const result = await onResetPassword(targetUser!.id);
       setResetResult(result.newPassword);
+      setEmailNotice(
+        result.emailSent
+          ? "Password was also sent to the user email."
+          : "Password email was not sent. Check RESEND_API_KEY / user email.",
+      );
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -1691,6 +1717,7 @@ function ChangePasswordModal({
     setConfirmPassword("");
     setError("");
     setResetResult(null);
+    setEmailNotice(null);
     setCopied(false);
     onClose();
   };
@@ -1715,6 +1742,9 @@ function ChangePasswordModal({
               <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
                 Password reset successfully!
               </p>
+              {emailNotice && (
+                <p className="text-xs text-emerald-700 dark:text-emerald-300">{emailNotice}</p>
+              )}
               <div className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 flex items-center justify-between">
                 <code className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tracking-[0.15em]">
                   {resetResult}
@@ -2704,11 +2734,16 @@ export default function UsersPage() {
     }
   };
 
-  const handleCreateSuccess = (pwd: string, data: Partial<User>) => {
+  const handleCreateSuccess = (pwd: string, data: Partial<User>, emailSent?: boolean) => {
     setGenPwd(pwd);
     setNewUser(data);
     setShowPwd(true);
-    show("User created successfully!", "success");
+    show(
+      emailSent === false
+        ? "User created. Password email failed to send; share the generated password manually."
+        : "User created successfully. Password email sent.",
+      emailSent === false ? "warning" : "success",
+    );
     refetch();
   };
 

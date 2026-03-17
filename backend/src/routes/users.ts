@@ -5,6 +5,7 @@ import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { authorize } from "../middleware/authorize";
 import { Role } from "@prisma/client";
 import { generateCompliantPassword } from "../lib/password-policy";
+import { sendPasswordEmail } from "../lib/email";
 
 const router = Router();
 
@@ -64,6 +65,7 @@ router.get(
         select: {
           id: true,
           userId: true,
+          email: true,
           firstName: true,
           lastName: true,
           role: true,
@@ -96,7 +98,7 @@ router.post(
   authorize(["SUPER_ADMIN", "ADMIN"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { userId, role, firstName, lastName, teamId, userRoleId } =
+      const { userId, email, role, firstName, lastName, teamId, userRoleId } =
         req.body;
       const actorRole = req.user!.role as Role;
 
@@ -110,6 +112,14 @@ router.post(
 
       if (!lastName || !lastName.trim()) {
         return res.status(400).json({ error: "Last name is required" });
+      }
+
+      const normalizedEmail = String(email ?? "").trim().toLowerCase();
+      if (!normalizedEmail) {
+        return res.status(400).json({ error: "Email is required" });
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ error: "Invalid email format" });
       }
 
       const trimmedUserId = userId.trim();
@@ -133,6 +143,15 @@ router.post(
         return res
           .status(409)
           .json({ error: "A user with this User ID already exists" });
+      }
+
+      const existingEmail = await prisma.user.findFirst({
+        where: {
+          email: { equals: normalizedEmail, mode: "insensitive" },
+        },
+      });
+      if (existingEmail) {
+        return res.status(409).json({ error: "A user with this email already exists" });
       }
 
       // Admin auto-assigns their team if no teamId provided
@@ -175,6 +194,7 @@ router.post(
             password: hashedPassword,
             passwordChangedAt: new Date(),
             createdById: req.user!.userId,
+            email: normalizedEmail,
             firstName: firstName.trim(),
             lastName: lastName.trim(),
             teamId: assignTeamId || null,
@@ -193,13 +213,22 @@ router.post(
         data: {
           userId: req.user!.userId,
           action: "USER_CREATED",
-          details: `Created user ${trimmedUserId} (${firstName.trim()} ${lastName.trim()}) with role ${role}`,
+          details: `Created user ${trimmedUserId} (${firstName.trim()} ${lastName.trim()}) with role ${role} and email ${normalizedEmail}`,
         },
+      });
+
+      const emailSent = await sendPasswordEmail({
+        to: normalizedEmail,
+        userId: newUser.userId,
+        fullName: `${firstName.trim()} ${lastName.trim()}`,
+        password: generatedPassword,
+        action: "created",
       });
 
       res.status(201).json({
         message: "User created successfully",
         generatedPassword,
+        emailSent,
         id: newUser.id,
         userIdStr: newUser.userId,
       });

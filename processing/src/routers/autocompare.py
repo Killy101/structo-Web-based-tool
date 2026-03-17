@@ -24,6 +24,8 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import re
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
@@ -46,8 +48,48 @@ from src.services.autocompare_service import (
     _generate_xml_suggestion,
     _generate_diff_lines,
 )
+from src.services.autocompare_langchain import generate_xml_suggestion_langchain
 
 router = APIRouter(prefix="/autocompare", tags=["autocompare"])
+logger = logging.getLogger(__name__)
+
+
+def _langchain_enabled() -> bool:
+    return os.getenv("AUTOCOMPARE_LANGCHAIN_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ── 0. HEALTH ─────────────────────────────────────────────────────────────────
+
+@router.get("/health/ai")
+async def ai_health_endpoint():
+    """
+    Check availability of AI providers used by the autogenerate endpoint.
+    Returns connectivity status for Ollama and whether OpenAI is configured.
+    """
+    import urllib.request
+
+    ollama_base = os.getenv("AUTOCOMPARE_LANGCHAIN_OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    ollama_ok = False
+    try:
+        with urllib.request.urlopen(f"{ollama_base}/api/tags", timeout=3) as resp:
+            ollama_ok = resp.status == 200
+    except Exception:
+        ollama_ok = False
+
+    openai_configured = bool(os.getenv("OPENAI_API_KEY", "").strip())
+
+    return {
+        "langchain_enabled": _langchain_enabled(),
+        "ollama": {
+            "available": ollama_ok,
+            "base_url": ollama_base,
+            "model": os.getenv("AUTOCOMPARE_LANGCHAIN_OLLAMA_MODEL", "qwen2.5:7b-instruct"),
+        },
+        "openai": {
+            "configured": openai_configured,
+            "model": os.getenv("AUTOCOMPARE_LANGCHAIN_OPENAI_MODEL", "gpt-4o-mini"),
+        },
+    }
 
 
 # ── 1. UPLOAD ─────────────────────────────────────────────────────────────────
@@ -296,14 +338,40 @@ async def autogenerate_endpoint(payload: AutoGenerateRequest):
 
     # Use the saved (user-edited) XML as the base, falling back to original
     base_xml = chunk.get("xml_saved") or chunk.get("xml_content", "")
-    suggested = _generate_xml_suggestion(
-        xml_chunk=base_xml,
-        old_pdf_text=chunk.get("old_text", ""),
-        new_pdf_text=chunk.get("new_text", ""),
-        focus_old_text=payload.old_text,
-        focus_new_text=payload.new_text,
-        focus_text=payload.diff_text,
-    )
+    generation_method = "deterministic"
+    used_fallback = False
+
+    suggested = ""
+    if _langchain_enabled():
+        try:
+            suggested, meta = generate_xml_suggestion_langchain(
+                xml_chunk=base_xml,
+                old_pdf_text=chunk.get("old_text", ""),
+                new_pdf_text=chunk.get("new_text", ""),
+                focus_old_text=payload.old_text,
+                focus_new_text=payload.new_text,
+                focus_text=payload.diff_text,
+            )
+            provider = str(meta.get("provider") or "langchain")
+            generation_method = f"langchain:{provider}"
+        except Exception as exc:
+            used_fallback = True
+            logger.warning(
+                "LangChain autogenerate failed for session=%s chunk=%s: %s",
+                payload.session_id,
+                payload.chunk_id,
+                exc,
+            )
+
+    if not suggested:
+        suggested = _generate_xml_suggestion(
+            xml_chunk=base_xml,
+            old_pdf_text=chunk.get("old_text", ""),
+            new_pdf_text=chunk.get("new_text", ""),
+            focus_old_text=payload.old_text,
+            focus_new_text=payload.new_text,
+            focus_text=payload.diff_text,
+        )
 
     has_line_focus = any([
         payload.diff_index is not None,
@@ -318,6 +386,8 @@ async def autogenerate_endpoint(payload: AutoGenerateRequest):
         "chunk_id":      payload.chunk_id,
         "suggested_xml": suggested,
         "generation_scope": "line" if has_line_focus else "chunk",
+        "generation_method": generation_method,
+        "used_fallback": used_fallback,
     }
 
 

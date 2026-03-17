@@ -162,6 +162,12 @@ export default function BrdPage() {
   const [deletedBrds,     setDeletedBrds]     = useState<(Brd & { deletedAt: string })[]>([]);
   const [trashLoading,    setTrashLoading]    = useState(false);
   const [restoring,       setRestoring]       = useState<string | null>(null);
+  const [reuploadBrd,     setReuploadBrd]     = useState<Brd | null>(null);
+  const [reuploadFile,    setReuploadFile]    = useState<File | null>(null);
+  const [reuploadLoading, setReuploadLoading] = useState(false);
+  const [statusChangeBrd, setStatusChangeBrd] = useState<Brd | null>(null);
+  const [newStatus,       setNewStatus]       = useState<BrdStatus>("COMPLETED");
+  const [statusChanging,  setStatusChanging]  = useState(false);
 
   const fetchBrds = useCallback(async () => {
     try {
@@ -219,6 +225,37 @@ export default function BrdPage() {
       fetchBrds();
     } catch (err) { console.error("Failed to restore BRD:", err); }
     finally { setRestoring(null); }
+  };
+
+  const handleReupload = async () => {
+    if (!reuploadBrd || !reuploadFile) return;
+    setReuploadLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", reuploadFile);
+      await api.post(`/brd/re-upload/${reuploadBrd.id}`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setReuploadBrd(null);
+      setReuploadFile(null);
+      fetchBrds();
+    } catch (err) {
+      console.error("Failed to re-upload BRD:", err);
+      alert("Re-upload failed. Please try again.");
+    } finally { setReuploadLoading(false); }
+  };
+
+  const handleStatusChange = async () => {
+    if (!statusChangeBrd) return;
+    setStatusChanging(true);
+    try {
+      await api.patch(`/brd/${statusChangeBrd.id}`, { status: newStatus });
+      setStatusChangeBrd(null);
+      fetchBrds();
+    } catch (err) {
+      console.error("Failed to change status:", err);
+      alert("Status change failed. Please try again.");
+    } finally { setStatusChanging(false); }
   };
 
   const confirmDelete = async () => {
@@ -552,6 +589,25 @@ export default function BrdPage() {
                   {/* Actions */}
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
+                      {/* DRAFT-specific actions */}
+                      {brd.status === "DRAFT" && (
+                        <>
+                          <button onClick={() => setReuploadBrd(brd)}
+                            title="Re-upload finalized document"
+                            className="p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 dark:hover:text-green-400 transition-colors">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+                            </svg>
+                          </button>
+                          <button onClick={() => setStatusChangeBrd(brd)}
+                            title="Change status to Completed or Approved"
+                            className="p-1.5 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 dark:hover:text-purple-400 transition-colors">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                          </button>
+                        </>
+                      )}
                       <button disabled={isLocked}
                         onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
                         title="View BRD"
@@ -618,6 +674,111 @@ export default function BrdPage() {
 
 
       {/* ── Delete Confirmation Modal (single) ── */}
+      {/* ── Re-upload Modal (DRAFTonly) ── */}
+      {reuploadBrd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !reuploadLoading && setReuploadBrd(null)} />
+          <div className="relative w-full max-w-md z-10">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="h-1 w-full bg-gradient-to-r from-green-500 to-emerald-500" />
+              <div className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className="w-11 h-11 rounded-full bg-green-50 dark:bg-green-900/20 flex items-center justify-center flex-shrink-0 border border-green-100 dark:border-green-800/40">
+                    <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Re-upload Finalized BRD</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                      Upload the finalized document. This will replace the draft sections with new extracted content.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <label className="block">
+                    <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => setReuploadFile(e.target.files?.[0] || null)}
+                      className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-900/30 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-900/50 cursor-pointer"
+                    />
+                  </label>
+                  {reuploadFile && (
+                    <div className="mt-2 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      <div className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{reuploadFile.name}</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{(reuploadFile.size / 1024 / 1024).toFixed(2)} MB</div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2.5 mt-5">
+                  <button onClick={() => { setReuploadBrd(null); setReuploadFile(null); }} disabled={reuploadLoading}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors">
+                    Cancel
+                  </button>
+                  <button onClick={handleReupload} disabled={reuploadLoading || !reuploadFile}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-green-600 hover:bg-green-700 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all">
+                    {reuploadLoading
+                      ? <span className="flex items-center justify-center gap-1.5"><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Uploading…</span>
+                      : "Re-upload"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Status Change Modal (DRAFT only) ── */}
+      {statusChangeBrd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !statusChanging && setStatusChangeBrd(null)} />
+          <div className="relative w-full max-w-md z-10">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="h-1 w-full bg-gradient-to-r from-purple-500 to-violet-500" />
+              <div className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className="w-11 h-11 rounded-full bg-purple-50 dark:bg-purple-900/20 flex items-center justify-center flex-shrink-0 border border-purple-100 dark:border-purple-800/40">
+                    <svg className="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Change BRD Status</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                      After re-uploading the finalized document, select a new status.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-2">New Status</label>
+                  <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as BrdStatus)}
+                    className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <option value="COMPLETED">Completed</option>
+                    <option value="APPROVED">Approved</option>
+                  </select>
+                  <div className="mt-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">BRD</div>
+                    <div className="text-xs font-medium text-slate-800 dark:text-slate-100">{statusChangeBrd.id}</div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 truncate">{displayTitle(statusChangeBrd)}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2.5 mt-5">
+                  <button onClick={() => setStatusChangeBrd(null)} disabled={statusChanging}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors">
+                    Cancel
+                  </button>
+                  <button onClick={handleStatusChange} disabled={statusChanging}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all">
+                    {statusChanging
+                      ? <span className="flex items-center justify-center gap-1.5"><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Updating…</span>
+                      : `Change to ${newStatus}`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete BRD Modal ── */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !deleteLoading && setDeleteTarget(null)} />

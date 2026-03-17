@@ -43,6 +43,7 @@ export const authApi = {
         message: string;
         newPassword: string;
         targetUserId: string;
+        emailSent?: boolean;
       }>("/auth/reset-user-password", { targetUserId })
       .then((r) => r.data),
   getPasswordPolicy: () =>

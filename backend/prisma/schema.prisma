@@ -29,6 +29,7 @@ model Team {
 model User {
   id                Int               @id @default(autoincrement())
   password          String
+  email             String?           @unique
   firstName         String?
   lastName          String?
   role              Role              @default(USER)

@@ -10,6 +10,7 @@ import {
   generateCompliantPassword,
 } from "../lib/password-policy";
 import { getSecurityPolicy } from "../lib/get-security-policy";
+import { sendPasswordEmail } from "../lib/email";
 
 const router = Router();
 
@@ -439,10 +440,22 @@ router.post(
         },
       });
 
+      const targetAny = target as any;
+      const emailSent = targetAny.email
+        ? await sendPasswordEmail({
+            to: String(targetAny.email),
+            userId: target.userId,
+            fullName: [targetAny.firstName, targetAny.lastName].filter(Boolean).join(" "),
+            password: newPassword,
+            action: "reset",
+          })
+        : false;
+
       res.json({
         message: "Password reset successfully",
         newPassword,
         targetUserId: target.userId,
+        emailSent,
       });
     } catch (error) {
       console.error("Reset user password error:", error);
