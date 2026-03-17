@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Upload from "./Upload";
 import Scope from "./Scope";
 import Metadata from "./Metadata";
@@ -163,6 +163,38 @@ export default function BrdFlow({
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError,   setViewError]   = useState<string | null>(null);
 
+  // ── FIX: per-section draft buffers ────────────────────────────────────────
+  // These refs accumulate onDataChange updates WITHOUT triggering re-renders
+  // or feeding back into initialData. They are flushed into uploadMeta only
+  // when the user navigates away from a step (next/prev/Back to Generate/Edit).
+  const metadataDraft       = useRef<Record<string, unknown> | null>(null);
+  const scopeDraft          = useRef<Record<string, unknown> | null>(null);
+  const tocDraft            = useRef<Record<string, unknown> | null>(null);
+  const citationsDraft      = useRef<Record<string, unknown> | null>(null);
+  const contentProfileDraft = useRef<Record<string, unknown> | null>(null);
+
+  // Flush all pending drafts into uploadMeta before navigating
+  function flushDrafts() {
+    setUploadMeta(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ...(scopeDraft.current          !== null ? { scope:          scopeDraft.current }          : {}),
+        ...(metadataDraft.current       !== null ? { metadata:       metadataDraft.current }       : {}),
+        ...(tocDraft.current            !== null ? { toc:            tocDraft.current }            : {}),
+        ...(citationsDraft.current      !== null ? { citations:      citationsDraft.current }      : {}),
+        ...(contentProfileDraft.current !== null ? { contentProfile: contentProfileDraft.current } : {}),
+      };
+    });
+    // Clear drafts after flush
+    scopeDraft.current          = null;
+    metadataDraft.current       = null;
+    tocDraft.current            = null;
+    citationsDraft.current      = null;
+    contentProfileDraft.current = null;
+  }
+  // ── End FIX ───────────────────────────────────────────────────────────────
+
   const isLastStep     = step === steps.length - 1;
   const isGenerateStep = isLastStep;
 
@@ -197,8 +229,10 @@ export default function BrdFlow({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const next = () => setStep((s) => Math.min(s + 1, steps.length - 1));
-  const prev = () => setStep((s) => Math.max(s - 1, 0));
+  // ── FIX: flush drafts before every step transition ────────────────────────
+  const next = () => { flushDrafts(); setStep((s) => Math.min(s + 1, steps.length - 1)); };
+  const prev = () => { flushDrafts(); setStep((s) => Math.max(s - 1, 0)); };
+  // ── End FIX ───────────────────────────────────────────────────────────────
 
   // On exit: blank upload screen (nothing to save) → close immediately.
   // On Generate step (work already saved) → close immediately.
@@ -208,6 +242,7 @@ export default function BrdFlow({
     if (isGenerateStep || isBlankUpload) {
       onClose?.();
     } else {
+      flushDrafts();
       setShowExitConfirm(true);
     }
   }, [isGenerateStep, isEditMode, step, uploadMeta, onClose]);
@@ -260,10 +295,9 @@ export default function BrdFlow({
   }
 
   function handleEditFromGenerate(targetFullStep: number) {
+    // No need to flush here — Generate doesn't have editable draft fields
     setStep(isEditMode ? toEditStep(targetFullStep) : targetFullStep);
   }
-
-// In BrdFlow.tsx, update the renderStepContent function
 
 function renderStepContent() {
   const fullStep = isEditMode ? fromEditStep(step) : step;
@@ -280,10 +314,11 @@ function renderStepContent() {
       );
 
     case 1:
-      return <Scope 
+      return <Scope
         initialData={uploadMeta?.scope}
         brdId={uploadMeta?.brdId}
-        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, scope: data } : prev)}
+        // ── FIX: write to ref, not directly into uploadMeta ──
+        onDataChange={(data) => { scopeDraft.current = data; }}
       />;
 
     case 2:
@@ -291,9 +326,12 @@ function renderStepContent() {
         <Metadata
           format={uploadMeta?.format ?? "new"}
           title={getBestTitle()}
+          // ── FIX: always pass the stable uploadMeta.metadata, never the
+          //         draft output — this prevents the init loop that erases fields
           initialData={uploadMeta?.metadata}
           brdId={uploadMeta?.brdId}
-          onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, metadata: data } : prev)}
+          // ── FIX: write to ref, not directly into uploadMeta ──
+          onDataChange={(data) => { metadataDraft.current = data; }}
         />
       );
 
@@ -303,26 +341,28 @@ function renderStepContent() {
       return <Toc
         initialData={tocData}
         brdId={uploadMeta?.brdId}
-        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, toc: data } : prev)}
+        // ── FIX: write to ref, not directly into uploadMeta ──
+        onDataChange={(data) => { tocDraft.current = data; }}
       />;
     }
 
     case 4:
-      return <Citation 
+      return <Citation
         initialData={uploadMeta?.citations}
         brdId={uploadMeta?.brdId}
-        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, citations: data } : prev)}
+        // ── FIX: write to ref, not directly into uploadMeta ──
+        onDataChange={(data) => { citationsDraft.current = data; }}
       />;
 
     case 5:
-      return <ContentProfile 
+      return <ContentProfile
         initialData={uploadMeta?.contentProfile}
         brdId={uploadMeta?.brdId}
-        onDataChange={(data) => setUploadMeta(prev => prev ? { ...prev, contentProfile: data } : prev)}
+        // ── FIX: write to ref, not directly into uploadMeta ──
+        onDataChange={(data) => { contentProfileDraft.current = data; }}
       />;
 
     case 6: {
-      // ... rest of the code
       return (
         <Generate
           brdId={uploadMeta?.brdId}
@@ -356,7 +396,7 @@ function renderStepContent() {
           return (
             <div key={label} className="flex items-center">
               <button
-                onClick={() => { if (i <= step) setStep(i); }}
+                onClick={() => { if (i <= step) { flushDrafts(); setStep(i); } }}
                 disabled={i > step}
                 title={label}
                 className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all
@@ -388,22 +428,35 @@ function renderStepContent() {
 
         {/* Top bar */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex-shrink-0">
-          <div>
+          <div className="min-w-0 flex-1 mr-3">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
               {isEditMode ? "Edit BRD" : "Document Workflow"}
             </p>
-            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-              Business Requirements Document
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate" title={getBestTitle()}>
+              {getBestTitle()}
             </h2>
           </div>
-          <button
-            onClick={requestClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {cameFromGenerate && !isGenerateStep && (
+              <button
+                onClick={() => { flushDrafts(); setStep(steps.length - 1); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-700/40 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Back to Generate
+              </button>
+            )}
+            <button
+              onClick={requestClose}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Step indicator */}
@@ -425,7 +478,20 @@ function renderStepContent() {
 
         {/* Content */}
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5">
-          {renderStepContent()}
+          {viewLoading ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4 py-20">
+              <svg className="w-8 h-8 text-blue-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2"/>
+                <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8"/>
+              </svg>
+              <p className="text-sm text-slate-500 dark:text-slate-400">Loading BRD data…</p>
+            </div>
+          ) : viewError ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 py-20">
+              <p className="text-sm text-red-500">{viewError}</p>
+              <button onClick={() => window.location.reload()} className="text-xs text-blue-600 hover:underline">Retry</button>
+            </div>
+          ) : renderStepContent()}
         </div>
 
         {/* Footer */}
@@ -443,20 +509,7 @@ function renderStepContent() {
                 Back
               </button>
 
-              <div className="flex items-center gap-3">
-                <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
-                {cameFromGenerate && (
-                  <button
-                    onClick={() => setStep(steps.length - 1)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-700/40 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                    Back to Generate
-                  </button>
-                )}
-              </div>
+              <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
 
               <button
                 onClick={next}

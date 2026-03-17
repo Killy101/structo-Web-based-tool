@@ -30,7 +30,7 @@ _CIRCLE_PATTERN = (
 )
 
 # Level 9: Arabic numeral with period — two patterns as in the BRD
-_ARABIC_DOTTED_PATTERN_1 = r"^[0-9]+\."
+_ARABIC_DOTTED_PATTERN_1 = r"^[0-9]+\.$"
 _ARABIC_DOTTED_PATTERN_2 = r"^[0-9]+ ?(의[0-9]+)?\.$"
 
 # Level 10: Korean syllable (explicit consonant-head list) with period
@@ -101,6 +101,27 @@ KOREAN_IDENTIFIER_PATTERNS: dict[str, dict] = {
 
 KOREAN_CUSTOM_TOC: dict = {
     "2": {"tags": "title", "patterns": []}
+}
+
+KOREAN_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
+    # Strip trailing . from "1." → "1", "가." → "가" (but preserve "1.1")
+    # Strip trailing ) from "1)" → "1", "가)" → "가" (but preserve "(a)")
+    "9":  [
+        ["-$",                          "",      0, ""],
+        ["(?<![0-9]\\.[0-9])\\.$",  "",      0, ""],
+    ],
+    "10": [
+        ["-$",                          "",      0, ""],
+        ["(?<![0-9]\\.[0-9])\\.$",  "",      0, ""],
+    ],
+    "11": [
+        ["-$",                          "",      0, ""],
+        ["^([^(].*)\\)$",             "\\1", 0, ""],
+    ],
+    "12": [
+        ["-$",                          "",      0, ""],
+        ["^([^(].*)\\)$",             "\\1", 0, ""],
+    ],
 }
 
 

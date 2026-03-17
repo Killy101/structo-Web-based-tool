@@ -89,6 +89,9 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
   const [saved, setSaved]                 = useState(false);
   const [images, setImages]               = useState<CellImageMeta[]>([]);
   const isInitializing = useRef(false);
+  // ── FIX: track previous initialData to avoid re-init on every parent re-render ──
+  const prevInitialData = useRef<Record<string, unknown> | undefined>(undefined);
+  const prevFormat = useRef<Format | undefined>(undefined);
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   function getFieldImgsUploaded(key: string): UploadedCellImage[] { return cellImages[key] ?? []; }
   function onFieldUploaded(key: string, img: UploadedCellImage) { setCellImages(prev => ({ ...prev, [key]: [...(prev[key] ?? []), img] })); }
@@ -96,7 +99,17 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
+  // ── FIX: only reset values when initialData or format genuinely changes ──
   useEffect(() => {
+    const initialDataChanged =
+      JSON.stringify(prevInitialData.current) !== JSON.stringify(initialData);
+    const formatChanged = prevFormat.current !== format;
+
+    if (!initialDataChanged && !formatChanged) return;
+
+    prevInitialData.current = initialData;
+    prevFormat.current = format;
+
     isInitializing.current = true;
     setValues(buildMetadataValues(format, initialData));
     setSaved(false);
@@ -336,7 +349,8 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function stripQuotes(value: string): string {
-  return value.trim().replace(/^["']+|["']+$/g, "").trim();
+  // ── FIX: only strip leading/trailing quote characters, do NOT trim internal whitespace ──
+  return value.replace(/^["']+|["']+$/g, "");
 }
 
 function buildMetadataValues(

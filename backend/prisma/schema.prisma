@@ -224,6 +224,7 @@ model Brd {
   upload    FileUpload?  @relation("BrdSourceFile", fields: [uploadId], references: [id])
   createdBy User         @relation("BrdCreatedBy", fields: [createdById], references: [id])
   sections  BrdSections?
+  versions  BrdVersion[]  // ← version history
 }
 
 // One row per BRD. All section data stored as JSON blobs.
@@ -238,40 +239,40 @@ model BrdSections {
   citations      Json?   // { references: [] }
   contentProfile Json?   // { rc_filename, heading_annotation, levels: [], whitespace: [] }
   brdConfig      Json?   // catch-all for extractor extras
-  innodMetajson Json?   // original innod metadata JSON blob (for debugging)
-  simpleMetajson Json?   // simplified metadata JSON blob (for easier frontend use)
+  innodMetajson  Json?   // original innod metadata JSON blob
+  simpleMetajson Json?   // simplified metadata JSON blob
 
-  cellImages BrdCellImage[] 
+  cellImages BrdCellImage[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("brd_sections")
 }
+
 model BrdCellImage {
   id          Int         @id @default(autoincrement())
   brdId       String
   brdSections BrdSections @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
 
-  tableIndex  Int
-  rowIndex    Int
-  colIndex    Int
-  rid         String
-  mediaName   String
-  mimeType    String
-  cellText    String      @default("")
+  tableIndex Int
+  rowIndex   Int
+  colIndex   Int
+  rid        String
+  mediaName  String
+  mimeType   String
+  cellText   String @default("")
 
-  // ── NEW: semantic location fields (populated by updated image_extractor.py)
-  section     String      @default("unknown") 
-  fieldLabel  String      @default("")        
+  section    String @default("unknown")
+  fieldLabel String @default("")
 
-  imageData   Bytes?     
-  blobUrl     String?     
-  extractedAt DateTime    @default(now())
+  imageData   Bytes?
+  blobUrl     String?
+  extractedAt DateTime @default(now())
 
   @@unique([brdId, tableIndex, rowIndex, colIndex, rid])
   @@index([brdId])
-  @@index([brdId, section])   
+  @@index([brdId, section])
   @@map("brd_cell_images")
 }
 
@@ -283,4 +284,24 @@ model AppSetting {
   updatedAt DateTime @updatedAt
 
   @@map("app_settings")
+}
+
+model BrdVersion {
+  id             Int      @id @default(autoincrement())
+  brdId          String
+  versionNum     Int
+  label          String   @default("v1.0")
+  scope          Json?
+  metadata       Json?
+  toc            Json?
+  citations      Json?
+  contentProfile Json?
+  brdConfig      Json?
+  savedAt        DateTime @default(now())
+
+  brd Brd @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
+
+  @@unique([brdId, versionNum])
+  @@index([brdId])
+  @@map("brd_versions")
 }

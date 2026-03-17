@@ -918,14 +918,42 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
     a.href = url; a.download = `${sanitizeFilePart(base)}.xls`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
-  async function handleSaveBrd() {
-    if (!brdId) return; setSaving(true); setSaveError(null);
-    try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "COMPLETED", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
-      setSavedToDB(true);
-    } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
-    finally { setSaving(false); }
+async function handleSaveBrd() {
+  if (!brdId) return;
+  setSaving(true);
+  setSaveError(null);
+  try {
+    // 1. Save the BRD sections as before
+    await api.post("/brd/save", {
+      brdId,
+      title: displayTitle,
+      format,
+      status: "COMPLETED",
+      scope: scopeData,
+      metadata: metadataData,
+      toc: tocData,
+      citations: citationsData,
+      contentProfile: contentProfileData,
+      brdConfig: brdConfigData,
+    });
+
+    // 2. Create a version snapshot so history is preserved
+    await api.post(`/brd/${brdId}/versions`, {
+      scope: scopeData,
+      metadata: metadataData,
+      toc: tocData,
+      citations: citationsData,
+      contentProfile: contentProfileData,
+      brdConfig: brdConfigData,
+    });
+
+    setSavedToDB(true);
+  } catch (err: any) {
+    setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed.");
+  } finally {
+    setSaving(false);
   }
+}
 
   async function runGenerateBrdExcel() {
     setGenerating(p=>({...p,brd:true}));
