@@ -1,8 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import prisma from "../lib/prisma";
 
-const prismaAny = prisma as any;
-
 const GOVERNANCE_OPERATIONS_KEY = "governance.operations";
 const GOVERNANCE_CACHE_TTL_MS = 10_000;
 const STRICT_WINDOW_MS = 60_000;
@@ -20,14 +18,6 @@ type StrictCounterState = {
 
 let cachedFlags: (OperationsFlags & { fetchedAt: number }) | null = null;
 const strictCounter = new Map<string, StrictCounterState>();
-
-function getAppSettingDelegate():
-  | { findMany: (args: unknown) => Promise<Array<{ key: string; value: unknown }>> }
-  | null {
-  const delegate = prismaAny?.appSetting;
-  if (!delegate || typeof delegate.findMany !== "function") return null;
-  return delegate;
-}
 
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -48,25 +38,13 @@ async function getOperationsFlags(): Promise<OperationsFlags> {
     return cachedFlags;
   }
 
-  const appSetting = getAppSettingDelegate();
-  if (!appSetting) {
-    const fallback = normalizeOperationsFlags(undefined);
-    cachedFlags = { ...fallback, fetchedAt: now };
-    return fallback;
-  }
-
-  const rows = await appSetting.findMany({
+  const row = await prisma.appSetting.findUnique({
     where: { key: GOVERNANCE_OPERATIONS_KEY },
-    select: { key: true, value: true },
-    take: 1,
+    select: { value: true },
   });
 
-  const ops = normalizeOperationsFlags(rows[0]?.value);
-  cachedFlags = {
-    ...ops,
-    fetchedAt: now,
-  };
-
+  const ops = normalizeOperationsFlags(row?.value);
+  cachedFlags = { ...ops, fetchedAt: now };
   return ops;
 }
 

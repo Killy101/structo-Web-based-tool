@@ -30,7 +30,7 @@ const DEFAULTS: LiveSecurityPolicy = {
 
 export async function getSecurityPolicy(): Promise<LiveSecurityPolicy> {
   try {
-    const row = await (prisma as any).appSetting?.findUnique?.({
+    const row = await prisma.appSetting.findUnique({
       where: { key: "governance.security" },
       select: { value: true },
     });
