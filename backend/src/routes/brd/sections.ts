@@ -131,6 +131,11 @@ router.put("/:brdId/sections/:name", async (req: Request, res: Response) => {
   }
 
   try {
+    const brd = await prisma.brd.findUnique({ where: { brdId }, select: { deletedAt: true } });
+    if (!brd || brd.deletedAt !== null) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+
     const storagePath = storagePathForSection(brdId, name);
     await uploadJsonObject(storagePath, data);
     const pointer = makeStoragePointer(storagePath);
