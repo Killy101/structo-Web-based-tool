@@ -513,4 +513,4 @@ async def download_all_endpoint(session_id: str):
 async def cleanup_endpoint(ttl: int = 3600):
     """Remove sessions older than `ttl` seconds from memory and disk."""
     removed = cleanup_old_sessions(ttl=ttl)
-    return {"success": True, "removed": removed}
+    return {"success": True, "removed": removed}    

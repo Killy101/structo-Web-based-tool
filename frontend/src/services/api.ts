@@ -9,6 +9,8 @@ import {
   Team,
   UserRole,
   BaseRoleFeaturePolicy,
+  GovernanceSettings,
+  OperationsPolicyState,
   TeamRoleFeaturePolicyItem,
   TeamFeatureOption,
   BrdSourceItem,
@@ -117,6 +119,26 @@ export const rolesApi = {
     api.delete<{ message: string }>(`/roles/${id}`).then((r) => r.data),
 };
 
+export const settingsApi = {
+  getGovernance: () =>
+    api
+      .get<{ settings: GovernanceSettings }>("/settings/governance")
+      .then((r) => r.data),
+  updateGovernance: (payload: GovernanceSettings) =>
+    api
+      .patch<{ message: string; settings: GovernanceSettings }>(
+        "/settings/governance",
+        payload,
+      )
+      .then((r) => r.data),
+  getOperationsStatus: () =>
+    api
+      .get<{ operationsPolicy: OperationsPolicyState }>(
+        "/settings/operations-status",
+      )
+      .then((r) => r.data),
+};
+
 export const tasksApi = {
   getAll: () =>
     api.get<{ tasks: TaskAssignment[] }>("/tasks").then((r) => r.data),
@@ -149,6 +171,10 @@ export const userLogsApi = {
 
 export const brdApi = {
   getAll: () => api.get<BrdSourceItem[]>("/brd").then((r) => r.data),
+  submitQuery: (brdId: string, body: string) =>
+    api
+      .post<{ message: string; recipients: number }>(`/brd/${brdId}/query`, { body })
+      .then((r) => r.data),
 };
 
 export const filesApi = {

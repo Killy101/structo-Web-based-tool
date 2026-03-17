@@ -10,6 +10,7 @@ import {
   Team,
   UserRole,
   BaseRoleFeaturePolicy,
+  GovernanceSettings,
   TeamRoleFeaturePolicyItem,
   TeamFeatureOption,
   BrdSourceItem,
@@ -24,6 +25,7 @@ import {
   dashboardApi,
   teamsApi,
   rolesApi,
+  settingsApi,
   tasksApi,
   userLogsApi,
   brdApi,
@@ -282,6 +284,55 @@ export function useTeamPolicies() {
     error,
     refetch,
     updatePolicy,
+  };
+}
+
+// ─── useGovernanceSettings ───────────────────────────────
+export function useGovernanceSettings() {
+  const [settings, setSettings] = useState<GovernanceSettings | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { settings } = await settingsApi.getGovernance();
+      setSettings(settings);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  const saveSettings = async (payload: GovernanceSettings) => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      const result = await settingsApi.updateGovernance(payload);
+      setSettings(result.settings);
+      return result;
+    } catch (e) {
+      setError(getErrorMessage(e));
+      throw e;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return {
+    settings,
+    isLoading,
+    isSaving,
+    error,
+    refetch,
+    saveSettings,
   };
 }
 
