@@ -43,6 +43,7 @@ function isSimilarTitle(a: string, b: string): boolean {
 router.get("/", async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       orderBy: { createdAt: "asc" },
       select: {
         id:        true,
@@ -94,7 +95,7 @@ router.get("/", async (_req: Request, res: Response) => {
 // ── GET /brd/next-id ───────────────────────────────────────────────────────
 router.get("/next-id", async (_req: Request, res: Response) => {
   try {
-    const allBrdIds = await prisma.brd.findMany({ select: { brdId: true } });
+    const allBrdIds = await prisma.brd.findMany({ where: { deletedAt: null }, select: { brdId: true } });
     const maxNum = allBrdIds.reduce((max, { brdId }) => {
       const n = parseInt(brdId.replace("BRD-", ""), 10);
       return isNaN(n) ? max : Math.max(max, n);
@@ -130,6 +131,7 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
     const normalised = normalizeTitle(candidateTitle);
 
     const allBrds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       select: { brdId: true, title: true, status: true },
     });
 
@@ -193,6 +195,7 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
 
     // Fetch all BRD titles — the table is small enough that a full scan is fine
     const allBrds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       select: { brdId: true, title: true, status: true },
     });
 
@@ -237,7 +240,7 @@ router.get("/:brdId", async (req: Request, res: Response) => {
       where:   { brdId: String(req.params.brdId) },
       include: { sections: true },
     });
-    if (!brd) return res.status(404).json({ error: "BRD not found" });
+    if (!brd || brd.deletedAt !== null) return res.status(404).json({ error: "BRD not found" });
 
     const meta = await resolveMaybeStoredJson(brd.sections?.metadata ?? null) as Record<string, unknown> | null;
 
@@ -344,10 +347,41 @@ router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Respons
   }
 });
 
-// ── DELETE /brd/:brdId ─────────────────────────────────────────────────────
+// ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
 router.delete("/:brdId", async (req: Request, res: Response) => {
   try {
-    await prisma.brd.delete({ where: { brdId: String(req.params.brdId) } });
+    const brd = await prisma.brd.findUnique({
+      where: { brdId: String(req.params.brdId) },
+      select: { deletedAt: true },
+    });
+    if (!brd || brd.deletedAt !== null) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+    await prisma.brd.update({
+      where: { brdId: String(req.params.brdId) },
+      data:  { deletedAt: new Date() },
+    });
+    return res.json({ success: true });
+  } catch {
+    return res.status(404).json({ error: "BRD not found" });
+  }
+});
+
+// ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
+router.post("/:brdId/restore", async (req: Request, res: Response) => {
+  try {
+    const brd = await prisma.brd.findUnique({
+      where: { brdId: String(req.params.brdId) },
+      select: { deletedAt: true },
+    });
+    if (!brd) return res.status(404).json({ error: "BRD not found" });
+    if (brd.deletedAt === null) {
+      return res.status(400).json({ error: "BRD is not deleted" });
+    }
+    await prisma.brd.update({
+      where: { brdId: String(req.params.brdId) },
+      data:  { deletedAt: null },
+    });
     return res.json({ success: true });
   } catch {
     return res.status(404).json({ error: "BRD not found" });
@@ -388,6 +422,7 @@ router.patch("/:brdId", async (req: Request, res: Response) => {
 router.post("/fix-formats", async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       select: { brdId: true, format: true, sections: { select: { metadata: true } } },
     });
 

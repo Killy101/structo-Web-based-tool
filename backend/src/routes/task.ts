@@ -12,27 +12,27 @@ router.get("/", authenticate, async (req: AuthRequest, res: Response) => {
     const actorRole = req.user!.role;
     const actorId = req.user!.userId;
 
-    let whereClause: any = {};
+    let whereClause: any = { deletedAt: null };
 
     if (
       actorRole === "USER" ||
       actorRole === "MANAGER_QA" ||
       actorRole === "MANAGER_QC"
     ) {
-      whereClause = { assignees: { some: { userId: actorId } } };
+      whereClause = { deletedAt: null, assignees: { some: { userId: actorId } } };
     } else if (actorRole === "ADMIN") {
       const admin = await prisma.user.findUnique({
         where: { id: actorId },
         select: { teamId: true },
       });
       if (admin?.teamId) {
-        whereClause = { teamId: admin.teamId };
+        whereClause = { deletedAt: null, teamId: admin.teamId };
       } else {
         return res.json({ tasks: [] });
       }
     } else if (actorRole === "SUPER_ADMIN") {
       // Super admin sees all tasks across all teams
-      whereClause = {};
+      whereClause = { deletedAt: null };
     }
 
     const tasks = await prisma.taskAssignment.findMany({
@@ -362,7 +362,7 @@ router.delete(
   },
 );
 
-// ── DELETE /tasks/:id ─────────────────────────────────────
+// ── DELETE /tasks/:id — soft delete ───────────────────────
 router.delete(
   "/:id",
   authenticate,
@@ -373,14 +373,51 @@ router.delete(
 
       const task = await prisma.taskAssignment.findUnique({
         where: { id: taskId },
+        select: { deletedAt: true },
       });
-      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (!task || task.deletedAt !== null) {
+        return res.status(404).json({ error: "Task not found" });
+      }
 
-      await prisma.taskAssignment.delete({ where: { id: taskId } });
+      await prisma.taskAssignment.update({
+        where: { id: taskId },
+        data:  { deletedAt: new Date() },
+      });
 
       res.json({ message: "Task deleted" });
     } catch (error) {
       console.error("Delete task error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── POST /tasks/:id/restore — restore a soft-deleted task ─
+router.post(
+  "/:id/restore",
+  authenticate,
+  authorize(["SUPER_ADMIN", "ADMIN"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const taskId = parseInt(req.params.id as string);
+
+      const task = await prisma.taskAssignment.findUnique({
+        where: { id: taskId },
+        select: { deletedAt: true },
+      });
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (task.deletedAt === null) {
+        return res.status(400).json({ error: "Task is not deleted" });
+      }
+
+      await prisma.taskAssignment.update({
+        where: { id: taskId },
+        data:  { deletedAt: null },
+      });
+
+      res.json({ message: "Task restored" });
+    } catch (error) {
+      console.error("Restore task error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   },

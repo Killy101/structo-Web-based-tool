@@ -64,6 +64,7 @@ model TaskAssignment {
   percentage  Int              @default(0)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+  deletedAt   DateTime?
   dueDate     DateTime?
   teamId      Int
   createdById Int
@@ -218,6 +219,7 @@ model Brd {
   status      BrdStatus @default(DRAFT)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
   createdById Int
   uploadId    Int?      @unique
 
