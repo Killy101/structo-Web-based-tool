@@ -11,7 +11,7 @@ import {
   EmptyState,
   ToastContainer,
 } from "../../../components/ui";
-import { useUsers, useTeams, useRoles, useToast } from "../../../hooks/index";
+import { useUsers, useTeams, useRoles, useToast, usePasswordPolicy } from "../../../hooks/index";
 import { useAuth } from "../../../context/AuthContext";
 import {
   ROLE_LABELS,
@@ -1590,6 +1590,43 @@ function PasswordModal({
 }
 
 /* ──────────────────────────────────────────────────────────
+   POLICY CHECK ROW (reused inside ChangePasswordModal)
+   ────────────────────────────────────────────────────────── */
+
+function PolicyCheck({ met, label }: { met: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+          met
+            ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
+            : "bg-slate-200 dark:bg-slate-700 text-slate-400"
+        }`}
+      >
+        {met ? (
+          <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        ) : (
+          <svg className="w-2 h-2" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        )}
+      </span>
+      <span
+        className={`text-xs transition-colors ${
+          met
+            ? "text-emerald-700 dark:text-emerald-400 line-through decoration-emerald-400/60"
+            : "text-slate-600 dark:text-slate-300"
+        }`}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
    CHANGE PASSWORD MODAL
    ────────────────────────────────────────────────────────── */
 
@@ -1608,6 +1645,7 @@ function ChangePasswordModal({
     userId: number,
   ) => Promise<{ message: string; newPassword: string; targetUserId: string }>;
 }) {
+  const policy = usePasswordPolicy();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1615,10 +1653,46 @@ function ChangePasswordModal({
   const [resetResult, setResetResult] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Derive active requirements from policy (fall back to safe defaults while loading)
+  const minLen = policy?.minPasswordLength ?? 8;
+  const needUpper = policy?.requireUppercase ?? false;
+  const needNumber = policy?.requireNumber ?? false;
+  const minSpecial = policy?.minSpecialChars ?? 0;
+
+  // Per-requirement checks (used for both the checklist and validation)
+  const checks = {
+    length: newPassword.length >= minLen,
+    upper: needUpper ? /[A-Z]/.test(newPassword) : true,
+    number: needNumber ? /[0-9]/.test(newPassword) : true,
+    special:
+      minSpecial > 0
+        ? (newPassword.match(/[^A-Za-z0-9]/g) ?? []).length >= minSpecial
+        : true,
+    match: confirmPassword.length > 0 && newPassword === confirmPassword,
+  };
+
+  const allMet =
+    checks.length && checks.upper && checks.number && checks.special;
+
+  // Strength: count how many of the 4 policy criteria pass
+  const strength = [
+    checks.length,
+    checks.upper && needUpper,
+    checks.number && needNumber,
+    checks.special && minSpecial > 0,
+  ].filter(Boolean).length;
+
+  const strengthMeta = [
+    { label: "Weak",   color: "bg-red-500" },
+    { label: "Fair",   color: "bg-amber-500" },
+    { label: "Good",   color: "bg-yellow-400" },
+    { label: "Strong", color: "bg-emerald-500" },
+  ];
+
   const handleManualChange = async () => {
     setError("");
-    if (!newPassword || newPassword.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (!allMet) {
+      setError("Password does not meet all security requirements.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -1733,22 +1807,75 @@ function ChangePasswordModal({
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
                 Set password manually
               </p>
-              <Input
-                label="New Password"
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Min. 8 characters"
-                autoComplete="new-password"
-              />
-              <Input
-                label="Confirm Password"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Repeat password"
-                autoComplete="new-password"
-              />
+
+              {/* New Password + strength bar */}
+              <div className="space-y-1.5">
+                <Input
+                  label="New Password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder={`Min. ${minLen} characters`}
+                  autoComplete="new-password"
+                />
+                {newPassword && (
+                  <div className="space-y-1 px-0.5">
+                    <div className="flex gap-1">
+                      {[0, 1, 2, 3].map((i) => (
+                        <div
+                          key={i}
+                          className={`h-1 flex-1 rounded-full transition-all duration-300 ${
+                            i < strength
+                              ? (strengthMeta[strength - 1]?.color ?? "bg-slate-300")
+                              : "bg-slate-200 dark:bg-slate-700"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {strengthMeta[strength - 1]?.label ?? ""}{strength > 0 ? " password" : ""}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Real-time policy requirements */}
+              {newPassword && (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3 space-y-1.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                    Password Requirements
+                  </p>
+                  <PolicyCheck met={checks.length} label={`At least ${minLen} characters`} />
+                  {needUpper && (
+                    <PolicyCheck met={checks.upper} label="At least one uppercase letter" />
+                  )}
+                  {needNumber && (
+                    <PolicyCheck met={checks.number} label="At least one number" />
+                  )}
+                  {minSpecial > 0 && (
+                    <PolicyCheck
+                      met={checks.special}
+                      label={`At least ${minSpecial} special character${minSpecial > 1 ? "s" : ""}`}
+                    />
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Input
+                  label="Confirm Password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Repeat password"
+                  autoComplete="new-password"
+                />
+                {confirmPassword && (
+                  <p className={`text-[11px] px-0.5 ${checks.match ? "text-emerald-500" : "text-red-500"}`}>
+                    {checks.match ? "✓ Passwords match" : "✗ Passwords do not match"}
+                  </p>
+                )}
+              </div>
             </div>
             {error && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
@@ -1769,6 +1896,7 @@ function ChangePasswordModal({
                 className="flex-1 justify-center"
                 onClick={handleManualChange}
                 loading={loading}
+                disabled={!allMet || !checks.match}
               >
                 Change Password
               </Button>
