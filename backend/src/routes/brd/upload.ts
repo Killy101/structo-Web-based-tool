@@ -8,6 +8,12 @@ import path from "path";
 import prisma from "../../lib/prisma";
 import { uploadLimiter, processingLimiter } from "../../middleware/rateLimits";
 import { Prisma } from "@prisma/client"; 
+import {
+  makeStoragePointer,
+  sanitizePathPart,
+  uploadBinaryObject,
+  uploadJsonObject,
+} from "../../lib/supabase-storage";
 
 const router = Router();
 
@@ -47,6 +53,16 @@ interface ImageMeta {
   mimeType:   string;
   cellText:   string;
   imageData:  string; // base64 encoded
+}
+
+function sectionPath(brdId: string, name: string): string {
+  return `brd/${brdId}/sections/${name}.json`;
+}
+
+function imagePath(brdId: string, image: ImageMeta, index: number): string {
+  const safeMediaName = sanitizePathPart(image.mediaName || `image-${index}`);
+  const safeRid = sanitizePathPart(image.rid || `rid-${index}`);
+  return `brd/${brdId}/images/${String(image.tableIndex)}-${String(image.rowIndex)}-${String(image.colIndex)}-${safeRid}-${safeMediaName}`;
 }
 
 function stripQuotes(s: string): string {
@@ -189,12 +205,39 @@ router.post(
       console.log(`\n✅ Processing successful!`);
       console.log(`   📊 Images extracted: ${extracted.image_metadata?.length || 0}`);
 
-      // ── 3. Create the BRD record ─────────────────────────────────────────
+      // ── 3. Persist heavy payloads to Supabase Storage ───────────────────
       const meta = (extracted.metadata ?? {}) as Record<string, string>;
       const title = buildTitle(meta, file.originalname);
 
       // Use format auto-detected by Python; fall back to "new"
       const detectedFormat = extracted.detected_format === "old" ? "old" : "new";
+
+      const storageSectionPaths = {
+        scope: await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope ?? null),
+        metadata: await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata ?? null),
+        toc: await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc ?? null),
+        citations: await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations ?? null),
+        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extracted.content_profile ?? null),
+        brdConfig: await uploadJsonObject(sectionPath(brdId, "brdConfig"), extracted.brd_config || extracted.brdConfig || null),
+      };
+
+      const imageRecords = await Promise.all((extracted.image_metadata ?? []).map(async (img, index) => {
+        const storagePath = imagePath(brdId, img, index);
+        const bytes = Buffer.from(img.imageData, "base64");
+        await uploadBinaryObject(storagePath, bytes, img.mimeType || "image/png");
+
+        return {
+          brdId,
+          tableIndex: img.tableIndex,
+          rowIndex: img.rowIndex,
+          colIndex: img.colIndex,
+          rid: img.rid,
+          mediaName: img.mediaName,
+          mimeType: img.mimeType,
+          cellText: img.cellText || "",
+          blobUrl: storagePath,
+        };
+      }));
 
       console.log(`   📝 Creating BRD record: ${brdId} (format: ${detectedFormat})`);
       
@@ -217,61 +260,40 @@ router.post(
         });
         console.log(`   ✅ BRD record created/updated: ${brd.brdId}`);
 
-        // ── 4. Create BrdSections record (THIS IS CRITICAL!) ───────────────
-        // The BrdCellImage foreign key points to BrdSections, not Brd!
+        // ── 4. Store pointers for BRD sections (payload is in Supabase) ────
         const brdSections = await tx.brdSections.upsert({
           where: { brdId: brdId },
           create: {
             brdId: brdId,
-            scope: (extracted.scope as any) || Prisma.JsonNull,
-            metadata: (extracted.metadata as any) || Prisma.JsonNull,
-            toc: (extracted.toc as any) || Prisma.JsonNull,
-            citations: (extracted.citations as any) || Prisma.JsonNull,
-            contentProfile: (extracted.content_profile as any) || Prisma.JsonNull,
-            brdConfig: (extracted.brd_config || extracted.brdConfig as any) || Prisma.JsonNull,
+            scope: (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
+            metadata: (makeStoragePointer(storageSectionPaths.metadata) as any) || Prisma.JsonNull,
+            toc: (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
+            citations: (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
+            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
+            brdConfig: (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
           },
           update: {
-            scope: (extracted.scope as any) || Prisma.JsonNull,
-            metadata: (extracted.metadata as any) || Prisma.JsonNull,
-            toc: (extracted.toc as any) || Prisma.JsonNull,
-            citations: (extracted.citations as any) || Prisma.JsonNull,
-            contentProfile: (extracted.content_profile as any) || Prisma.JsonNull,
-            brdConfig: (extracted.brd_config || extracted.brdConfig as any) || Prisma.JsonNull,
+            scope: (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
+            metadata: (makeStoragePointer(storageSectionPaths.metadata) as any) || Prisma.JsonNull,
+            toc: (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
+            citations: (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
+            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
+            brdConfig: (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
           }
         });
         console.log(`   ✅ BrdSections record created/verified: ${brdSections.brdId}`);
 
-        // ── 5. NOW save images (foreign key to BrdSections exists!) ────────
-        if (extracted.image_metadata && extracted.image_metadata.length > 0) {
+        // ── 5. Save image metadata + storage paths (no BYTEA in DB) ────────
+        if (imageRecords.length > 0) {
           console.log(`   🔍 First image metadata:`, {
-            tableIndex: extracted.image_metadata[0].tableIndex,
-            rowIndex: extracted.image_metadata[0].rowIndex,
-            colIndex: extracted.image_metadata[0].colIndex,
-            mediaName: extracted.image_metadata[0].mediaName,
-            mimeType: extracted.image_metadata[0].mimeType,
-            imageDataLength: extracted.image_metadata[0].imageData?.length || 0,
+            tableIndex: imageRecords[0].tableIndex,
+            rowIndex: imageRecords[0].rowIndex,
+            colIndex: imageRecords[0].colIndex,
+            mediaName: imageRecords[0].mediaName,
+            mimeType: imageRecords[0].mimeType,
           });
 
-          console.log(`   💾 Attempting to save ${extracted.image_metadata.length} images to PostgreSQL...`);
-          
-          // Convert base64 strings to Buffer for Prisma
-          const imageRecords = extracted.image_metadata.map((img: ImageMeta, index: number) => {
-            const buffer = Buffer.from(img.imageData, 'base64');
-            console.log(`      Image ${index}: ${img.mediaName} -> base64 length: ${img.imageData.length}, buffer length: ${buffer.length} bytes`);
-            
-            return {
-              brdId: brdId,  // This now references brdId in BrdSections
-              tableIndex: img.tableIndex,
-              rowIndex: img.rowIndex,
-              colIndex: img.colIndex,
-              rid: img.rid,
-              mediaName: img.mediaName,
-              mimeType: img.mimeType,
-              cellText: img.cellText || "",
-              imageData: buffer,
-              blobUrl: null,
-            };
-          });
+          console.log(`   💾 Attempting to save ${imageRecords.length} image pointers to PostgreSQL...`);
 
           // Delete any existing images for this BRD
           const deleteResult = await tx.brdCellImage.deleteMany({
@@ -286,7 +308,7 @@ router.post(
             const saved = await tx.brdCellImage.createMany({
               data: imageRecords
             });
-            console.log(`   ✅ SUCCESS: Saved ${saved.count} images to PostgreSQL`);
+            console.log(`   ✅ SUCCESS: Saved ${saved.count} image rows with Supabase paths`);
             
             // Verify count
             const verifyCount = await tx.brdCellImage.count({

@@ -6,11 +6,13 @@ import usersRoutes from "./routes/users";
 import dashboardRoutes from "./routes/dashboard";
 import teamsRoutes from "./routes/teams";
 import rolesRoutes from "./routes/roles";
+import settingsRoutes from "./routes/settings";
 import tasksRoutes from "./routes/task";
 import userLogsRoutes from "./routes/user-logs";
 import brdRouter from "./routes/brd";
 import uploadRoute from "./routes/brd/upload";
 import notificationsRoutes from "./routes/notifications";
+import { governanceControlsMiddleware } from "./middleware/governanceControls";
 import {
   generalLimiter,
   uploadLimiter,
@@ -35,6 +37,9 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// ── Governance controls (maintenance mode + strict rate limit mode) ──────────
+app.use(governanceControlsMiddleware);
+
 // ── Global rate limiter ────────────────────────────────────────────────────────
 app.use(generalLimiter);
 
@@ -44,6 +49,7 @@ app.use("/users",          usersRoutes);
 app.use("/dashboard",      dashboardRoutes);
 app.use("/teams",          teamsRoutes);
 app.use("/roles",          rolesRoutes);
+app.use("/settings",       settingsRoutes);
 app.use("/tasks",          tasksRoutes);
 app.use("/user-logs",      userLogsRoutes);
 app.use("/brd",            brdRouter);  // handles /brd/upload, /brd/:id/scope, etc.

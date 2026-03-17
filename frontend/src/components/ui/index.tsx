@@ -130,6 +130,117 @@ export const CardHeader = ({
   </div>
 );
 
+export const DashboardListHeader = ({
+  title,
+  subtitle,
+  searchValue,
+  onSearchChange,
+  searchPlaceholder,
+  controls,
+  presets,
+  activePreset,
+  onPresetChange,
+}: {
+  title: string;
+  subtitle?: string;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  searchPlaceholder: string;
+  controls?: React.ReactNode;
+  presets?: Array<{ key: string; label: string; count?: number }>;
+  activePreset?: string;
+  onPresetChange?: (key: string) => void;
+}) => (
+  <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div>
+        <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+          {title}
+        </h1>
+        {subtitle && (
+          <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
+            {subtitle}
+          </p>
+        )}
+      </div>
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center lg:w-full lg:max-w-2xl">
+        <SearchInput
+          value={searchValue}
+          onChange={onSearchChange}
+          placeholder={searchPlaceholder}
+          className="w-full sm:min-w-72 lg:flex-1"
+        />
+        {controls}
+      </div>
+    </div>
+
+    {!!presets?.length && onPresetChange && (
+      <div className="flex flex-wrap items-center gap-2">
+        {presets.map((preset) => {
+          const active = activePreset === preset.key;
+          return (
+            <button
+              key={preset.key}
+              onClick={() => onPresetChange(preset.key)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all ${
+                active
+                  ? "border-blue-600 bg-blue-600 text-white"
+                  : "border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              }`}
+            >
+              {preset.count != null && (
+                <span className="font-mono font-bold">{preset.count}</span>
+              )}
+              {preset.label}
+            </button>
+          );
+        })}
+      </div>
+    )}
+  </div>
+);
+
+export const SortChipBar = ({
+  options,
+  activeKey,
+  onChange,
+  direction,
+  onDirectionChange,
+}: {
+  options: Array<{ key: string; label: string }>;
+  activeKey: string;
+  onChange: (key: string) => void;
+  direction?: "asc" | "desc";
+  onDirectionChange?: (direction: "asc" | "desc") => void;
+}) => (
+  <div className="flex flex-wrap items-center gap-2">
+    {options.map((option) => {
+      const active = activeKey === option.key;
+      return (
+        <button
+          key={option.key}
+          onClick={() => onChange(option.key)}
+          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all ${
+            active
+              ? "border-slate-900 bg-slate-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900"
+              : "border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          }`}
+        >
+          {option.label}
+        </button>
+      );
+    })}
+    {direction && onDirectionChange && (
+      <button
+        onClick={() => onDirectionChange(direction === "asc" ? "desc" : "asc")}
+        className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+      >
+        {direction === "asc" ? "Ascending" : "Descending"}
+      </button>
+    )}
+  </div>
+);
+
 // ─── INPUT ─────────────────────────────────────────────────────────────────────
 interface InputProps {
   label?: string;

@@ -36,7 +36,7 @@ function DropZone({ label, accept, file, onFile, icon, color }: DropZoneProps) {
     ? `border-${color}-400 bg-${color}-500/10`
     : file
     ? `border-${color}-500/50 bg-${color}-500/5`
-    : `border-slate-600/50 bg-slate-800/30 hover:border-${color}-500/40 hover:bg-${color}-500/5`;
+    : `border-slate-300 dark:border-slate-600/50 bg-slate-50 dark:bg-slate-800/30 hover:border-${color}-400 dark:hover:border-${color}-500/40 hover:bg-${color}-50 dark:hover:bg-${color}-500/5`;
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -76,17 +76,17 @@ function DropZone({ label, accept, file, onFile, icon, color }: DropZoneProps) {
       </div>
 
       {/* Label */}
-      <p className="text-xs font-semibold text-slate-300 text-center">{label}</p>
+      <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 text-center">{label}</p>
 
       {/* File info or placeholder */}
       {file ? (
         <div className="text-center">
-          <p className={`text-xs font-medium text-${color}-300 truncate max-w-[140px]`}>{file.name}</p>
-          <p className="text-[10px] text-slate-500 mt-0.5">{formatBytes(file.size)}</p>
+          <p className={`text-xs font-medium text-${color}-600 dark:text-${color}-300 truncate max-w-[140px]`}>{file.name}</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{formatBytes(file.size)}</p>
         </div>
       ) : (
-        <p className="text-[10px] text-slate-500 text-center">
-          Drag & drop or click to browse
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center">
+          Drag &amp; drop or click to browse
         </p>
       )}
 
@@ -121,7 +121,7 @@ function MultiDropZone({ label, accept, files, onFiles, icon, color }: MultiDrop
     ? `border-${color}-400 bg-${color}-500/10`
     : files.length > 0
     ? `border-${color}-500/50 bg-${color}-500/5`
-    : `border-slate-600/50 bg-slate-800/30 hover:border-${color}-500/40 hover:bg-${color}-500/5`;
+    : `border-slate-300 dark:border-slate-600/50 bg-slate-50 dark:bg-slate-800/30 hover:border-${color}-400 dark:hover:border-${color}-500/40 hover:bg-${color}-50 dark:hover:bg-${color}-500/5`;
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -169,19 +169,19 @@ function MultiDropZone({ label, accept, files, onFiles, icon, color }: MultiDrop
       </div>
 
       {/* Label */}
-      <p className="text-xs font-semibold text-slate-300 text-center">{label}</p>
+      <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 text-center">{label}</p>
 
       {/* File info or placeholder */}
       {files.length > 0 ? (
         <div className="text-center">
-          <p className={`text-xs font-medium text-${color}-300`}>
+          <p className={`text-xs font-medium text-${color}-600 dark:text-${color}-300`}>
             {files.length} file{files.length > 1 ? "s" : ""} selected
           </p>
-          <p className="text-[10px] text-slate-500 mt-0.5">{formatBytes(totalSize)}</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{formatBytes(totalSize)}</p>
         </div>
       ) : (
-        <p className="text-[10px] text-slate-500 text-center">
-          Drag & drop or click to select multiple files
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center">
+          Drag &amp; drop or click to select multiple files
         </p>
       )}
 
@@ -204,10 +204,10 @@ function ProgressBar({ value, label }: { value: number; label: string }) {
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between items-center">
-        <span className="text-xs text-slate-400">{label}</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
         <span className="text-xs font-semibold text-[#1a8fd1]">{pct}%</span>
       </div>
-      <div className="h-2 bg-slate-700/50 rounded-full overflow-hidden">
+      <div className="h-2 bg-slate-200 dark:bg-slate-700/50 rounded-full overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-300 ease-out"
           style={{
@@ -261,37 +261,24 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
   };
 
   return (
-    <div
-      className="flex flex-col gap-6 p-6 rounded-2xl border"
-      style={{
-        background:   "rgba(11, 26, 46, 0.8)",
-        borderColor:  "rgba(26, 143, 209, 0.15)",
-        backdropFilter: "blur(12px)",
-      }}
-    >
+    <div className="flex flex-col gap-6 p-6 rounded-2xl border border-blue-200/60 dark:border-blue-500/15 bg-white/90 dark:bg-[rgba(11,26,46,0.8)] backdrop-blur-md shadow-xl">
       {/* Header */}
       <div>
-        <h2 className="text-base font-semibold text-white">Upload Files</h2>
-        <p className="text-xs text-slate-400 mt-0.5">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-white">Upload Files</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
           Upload your OLD PDF, NEW PDF, and pre-chunked XML files to begin the comparison.
         </p>
       </div>
 
       {/* Source name */}
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-slate-300">Project / Source Name</label>
+        <label className="text-xs font-medium text-slate-600 dark:text-slate-300">Project / Source Name</label>
         <input
           type="text"
           value={sourceName}
           onChange={(e) => setSourceName(e.target.value)}
           placeholder="e.g. LegalDoc_v2_Update"
-          className="w-full px-3 py-2 rounded-lg text-sm text-white placeholder-slate-500 border outline-none transition-colors"
-          style={{
-            background:  "rgba(26, 143, 209, 0.06)",
-            borderColor: "rgba(26, 143, 209, 0.2)",
-          }}
-          onFocus={(e) => (e.target.style.borderColor = "rgba(26,143,209,0.5)")}
-          onBlur={(e)  => (e.target.style.borderColor = "rgba(26,143,209,0.2)")}
+          className="w-full px-3 py-2 rounded-lg text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 border border-blue-200 dark:border-blue-500/20 bg-blue-50/40 dark:bg-blue-500/[.06] outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 transition-colors"
         />
       </div>
 
@@ -345,7 +332,7 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
 
       {/* Error */}
       {error && (
-        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-red-500/10 border border-red-500/25 text-red-300 text-xs">
+        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/25 text-red-600 dark:text-red-300 text-xs">
           <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -358,11 +345,11 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
       <button
         onClick={handleUpload}
         disabled={!canUpload || uploading}
-        className="w-full py-2.5 rounded-xl text-sm font-semibold text-white transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
-        style={canUpload && !uploading ? {
-          background:  "linear-gradient(135deg, #1a8fd1, #146da3)",
-          boxShadow:   "0 4px 16px rgba(26,143,209,0.3)",
-        } : { background: "rgba(26,143,209,0.2)" }}
+        className={`w-full py-2.5 rounded-xl text-sm font-semibold text-white transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed ${
+          canUpload && !uploading
+            ? "bg-gradient-to-br from-[#1a8fd1] to-[#146da3] shadow-[0_4px_16px_rgba(26,143,209,0.3)] hover:shadow-[0_4px_20px_rgba(26,143,209,0.45)]"
+            : "bg-[#1a8fd1]/20"
+        }`}
       >
         {uploading ? "Uploading…" : "Upload & Continue"}
       </button>

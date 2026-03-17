@@ -1,10 +1,19 @@
 // routes/brd/crud.ts
 import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
+import { authenticate, AuthRequest } from "../../middleware/authenticate";
+import { notifyMany } from "../../lib/notify";
+import { downloadJsonObject, extractStoragePath } from "../../lib/supabase-storage";
 
 const router = Router();
 
 const VALID_STATUSES = ["DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"];
+
+async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
+  const storagePath = extractStoragePath(raw);
+  if (!storagePath) return raw ?? null;
+  return downloadJsonObject(storagePath);
+}
 
 // ── Title normalisation helper ─────────────────────────────────────────────
 // Strips punctuation, collapses whitespace, lowercases — used for both the
@@ -49,8 +58,8 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b) => {
-      const meta = b.sections?.metadata as Record<string, unknown> | null;
+    const data = await Promise.all(brds.map(async (b) => {
+      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
 
       const geography     = (meta?.geography              as string) ?? "—";
 
@@ -73,7 +82,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    });
+    }));
 
     return res.json(data);
   } catch (err) {
@@ -230,7 +239,73 @@ router.get("/:brdId", async (req: Request, res: Response) => {
     });
     if (!brd) return res.status(404).json({ error: "BRD not found" });
 
-    const meta          = brd.sections?.metadata as Record<string, unknown> | null;
+    const meta = await resolveMaybeStoredJson(brd.sections?.metadata ?? null) as Record<string, unknown> | null;
+
+// ── POST /brd/:brdId/query — send a BRD query to Pre-Production ───────────
+router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const brdId = String(req.params.brdId);
+    const body = String(req.body?.body ?? "").trim();
+
+    if (!body) {
+      return res.status(400).json({ error: "Query body is required" });
+    }
+
+    const [brd, actor, recipients] = await Promise.all([
+      prisma.brd.findUnique({
+        where: { brdId },
+        select: { brdId: true, title: true, status: true },
+      }),
+      prisma.user.findUnique({
+        where: { id: req.user!.userId },
+        select: { id: true, userId: true, firstName: true, lastName: true },
+      }),
+      prisma.user.findMany({
+        where: {
+          status: "ACTIVE",
+          team: { slug: "pre-production" },
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    if (!brd) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+
+    if (recipients.length === 0) {
+      return res.status(404).json({ error: "No active pre-production users found" });
+    }
+
+    const actorName = actor
+      ? [actor.firstName, actor.lastName].filter(Boolean).join(" ").trim() || actor.userId
+      : "A user";
+
+    await notifyMany(
+      recipients.map((user) => user.id),
+      "BRD_STATUS",
+      `BRD Query: ${brd.title}`,
+      `${actorName} submitted a query for ${brd.brdId}: ${body}`,
+      { brdId: brd.brdId, status: brd.status, query: body, submittedBy: req.user!.userId },
+    );
+
+    await prisma.userLog.create({
+      data: {
+        userId: req.user!.userId,
+        action: "BRD_QUERY_SUBMITTED",
+        details: `Submitted query for ${brd.brdId}: ${body}`,
+      },
+    });
+
+    return res.status(201).json({
+      message: "Query sent to Pre-Production",
+      recipients: recipients.length,
+    });
+  } catch (err) {
+    console.error("[POST /brd/:brdId/query]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
 
     const storedFormat2  = (meta?._format        as string) ?? "";
     const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -242,6 +317,13 @@ router.get("/:brdId", async (req: Request, res: Response) => {
 
     const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
 
+    const scope = await resolveMaybeStoredJson(brd.sections?.scope ?? null);
+    const metadata = await resolveMaybeStoredJson(brd.sections?.metadata ?? null);
+    const toc = await resolveMaybeStoredJson(brd.sections?.toc ?? null);
+    const citations = await resolveMaybeStoredJson(brd.sections?.citations ?? null);
+    const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
+    const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
+
     return res.json({
       id:             brd.brdId,
       title:          displayName,
@@ -249,12 +331,12 @@ router.get("/:brdId", async (req: Request, res: Response) => {
       status:         brd.status,
       version:        "v1.0",
       lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
-      scope:          brd.sections?.scope          ?? null,
-      metadata:       brd.sections?.metadata       ?? null,
-      toc:            brd.sections?.toc            ?? null,
-      citations:      brd.sections?.citations      ?? null,
-      contentProfile: brd.sections?.contentProfile ?? null,
-      brdConfig:      brd.sections?.brdConfig      ?? null,
+      scope,
+      metadata,
+      toc,
+      citations,
+      contentProfile,
+      brdConfig,
     });
   } catch (err) {
     console.error("[GET /brd/:brdId]", err);
@@ -311,7 +393,7 @@ router.post("/fix-formats", async (_req: Request, res: Response) => {
 
     let fixed = 0;
     for (const b of brds) {
-      const meta = b.sections?.metadata as Record<string, unknown> | null;
+      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
       if (!meta) continue;
 
       const storedFmt   = (meta._format        as string) ?? "";

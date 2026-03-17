@@ -31,6 +31,29 @@ export interface BaseRoleFeaturePolicy {
   updatedAt: string;
 }
 
+export interface SecurityPolicyState {
+  minPasswordLength: number;
+  requireUppercase: boolean;
+  requireNumber: boolean;
+  minSpecialChars: number;
+  rememberedCount: number;
+  minPasswordAgeDays: number;
+  maxPasswordAgeDays: number;
+  sessionTimeoutMinutes: number;
+  enforceMfaForAdmins: boolean;
+}
+
+export interface OperationsPolicyState {
+  maintenanceMode: boolean;
+  strictRateLimitMode: boolean;
+  auditDigestEnabled: boolean;
+}
+
+export interface GovernanceSettings {
+  securityPolicy: SecurityPolicyState;
+  operationsPolicy: OperationsPolicyState;
+}
+
 export interface TeamFeatureOption {
   key: string;
   label: string;

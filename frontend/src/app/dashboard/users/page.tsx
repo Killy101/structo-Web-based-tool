@@ -5,10 +5,11 @@ import {
   Card,
   Badge,
   Button,
+  DashboardListHeader,
   Modal,
   Input,
   Select,
-  SearchInput,
+  SortChipBar,
   EmptyState,
   ToastContainer,
 } from "../../../components/ui";
@@ -95,6 +96,8 @@ function exportToCSV(users: User[], filename = "users.csv") {
 
 type SortKey = "name" | "role" | "team" | "status" | "created";
 type SortDir = "asc" | "desc";
+type ToolbarSortKey = "name" | "created";
+type UserPresetKey = "default" | "newest" | "active" | "inactive";
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -2180,6 +2183,7 @@ export default function UsersPage() {
   // NEW: sort state
   const [sortKey, setSortKey] = useState<SortKey>(initialSort);
   const [sortDir, setSortDir] = useState<SortDir>(initialDir);
+  const [activePreset, setActivePreset] = useState<UserPresetKey>("default");
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(
     new Set(),
   );
@@ -2214,26 +2218,71 @@ export default function UsersPage() {
   // Filter change handlers that reset pagination
   const handleSearchChange = (value: string) => {
     setSearch(value);
+    setActivePreset("default");
     setCurrentPage(1);
     setSelectedUserIds(new Set());
   };
 
   const handleRoleChange = (value: string) => {
     setRole(value);
+    setActivePreset("default");
     setCurrentPage(1);
     setSelectedUserIds(new Set());
   };
 
   const handleStatusChange = (value: StatusFilterChip) => {
     setStatus(value);
+    setActivePreset("default");
     setCurrentPage(1);
     setSelectedUserIds(new Set());
   };
 
   const handleTeamChange = (value: string) => {
     setTeamFilter(value);
+    setActivePreset("default");
     setCurrentPage(1);
     setSelectedUserIds(new Set());
+  };
+
+  const handleToolbarSortChange = (value: ToolbarSortKey) => {
+    setSortKey(value);
+    setActivePreset("default");
+    setCurrentPage(1);
+  };
+
+  const handleSortDirectionChange = (value: SortDir) => {
+    setSortDir(value);
+    setActivePreset("default");
+    setCurrentPage(1);
+  };
+
+  const applyPreset = (preset: UserPresetKey) => {
+    setActivePreset(preset);
+    if (preset === "newest") {
+      setStatus("ALL");
+      setSortKey("created");
+      setSortDir("desc");
+      setCurrentPage(1);
+      return;
+    }
+    if (preset === "active") {
+      setStatus("ACTIVE");
+      setSortKey("name");
+      setSortDir("asc");
+      setCurrentPage(1);
+      return;
+    }
+    if (preset === "inactive") {
+      setStatus("INACTIVE");
+      setSortKey("created");
+      setSortDir("desc");
+      setCurrentPage(1);
+      return;
+    }
+    setStatus("ALL");
+    setSortKey("name");
+    setSortDir("asc");
+    setCurrentPage(1);
   };
 
   // NEW: isFiltering now also checks if any filter is active (used for clear button)
@@ -2249,6 +2298,7 @@ export default function UsersPage() {
     setRole("ALL");
     setStatus("ALL");
     setTeamFilter("ALL");
+    setActivePreset("default");
     setCurrentPage(1);
     setSelectedUserIds(new Set());
   };
@@ -2437,7 +2487,7 @@ export default function UsersPage() {
       : null;
   const headerTitle =
     actorRole === "SUPER_ADMIN"
-      ? "User Management"
+      ? "All Users"
       : actorRole === "ADMIN"
         ? "Team Members"
         : "Users";
@@ -2646,48 +2696,43 @@ export default function UsersPage() {
 
   return (
     <div className="h-full w-full min-h-0 px-6 py-5 text-xs flex flex-col gap-5">
-      {/* ── Header ── */}
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-            {headerTitle}
-          </h1>
-          <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-            Manage user accounts, roles, and team assignments
-          </p>
-        </div>
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 lg:w-full lg:max-w-2xl">
-          <SearchInput
-            value={search}
-            onChange={handleSearchChange}
-            placeholder="Search by ID, name, or role..."
-            className="w-full sm:min-w-72 lg:flex-1"
-            autoComplete="off"
-          />
-
-          <button
-            onClick={refetch}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 transition-all"
-          >
-            <RefreshIcon /> Refresh
-          </button>
-
-          {/* NEW: Export CSV — exports the currently filtered list */}
-          <button
-            onClick={handleExportCSV}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:border-emerald-300 dark:hover:border-emerald-700 transition-all"
-          >
-            <DownloadIcon />
-            Export CSV
-          </button>
-
-          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
-            <Button onClick={() => setShowCreate(true)}>
-              <PlusIcon /> Add User
-            </Button>
-          )}
-        </div>
-      </div>
+      <DashboardListHeader
+        title={headerTitle}
+       
+        searchValue={search}
+        onSearchChange={handleSearchChange}
+        searchPlaceholder="Search by ID, name, or role..."
+        controls={
+          <>
+            <button
+              onClick={refetch}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+            >
+              <RefreshIcon /> Refresh
+            </button>
+            <button
+              onClick={handleExportCSV}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-emerald-600 transition-all hover:border-emerald-300 hover:bg-emerald-50 dark:border-slate-700 dark:text-emerald-400 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/20"
+            >
+              <DownloadIcon />
+              Export CSV
+            </button>
+            {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
+              <Button onClick={() => setShowCreate(true)}>
+                <PlusIcon /> Add User
+              </Button>
+            )}
+          </>
+        }
+        presets={[
+          { key: "default", label: "All Users", count: users.length },
+          { key: "newest", label: "Newest First" },
+          { key: "active", label: "Active", count: activeCount },
+          { key: "inactive", label: "Inactive", count: inactiveCount },
+        ]}
+        activePreset={activePreset}
+        onPresetChange={(key) => applyPreset(key as UserPresetKey)}
+      />
 
       {selectedUsers.length > 0 && (
         <Card className="p-3 border-blue-200/70 dark:border-blue-800/40 bg-blue-50/50 dark:bg-blue-900/10">
@@ -2750,35 +2795,47 @@ export default function UsersPage() {
         ))}
       </div>
 
-      {/* ── Status Chips ── */}
-      <div className="flex flex-wrap items-center gap-2">
-        {STATUS_FILTER_CHIPS.map((chip) => {
-          const count =
-            chip === "ALL"
-              ? users.length
-              : users.filter((u) => u.status === chip).length;
-          const active = statusFilter === chip;
-          const styles = STATUS_FILTER_STYLES[chip];
-          return (
-            <button
-              key={chip}
-              onClick={() => handleStatusChange(chip)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 whitespace-nowrap ${active ? styles.active : styles.base}`}
-            >
-              <span className="font-mono font-bold">{count}</span>
-              {chip === "ALL"
-                ? "All"
-                : chip === "ACTIVE"
-                  ? "Active"
-                  : "Inactive"}
-            </button>
-          );
-        })}
-        {actorTeamName && (
-          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/40">
-            Team: {actorTeamName}
-          </span>
-        )}
+      {/* ── Status Chips + Sort ── */}
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          {STATUS_FILTER_CHIPS.map((chip) => {
+            const count =
+              chip === "ALL"
+                ? users.length
+                : users.filter((u) => u.status === chip).length;
+            const active = statusFilter === chip;
+            const styles = STATUS_FILTER_STYLES[chip];
+            return (
+              <button
+                key={chip}
+                onClick={() => handleStatusChange(chip)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 whitespace-nowrap ${active ? styles.active : styles.base}`}
+              >
+                <span className="font-mono font-bold">{count}</span>
+                {chip === "ALL"
+                  ? "All"
+                  : chip === "ACTIVE"
+                    ? "Active"
+                    : "Inactive"}
+              </button>
+            );
+          })}
+          {actorTeamName && (
+            <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 dark:border-blue-800/40 dark:bg-blue-900/30 dark:text-blue-400">
+              Team: {actorTeamName}
+            </span>
+          )}
+        </div>
+        <SortChipBar
+          options={[
+            { key: "name", label: "Name" },
+            { key: "created", label: "Date" },
+          ]}
+          activeKey={sortKey === "created" ? "created" : "name"}
+          onChange={(key) => handleToolbarSortChange(key as ToolbarSortKey)}
+          direction={sortDir}
+          onDirectionChange={handleSortDirectionChange}
+        />
       </div>
 
       {/* ── Filter Controls ── */}

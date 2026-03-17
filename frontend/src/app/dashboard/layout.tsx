@@ -8,7 +8,7 @@ import Sidebar from "../../components/layout/Sidebar";
 import Unauthorized from "../../components/layout/Unauthorized";
 import { Spinner, Button } from "../../components/ui";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
-import { getToken } from "../../services/api";
+import { getToken, settingsApi } from "../../services/api";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
 import type { Role } from "../../types";
 
@@ -50,7 +50,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   },
   "/dashboard/users": {
     title: "User Management",
-    subtitle: "Manage team members and roles",
+    subtitle: "Manage user accounts, roles, and team assignments",
   },
   "/dashboard/compare": {
     title: "Compare BRD Sources",
@@ -94,6 +94,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
   const splashCheckedRef = useRef(false);
   const redirectedRef = useRef(false);
 
@@ -137,6 +138,33 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     const raf = requestAnimationFrame(() => setVisible(true));
     return () => cancelAnimationFrame(raf);
   }, [showSplash, isLoading, isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    let active = true;
+
+    const fetchOperationsStatus = async () => {
+      try {
+        const { operationsPolicy } = await settingsApi.getOperationsStatus();
+        if (!active) return;
+        setMaintenanceMode(Boolean(operationsPolicy.maintenanceMode));
+      } catch {
+        if (!active) return;
+        setMaintenanceMode(false);
+      }
+    };
+
+    void fetchOperationsStatus();
+    const interval = setInterval(fetchOperationsStatus, 30_000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isAuthenticated]);
 
   const handleSplashDone = useCallback(() => {
     setShowSplash(false);
@@ -232,6 +260,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     >
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
       <div className="flex-1 flex flex-col overflow-hidden">
+        {maintenanceMode && (
+          <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
+            Maintenance mode is active. Some actions are temporarily restricted.
+          </div>
+        )}
         {!isBrdRoute && (
           <header className="flex-shrink-0 flex items-center px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
             <div>

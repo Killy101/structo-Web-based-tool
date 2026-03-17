@@ -2,6 +2,7 @@
 import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
 import { BrdFormat, BrdStatus, Prisma } from "@prisma/client";
+import { makeStoragePointer, uploadJsonObject } from "../../lib/supabase-storage";
 
 const router = Router();
 
@@ -61,6 +62,15 @@ function sanitizeBrdConfig(config: unknown): unknown {
 function toJsonValue(val: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
   if (val === null || val === undefined) return Prisma.JsonNull;
   return val as Prisma.InputJsonValue;
+}
+
+async function persistSection(brdId: string, name: string, value: unknown): Promise<unknown | undefined> {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  const storagePath = `brd/${brdId}/sections/${name}.json`;
+  await uploadJsonObject(storagePath, value);
+  return makeStoragePointer(storagePath);
 }
 
 // ── POST /brd/save ─────────────────────────────────────────────────────────
@@ -129,8 +139,15 @@ router.post("/save", async (req: Request, res: Response) => {
       },
     });
 
-    // Sanitize brdConfig to prevent 413 on re-saves
+    // Sanitize brdConfig before persistence
     const sanitizedBrdConfig = sanitizeBrdConfig(brdConfig);
+
+    const persistedScope = await persistSection(brdId, "scope", scope);
+    const persistedMetadata = await persistSection(brdId, "metadata", metadata);
+    const persistedToc = await persistSection(brdId, "toc", toc);
+    const persistedCitations = await persistSection(brdId, "citations", citations);
+    const persistedContentProfile = await persistSection(brdId, "contentProfile", contentProfile);
+    const persistedBrdConfig = await persistSection(brdId, "brdConfig", sanitizedBrdConfig);
 
     // Upsert sections blob.
     //
@@ -144,20 +161,20 @@ router.post("/save", async (req: Request, res: Response) => {
       where:  { brdId },
       create: {
         brdId,
-        scope:          toJsonValue(scope),
-        metadata:       toJsonValue(metadata),
-        toc:            toJsonValue(toc),
-        citations:      toJsonValue(citations),
-        contentProfile: toJsonValue(contentProfile),
-        brdConfig:      toJsonValue(sanitizedBrdConfig),
+        scope:          toJsonValue(persistedScope),
+        metadata:       toJsonValue(persistedMetadata),
+        toc:            toJsonValue(persistedToc),
+        citations:      toJsonValue(persistedCitations),
+        contentProfile: toJsonValue(persistedContentProfile),
+        brdConfig:      toJsonValue(persistedBrdConfig),
       },
       update: {
-        ...(scope          !== undefined && { scope:          toJsonValue(scope)          }),
-        ...(metadata       !== undefined && { metadata:       toJsonValue(metadata)       }),
-        ...(toc            !== undefined && { toc:            toJsonValue(toc)            }),
-        ...(citations      !== undefined && { citations:      toJsonValue(citations)      }),
-        ...(contentProfile !== undefined && { contentProfile: toJsonValue(contentProfile) }),
-        ...(brdConfig      !== undefined && { brdConfig:      toJsonValue(sanitizedBrdConfig) }),
+        ...(persistedScope          !== undefined && { scope:          toJsonValue(persistedScope)          }),
+        ...(persistedMetadata       !== undefined && { metadata:       toJsonValue(persistedMetadata)       }),
+        ...(persistedToc            !== undefined && { toc:            toJsonValue(persistedToc)            }),
+        ...(persistedCitations      !== undefined && { citations:      toJsonValue(persistedCitations)      }),
+        ...(persistedContentProfile !== undefined && { contentProfile: toJsonValue(persistedContentProfile) }),
+        ...(persistedBrdConfig      !== undefined && { brdConfig:      toJsonValue(persistedBrdConfig)      }),
       },
     });
 
