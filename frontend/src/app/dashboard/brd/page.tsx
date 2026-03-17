@@ -244,6 +244,21 @@ export default function BrdPage() {
     window.open(`${baseUrl}/brd/${brd.id}/export/pdf-html`, "_blank");
   };
 
+  const handleExportAll = async () => {
+    setExportLoading("all");
+    try {
+      const res = await api.get("/brd/export/csv", { responseType: "blob" });
+      const today = new Date().toISOString().split("T")[0];
+      const url   = URL.createObjectURL(new Blob([res.data], { type: "text/csv" }));
+      const link  = document.createElement("a");
+      link.href     = url;
+      link.download = `brd-registry-${today}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { console.error("Export all failed:", err); }
+    finally { setExportLoading(null); }
+  };
+
   const statusCounts = brds.reduce<Record<string, number>>((acc, b) => {
     acc[b.status] = (acc[b.status] || 0) + 1; return acc;
   }, {});
@@ -336,6 +351,17 @@ export default function BrdPage() {
         {/* Refresh */}
         <button onClick={fetchBrds} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
           <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
+        </button>
+
+        {/* Export All BRDs */}
+        <button
+          onClick={handleExportAll}
+          disabled={exportLoading === "all" || loading}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          {exportLoading === "all"
+            ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg><span className="hidden sm:inline">Exporting…</span></>
+            : <><ExportIcon /><span className="hidden sm:inline">Export CSV</span></>
+          }
         </button>
 
         {/* Bulk delete */}

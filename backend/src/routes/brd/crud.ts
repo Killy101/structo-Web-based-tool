@@ -50,7 +50,7 @@ router.get("/", async (_req: Request, res: Response) => {
     const data = brds.map((b) => {
       const meta = b.sections?.metadata as Record<string, unknown> | null;
 
-      const geography     = (meta?.geography              as string) ?? "—";
+      const geography     = ((meta?.Geography || meta?.geography) as string) ?? "—";
 
       const storedFormat  = (meta?._format        as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -103,7 +103,7 @@ router.get("/deleted", async (_req: Request, res: Response) => {
 
     const data = brds.map((b) => {
       const meta = b.sections?.metadata as Record<string, unknown> | null;
-      const geography = (meta?.geography as string) ?? "—";
+      const geography = ((meta?.Geography || meta?.geography) as string) ?? "—";
       const storedFormat = (meta?._format as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
       const derivedFormat: "old" | "new" =

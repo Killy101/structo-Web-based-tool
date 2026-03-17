@@ -6,6 +6,64 @@ import prisma from "../../lib/prisma";
 
 const router = Router();
 
+// ── GET /brd/export/csv — export ALL active BRDs as a summary CSV ──────────
+router.get("/export/csv", async (_req: Request, res: Response) => {
+  try {
+    const brds = await prisma.brd.findMany({
+      where:   { deletedAt: null },
+      orderBy: { createdAt: "asc" },
+      select: {
+        brdId:     true,
+        title:     true,
+        format:    true,
+        status:    true,
+        createdAt: true,
+        updatedAt: true,
+        sections:  { select: { metadata: true } },
+      },
+    });
+
+    const rows: string[] = [];
+
+    // Header
+    rows.push(csvRow(["BRD ID", "Title", "Geography", "Status", "Format", "Version", "Last Updated"]));
+
+    for (const b of brds) {
+      const meta      = b.sections?.metadata as Record<string, unknown> | null;
+      const geography = ((meta?.Geography || meta?.geography) as string) ?? "";
+
+      const storedFormat  = (meta?._format as string) ?? "";
+      const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
+      const format: string =
+        storedFormat === "old" ? "Legacy" :
+        storedFormat === "new" ? "New" :
+        hasLegacyKeys           ? "Legacy" :
+        b.format === "OLD"      ? "Legacy" : "New";
+
+      rows.push(csvRow([
+        b.brdId,
+        b.title,
+        geography,
+        b.status,
+        format,
+        "v1.0",
+        b.updatedAt.toISOString().split("T")[0],
+      ]));
+    }
+
+    const csv      = rows.join("\n");
+    const today    = new Date().toISOString().split("T")[0];
+    const filename = `brd-registry-${today}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send("\uFEFF" + csv); // BOM for Excel UTF-8 detection
+  } catch (err) {
+    console.error("[GET /brd/export/csv]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function escapeCsv(val: unknown): string {
