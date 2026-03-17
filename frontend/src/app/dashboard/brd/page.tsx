@@ -161,8 +161,9 @@ export default function BrdPage() {
       setLoading(true); setFetchError(null);
       const res = await api.get<Brd[]>("/brd");
       setBrds(res.data);
-    } catch (err: any) {
-      setFetchError(err?.response?.data?.error ?? err?.message ?? "Unknown error");
+    } catch (err) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setFetchError(error?.response?.data?.error ?? error?.message ?? "Unknown error");
       console.error("Failed to fetch BRDs:", err);
     } finally { setLoading(false); }
   }, []);
@@ -231,7 +232,7 @@ export default function BrdPage() {
     if (allPageSelected) setSelected(s => { const n = new Set(s); paginated.forEach(b => n.delete(b.id)); return n; });
     else setSelected(s => { const n = new Set(s); paginated.forEach(b => n.add(b.id)); return n; });
   };
-  const toggleOne = (id: string) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleOne = (id: string) => setSelected(s => { const n = new Set(s); if (n.has(id)) { n.delete(id); } else { n.add(id); } return n; });
 
   // Page numbers to show
   const pageNums = (() => {
