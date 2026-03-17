@@ -1739,6 +1739,7 @@ function ChangePasswordModal({
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="Min. 8 characters"
+                autoComplete="new-password"
               />
               <Input
                 label="Confirm Password"
@@ -1746,6 +1747,7 @@ function ChangePasswordModal({
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder="Repeat password"
+                autoComplete="new-password"
               />
             </div>
             {error && (
@@ -2872,6 +2874,8 @@ export default function UsersPage() {
               value={search}
               onChange={(e) => handleSearchChange(e.target.value)}
               placeholder="Search by ID, name…"
+              autoComplete="off"
+              name="user-search"
               className="pl-8 pr-7 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors"
             />
             {search && (
