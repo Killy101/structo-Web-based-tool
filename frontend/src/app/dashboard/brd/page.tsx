@@ -159,7 +159,7 @@ export default function BrdPage() {
   const [deletedLoading,  setDeletedLoading]  = useState(false);
   const [restoreTarget,   setRestoreTarget]   = useState<Brd | null>(null);
   const [restoreLoading,  setRestoreLoading]  = useState(false);
-  const [exportLoading,   setExportLoading]   = useState<string | null>(null);
+  const [exportLoading,   setExportLoading]   = useState(false);
 
   const fetchBrds = useCallback(async () => {
     try {
@@ -225,27 +225,8 @@ export default function BrdPage() {
     finally { setRestoreLoading(false); }
   };
 
-  const handleExportCsv = async (brd: Brd) => {
-    setExportLoading(`csv-${brd.id}`);
-    try {
-      const res = await api.get(`/brd/${brd.id}/export/csv`, { responseType: "blob" });
-      const url  = URL.createObjectURL(new Blob([res.data], { type: "text/csv" }));
-      const link = document.createElement("a");
-      link.href     = url;
-      link.download = `${brd.id.toLowerCase()}-export.csv`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (err) { console.error("CSV export failed:", err); }
-    finally { setExportLoading(null); }
-  };
-
-  const handleExportPdf = (brd: Brd) => {
-    const baseUrl = (api.defaults.baseURL ?? "").replace(/\/$/, "");
-    window.open(`${baseUrl}/brd/${brd.id}/export/pdf-html`, "_blank");
-  };
-
   const handleExportAll = async () => {
-    setExportLoading("all");
+    setExportLoading(true);
     try {
       const res = await api.get("/brd/export/csv", { responseType: "blob" });
       const today = new Date().toISOString().split("T")[0];
@@ -256,7 +237,7 @@ export default function BrdPage() {
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) { console.error("Export all failed:", err); }
-    finally { setExportLoading(null); }
+    finally { setExportLoading(false); }
   };
 
   const statusCounts = brds.reduce<Record<string, number>>((acc, b) => {
@@ -356,9 +337,9 @@ export default function BrdPage() {
         {/* Export All BRDs */}
         <button
           onClick={handleExportAll}
-          disabled={exportLoading === "all" || loading}
+          disabled={exportLoading || loading}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          {exportLoading === "all"
+          {exportLoading
             ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg><span className="hidden sm:inline">Exporting…</span></>
             : <><ExportIcon /><span className="hidden sm:inline">Export CSV</span></>
           }
@@ -569,27 +550,6 @@ export default function BrdPage() {
                         className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EditIcon />
                       </button>
-                      {/* Export dropdown */}
-                      <div className="relative group/export">
-                        <button
-                          title="Export"
-                          disabled={exportLoading === `csv-${brd.id}`}
-                          className="p-1.5 rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 dark:hover:text-emerald-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                          <ExportIcon />
-                        </button>
-                        <div className="hidden group-hover/export:block absolute right-0 top-full mt-1 z-30 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 min-w-[130px]">
-                          <button
-                            onClick={() => handleExportCsv(brd)}
-                            className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
-                            Export as CSV
-                          </button>
-                          <button
-                            onClick={() => handleExportPdf(brd)}
-                            className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
-                            Export as PDF
-                          </button>
-                        </div>
-                      </div>
                       <button onClick={() => setHistoryBrd(brd)} title="Version History"
                         className="p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 dark:hover:text-violet-400 transition-colors">
                         <HistoryIcon />
