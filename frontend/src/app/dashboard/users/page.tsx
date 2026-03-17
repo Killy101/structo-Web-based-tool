@@ -1302,7 +1302,6 @@ function CreateUserModal({
     lastName: "",
     role: "USER" as Role,
     teamId: actorTeamId ?? 0,
-    userRoleId: 0,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -1314,8 +1313,6 @@ function CreateUserModal({
           { value: "USER", label: "User" },
         ]
       : [{ value: "USER", label: "User" }];
-
-  const selectedCustomRole = customRoles.find((r) => r.id === form.userRoleId);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -1340,7 +1337,6 @@ function CreateUserModal({
         lastName: form.lastName.trim(),
         role: form.role,
         teamId: form.teamId || undefined,
-        userRoleId: form.userRoleId || undefined,
       };
       const result = await createUser(payload);
       onSuccess(result.generatedPassword, {
@@ -1348,14 +1344,6 @@ function CreateUserModal({
         firstName: payload.firstName,
         lastName: payload.lastName,
         role: payload.role,
-        userRole: selectedCustomRole
-          ? {
-              id: selectedCustomRole.id,
-              name: selectedCustomRole.name,
-              slug: selectedCustomRole.slug,
-              features: selectedCustomRole.features,
-            }
-          : undefined,
       });
       setForm({
         userId: "",
@@ -1363,7 +1351,6 @@ function CreateUserModal({
         lastName: "",
         role: "USER",
         teamId: actorTeamId ?? 0,
-        userRoleId: 0,
       });
       setErrors({});
       onClose();
@@ -1425,39 +1412,6 @@ function CreateUserModal({
             </option>
           ))}
         </Select>
-        {customRoles.length > 0 && (
-          <Select
-            label="Custom Role (Optional)"
-            value={String(form.userRoleId)}
-            onChange={(e) =>
-              setForm({ ...form, userRoleId: parseInt(e.target.value) || 0 })
-            }
-          >
-            <option value="0">— No Custom Role —</option>
-            {customRoles.map((r) => (
-              <option key={r.id} value={String(r.id)}>
-                {r.name}
-              </option>
-            ))}
-          </Select>
-        )}
-        {selectedCustomRole && selectedCustomRole.features.length > 0 && (
-          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-3">
-            <p className="text-xs font-semibold text-blue-800 dark:text-blue-300 mb-2">
-              Feature Access — {selectedCustomRole.name}
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {selectedCustomRole.features.map((f) => (
-                <span
-                  key={f}
-                  className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-blue-100/80 text-blue-700 dark:bg-blue-800/30 dark:text-blue-300"
-                >
-                  {FEATURE_LABELS[f] ?? f}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
         {actorRole === "SUPER_ADMIN" && (
           <Select
             label="Assign to Team"
