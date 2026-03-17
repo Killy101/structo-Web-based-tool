@@ -402,4 +402,57 @@ router.patch(
   },
 );
 
+// ── PATCH /users/:id/user-role (SuperAdmin only) ──────────
+router.patch(
+  "/:id/user-role",
+  authenticate,
+  authorize(["SUPER_ADMIN"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const targetId = parseInt(req.params.id as string);
+      const { userRoleId } = req.body; // null to clear
+
+      const target = await prisma.user.findUnique({ where: { id: targetId } });
+      if (!target) return res.status(404).json({ error: "User not found" });
+
+      let roleName: string | null = null;
+      if (userRoleId !== null && userRoleId !== undefined) {
+        const customRole = await prisma.userRole.findUnique({
+          where: { id: Number(userRoleId) },
+        });
+        if (!customRole) {
+          return res.status(400).json({ error: "User role not found" });
+        }
+        // Disallow assigning internal team-policy roles directly to users
+        if (customRole.slug.startsWith("__TEAM_ROLE_POLICY__")) {
+          return res
+            .status(400)
+            .json({ error: "Cannot assign a team policy role directly to a user" });
+        }
+        roleName = customRole.name;
+      }
+
+      await prisma.user.update({
+        where: { id: targetId },
+        data: { userRoleId: userRoleId != null ? Number(userRoleId) : null },
+      });
+
+      await prisma.userLog.create({
+        data: {
+          userId: req.user!.userId,
+          action: "USER_ROLE_ASSIGNED",
+          details: roleName
+            ? `Assigned custom role "${roleName}" to user ${target.userId}`
+            : `Cleared custom role from user ${target.userId}`,
+        },
+      });
+
+      res.json({ message: "User role updated" });
+    } catch (error) {
+      console.error("Assign user role error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
 export default router;

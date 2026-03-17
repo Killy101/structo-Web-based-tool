@@ -134,12 +134,15 @@ async function loadGovernanceSettings() {
 }
 
 async function loadOperationsStatus() {
-  const row = await prisma.appSetting.findUnique({
-    where: { key: GOVERNANCE_OPERATIONS_KEY },
-    select: { value: true },
+  const rows = await prisma.appSetting.findMany({
+    where: { key: { in: [GOVERNANCE_OPERATIONS_KEY, GOVERNANCE_SECURITY_KEY] } },
+    select: { key: true, value: true },
   });
-
-  return { operationsPolicy: normalizeOperationsPolicy(row?.value) };
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  const operationsPolicy = normalizeOperationsPolicy(byKey.get(GOVERNANCE_OPERATIONS_KEY));
+  const sec = byKey.get(GOVERNANCE_SECURITY_KEY) as Record<string, unknown> | undefined;
+  const sessionTimeoutMinutes = Math.max(5, Number(sec?.sessionTimeoutMinutes ?? 30));
+  return { operationsPolicy, sessionTimeoutMinutes };
 }
 
 // ── GET /settings/operations-status ───────────────────────────────────────────
@@ -168,6 +171,31 @@ router.get(
       return res.json({ settings });
     } catch (error) {
       console.error("Get governance settings error:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── GET /settings/governance-history ─────────────────────
+router.get(
+  "/governance-history",
+  authenticate,
+  authorize(["SUPER_ADMIN"]),
+  async (_req: AuthRequest, res: Response) => {
+    try {
+      const logs = await prisma.userLog.findMany({
+        where: { action: "GOVERNANCE_SETTINGS_UPDATED" },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        include: {
+          user: {
+            select: { id: true, userId: true, firstName: true, lastName: true, role: true },
+          },
+        },
+      });
+      return res.json({ logs });
+    } catch (error) {
+      console.error("Get governance history error:", error);
       return res.status(500).json({ error: "Internal server error" });
     }
   },

@@ -111,6 +111,26 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ─── GET PASSWORD POLICY (public — no auth required) ─────
+router.get("/password-policy", async (_req: Request, res: Response) => {
+  try {
+    const policy = await getSecurityPolicy();
+    res.json({
+      minPasswordLength:  policy.minPasswordLength,
+      requireUppercase:   policy.requireUppercase,
+      requireNumber:      policy.requireNumber,
+      minSpecialChars:    policy.minSpecialChars,
+    });
+  } catch {
+    res.json({
+      minPasswordLength: 15,
+      requireUppercase:  true,
+      requireNumber:     true,
+      minSpecialChars:   1,
+    });
+  }
+});
+
 // ─── LOGIN (userId + password only) ──────────────────────
 router.post("/login", loginLimiter, async (req: Request, res: Response) => {
   try {

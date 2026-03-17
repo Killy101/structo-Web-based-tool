@@ -18,6 +18,7 @@ import {
   useRoles,
   useTeamPolicies,
   useToast,
+  useGovernanceHistory,
 } from "../../../hooks";
 import {
   OperationsPolicyState,
@@ -114,6 +115,14 @@ function AddTeamModal({
 }
 
 // ─── Edit Team Modal ──────────────────────────────────────────────────────────
+function toTeamSlug(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 function EditTeamModal({
   team,
   onClose,
@@ -126,19 +135,28 @@ function EditTeamModal({
   const [name, setName] = useState(team?.name ?? "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!team) return;
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setError("Team name is required");
-      return;
+  const prevTeamId = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (team && team.id !== prevTeamId.current) {
+      prevTeamId.current = team.id;
+      setName(team.name);
+      setError("");
+      setConfirming(false);
     }
-    setError("");
+  }, [team]);
+
+  const trimmed = name.trim();
+  const newSlug = toTeamSlug(trimmed);
+  const slugWillChange = team ? newSlug !== team.slug : false;
+
+  const doSave = async () => {
+    if (!team) return;
     setLoading(true);
     try {
       await onUpdate(team.id, trimmed);
+      setConfirming(false);
       onClose();
     } catch (err: unknown) {
       const msg =
@@ -147,14 +165,53 @@ function EditTeamModal({
           : ((err as { response?: { data?: { error?: string } } })?.response
               ?.data?.error ?? "Failed to update team");
       setError(msg);
+      setConfirming(false);
     } finally {
       setLoading(false);
     }
   };
 
+  const handleFirstStep = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!trimmed) { setError("Team name is required"); return; }
+    setError("");
+    if (slugWillChange) { setConfirming(true); return; }
+    void doSave();
+  };
+
+  if (confirming && team) {
+    return (
+      <Modal isOpen={!!team} onClose={onClose} title="Confirm Team Rename" size="sm">
+        <div className="space-y-4">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-300">
+            <p className="font-semibold mb-1">Slug will change</p>
+            <p className="text-xs">
+              <span className="font-mono">{team.slug}</span>{" → "}
+              <span className="font-mono">{newSlug}</span>. Team feature
+              policies will be updated automatically.
+            </p>
+          </div>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            Rename <span className="font-semibold">{team.name}</span> to{" "}
+            <span className="font-semibold">{trimmed}</span>?
+          </p>
+          {error && <p className="text-xs text-red-500">{error}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setConfirming(false)} type="button">
+              Back
+            </Button>
+            <Button onClick={() => void doSave()} loading={loading}>
+              Confirm Rename
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
   return (
     <Modal isOpen={!!team} onClose={onClose} title="Rename Team" size="sm">
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleFirstStep} className="space-y-4">
         <Input
           label="Team Name"
           value={name}
@@ -522,14 +579,60 @@ export default function SettingsPage() {
   const [operationsPolicy, setOperationsPolicy] =
     useState<OperationsPolicyState>(DEFAULT_OPERATIONS_POLICY);
   const [activeSection, setActiveSection] = useState<
-    "governance" | "teams" | "team-policies" | "roles"
+    "governance" | "teams" | "team-policies" | "roles" | "history"
   >("governance");
+  const { logs: historyLogs, isLoading: historyLoading } = useGovernanceHistory();
+
+  // ─── Dirty-state tracking ────────────────────────────────────
+  const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => {
     if (!governanceSettings) return;
     setSecurityPolicy(governanceSettings.securityPolicy);
     setOperationsPolicy(governanceSettings.operationsPolicy);
+    setIsDirty(false);
   }, [governanceSettings]);
+
+  // Mark dirty whenever user edits local policy state
+  useEffect(() => {
+    if (!governanceSettings) return;
+    const secChanged =
+      JSON.stringify(securityPolicy) !==
+      JSON.stringify(governanceSettings.securityPolicy);
+    const opsChanged =
+      JSON.stringify(operationsPolicy) !==
+      JSON.stringify(governanceSettings.operationsPolicy);
+    setIsDirty(secChanged || opsChanged);
+  }, [securityPolicy, operationsPolicy, governanceSettings]);
+
+  // Warn before browser navigation when unsaved changes exist
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
+  // Guard section switches when governance changes are unsaved
+  const handleSectionChange = (
+    next: "governance" | "teams" | "team-policies" | "roles" | "history",
+  ) => {
+    if (
+      isDirty &&
+      activeSection === "governance" &&
+      next !== "governance" &&
+      !window.confirm(
+        "You have unsaved governance changes. Leave without saving?",
+      )
+    ) {
+      return;
+    }
+    setActiveSection(next);
+  };
 
   useEffect(() => {
     if (!governanceLoading && !governanceSettings) {
@@ -624,6 +727,7 @@ export default function SettingsPage() {
   const persistGovernanceConfig = async () => {
     try {
       await saveGovernanceSettings({ securityPolicy, operationsPolicy });
+      setIsDirty(false);
       show("Governance settings saved", "success");
     } catch (err: unknown) {
       const msg =
@@ -923,13 +1027,19 @@ export default function SettingsPage() {
                   subtitle: "Manage custom feature profiles",
                   icon: "🛡️",
                 },
+                {
+                  key: "history" as const,
+                  title: "Change History",
+                  subtitle: "Governance audit trail",
+                  icon: "📋",
+                },
               ].map((item) => {
                 const isActive = activeSection === item.key;
                 return (
                   <button
                     key={item.key}
                     type="button"
-                    onClick={() => setActiveSection(item.key)}
+                    onClick={() => handleSectionChange(item.key)}
                     className={`w-full rounded-lg border px-3 py-3 text-left transition ${
                       isActive
                         ? "border-blue-200 bg-blue-50 dark:border-blue-800/70 dark:bg-blue-900/20"
@@ -940,13 +1050,16 @@ export default function SettingsPage() {
                       <span className="text-base leading-none mt-0.5">{item.icon}</span>
                       <div className="min-w-0">
                         <p
-                          className={`text-sm font-semibold ${
+                          className={`text-sm font-semibold flex items-center gap-1.5 ${
                             isActive
                               ? "text-blue-700 dark:text-blue-300"
                               : "text-slate-800 dark:text-slate-100"
                           }`}
                         >
                           {item.title}
+                          {item.key === "governance" && isDirty && (
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
+                          )}
                         </p>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                           {item.subtitle}
@@ -967,13 +1080,21 @@ export default function SettingsPage() {
                 title="Governance Controls"
                 subtitle="Security and operations baselines for Super Admin oversight."
                 action={
-                  <Button
-                    size="sm"
-                    onClick={() => void persistGovernanceConfig()}
-                    loading={governanceSaving}
-                  >
-                    Save Governance Settings
-                  </Button>
+                  <div className="flex items-center gap-3">
+                    {isDirty && (
+                      <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                        Unsaved changes
+                      </span>
+                    )}
+                    <Button
+                      size="sm"
+                      onClick={() => void persistGovernanceConfig()}
+                      loading={governanceSaving}
+                      disabled={!isDirty}
+                    >
+                      Save Governance Settings
+                    </Button>
+                  </div>
                 }
               />
               {governanceLoading && (
@@ -1062,20 +1183,19 @@ export default function SettingsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    {[
-                      ["requireUppercase", "Require uppercase character"],
-                      ["requireNumber", "Require numeric character"],
-                      ["enforceMfaForAdmins", "Enforce MFA for admins"],
-                    ].map(([key, label]) => (
+                    {(
+                      [
+                        ["requireUppercase", "Require uppercase character"],
+                        ["requireNumber", "Require numeric character"],
+                      ] as [keyof SecurityPolicyState, string][]
+                    ).map(([key, label]) => (
                       <label
                         key={key}
                         className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
                       >
                         <input
                           type="checkbox"
-                          checked={Boolean(
-                            securityPolicy[key as keyof SecurityPolicyState],
-                          )}
+                          checked={Boolean(securityPolicy[key])}
                           onChange={(e) =>
                             setSecurityPolicy((prev) => ({
                               ...prev,
@@ -1089,6 +1209,15 @@ export default function SettingsPage() {
                         </span>
                       </label>
                     ))}
+                    {/* MFA — groundwork only, not yet implemented */}
+                    <div className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 opacity-60">
+                      <span className="text-slate-500 dark:text-slate-400">
+                        Enforce MFA for admins
+                      </span>
+                      <span className="text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-full">
+                        Coming soon
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1188,6 +1317,53 @@ export default function SettingsPage() {
                 emptyMessage="No custom roles yet. Create one to assign specific feature access to users."
                 emptyIcon="🛡️"
               />
+            </Card>
+          )}
+
+          {activeSection === "history" && (
+            <Card>
+              <CardHeader
+                title="Change History"
+                subtitle="Last 50 governance settings changes made by Super Admins."
+              />
+              {historyLoading ? (
+                <div className="px-6 py-8 text-sm text-slate-400 dark:text-slate-500 text-center">
+                  Loading history…
+                </div>
+              ) : historyLogs.length === 0 ? (
+                <div className="px-6 py-8 text-sm text-slate-400 dark:text-slate-500 text-center">
+                  No governance changes recorded yet.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {historyLogs.map((log) => {
+                    const actor = log.user
+                      ? `${[log.user.firstName, log.user.lastName].filter(Boolean).join(" ") || log.user.userId}`
+                      : `User #${log.userId}`;
+                    return (
+                      <div key={log.id} className="flex items-start gap-4 px-6 py-3">
+                        <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0 text-xs font-bold">
+                          {actor.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-slate-800 dark:text-slate-100">
+                            <span className="font-medium">{actor}</span>{" "}
+                            updated governance settings
+                          </p>
+                          {log.details && (
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {log.details}
+                            </p>
+                          )}
+                        </div>
+                        <time className="text-xs text-slate-400 whitespace-nowrap mt-0.5">
+                          {new Date(log.createdAt).toLocaleString()}
+                        </time>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Card>
           )}
         </div>

@@ -870,6 +870,7 @@ function UserDetailModal({
   onChangePassword,
   onChangeRole,
   onAssignTeam,
+  onAssignCustomRole,
   onToggleStatus,
 }: {
   isOpen: boolean;
@@ -880,6 +881,7 @@ function UserDetailModal({
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
+  onAssignCustomRole: (u: User) => void;
   onToggleStatus: (u: User) => void;
 }) {
   if (!user) return null;
@@ -1084,6 +1086,44 @@ function UserDetailModal({
                   </p>
                   <p className="text-xs text-slate-400">
                     Move to a different team
+                  </p>
+                </div>
+              </button>
+            )}
+            {actorRole === "SUPER_ADMIN" && user.role !== "SUPER_ADMIN" && (
+              <button
+                onClick={() => {
+                  onAssignCustomRole(user);
+                  onClose();
+                }}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
+              >
+                <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <svg
+                    className="w-4 h-4 text-violet-600 dark:text-violet-400"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L9.568 3z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 6h.008v.008H6V6z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    Assign Custom Role
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Override feature permissions
                   </p>
                 </div>
               </button>
@@ -1932,6 +1972,100 @@ function ChangeRoleModal({
 }
 
 /* ──────────────────────────────────────────────────────────
+   ASSIGN CUSTOM ROLE MODAL
+   ────────────────────────────────────────────────────────── */
+
+function AssignCustomRoleModal({
+  isOpen,
+  onClose,
+  targetUser,
+  roles,
+  onAssign,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  targetUser: User | null;
+  roles: UserRole[];
+  onAssign: (userId: number, userRoleId: number | null) => Promise<void>;
+}) {
+  const TEAM_POLICY_PREFIX = "__TEAM_ROLE_POLICY__";
+  const selectableRoles = roles.filter(
+    (r) => !r.slug.startsWith(TEAM_POLICY_PREFIX),
+  );
+  const [selectedId, setSelectedId] = useState<number | null>(
+    targetUser?.userRoleId ?? null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (targetUser) setSelectedId(targetUser.userRoleId ?? null);
+  }, [targetUser]);
+
+  const handleSubmit = async () => {
+    if (!targetUser) return;
+    setLoading(true);
+    setError("");
+    try {
+      await onAssign(targetUser.id, selectedId);
+      onClose();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!targetUser) return null;
+  const currentRoleName = targetUser.userRole?.name ?? "None";
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Assign Custom Role" size="sm">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Assign a custom feature role to{" "}
+          <span className="font-semibold text-slate-900 dark:text-white">
+            {getDisplayName(targetUser)}
+          </span>
+          .{" "}
+          <span className="text-xs">
+            Currently:{" "}
+            <span className="font-medium">{currentRoleName}</span>
+          </span>
+        </p>
+
+        <Select
+          label="Custom Role"
+          value={String(selectedId ?? "")}
+          onChange={(e) =>
+            setSelectedId(e.target.value === "" ? null : Number(e.target.value))
+          }
+        >
+          <option value="">— No custom role —</option>
+          {selectableRoles.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </Select>
+
+        {error && (
+          <p className="text-xs text-red-500 dark:text-red-400">{error}</p>
+        )}
+        <div className="flex gap-3 pt-1">
+          <Button variant="secondary" className="flex-1 justify-center" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button className="flex-1 justify-center" onClick={handleSubmit} loading={loading}>
+            Save
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
    ASSIGN TEAM MODAL
    FIX: derive availableTeams inside useEffect using raw teams list
    ────────────────────────────────────────────────────────── */
@@ -2165,6 +2299,7 @@ export default function UsersPage() {
     changeRole,
     changePassword,
     resetPassword,
+    assignUserRole,
     refetch,
   } = useUsers();
   const { teams } = useTeams();
@@ -2200,6 +2335,7 @@ export default function UsersPage() {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showChangeRole, setShowChangeRole] = useState(false);
   const [showAssignTeam, setShowAssignTeam] = useState(false);
+  const [showAssignCustomRole, setShowAssignCustomRole] = useState(false);
   const [targetUser, setTargetUser] = useState<User | null>(null);
 
   const actorRole = (currentUser?.role ?? "USER") as Role;
@@ -2600,6 +2736,10 @@ export default function UsersPage() {
     setTargetUser(u);
     setShowAssignTeam(true);
   };
+  const handleOpenAssignCustomRole = (u: User) => {
+    setTargetUser(u);
+    setShowAssignCustomRole(true);
+  };
 
   const handleChangePassword = async (userId: number, newPassword: string) => {
     await changePassword(userId, newPassword);
@@ -2619,6 +2759,16 @@ export default function UsersPage() {
     await assignTeam(userId, teamId);
     show("Team assignment updated", "success");
     refetch();
+  };
+  const handleAssignCustomRole = async (
+    userId: number,
+    userRoleId: number | null,
+  ) => {
+    await assignUserRole(userId, userRoleId);
+    show(
+      userRoleId ? "Custom role assigned" : "Custom role cleared",
+      "success",
+    );
   };
 
   const handleBulkActivate = async () => {
@@ -2999,6 +3149,7 @@ export default function UsersPage() {
         onChangePassword={handleOpenChangePassword}
         onChangeRole={handleOpenChangeRole}
         onAssignTeam={handleOpenAssignTeam}
+        onAssignCustomRole={handleOpenAssignCustomRole}
         onToggleStatus={handleToggle}
       />
       <ChangePasswordModal
@@ -3030,6 +3181,17 @@ export default function UsersPage() {
         targetUser={targetUser}
         teams={teams}
         onAssignTeam={handleAssignTeam}
+      />
+
+      <AssignCustomRoleModal
+        isOpen={showAssignCustomRole}
+        onClose={() => {
+          setShowAssignCustomRole(false);
+          setTargetUser(null);
+        }}
+        targetUser={targetUser}
+        roles={customRoles}
+        onAssign={handleAssignCustomRole}
       />
 
       <BulkAssignTeamModal

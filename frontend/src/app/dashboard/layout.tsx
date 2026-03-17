@@ -90,11 +90,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
-  useAutoLogout(15);
+  const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(15);
+  useAutoLogout(sessionTimeoutMinutes);
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [strictRateLimitMode, setStrictRateLimitMode] = useState(false);
   const splashCheckedRef = useRef(false);
   const redirectedRef = useRef(false);
 
@@ -148,12 +150,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
     const fetchOperationsStatus = async () => {
       try {
-        const { operationsPolicy } = await settingsApi.getOperationsStatus();
+        const { operationsPolicy, sessionTimeoutMinutes: timeout } =
+          await settingsApi.getOperationsStatus();
         if (!active) return;
         setMaintenanceMode(Boolean(operationsPolicy.maintenanceMode));
+        setStrictRateLimitMode(Boolean(operationsPolicy.strictRateLimitMode));
+        if (typeof timeout === "number" && timeout >= 5) {
+          setSessionTimeoutMinutes(timeout);
+        }
       } catch {
         if (!active) return;
         setMaintenanceMode(false);
+        setStrictRateLimitMode(false);
       }
     };
 
@@ -262,7 +270,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex flex-col overflow-hidden">
         {maintenanceMode && (
           <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
-            Maintenance mode is active. Some actions are temporarily restricted.
+            Maintenance mode is active — write operations are temporarily restricted.
+          </div>
+        )}
+        {!maintenanceMode && strictRateLimitMode && (
+          <div className="flex-shrink-0 border-b border-orange-200 bg-orange-50 px-6 py-2 text-xs font-medium text-orange-800 dark:border-orange-900/40 dark:bg-orange-900/20 dark:text-orange-300">
+            Strict rate-limit mode is active — requests are limited to 60 per minute per IP.
           </div>
         )}
         {!isBrdRoute && (

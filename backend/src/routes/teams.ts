@@ -254,12 +254,34 @@ router.patch(
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, "");
 
+      // Guard against slug / name collision with another team
+      const collision = await prisma.team.findFirst({
+        where: {
+          id: { not: targetId },
+          OR: [
+            { name: { equals: name.trim(), mode: "insensitive" } },
+            { slug },
+          ],
+        },
+      });
+      if (collision) {
+        return res.status(409).json({ error: "A team with this name already exists" });
+      }
+
       const updated = await prisma.team.update({
         where: { id: targetId },
         data: { name: name.trim(), slug },
       });
 
       await renameTeamPolicies(team.slug, updated.slug);
+
+      await prisma.userLog.create({
+        data: {
+          userId: req.user!.userId,
+          action: "TEAM_RENAMED",
+          details: `Renamed team "${team.name}" to "${name.trim()}"`,
+        },
+      });
 
       res.json({ message: "Team updated", team: updated });
     } catch (error) {

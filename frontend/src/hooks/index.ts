@@ -106,6 +106,11 @@ export function useUsers() {
     return await authApi.resetUserPassword(targetUserId);
   };
 
+  const assignUserRole = async (id: number, userRoleId: number | null) => {
+    await usersApi.assignUserRole(id, userRoleId);
+    await refetch();
+  };
+
   return {
     users,
     isLoading,
@@ -118,6 +123,7 @@ export function useUsers() {
     activateUser,
     changePassword,
     resetPassword,
+    assignUserRole,
   };
 }
 
@@ -595,6 +601,49 @@ export function useTaskComments(taskId: number) {
   };
 
   return { comments, isLoading, error, refetch, addComment, deleteComment };
+}
+
+// ─── useGovernanceHistory ────────────────────────────────
+export function useGovernanceHistory() {
+  const [logs, setLogs] = useState<UserLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const refetch = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const { logs } = await settingsApi.getGovernanceHistory();
+      setLogs(logs);
+    } catch {
+      setLogs([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  return { logs, isLoading, refetch };
+}
+
+// ─── usePasswordPolicy ────────────────────────────────────
+export function usePasswordPolicy() {
+  const [policy, setPolicy] = useState<{
+    minPasswordLength: number;
+    requireUppercase: boolean;
+    requireNumber: boolean;
+    minSpecialChars: number;
+  } | null>(null);
+
+  useEffect(() => {
+    authApi
+      .getPasswordPolicy()
+      .then(setPolicy)
+      .catch(() => setPolicy(null));
+  }, []);
+
+  return policy;
 }
 
 // ─── useToast ──────────────────────────────────────────────
