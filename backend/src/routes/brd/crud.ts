@@ -7,19 +7,13 @@ import { downloadJsonObject, extractStoragePath } from "../../lib/supabase-stora
 
 const router = Router();
 
-const VALID_STATUSES = ["DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"];
-
-/** Fix historical typo: "sectionns" → "sections" in stored paths. */
-function normalizeStoragePath(p: string): string {
-  return p.replace(/\/sectionns\//g, "/sections/");
-}
+const VALID_STATUSES = ["DRAFT", "ONGOING", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"];
 
 async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
-  const path = normalizeStoragePath(storagePath);
   try {
-    return await downloadJsonObject(path);
+    return await downloadJsonObject(storagePath);
   } catch {
     console.warn(`⚠️ Missing file in storage: ${storagePath}`);
     return null;
