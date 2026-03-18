@@ -26,6 +26,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Trust first proxy so rate-limit and IP detection work correctly behind reverse proxies.
+app.set("trust proxy", 1);
+
 app.use(
   cors({
     origin: process.env.FRONTEND_URL || "http://localhost:3000",
