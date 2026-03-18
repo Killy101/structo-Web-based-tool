@@ -9,6 +9,7 @@ export const loginLimiter = rateLimit({
   max: 50,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
   message: { error: "Too many login attempts. Please try again later." },
 });
 
@@ -38,7 +39,7 @@ export const generalLimiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: safeIpKeyGenerator, // fallback included
+  keyGenerator: (req: any) => req.user?.userId?.toString() ?? ipKeyGenerator(req),
   message: { error: "Too many requests. Please slow down." },
 });
 

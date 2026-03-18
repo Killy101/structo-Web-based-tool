@@ -40,6 +40,10 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// ── Trust proxy — required for req.ip to work behind any reverse proxy ────────
+// Without this, express-rate-limit throws ERR_ERL_UNDEFINED_IP_ADDRESS.
+app.set("trust proxy", 1);
+
 // ── Governance controls (maintenance mode + strict rate limit mode) ──────────
 app.use(governanceControlsMiddleware);
 
