@@ -354,4 +354,127 @@ router.post(
     }
   }
 );
+// ── POST /brd/re-upload/:brdId — replace sections for an existing BRD ────────
+// Used when a finalized document is received after the draft has been reviewed.
+// The BRD record itself (title, format, status) is preserved; only the extracted
+// sections and images are replaced.
+router.post(
+  "/re-upload/:brdId",
+  processingLimiter,
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    const file = req.file;
+    const { brdId } = req.params;
+
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    try {
+      // Confirm the BRD exists and is not deleted
+      const existing = await prisma.brd.findUnique({
+        where: { brdId },
+        select: { brdId: true, deletedAt: true, status: true },
+      });
+      if (!existing || existing.deletedAt !== null) {
+        return res.status(404).json({ error: "BRD not found" });
+      }
+
+      // Forward to Python processor with the same brdId
+      const form = new FormData();
+      form.append("file", fs.createReadStream(file.path), {
+        filename: file.originalname,
+        contentType: file.mimetype,
+      });
+
+      const pyRes = await fetch(
+        `${PROCESSING_URL}/process?brd_id=${encodeURIComponent(brdId)}`,
+        { method: "POST", body: form, headers: form.getHeaders() },
+      );
+
+      if (!pyRes.ok) {
+        const errText = (await pyRes.text()).slice(0, 500);
+        throw new Error(`Processing service error [${pyRes.status}]: ${errText}`);
+      }
+
+      const extracted = (await pyRes.json()) as ProcessingResult;
+
+      // Overwrite section blobs in Supabase Storage
+      const storageSectionPaths = {
+        scope:          await uploadJsonObject(sectionPath(brdId, "scope"),          extracted.scope           ?? null),
+        metadata:       await uploadJsonObject(sectionPath(brdId, "metadata"),       extracted.metadata        ?? null),
+        toc:            await uploadJsonObject(sectionPath(brdId, "toc"),            extracted.toc             ?? null),
+        citations:      await uploadJsonObject(sectionPath(brdId, "citations"),      extracted.citations       ?? null),
+        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extracted.content_profile ?? null),
+        brdConfig:      await uploadJsonObject(sectionPath(brdId, "brdConfig"),      extracted.brd_config || extracted.brdConfig || null),
+      };
+
+      const imageRecords = await Promise.all(
+        (extracted.image_metadata ?? []).map(async (img, index) => {
+          const storagePath2 = imagePath(brdId, img, index);
+          await uploadBinaryObject(storagePath2, Buffer.from(img.imageData, "base64"), img.mimeType || "image/png");
+          return {
+            brdId,
+            tableIndex: img.tableIndex,
+            rowIndex:   img.rowIndex,
+            colIndex:   img.colIndex,
+            rid:        img.rid,
+            mediaName:  img.mediaName,
+            mimeType:   img.mimeType,
+            cellText:   img.cellText || "",
+            blobUrl:    storagePath2,
+          };
+        }),
+      );
+
+      await prisma.$transaction(async (tx) => {
+        // Update brdSections (upsert in case row is missing)
+        await tx.brdSections.upsert({
+          where:  { brdId },
+          create: {
+            brdId,
+            scope:          (makeStoragePointer(storageSectionPaths.scope)          as any) || Prisma.JsonNull,
+            metadata:       (makeStoragePointer(storageSectionPaths.metadata)       as any) || Prisma.JsonNull,
+            toc:            (makeStoragePointer(storageSectionPaths.toc)            as any) || Prisma.JsonNull,
+            citations:      (makeStoragePointer(storageSectionPaths.citations)      as any) || Prisma.JsonNull,
+            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
+            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig)      as any) || Prisma.JsonNull,
+          },
+          update: {
+            scope:          (makeStoragePointer(storageSectionPaths.scope)          as any) || Prisma.JsonNull,
+            metadata:       (makeStoragePointer(storageSectionPaths.metadata)       as any) || Prisma.JsonNull,
+            toc:            (makeStoragePointer(storageSectionPaths.toc)            as any) || Prisma.JsonNull,
+            citations:      (makeStoragePointer(storageSectionPaths.citations)      as any) || Prisma.JsonNull,
+            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
+            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig)      as any) || Prisma.JsonNull,
+          },
+        });
+
+        // Replace images
+        await tx.brdCellImage.deleteMany({ where: { brdId } });
+        if (imageRecords.length > 0) {
+          await tx.brdCellImage.createMany({ data: imageRecords });
+        }
+      });
+
+      const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || [];
+
+      return res.json({
+        brdId,
+        format: extracted.detected_format === "old" ? "old" : "new",
+        scope:          extracted.scope,
+        metadata:       extracted.metadata,
+        toc:            extracted.toc,
+        citations:      extracted.citations,
+        contentProfile: extracted.content_profile,
+        brdConfig:      extracted.brd_config || extracted.brdConfig || null,
+        imageMetadata:  responseImageMetadata,
+      });
+    } catch (err) {
+      console.error("[POST /brd/re-upload/:brdId]", err);
+      return res.status(500).json({ error: err instanceof Error ? err.message : "Re-upload failed" });
+    } finally {
+      if (file?.path) fs.unlink(file.path, () => {});
+    }
+  },
+);
+
 export default router;

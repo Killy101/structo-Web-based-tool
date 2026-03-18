@@ -63,6 +63,7 @@ interface Props {
   brdId?: string;
   title?: string;
   format?: "new" | "old";
+  status?: string;
   initialData?: {
     scope?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
@@ -75,6 +76,9 @@ interface Props {
   onComplete?: () => void;
   canEdit?: boolean;
 }
+
+/** Keys that require APPROVED status before generation is allowed. */
+const APPROVAL_RESTRICTED = new Set(["metajson", "innod", "content"]);
 
 type Format = "new" | "old";
 
@@ -871,7 +875,8 @@ const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; descriptio
   content:  { label:"Content Profile",  sublabel:"Export",   description:"Levels & whitespace rules as Excel",        iconKey:"content",  accentLight:"#f5f3ff", accentDark:"#2a1f45", iconColorLight:"#7c3aed", iconColorDark:"#a78bfa", btnBg:"#7c3aed", btnHover:"#6d28d9", badgeLabel:".xls"  },
 };
 
-export default function Generate({ brdId, title, format, initialData, onEdit, onComplete, canEdit = true }: Props) {
+export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true }: Props) {
+  const isApproved = status === "APPROVED";
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
   const [completed, setCompleted]   = useState<Record<string, boolean>>({});
@@ -1123,38 +1128,47 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
                 <span className="text-[10px] text-slate-300 dark:text-slate-600" style={MONO}>4 outputs</span>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:12,alignItems:"stretch"}}>
-                {(["brd","metajson","innod","content"] as const).map(key=>(
-                  <div key={key} className={`gen-btn-card flex flex-col${done[key]?" gen-btn-done":""}`}
-                    style={{border:done[key]?"1.5px solid #bbf7d0":"1.5px solid #e2e8f0",borderRadius:8,background:done[key]?"#f0fdf4":"#ffffff",boxShadow:"0 1px 4px rgba(0,0,0,0.05)",overflow:"hidden",transition:"border-color 0.2s, background 0.2s"}}>
-                    <div className="flex items-start gap-3 p-4 pb-2.5" style={{flex:1}}>
-                      <div className={`gen-btn-icon-wrap icon-${key}${done[key]?" icon-done":""} flex-shrink-0 flex items-center justify-center rounded-lg`}
-                        style={{width:38,height:38,background:done[key]?"#dcfce7":GEN_BTN_CONFIG[key].accentLight,color:done[key]?"#16a34a":GEN_BTN_CONFIG[key].iconColorLight,transition:"background 0.2s, color 0.2s"}}>
-                        {done[key]?<svg viewBox="0 0 20 20" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth="2"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>:GenBtnIcons[GEN_BTN_CONFIG[key].iconKey]}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 mb-0.5">
-                          <span className={`gen-btn-sublabel${done[key]?" done":""} text-[10px] font-bold uppercase tracking-[0.14em]`} style={{...MONO,color:done[key]?"#15803d":"#94a3b8"}}>{done[key]?"Done":GEN_BTN_CONFIG[key].sublabel}</span>
-                          <span className={`gen-btn-badge${done[key]?" done":""} text-[9px] font-semibold px-1.5 py-0.5 rounded`} style={{...MONO,background:done[key]?"#bbf7d0":"#f1f5f9",color:done[key]?"#15803d":"#64748b"}}>{GEN_BTN_CONFIG[key].badgeLabel}</span>
+                {(["brd","metajson","innod","content"] as const).map(key=>{
+                  const locked = APPROVAL_RESTRICTED.has(key) && !isApproved;
+                  return (
+                    <div key={key} className={`gen-btn-card flex flex-col${done[key]?" gen-btn-done":""}${locked?" opacity-60":""}`}
+                      style={{border:done[key]?"1.5px solid #bbf7d0":locked?"1.5px solid #e2e8f0":"1.5px solid #e2e8f0",borderRadius:8,background:done[key]?"#f0fdf4":locked?"#f8fafc":"#ffffff",boxShadow:"0 1px 4px rgba(0,0,0,0.05)",overflow:"hidden",transition:"border-color 0.2s, background 0.2s",position:"relative"}}>
+                      {locked && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 z-10 rounded-lg" style={{background:"rgba(248,250,252,0.92)"}}>
+                          <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                          <p className="text-[11px] font-semibold text-slate-500 text-center px-3">Requires <span className="text-violet-600 dark:text-violet-400">Approved</span> status</p>
                         </div>
-                        <p className={`gen-btn-title${done[key]?" done":""} text-[13px] font-semibold leading-snug`} style={{color:done[key]?"#15803d":"#1e293b"}}>{GEN_BTN_CONFIG[key].label}</p>
-                        <p className="gen-btn-desc text-[11px] text-slate-400 mt-0.5 leading-snug">{GEN_BTN_CONFIG[key].description}</p>
+                      )}
+                      <div className="flex items-start gap-3 p-4 pb-2.5" style={{flex:1}}>
+                        <div className={`gen-btn-icon-wrap icon-${key}${done[key]?" icon-done":""} flex-shrink-0 flex items-center justify-center rounded-lg`}
+                          style={{width:38,height:38,background:done[key]?"#dcfce7":GEN_BTN_CONFIG[key].accentLight,color:done[key]?"#16a34a":GEN_BTN_CONFIG[key].iconColorLight,transition:"background 0.2s, color 0.2s"}}>
+                          {done[key]?<svg viewBox="0 0 20 20" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth="2"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>:GenBtnIcons[GEN_BTN_CONFIG[key].iconKey]}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className={`gen-btn-sublabel${done[key]?" done":""} text-[10px] font-bold uppercase tracking-[0.14em]`} style={{...MONO,color:done[key]?"#15803d":"#94a3b8"}}>{done[key]?"Done":GEN_BTN_CONFIG[key].sublabel}</span>
+                            <span className={`gen-btn-badge${done[key]?" done":""} text-[9px] font-semibold px-1.5 py-0.5 rounded`} style={{...MONO,background:done[key]?"#bbf7d0":"#f1f5f9",color:done[key]?"#15803d":"#64748b"}}>{GEN_BTN_CONFIG[key].badgeLabel}</span>
+                          </div>
+                          <p className={`gen-btn-title${done[key]?" done":""} text-[13px] font-semibold leading-snug`} style={{color:done[key]?"#15803d":"#1e293b"}}>{GEN_BTN_CONFIG[key].label}</p>
+                          <p className="gen-btn-desc text-[11px] text-slate-400 mt-0.5 leading-snug">{GEN_BTN_CONFIG[key].description}</p>
+                        </div>
+                      </div>
+                      <div className="px-4 pb-4 pt-1">
+                        <button
+                          onClick={key==="brd"?runGenerateBrdExcel:key==="metajson"?runGenerateMetajson:key==="innod"?runGenerateInnod:runGenerateContentProfileExcel}
+                          disabled={!!generating[key]||!!done[key]||locked}
+                          className="w-full py-2 rounded-md text-[12px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                          style={{background:done[key]?"#16a34a":GEN_BTN_CONFIG[key].btnBg,transition:"background 0.15s"}}
+                          onMouseEnter={e=>{if(!done[key]&&!generating[key]&&!locked)(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnHover;}}
+                          onMouseLeave={e=>{if(!done[key]&&!generating[key]&&!locked)(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnBg;}}>
+                          {generating[key]?(<><svg className="animate-spin w-3.5 h-3.5 text-white/80" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>Generating…</>)
+                            :done[key]?(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2.5"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>Generated</>)
+                            :(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><path d="M10 3v11M5 9l5 5 5-5" strokeLinecap="round" strokeLinejoin="round"/></svg>{GEN_BTN_CONFIG[key].sublabel} {GEN_BTN_CONFIG[key].label}</>)}
+                        </button>
                       </div>
                     </div>
-                    <div className="px-4 pb-4 pt-1">
-                      <button
-                        onClick={key==="brd"?runGenerateBrdExcel:key==="metajson"?runGenerateMetajson:key==="innod"?runGenerateInnod:runGenerateContentProfileExcel}
-                        disabled={!!generating[key]||!!done[key]}
-                        className="w-full py-2 rounded-md text-[12px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                        style={{background:done[key]?"#16a34a":GEN_BTN_CONFIG[key].btnBg,transition:"background 0.15s"}}
-                        onMouseEnter={e=>{if(!done[key]&&!generating[key])(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnHover;}}
-                        onMouseLeave={e=>{if(!done[key]&&!generating[key])(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnBg;}}>
-                        {generating[key]?(<><svg className="animate-spin w-3.5 h-3.5 text-white/80" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>Generating…</>)
-                          :done[key]?(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2.5"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>Generated</>)
-                          :(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><path d="M10 3v11M5 9l5 5 5-5" strokeLinecap="round" strokeLinejoin="round"/></svg>{GEN_BTN_CONFIG[key].sublabel} {GEN_BTN_CONFIG[key].label}</>)}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

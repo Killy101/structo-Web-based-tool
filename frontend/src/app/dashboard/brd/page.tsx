@@ -4,7 +4,7 @@ import { Card, CardHeader } from "@/components/ui";
 import BrdFlow from "@/components/brd/BrdFlow";
 import api from "@/app/lib/api";
 
-type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
+type BrdStatus = "DRAFT" | "ONGOING" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
 type SortField = "name" | "date";
 type SortDirection = "asc" | "desc";
 
@@ -25,11 +25,17 @@ function displayTitle(brd: Brd): string {
 }
 
 const STATUS_LABEL: Record<BrdStatus, string> = {
-  DRAFT: "On Going", PAUSED: "Paused", COMPLETED: "Completed", APPROVED: "Approved", ON_HOLD: "On Hold",
+  DRAFT:     "Draft",
+  ONGOING:   "Ongoing",
+  PAUSED:    "Paused",
+  COMPLETED: "Completed",
+  APPROVED:  "Approved",
+  ON_HOLD:   "On Hold",
 };
 
 const STATUS_BADGE: Record<BrdStatus, string> = {
-  DRAFT:     "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
+  DRAFT:     "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+  ONGOING:   "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
   PAUSED:    "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
   COMPLETED: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
   APPROVED:  "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
@@ -37,12 +43,24 @@ const STATUS_BADGE: Record<BrdStatus, string> = {
 };
 
 const STATUS_DOT: Record<BrdStatus, string> = {
-  DRAFT:     "bg-sky-500 animate-pulse",
+  DRAFT:     "bg-slate-400",
+  ONGOING:   "bg-sky-500 animate-pulse",
   PAUSED:    "bg-amber-500",
   COMPLETED: "bg-emerald-500",
   APPROVED:  "bg-violet-500",
   ON_HOLD:   "bg-slate-400",
 };
+
+/** Returns valid next statuses for a given current status (workflow order). */
+function getNextStatuses(current: BrdStatus): BrdStatus[] {
+  switch (current) {
+    case "DRAFT":     return ["ONGOING"];
+    case "ONGOING":   return ["PAUSED", "COMPLETED"];
+    case "PAUSED":    return ["ONGOING", "COMPLETED"];
+    case "COMPLETED": return ["APPROVED"];
+    default:          return [];
+  }
+}
 
 // ── Continent / Geography ─────────────────────────────────────────
 type Continent = "Asia" | "Europe" | "Americas" | "Africa" | "Oceania" | "Global";
@@ -148,7 +166,7 @@ export default function BrdPage() {
   const [showBrdFlow,     setShowBrdFlow]     = useState(false);
   const [flowInitialStep, setFlowInitialStep] = useState(0);
   const [flowFinalMode,   setFlowFinalMode]   = useState<"generate" | "view">("generate");
-  const [flowInitialMeta, setFlowInitialMeta] = useState<{ format: "new" | "old"; brdId: string; title: string } | null>(null);
+  const [flowInitialMeta, setFlowInitialMeta] = useState<{ format: "new" | "old"; brdId: string; title: string; status?: BrdStatus } | null>(null);
   const [fetchError,      setFetchError]      = useState<string | null>(null);
   const [page,            setPage]            = useState(1);
   const [rowsPerPage,     setRowsPerPage]     = useState(10);
@@ -184,6 +202,12 @@ export default function BrdPage() {
   }, []);
 
   useEffect(() => { fetchBrds(); }, [fetchBrds]);
+  // Sync newStatus to first valid next-status whenever the modal target changes
+  useEffect(() => {
+    if (!statusChangeBrd) return;
+    const nexts = getNextStatuses(statusChangeBrd.status);
+    if (nexts.length > 0) setNewStatus(nexts[0]);
+  }, [statusChangeBrd]);
   const handleFlowClose = useCallback(() => { setShowBrdFlow(false); fetchBrds(); }, [fetchBrds]);
   const handleRemove = (brd: Brd) => setDeleteTarget(brd);
 
@@ -489,11 +513,11 @@ export default function BrdPage() {
             )}
           </div>
 
-          {/* New BRD */}
+          {/* Draft BRD */}
           <button onClick={startNewBrd}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
             <PlusIcon />
-            New BRD
+            Draft BRD
           </button>
         </div>
       </div>
@@ -541,13 +565,13 @@ export default function BrdPage() {
                     <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                   </div>
                   <div className="text-sm font-medium text-slate-600 dark:text-slate-400">{brds.length === 0 ? "No BRDs yet" : "No results found"}</div>
-                  <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? "Click \"New BRD\" to get started." : "Try adjusting your search or filters."}</div>
+                  <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? "Click \"Draft BRD\" to get started." : "Try adjusting your search or filters."}</div>
                 </td>
               </tr>
             ) : paginated.map((brd) => {
               const name = displayTitle(brd);
               const hasSourceLabel = !!(brd.sourceName?.trim() || brd.contentName?.trim());
-              const isLocked = brd.status !== "DRAFT" && brd.status !== "COMPLETED" && brd.status !== "APPROVED" && brd.status !== "PAUSED";
+              const isLocked = brd.status === "ON_HOLD";
               const isSelected = selected.has(brd.id);
               const continent = detectContinent(brd.geography);
               return (
@@ -602,33 +626,34 @@ export default function BrdPage() {
                   {/* Actions */}
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
-                      {/* DRAFT-specific actions */}
-                      {brd.status === "DRAFT" && (
-                        <>
-                          <button onClick={() => setReuploadBrd(brd)}
-                            title="Re-upload finalized document"
-                            className="p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 dark:hover:text-green-400 transition-colors">
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
-                            </svg>
-                          </button>
-                          <button onClick={() => setStatusChangeBrd(brd)}
-                            title="Change status to Completed or Approved"
-                            className="p-1.5 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 dark:hover:text-purple-400 transition-colors">
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                            </svg>
-                          </button>
-                        </>
+                      {/* Re-upload — only available once BRD is Ongoing */}
+                      {brd.status === "ONGOING" && (
+                        <button onClick={() => setReuploadBrd(brd)}
+                          title="Re-upload finalized document"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 dark:hover:text-green-400 transition-colors">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+                          </svg>
+                        </button>
+                      )}
+                      {/* Status change — available for any status that has a valid next step */}
+                      {getNextStatuses(brd.status).length > 0 && (
+                        <button onClick={() => setStatusChangeBrd(brd)}
+                          title="Change status"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 dark:hover:text-purple-400 transition-colors">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                          </svg>
+                        </button>
                       )}
                       <button disabled={isLocked}
-                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
+                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
                         title="View BRD"
                         className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EyeIcon />
                       </button>
                       <button disabled={isLocked}
-                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
+                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
                         title="Edit BRD"
                         className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EditIcon />
@@ -739,7 +764,7 @@ export default function BrdPage() {
         </div>
       )}
 
-      {/* ── Status Change Modal (DRAFT only) ── */}
+      {/* ── Status Change Modal ── */}
       {statusChangeBrd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !statusChanging && setStatusChangeBrd(null)} />
@@ -756,7 +781,7 @@ export default function BrdPage() {
                   <div className="flex-1 min-w-0">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Change BRD Status</h3>
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                      After re-uploading the finalized document, select a new status.
+                      Move this BRD to the next stage in the workflow.
                     </p>
                   </div>
                 </div>
@@ -764,8 +789,9 @@ export default function BrdPage() {
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-2">New Status</label>
                   <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as BrdStatus)}
                     className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    <option value="COMPLETED">Completed</option>
-                    <option value="APPROVED">Approved</option>
+                    {getNextStatuses(statusChangeBrd!.status).map(s => (
+                      <option key={s} value={s}>{STATUS_LABEL[s]}</option>
+                    ))}
                   </select>
                   <div className="mt-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
                     <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">BRD</div>
