@@ -32,20 +32,30 @@ function normalizeOperationsFlags(input: unknown): OperationsFlags {
   };
 }
 
+const GOVERNANCE_ERROR_CACHE_TTL_MS = 30_000; // retry DB after 30s on error
+
 async function getOperationsFlags(): Promise<OperationsFlags> {
   const now = Date.now();
   if (cachedFlags && now - cachedFlags.fetchedAt < GOVERNANCE_CACHE_TTL_MS) {
     return cachedFlags;
   }
 
-  const row = await prisma.appSetting.findUnique({
-    where: { key: GOVERNANCE_OPERATIONS_KEY },
-    select: { value: true },
-  });
-
-  const ops = normalizeOperationsFlags(row?.value);
-  cachedFlags = { ...ops, fetchedAt: now };
-  return ops;
+  try {
+    const row = await prisma.appSetting.findUnique({
+      where: { key: GOVERNANCE_OPERATIONS_KEY },
+      select: { value: true },
+    });
+    const ops = normalizeOperationsFlags(row?.value);
+    cachedFlags = { ...ops, fetchedAt: now };
+    return ops;
+  } catch (err) {
+    // DB unreachable — keep serving from cache if available, otherwise use safe defaults.
+    // Use a longer TTL on error so we don't hammer a struggling DB every request.
+    if (cachedFlags) return cachedFlags;
+    const safe: OperationsFlags = { maintenanceMode: false, strictRateLimitMode: false };
+    cachedFlags = { ...safe, fetchedAt: now - GOVERNANCE_CACHE_TTL_MS + GOVERNANCE_ERROR_CACHE_TTL_MS };
+    return safe;
+  }
 }
 
 function isMutationMethod(method: string): boolean {
