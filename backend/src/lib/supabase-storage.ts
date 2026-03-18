@@ -74,9 +74,22 @@ export async function downloadJsonObject(path: string): Promise<unknown> {
     .from(BRD_STORAGE_BUCKET)
     .download(path);
 
-  if (error || !data) {
-    throw new Error(`Supabase JSON download failed for ${path}: ${error?.message || "missing data"}`);
+  if (error) {
+    const msg = error.message ?? "";
+    // Treat missing files as null rather than a hard error — handles stale
+    // storage pointers (e.g. old records with a typo in the path).
+    if (
+      msg.toLowerCase().includes("not found") ||
+      msg.toLowerCase().includes("object not found") ||
+      msg.toLowerCase().includes("no such")
+    ) {
+      console.warn(`⚠️ Missing file in storage: ${path}`);
+      return null;
+    }
+    throw new Error(`Supabase JSON download failed for ${path}: ${msg}`);
   }
+
+  if (!data) return null;
 
   const text = await data.text();
   return text ? JSON.parse(text) : null;
