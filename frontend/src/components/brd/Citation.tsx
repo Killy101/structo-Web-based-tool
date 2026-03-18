@@ -55,6 +55,26 @@ function buildRowsFromCitations(initialData?: Record<string, unknown>): Citation
     }));
 }
 
+function normalizeCitationRow(row: CitationRow) {
+  return {
+    level: row.level,
+    citationRules: row.citationRules,
+    sourceOfLaw: row.sourceOfLaw,
+    isCitable: row.isCitable,
+    smeComments: row.smeComments,
+  };
+}
+
+function citationRowsEqualIgnoringIds(a: CitationRow[], b: CitationRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (JSON.stringify(normalizeCitationRow(a[i])) !== JSON.stringify(normalizeCitationRow(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const COLUMNS = [
   { key: "level",         label: "Level",          width: "w-16",  icon: "⬡" },
   { key: "isCitable",     label: "Citable",        width: "w-20",  icon: "✓" },
@@ -165,15 +185,23 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
   function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
   const isInitializing = useRef(false);
+  const rowsRef = useRef<CitationRow[]>(INITIAL_ROWS);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
+    const nextRows = buildRowsFromCitations(initialData);
+    if (citationRowsEqualIgnoringIds(rowsRef.current, nextRows)) return;
+
     isInitializing.current = true;
-    setRows(buildRowsFromCitations(initialData));
+    setRows(nextRows);
     setEditingCell(null);
     setSaved(false);
   }, [initialData]);
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
   useEffect(() => {
     if (!onDataChange) return;

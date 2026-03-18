@@ -5,8 +5,6 @@ import * as dotenv from "dotenv";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
-console.log("DIRECT_URL:", process.env.DIRECT_URL); // debug line
-
 import { defineConfig } from "prisma/config";
 
 export default defineConfig({

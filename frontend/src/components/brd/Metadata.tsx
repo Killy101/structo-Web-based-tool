@@ -83,12 +83,22 @@ function FieldInput({
   );
 }
 
+function metadataValuesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Array.from(new Set([...Object.keys(a), ...Object.keys(b)])).sort();
+  for (const key of keys) {
+    if ((a[key] ?? "") !== (b[key] ?? "")) return false;
+  }
+  return true;
+}
+
 export default function Metadata({ format, brdId, title, onComplete, initialData, onDataChange }: Props) {
   const fields = format === "old" ? OLD_FIELDS : NEW_FIELDS;
   const [values, setValues]               = useState<Record<string, string>>({});
   const [saved, setSaved]                 = useState(false);
   const [images, setImages]               = useState<CellImageMeta[]>([]);
   const isInitializing = useRef(false);
+  const valuesRef = useRef<Record<string, string>>({});
+  const lastAppliedSignatureRef = useRef<string>("");
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   function getFieldImgsUploaded(key: string): UploadedCellImage[] { return cellImages[key] ?? []; }
   function onFieldUploaded(key: string, img: UploadedCellImage) { setCellImages(prev => ({ ...prev, [key]: [...(prev[key] ?? []), img] })); }
@@ -97,10 +107,19 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
+    const nextValues = buildMetadataValues(format, initialData);
+    const signature = `${format}:${JSON.stringify(nextValues)}`;
+    if (lastAppliedSignatureRef.current === signature && metadataValuesEqual(valuesRef.current, nextValues)) return;
+
     isInitializing.current = true;
-    setValues(buildMetadataValues(format, initialData));
+    setValues(nextValues);
+    lastAppliedSignatureRef.current = signature;
     setSaved(false);
   }, [format, initialData]);
+
+  useEffect(() => {
+    valuesRef.current = values;
+  }, [values]);
 
   useEffect(() => {
     if (!onDataChange) return;

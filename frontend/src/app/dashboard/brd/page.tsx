@@ -1,10 +1,10 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "react";
 import { Card, CardHeader } from "@/components/ui";
 import BrdFlow from "@/components/brd/BrdFlow";
 import api from "@/app/lib/api";
 
-type BrdStatus = "DRAFT" | "ONGOING" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
+type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
 type SortField = "name" | "date";
 type SortDirection = "asc" | "desc";
 
@@ -25,17 +25,19 @@ function displayTitle(brd: Brd): string {
 }
 
 const STATUS_LABEL: Record<BrdStatus, string> = {
-  DRAFT:     "Draft",
-  ONGOING:   "Ongoing",
-  PAUSED:    "Paused",
-  COMPLETED: "Completed",
-  APPROVED:  "Approved",
-  ON_HOLD:   "On Hold",
+  DRAFT: "Draft", PAUSED: "Paused", COMPLETED: "Complete", APPROVED: "Approved", ON_HOLD: "On Hold",
+};
+
+const STATUS_TRANSITIONS: Record<BrdStatus, BrdStatus[]> = {
+  DRAFT: ["DRAFT", "COMPLETED", "ON_HOLD"],
+  PAUSED: ["PAUSED", "DRAFT", "COMPLETED", "ON_HOLD"],
+  COMPLETED: ["COMPLETED", "APPROVED", "ON_HOLD"],
+  APPROVED: ["APPROVED", "ON_HOLD"],
+  ON_HOLD: ["ON_HOLD", "DRAFT", "COMPLETED", "APPROVED"],
 };
 
 const STATUS_BADGE: Record<BrdStatus, string> = {
-  DRAFT:     "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
-  ONGOING:   "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
+  DRAFT:     "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
   PAUSED:    "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
   COMPLETED: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
   APPROVED:  "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
@@ -43,24 +45,20 @@ const STATUS_BADGE: Record<BrdStatus, string> = {
 };
 
 const STATUS_DOT: Record<BrdStatus, string> = {
-  DRAFT:     "bg-slate-400",
-  ONGOING:   "bg-sky-500 animate-pulse",
+  DRAFT:     "bg-sky-500 animate-pulse",
   PAUSED:    "bg-amber-500",
   COMPLETED: "bg-emerald-500",
   APPROVED:  "bg-violet-500",
   ON_HOLD:   "bg-slate-400",
 };
 
-/** Returns valid next statuses for a given current status (workflow order). */
-function getNextStatuses(current: BrdStatus): BrdStatus[] {
-  switch (current) {
-    case "DRAFT":     return ["ONGOING"];
-    case "ONGOING":   return ["PAUSED", "COMPLETED"];
-    case "PAUSED":    return ["ONGOING", "COMPLETED"];
-    case "COMPLETED": return ["APPROVED"];
-    default:          return [];
-  }
-}
+const STATUS_HELPER: Record<BrdStatus, string> = {
+  DRAFT: "Initial draft uploaded. Re-upload final BRD while in Draft.",
+  PAUSED: "Work in progress and temporarily paused.",
+  COMPLETED: "Final BRD processed. Waiting for client approval.",
+  APPROVED: "Client approved. View BRD and generate all outputs.",
+  ON_HOLD: "Production questions or client comments pending.",
+};
 
 // ── Continent / Geography ─────────────────────────────────────────
 type Continent = "Asia" | "Europe" | "Americas" | "Africa" | "Oceania" | "Global";
@@ -142,6 +140,8 @@ const TagIcon     = () => <svg className="w-3 h-3" fill="none" stroke="currentCo
 const RefreshIcon = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>;
 const SearchIcon  = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>;
 const PlusIcon    = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4"/></svg>;
+const ReuploadIcon = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5-5m0 0l5 5m-5-5v12"/></svg>;
+const StatusIcon  = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 0h6"/></svg>;
 
 // Stat pill icons
 const ReceivedIcon  = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>;
@@ -180,14 +180,14 @@ export default function BrdPage() {
   const [deletedBrds,     setDeletedBrds]     = useState<(Brd & { deletedAt: string })[]>([]);
   const [trashLoading,    setTrashLoading]    = useState(false);
   const [restoring,       setRestoring]       = useState<string | null>(null);
-  const [reuploadBrd,     setReuploadBrd]     = useState<Brd | null>(null);
-  const [reuploadFile,    setReuploadFile]    = useState<File | null>(null);
-  const [reuploadLoading, setReuploadLoading] = useState(false);
-  const [statusChangeBrd, setStatusChangeBrd] = useState<Brd | null>(null);
-  const [newStatus,       setNewStatus]       = useState<BrdStatus>("COMPLETED");
-  const [statusChanging,  setStatusChanging]  = useState(false);
-  const [permDeleteTarget, setPermDeleteTarget] = useState<(Brd & { deletedAt: string }) | null>(null);
-  const [permDeleting,    setPermDeleting]    = useState(false);
+  const [permanentDeleting, setPermanentDeleting] = useState<string | null>(null);
+  const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<(Brd & { deletedAt: string }) | null>(null);
+  const [reuploadingId,   setReuploadingId]   = useState<string | null>(null);
+  const [reuploadTargetId, setReuploadTargetId] = useState<string | null>(null);
+  const [statusTarget,    setStatusTarget]    = useState<Brd | null>(null);
+  const [statusUpdating,  setStatusUpdating]  = useState(false);
+  const [nextStatus,      setNextStatus]      = useState<BrdStatus>("DRAFT");
+  const reuploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchBrds = useCallback(async () => {
     try {
@@ -202,12 +202,6 @@ export default function BrdPage() {
   }, []);
 
   useEffect(() => { fetchBrds(); }, [fetchBrds]);
-  // Sync newStatus to first valid next-status whenever the modal target changes
-  useEffect(() => {
-    if (!statusChangeBrd) return;
-    const nexts = getNextStatuses(statusChangeBrd.status);
-    if (nexts.length > 0) setNewStatus(nexts[0]);
-  }, [statusChangeBrd]);
   const handleFlowClose = useCallback(() => { setShowBrdFlow(false); fetchBrds(); }, [fetchBrds]);
   const handleRemove = (brd: Brd) => setDeleteTarget(brd);
 
@@ -220,7 +214,7 @@ export default function BrdPage() {
       escape(b.geography),
       escape(STATUS_LABEL[b.status] ?? b.status),
       escape(b.version),
-      escape(b.format === "old" ? "Legacy" : "New"),
+      escape(b.format === "old" ? "OLD" : "New"),
       escape(b.lastUpdated),
     ].join(","));
     const csv = [headers.map(escape).join(","), ...rows].join("\n");
@@ -253,46 +247,23 @@ export default function BrdPage() {
     finally { setRestoring(null); }
   };
 
-  const handleReupload = async () => {
-    if (!reuploadBrd || !reuploadFile) return;
-    setReuploadLoading(true);
+  const permanentlyDeleteBrd = async (brd: Brd & { deletedAt: string }) => {
+    setPermanentDeleting(brd.id);
     try {
-      const formData = new FormData();
-      formData.append("file", reuploadFile);
-      await api.post(`/brd/re-upload/${reuploadBrd.id}`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setReuploadBrd(null);
-      setReuploadFile(null);
+      await api.delete(`/brd/${brd.id}/permanent`);
+      setDeletedBrds(prev => prev.filter(item => item.id !== brd.id));
       fetchBrds();
     } catch (err) {
-      console.error("Failed to re-upload BRD:", err);
-      alert("Re-upload failed. Please try again.");
-    } finally { setReuploadLoading(false); }
+      console.error("Failed to permanently delete BRD:", err);
+    } finally {
+      setPermanentDeleting(null);
+      setPermanentDeleteTarget(null);
+    }
   };
 
-  const handleStatusChange = async () => {
-    if (!statusChangeBrd) return;
-    setStatusChanging(true);
-    try {
-      await api.patch(`/brd/${statusChangeBrd.id}`, { status: newStatus });
-      setStatusChangeBrd(null);
-      fetchBrds();
-    } catch (err) {
-      console.error("Failed to change status:", err);
-      alert("Status change failed. Please try again.");
-    } finally { setStatusChanging(false); }
-  };
-
-  const confirmPermDelete = async () => {
-    if (!permDeleteTarget) return;
-    setPermDeleting(true);
-    try {
-      await api.delete(`/brd/${permDeleteTarget.id}/permanent`);
-      setDeletedBrds(prev => prev.filter(b => b.id !== permDeleteTarget.id));
-      setPermDeleteTarget(null);
-    } catch (err) { console.error("Failed to permanently delete BRD:", err); }
-    finally { setPermDeleting(false); }
+  const confirmPermanentDelete = async () => {
+    if (!permanentDeleteTarget) return;
+    await permanentlyDeleteBrd(permanentDeleteTarget);
   };
 
   const confirmDelete = async () => {
@@ -316,6 +287,78 @@ export default function BrdPage() {
       setBulkDeleteOpen(false);
     } catch (err) { console.error("Failed to bulk delete:", err); }
     finally { setDeleteLoading(false); }
+  };
+
+  const promptReupload = (brdId: string) => {
+    setReuploadTargetId(brdId);
+    reuploadInputRef.current?.click();
+  };
+
+  const handleReuploadSelected = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const targetId = reuploadTargetId;
+    e.target.value = "";
+
+    if (!file || !targetId) return;
+
+    const targetBrd = brds.find((b) => b.id === targetId) ?? null;
+
+    setReuploadingId(targetId);
+    setFetchError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      await api.post(`/brd/re-upload/${targetId}`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      await fetchBrds();
+
+      if (targetBrd) {
+        setFlowFinalMode("generate");
+        setFlowInitialStep(1);
+        setFlowInitialMeta({
+          format: targetBrd.format,
+          brdId: targetBrd.id,
+          title: displayTitle(targetBrd),
+          status: targetBrd.status,
+        });
+        setShowBrdFlow(true);
+      }
+    } catch (err) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setFetchError(error?.response?.data?.error ?? error?.message ?? "Re-upload failed");
+      console.error("Failed to re-upload BRD:", err);
+    } finally {
+      setReuploadingId(null);
+      setReuploadTargetId(null);
+    }
+  };
+
+  const openStatusModal = (brd: Brd) => {
+    setStatusTarget(brd);
+    setNextStatus(brd.status);
+  };
+
+  const submitStatusChange = async () => {
+    if (!statusTarget) return;
+
+    setStatusUpdating(true);
+    setFetchError(null);
+    try {
+      await api.patch(`/brd/${statusTarget.id}`, { status: nextStatus });
+      setBrds((prev) =>
+        prev.map((b) =>
+          b.id === statusTarget.id ? { ...b, status: nextStatus } : b,
+        ),
+      );
+      setStatusTarget(null);
+    } catch (err) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setFetchError(error?.response?.data?.error ?? error?.message ?? "Failed to change BRD status");
+    } finally {
+      setStatusUpdating(false);
+    }
   };
 
   const statusCounts = brds.reduce<Record<string, number>>((acc, b) => {
@@ -390,7 +433,7 @@ export default function BrdPage() {
       <div className="flex flex-wrap gap-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         {[
           { label: "Received",  value: brds.length,                   icon: <ReceivedIcon />,   color: "text-blue-500 dark:text-blue-400",    bg: "bg-blue-50 dark:bg-blue-900/20",    border: "border-r border-slate-200 dark:border-slate-800" },
-          { label: "On Going",  value: statusCounts["DRAFT"] || 0,    icon: <ProcessingIcon />, color: "text-amber-500 dark:text-amber-400",  bg: "bg-amber-50 dark:bg-amber-900/20",  border: "border-r border-slate-200 dark:border-slate-800" },
+          { label: "Draft",     value: statusCounts["DRAFT"] || 0,    icon: <ProcessingIcon />, color: "text-amber-500 dark:text-amber-400",  bg: "bg-amber-50 dark:bg-amber-900/20",  border: "border-r border-slate-200 dark:border-slate-800" },
           { label: "Paused",    value: statusCounts["PAUSED"] || 0,   icon: <PausedIcon />,     color: "text-slate-500 dark:text-slate-400",  bg: "bg-slate-50 dark:bg-slate-800/60",  border: "border-r border-slate-200 dark:border-slate-800" },
           { label: "Completed", value: statusCounts["COMPLETED"] || 0,icon: <CompletedIcon />,  color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-900/20", border: "" },
         ].map((s) => (
@@ -457,9 +500,9 @@ export default function BrdPage() {
             onChange={e => { setActiveFilter(e.target.value as BrdStatus | "All"); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
             <option value="All">All Status</option>
-            <option value="DRAFT">On Going</option>
+            <option value="DRAFT">Draft</option>
             <option value="PAUSED">Paused</option>
-            <option value="COMPLETED">Completed</option>
+            <option value="COMPLETED">Complete</option>
             <option value="APPROVED">Approved</option>
             <option value="ON_HOLD">On Hold</option>
           </select>
@@ -513,11 +556,11 @@ export default function BrdPage() {
             )}
           </div>
 
-          {/* Draft BRD */}
+          {/* New BRD */}
           <button onClick={startNewBrd}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
             <PlusIcon />
-            Draft BRD
+            New BRD
           </button>
         </div>
       </div>
@@ -528,6 +571,26 @@ export default function BrdPage() {
           ⚠ Backend error: <span className="font-mono">{fetchError}</span>
         </div>
       )}
+
+      <div className="mx-4 mt-3 px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+          <span className="font-semibold text-slate-600 dark:text-slate-300">Workflow:</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-sky-500" />Draft</span>
+          <span className="text-slate-300 dark:text-slate-600">-&gt;</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500" />Complete</span>
+          <span className="text-slate-300 dark:text-slate-600">-&gt;</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-violet-500" />Approved</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-slate-400" />On Hold (questions/comments)</span>
+        </div>
+      </div>
+
+      <input
+        ref={reuploadInputRef}
+        type="file"
+        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        className="hidden"
+        onChange={handleReuploadSelected}
+      />
 
       {/* ── Table ── */}
       <div className="flex-1 min-h-0 overflow-auto">
@@ -565,13 +628,15 @@ export default function BrdPage() {
                     <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                   </div>
                   <div className="text-sm font-medium text-slate-600 dark:text-slate-400">{brds.length === 0 ? "No BRDs yet" : "No results found"}</div>
-                  <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? "Click \"Draft BRD\" to get started." : "Try adjusting your search or filters."}</div>
+                  <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? "Click \"New BRD\" to get started." : "Try adjusting your search or filters."}</div>
                 </td>
               </tr>
             ) : paginated.map((brd) => {
               const name = displayTitle(brd);
               const hasSourceLabel = !!(brd.sourceName?.trim() || brd.contentName?.trim());
-              const isLocked = brd.status === "ON_HOLD";
+              const canView = true;
+              const canEdit = brd.status === "DRAFT" || brd.status === "PAUSED" || brd.status === "COMPLETED" || brd.status === "APPROVED" || brd.status === "ON_HOLD";
+              const canReupload = brd.status === "DRAFT";
               const isSelected = selected.has(brd.id);
               const continent = detectContinent(brd.geography);
               return (
@@ -604,17 +669,25 @@ export default function BrdPage() {
                   </td>
                   {/* Status */}
                   <td className="px-3 py-3 whitespace-nowrap">
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${STATUS_BADGE[brd.status]}`}>
+                    <span
+                      title={STATUS_HELPER[brd.status]}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${STATUS_BADGE[brd.status]}`}
+                    >
                       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[brd.status]}`} />
                       {STATUS_LABEL[brd.status]}
                     </span>
+                    {(brd.status === "COMPLETED" || brd.status === "ON_HOLD") && (
+                      <div className="mt-1 text-[10px] text-slate-400 dark:text-slate-500" title={STATUS_HELPER[brd.status]}>
+                        {brd.status === "COMPLETED" ? "Awaiting approval" : "Action required"}
+                      </div>
+                    )}
                   </td>
                   {/* Version */}
                   <td className="px-3 py-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded">{brd.version}</span>
                       {brd.format === "old"
-                        ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-400/30">Legacy</span>
+                        ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-400/30">OLD</span>
                         : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-400/10 dark:text-blue-300 dark:border-blue-400/30">New</span>
                       }
                     </div>
@@ -626,41 +699,43 @@ export default function BrdPage() {
                   {/* Actions */}
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
-                      {/* Re-upload — only available once BRD is Ongoing */}
-                      {brd.status === "ONGOING" && (
-                        <button onClick={() => setReuploadBrd(brd)}
-                          title="Re-upload finalized document"
-                          className="p-1.5 rounded-md text-slate-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 dark:hover:text-green-400 transition-colors">
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
-                          </svg>
-                        </button>
-                      )}
-                      {/* Status change — available for any status that has a valid next step */}
-                      {getNextStatuses(brd.status).length > 0 && (
-                        <button onClick={() => setStatusChangeBrd(brd)}
-                          title="Change status"
-                          className="p-1.5 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 dark:hover:text-purple-400 transition-colors">
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                          </svg>
-                        </button>
-                      )}
-                      <button disabled={isLocked}
-                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
+                      <button disabled={!canView}
+                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
                         title="View BRD"
                         className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EyeIcon />
                       </button>
-                      <button disabled={isLocked}
-                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
-                        title="Edit BRD"
+                      <button disabled={!canEdit}
+                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
+                        title="Edit BRD (Draft, Paused, Complete, Approved, On Hold)"
                         className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EditIcon />
                       </button>
                       <button onClick={() => setHistoryBrd(brd)} title="Version History"
                         className="p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 dark:hover:text-violet-400 transition-colors">
                         <HistoryIcon />
+                      </button>
+                      <button
+                        onClick={() => openStatusModal(brd)}
+                        title="Change Status"
+                        className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 dark:hover:text-indigo-400 transition-colors"
+                      >
+                        <StatusIcon />
+                      </button>
+                      <button
+                        onClick={() => promptReupload(brd.id)}
+                        title="Re-upload final BRD (Draft only)"
+                        disabled={!canReupload || reuploadingId === brd.id}
+                        className="p-1.5 rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 dark:hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {reuploadingId === brd.id ? (
+                          <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                          </svg>
+                        ) : (
+                          <ReuploadIcon />
+                        )}
                       </button>
                       <button onClick={() => handleRemove(brd)} title="Remove"
                         className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors">
@@ -712,112 +787,6 @@ export default function BrdPage() {
 
 
       {/* ── Delete Confirmation Modal (single) ── */}
-      {/* ── Re-upload Modal (DRAFTonly) ── */}
-      {reuploadBrd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !reuploadLoading && setReuploadBrd(null)} />
-          <div className="relative w-full max-w-md z-10">
-            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-              <div className="h-1 w-full bg-gradient-to-r from-green-500 to-emerald-500" />
-              <div className="p-6">
-                <div className="flex items-start gap-4">
-                  <div className="w-11 h-11 rounded-full bg-green-50 dark:bg-green-900/20 flex items-center justify-center flex-shrink-0 border border-green-100 dark:border-green-800/40">
-                    <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Re-upload Finalized BRD</h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                      Upload the finalized document. This will replace the draft sections with new extracted content.
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4">
-                  <label className="block">
-                    <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => setReuploadFile(e.target.files?.[0] || null)}
-                      className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-900/30 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-900/50 cursor-pointer"
-                    />
-                  </label>
-                  {reuploadFile && (
-                    <div className="mt-2 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                      <div className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{reuploadFile.name}</div>
-                      <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{(reuploadFile.size / 1024 / 1024).toFixed(2)} MB</div>
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2.5 mt-5">
-                  <button onClick={() => { setReuploadBrd(null); setReuploadFile(null); }} disabled={reuploadLoading}
-                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors">
-                    Cancel
-                  </button>
-                  <button onClick={handleReupload} disabled={reuploadLoading || !reuploadFile}
-                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-green-600 hover:bg-green-700 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all">
-                    {reuploadLoading
-                      ? <span className="flex items-center justify-center gap-1.5"><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Uploading…</span>
-                      : "Re-upload"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Status Change Modal ── */}
-      {statusChangeBrd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !statusChanging && setStatusChangeBrd(null)} />
-          <div className="relative w-full max-w-md z-10">
-            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-              <div className="h-1 w-full bg-gradient-to-r from-purple-500 to-violet-500" />
-              <div className="p-6">
-                <div className="flex items-start gap-4">
-                  <div className="w-11 h-11 rounded-full bg-purple-50 dark:bg-purple-900/20 flex items-center justify-center flex-shrink-0 border border-purple-100 dark:border-purple-800/40">
-                    <svg className="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Change BRD Status</h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                      Move this BRD to the next stage in the workflow.
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4">
-                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-2">New Status</label>
-                  <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as BrdStatus)}
-                    className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    {getNextStatuses(statusChangeBrd!.status).map(s => (
-                      <option key={s} value={s}>{STATUS_LABEL[s]}</option>
-                    ))}
-                  </select>
-                  <div className="mt-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">BRD</div>
-                    <div className="text-xs font-medium text-slate-800 dark:text-slate-100">{statusChangeBrd.id}</div>
-                    <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 truncate">{displayTitle(statusChangeBrd)}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2.5 mt-5">
-                  <button onClick={() => setStatusChangeBrd(null)} disabled={statusChanging}
-                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors">
-                    Cancel
-                  </button>
-                  <button onClick={handleStatusChange} disabled={statusChanging}
-                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all">
-                    {statusChanging
-                      ? <span className="flex items-center justify-center gap-1.5"><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Updating…</span>
-                      : `Change to ${newStatus}`}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Delete BRD Modal ── */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !deleteLoading && setDeleteTarget(null)} />
@@ -933,7 +902,7 @@ export default function BrdPage() {
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Deleted BRDs</h3>
-                    <p className="text-[11px] text-slate-400 dark:text-slate-500">Restore to bring back, or permanently delete to remove forever</p>
+                    <p className="text-[11px] text-slate-400 dark:text-slate-500">Soft-deleted records — restore to bring them back</p>
                   </div>
                 </div>
                 <button onClick={() => setTrashOpen(false)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
@@ -981,16 +950,28 @@ export default function BrdPage() {
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap text-slate-500 dark:text-slate-400 text-[11px]">{b.deletedAt}</td>
                           <td className="px-4 py-3 text-center">
-                            <button
-                              onClick={() => restoreBrd(b.id)}
-                              disabled={restoring === b.id}
-                              title="Restore BRD"
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                              {restoring === b.id
-                                ? <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                                : <RestoreIcon />}
-                              Restore
-                            </button>
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                onClick={() => restoreBrd(b.id)}
+                                disabled={restoring === b.id || permanentDeleting === b.id}
+                                title="Restore BRD"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                {restoring === b.id
+                                  ? <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                                  : <RestoreIcon />}
+                                Restore
+                              </button>
+                              <button
+                                onClick={() => setPermanentDeleteTarget(b)}
+                                disabled={restoring === b.id || permanentDeleting === b.id}
+                                title="Delete permanently"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                {permanentDeleting === b.id
+                                  ? <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                                  : <TrashIcon />}
+                                Delete Permanently
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1011,39 +992,50 @@ export default function BrdPage() {
       )}
 
       {/* ── Permanent Delete Confirmation Modal ── */}
-      {permDeleteTarget && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !permDeleting && setPermDeleteTarget(null)} />
-          <div className="relative w-full max-w-sm z-10 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-            <div className="h-1 w-full bg-gradient-to-r from-red-500 to-rose-500" />
-            <div className="px-6 py-5">
-              <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-xl bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <svg className="w-4.5 h-4.5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Permanently Delete BRD?</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    <span className="font-semibold text-slate-700 dark:text-slate-200">{permDeleteTarget.id}</span> will be permanently removed. This action <span className="font-semibold text-red-600 dark:text-red-400">cannot be undone</span>.
-                  </p>
-                  <div className="mt-3 p-2.5 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-                    <div className="text-xs font-medium text-slate-800 dark:text-slate-100 truncate">{permDeleteTarget.title}</div>
-                    <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Deleted on {permDeleteTarget.deletedAt}</div>
+      {permanentDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !permanentDeleting && setPermanentDeleteTarget(null)} />
+          <div className="relative w-full max-w-md z-10">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="h-1 w-full bg-gradient-to-r from-red-600 to-rose-600" />
+              <div className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className="w-11 h-11 rounded-full bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0 border border-red-100 dark:border-red-800/40">
+                    <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Delete Permanently?</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                      <span className="font-semibold text-slate-700 dark:text-slate-200">{permanentDeleteTarget.id}</span> will be permanently removed from the system and cannot be restored.
+                    </p>
                   </div>
                 </div>
+                <div className="mt-4 px-3.5 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Document</div>
+                  <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">{displayTitle(permanentDeleteTarget)}</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Deleted on {permanentDeleteTarget.deletedAt}</div>
+                </div>
+                <div className="flex items-center gap-2.5 mt-5">
+                  <button
+                    onClick={() => setPermanentDeleteTarget(null)}
+                    disabled={!!permanentDeleting}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmPermanentDelete}
+                    disabled={!!permanentDeleting}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-700 active:scale-[0.98] disabled:opacity-60 transition-all"
+                  >
+                    {permanentDeleting
+                      ? <span className="flex items-center justify-center gap-1.5"><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Deleting…</span>
+                      : "Delete Permanently"}
+                  </button>
+                </div>
               </div>
-            </div>
-            <div className="px-6 pb-5 flex items-center justify-end gap-2">
-              <button onClick={() => setPermDeleteTarget(null)} disabled={permDeleting}
-                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors">
-                Cancel
-              </button>
-              <button onClick={confirmPermDelete} disabled={permDeleting}
-                className="px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-medium disabled:opacity-60 transition-colors flex items-center gap-1.5">
-                {permDeleting
-                  ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Deleting…</>
-                  : "Delete Permanently"}
-              </button>
             </div>
           </div>
         </div>
@@ -1095,6 +1087,69 @@ export default function BrdPage() {
                 </button>
               </div>
             </Card>
+          </div>
+        </div>
+      )}
+
+      {/* ── Status Modal ── */}
+      {statusTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !statusUpdating && setStatusTarget(null)} />
+          <div className="relative w-full max-w-md z-10">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="h-1 w-full bg-gradient-to-r from-indigo-500 to-violet-500" />
+              <div className="p-6 space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Change BRD Status</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    Move <span className="font-semibold">{statusTarget.id}</span> to the next workflow state.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    New Status
+                  </label>
+                  <select
+                    value={nextStatus}
+                    onChange={(e) => setNextStatus(e.target.value as BrdStatus)}
+                    disabled={statusUpdating}
+                    className="w-full px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-400"
+                  >
+                    {(statusTarget ? STATUS_TRANSITIONS[statusTarget.status] : (["DRAFT"] as BrdStatus[])).map((status: BrdStatus) => (
+                      <option key={status} value={status}>{STATUS_LABEL[status]}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Workflow: Draft -&gt; Complete -&gt; Approved. Use On Hold for client comments or production-team questions.
+                </p>
+
+                <div className="px-3.5 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">BRD</div>
+                  <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">{statusTarget.id}</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 truncate">{displayTitle(statusTarget)}</div>
+                </div>
+
+                <div className="flex items-center gap-2.5 pt-1">
+                  <button
+                    onClick={() => setStatusTarget(null)}
+                    disabled={statusUpdating}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={submitStatusChange}
+                    disabled={statusUpdating}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-60 transition-all"
+                  >
+                    {statusUpdating ? "Updating..." : `Change to ${STATUS_LABEL[nextStatus].toUpperCase()}`}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

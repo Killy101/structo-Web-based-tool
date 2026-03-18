@@ -77,6 +77,8 @@ interface Props {
   canEdit?: boolean;
 }
 
+type SaveStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
+
 /** Keys that require APPROVED status before generation is allowed. */
 const APPROVAL_RESTRICTED = new Set(["metajson", "innod", "content"]);
 
@@ -904,6 +906,16 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const activeFormat: Format   = format === "old" ? "old" : "new";
   const metadataValues         = buildTemplateMetadataValues(activeFormat, metadataData);
   const displayTitle           = deriveTitle(metadataData, title);
+  const resolvedSaveStatus: SaveStatus =
+    status === "PAUSED" || status === "COMPLETED" || status === "APPROVED" || status === "ON_HOLD"
+      ? status
+      : "DRAFT";
+  const saveStatusLabel =
+    resolvedSaveStatus === "COMPLETED"
+      ? "Complete"
+      : resolvedSaveStatus === "ON_HOLD"
+      ? "On Hold"
+      : resolvedSaveStatus.charAt(0) + resolvedSaveStatus.slice(1).toLowerCase();
 
   function markDone(key: string, ms = 1600) {
     if (doneResetTimers.current[key]) window.clearTimeout(doneResetTimers.current[key]);
@@ -926,7 +938,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null);
     try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "COMPLETED", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       setSavedToDB(true);
     } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
     finally { setSaving(false); }
@@ -1113,7 +1125,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
                 ) : (
                   <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-500/10">
                     <svg className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">Completed</span></p>
+                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">{saveStatusLabel}</span></p>
                     <button onClick={()=>setSavedToDB(false)} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
                   </div>
                 )}

@@ -162,6 +162,43 @@ function deriveHardcodedPathFromLevels(levels: LevelRow[]): string {
   return (clean0 + "/" + clean1).replace(/\/+/g, "/");
 }
 
+function normalizeLevelRow(row: LevelRow) {
+  return {
+    levelNumber: row.levelNumber,
+    description: row.description,
+    redjayXmlTag: row.redjayXmlTag,
+    path: row.path,
+    remarksNotes: row.remarksNotes,
+  };
+}
+
+function normalizeWhitespaceRow(row: WhitespaceRow) {
+  return {
+    tags: row.tags,
+    innodReplace: row.innodReplace,
+  };
+}
+
+function levelRowsEqualIgnoringIds(a: LevelRow[], b: LevelRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (JSON.stringify(normalizeLevelRow(a[i])) !== JSON.stringify(normalizeLevelRow(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function whitespaceRowsEqualIgnoringIds(a: WhitespaceRow[], b: WhitespaceRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (JSON.stringify(normalizeWhitespaceRow(a[i])) !== JSON.stringify(normalizeWhitespaceRow(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <span
@@ -282,19 +319,51 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
   function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
   const isInitializing = useRef(false);
+  const levelsRef = useRef<LevelRow[]>([]);
+  const whitespaceRef = useRef<WhitespaceRow[]>(DEFAULT_WHITESPACE_ROWS);
+  const topFieldsRef = useRef<{ rcFilename: string; headingAnnotation: string }>({ rcFilename: "", headingAnnotation: "Level 2" });
 
   const hardcodedPath = useMemo(() => deriveHardcodedPathFromLevels(levels), [levels]);
 
   useEffect(() => {
+    const nextRcFilename = String(initialData?.rc_filename ?? "");
+    const nextHeadingAnnotation = String(initialData?.heading_annotation ?? "Level 2");
+    const nextLevels = asExtractedLevels(initialData);
+    const nextWhitespace = asExtractedWhitespace(initialData);
+
+    const topUnchanged =
+      topFieldsRef.current.rcFilename === nextRcFilename &&
+      topFieldsRef.current.headingAnnotation === nextHeadingAnnotation;
+
+    if (
+      topUnchanged &&
+      levelRowsEqualIgnoringIds(levelsRef.current, nextLevels) &&
+      whitespaceRowsEqualIgnoringIds(whitespaceRef.current, nextWhitespace)
+    ) {
+      return;
+    }
+
     isInitializing.current = true;
-    setRcFilename(String(initialData?.rc_filename ?? ""));
-    setHeadingAnnotation(String(initialData?.heading_annotation ?? "Level 2"));
-    setLevels(asExtractedLevels(initialData));
-    setWhitespace(asExtractedWhitespace(initialData));
+    setRcFilename(nextRcFilename);
+    setHeadingAnnotation(nextHeadingAnnotation);
+    setLevels(nextLevels);
+    setWhitespace(nextWhitespace);
     setLevelEditing(null);
     setWsEditing(null);
     setSaved(false);
   }, [initialData]);
+
+  useEffect(() => {
+    levelsRef.current = levels;
+  }, [levels]);
+
+  useEffect(() => {
+    whitespaceRef.current = whitespace;
+  }, [whitespace]);
+
+  useEffect(() => {
+    topFieldsRef.current = { rcFilename, headingAnnotation };
+  }, [rcFilename, headingAnnotation]);
 
   useEffect(() => {
     if (!onDataChange) return;

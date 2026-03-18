@@ -378,6 +378,18 @@ router.post(
         return res.status(404).json({ error: "BRD not found" });
       }
 
+      const existingSections = await prisma.brdSections.findUnique({
+        where: { brdId },
+        select: {
+          scope: true,
+          metadata: true,
+          toc: true,
+          citations: true,
+          contentProfile: true,
+          brdConfig: true,
+        },
+      });
+
       // Forward to Python processor with the same brdId
       const form = new FormData();
       form.append("file", fs.createReadStream(file.path), {
@@ -397,15 +409,33 @@ router.post(
 
       const extracted = (await pyRes.json()) as ProcessingResult;
 
-      // Overwrite section blobs in Supabase Storage
-      const storageSectionPaths = {
-        scope:          await uploadJsonObject(sectionPath(brdId, "scope"),          extracted.scope           ?? null),
-        metadata:       await uploadJsonObject(sectionPath(brdId, "metadata"),       extracted.metadata        ?? null),
-        toc:            await uploadJsonObject(sectionPath(brdId, "toc"),            extracted.toc             ?? null),
-        citations:      await uploadJsonObject(sectionPath(brdId, "citations"),      extracted.citations       ?? null),
-        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extracted.content_profile ?? null),
-        brdConfig:      await uploadJsonObject(sectionPath(brdId, "brdConfig"),      extracted.brd_config || extracted.brdConfig || null),
-      };
+      // Re-upload should load final BRD extraction data.
+      // Fallback to existing pointer only when a specific extracted section is missing.
+      const scopePointer = extracted.scope !== undefined && extracted.scope !== null
+        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope)) as any)
+        : ((existingSections?.scope as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "scope"), null)) as any));
+
+      const metadataPointer = extracted.metadata !== undefined && extracted.metadata !== null
+        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata)) as any)
+        : ((existingSections?.metadata as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "metadata"), null)) as any));
+
+      const tocPointer = extracted.toc !== undefined && extracted.toc !== null
+        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc)) as any)
+        : ((existingSections?.toc as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "toc"), null)) as any));
+
+      const citationsPointer = extracted.citations !== undefined && extracted.citations !== null
+        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations)) as any)
+        : ((existingSections?.citations as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), null)) as any));
+
+      const extractedContentProfile = extracted.content_profile;
+      const contentProfilePointer = extractedContentProfile !== undefined && extractedContentProfile !== null
+        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile)) as any)
+        : ((existingSections?.contentProfile as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), null)) as any));
+
+      const extractedBrdConfig = extracted.brd_config || extracted.brdConfig;
+      const brdConfigPointer = extractedBrdConfig !== undefined && extractedBrdConfig !== null
+        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "brdConfig"), extractedBrdConfig)) as any)
+        : ((existingSections?.brdConfig as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "brdConfig"), null)) as any));
 
       const imageRecords = await Promise.all(
         (extracted.image_metadata ?? []).map(async (img, index) => {
@@ -431,20 +461,20 @@ router.post(
           where:  { brdId },
           create: {
             brdId,
-            scope:          (makeStoragePointer(storageSectionPaths.scope)          as any) || Prisma.JsonNull,
-            metadata:       (makeStoragePointer(storageSectionPaths.metadata)       as any) || Prisma.JsonNull,
-            toc:            (makeStoragePointer(storageSectionPaths.toc)            as any) || Prisma.JsonNull,
-            citations:      (makeStoragePointer(storageSectionPaths.citations)      as any) || Prisma.JsonNull,
-            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig)      as any) || Prisma.JsonNull,
+            scope:          (scopePointer as any) || Prisma.JsonNull,
+            metadata:       (metadataPointer as any) || Prisma.JsonNull,
+            toc:            (tocPointer as any) || Prisma.JsonNull,
+            citations:      (citationsPointer as any) || Prisma.JsonNull,
+            contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
+            brdConfig:      (brdConfigPointer as any) || Prisma.JsonNull,
           },
           update: {
-            scope:          (makeStoragePointer(storageSectionPaths.scope)          as any) || Prisma.JsonNull,
-            metadata:       (makeStoragePointer(storageSectionPaths.metadata)       as any) || Prisma.JsonNull,
-            toc:            (makeStoragePointer(storageSectionPaths.toc)            as any) || Prisma.JsonNull,
-            citations:      (makeStoragePointer(storageSectionPaths.citations)      as any) || Prisma.JsonNull,
-            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig)      as any) || Prisma.JsonNull,
+            scope:          (scopePointer as any) || Prisma.JsonNull,
+            metadata:       (metadataPointer as any) || Prisma.JsonNull,
+            toc:            (tocPointer as any) || Prisma.JsonNull,
+            citations:      (citationsPointer as any) || Prisma.JsonNull,
+            contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
+            brdConfig:      (brdConfigPointer as any) || Prisma.JsonNull,
           },
         });
 

@@ -183,6 +183,29 @@ function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
     .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
 }
 
+function normalizeRowForCompare(row: TocRow) {
+  return {
+    level: row.level,
+    name: row.name,
+    required: row.required,
+    definition: row.definition,
+    example: row.example,
+    note: row.note,
+    tocRequirements: row.tocRequirements,
+    smeComments: row.smeComments,
+  };
+}
+
+function rowsEqualIgnoringIds(a: TocRow[], b: TocRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (JSON.stringify(normalizeRowForCompare(a[i])) !== JSON.stringify(normalizeRowForCompare(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function mapRequiredValue(val?: string): TocRow["required"] {
   if (!val) return "";
   const lower = val.toLowerCase().trim();
@@ -315,16 +338,23 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
   function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
   const isInitializing = useRef(false);
+  const rowsRef = useRef<TocRow[]>(INITIAL_ROWS);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
-    isInitializing.current = true;
     const newRows = buildRowsFromToc(initialData);
+    if (rowsEqualIgnoringIds(rowsRef.current, newRows)) return;
+
+    isInitializing.current = true;
     setRows(newRows);
     setEditingCell(null);
     setSaved(false);
   }, [initialData]);
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
   useEffect(() => {
     if (!onDataChange) return;
