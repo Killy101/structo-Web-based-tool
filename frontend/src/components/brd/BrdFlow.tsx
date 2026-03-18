@@ -13,7 +13,7 @@ import api from "@/app/lib/api";
 interface Props {
   onClose?: () => void;
   initialStep?: number;
-  initialMeta?: { format: "new" | "old"; brdId: string; title: string } | null;
+  initialMeta?: { format: "new" | "old"; brdId: string; title: string; status?: string } | null;
   finalStepMode?: "generate" | "view";
 }
 
@@ -21,6 +21,7 @@ interface UploadFlowData {
   format: "new" | "old";
   brdId: string;
   title: string;
+  status?: string;
   scope?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -34,6 +35,7 @@ interface BrdDetailResponse {
   id:              string;
   title:           string;
   format:          "new" | "old";
+  status?:         string;
   scope?:          Record<string, unknown>;
   metadata?:       Record<string, unknown>;
   toc?:            Record<string, unknown>;
@@ -157,7 +159,7 @@ export default function BrdFlow({
   const [isSaving,        setIsSaving]        = useState(false);
   const [uploadMeta,      setUploadMeta]      = useState<UploadFlowData | null>(
     initialMeta
-      ? { format: initialMeta.format, brdId: initialMeta.brdId, title: initialMeta.title }
+      ? { format: initialMeta.format, brdId: initialMeta.brdId, title: initialMeta.title, status: initialMeta.status }
       : null
   );
   const [viewLoading, setViewLoading] = useState(false);
@@ -181,6 +183,7 @@ export default function BrdFlow({
           format:         d.format         ?? initialMeta.format,
           brdId:          d.id             ?? initialMeta.brdId,
           title:          d.title          ?? initialMeta.title,
+          status:         d.status         ?? initialMeta.status,
           scope:          d.scope,
           metadata:       d.metadata,
           toc:            d.toc,
@@ -328,6 +331,7 @@ function renderStepContent() {
           brdId={uploadMeta?.brdId}
           title={getBestTitle()}
           format={uploadMeta?.format ?? initialMeta?.format ?? "new"}
+          status={uploadMeta?.status ?? initialMeta?.status}
           initialData={{
             scope:          uploadMeta?.scope,
             metadata:       uploadMeta?.metadata,
