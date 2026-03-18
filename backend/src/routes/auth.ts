@@ -95,10 +95,16 @@ function defaultTeamRoleFeatures(
   };
 }
 
+function resolvePolicyRole(role: string): "ADMIN" | "USER" | null {
+  if (role === "ADMIN") return "ADMIN";
+  if (role === "USER") return "USER";
+  return null;
+}
+
 // ─── Who can change whose password ───────────────────────
 const CAN_CHANGE_PASSWORD: Record<string, string[]> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 // ─── RATE LIMITER ────────────────────────────────────────
@@ -255,6 +261,7 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
         createdAt: true,
         teamId: true,
         team: { select: { id: true, name: true, slug: true } },
+        userRole: { select: { slug: true, features: true } },
       },
     });
 
@@ -265,19 +272,31 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
     let effectiveFeatures: string[] = [];
     if (user.role === "SUPER_ADMIN") {
       effectiveFeatures = ["*"];
-    } else if (
-      (user.role === "ADMIN" || user.role === "USER") &&
-      user.team?.slug
-    ) {
+    } else if (user.team?.slug) {
+      const policyRole = resolvePolicyRole(user.role);
+
+      if (!policyRole) {
+        return res.json({ user: { ...user, effectiveFeatures } });
+      }
+
       const policy = await prisma.userRole.findUnique({
         where: {
-          slug: policySlug(user.team.slug, user.role),
+          slug: policySlug(user.team.slug, policyRole),
         },
         select: { features: true },
       });
 
       effectiveFeatures =
-        policy?.features ?? defaultTeamRoleFeatures(user.team.slug)[user.role];
+        policy?.features ?? defaultTeamRoleFeatures(user.team.slug)[policyRole];
+
+      if (
+        user.userRole &&
+        !user.userRole.slug.startsWith(TEAM_POLICY_PREFIX)
+      ) {
+        effectiveFeatures = Array.from(
+          new Set([...effectiveFeatures, ...user.userRole.features]),
+        );
+      }
     }
 
     res.json({ user: { ...user, effectiveFeatures } });
@@ -288,8 +307,8 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // ─── CHANGE PASSWORD ──────────────────────────────────────
-// SuperAdmin → ADMIN, MANAGER_QA, MANAGER_QC, USER
-// Admin      → MANAGER_QA, MANAGER_QC, USER
+// SuperAdmin → ADMIN, USER
+// Admin      → USER
 // NOTE: Min-age (7 days) is intentionally skipped for admin-initiated changes.
 //       Only password history reuse check is enforced.
 router.post(

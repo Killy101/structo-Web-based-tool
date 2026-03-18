@@ -14,11 +14,7 @@ router.get("/", authenticate, async (req: AuthRequest, res: Response) => {
 
     let whereClause: any = { deletedAt: null };
 
-    if (
-      actorRole === "USER" ||
-      actorRole === "MANAGER_QA" ||
-      actorRole === "MANAGER_QC"
-    ) {
+    if (actorRole === "USER") {
       whereClause = { deletedAt: null, assignees: { some: { userId: actorId } } };
     } else if (actorRole === "ADMIN") {
       const admin = await prisma.user.findUnique({
@@ -199,11 +195,7 @@ router.patch(
 
       if (!task) return res.status(404).json({ error: "Task not found" });
 
-      if (
-        actorRole === "USER" ||
-        actorRole === "MANAGER_QA" ||
-        actorRole === "MANAGER_QC"
-      ) {
+      if (actorRole === "USER") {
         const isAssigned = task.assignees.some((a) => a.userId === actorId);
         if (!isAssigned) {
           return res

@@ -18,6 +18,8 @@ import {
   UserLog,
   Notification,
   TaskComment,
+  UpdateUserProfilePayload,
+  UpdateUserProfileResponse,
 } from "../types";
 
 export const getToken = () =>
@@ -61,6 +63,10 @@ export const usersApi = {
   getAll: () => api.get<{ users: User[] }>("/users").then((r) => r.data),
   create: (data: CreateUserPayload) =>
     api.post<CreateUserResponse>("/users/create", data).then((r) => r.data),
+  updateProfile: (id: number, data: UpdateUserProfilePayload) =>
+    api
+      .patch<UpdateUserProfileResponse>(`/users/${id}/profile`, data)
+      .then((r) => r.data),
   assignTeam: (id: number, teamId: number | null) =>
     api
       .patch<{ message: string }>(`/users/${id}/team`, { teamId })

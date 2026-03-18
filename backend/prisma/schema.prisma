@@ -149,8 +149,6 @@ model PasswordHistory {
 enum Role {
   SUPER_ADMIN
   ADMIN
-  MANAGER_QA
-  MANAGER_QC
   USER
 }
 

@@ -1,8 +1,6 @@
 export type Role =
   | "SUPER_ADMIN"
   | "ADMIN"
-  | "MANAGER_QA"
-  | "MANAGER_QC"
   | "USER";
 export type Status = "ACTIVE" | "INACTIVE";
 export type TaskStatus =
@@ -257,6 +255,18 @@ export interface CreateUserResponse {
   emailSent?: boolean;
   id: number;
   userIdStr: string;
+}
+
+export interface UpdateUserProfilePayload {
+  userId: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+}
+
+export interface UpdateUserProfileResponse {
+  message: string;
+  user: Pick<User, "id" | "userId" | "email" | "firstName" | "lastName">;
 }
 
 export type ToastType = "success" | "error" | "warning" | "info";

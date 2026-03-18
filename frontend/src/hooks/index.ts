@@ -72,6 +72,15 @@ export function useUsers() {
     return result;
   };
 
+  const updateUserProfile = async (
+    id: number,
+    data: { userId: string; email: string; firstName: string; lastName: string },
+  ) => {
+    const result = await usersApi.updateProfile(id, data);
+    await refetch();
+    return result;
+  };
+
   const assignTeam = async (id: number, teamId: number | null) => {
     await usersApi.assignTeam(id, teamId);
     await refetch();
@@ -117,6 +126,7 @@ export function useUsers() {
     error,
     refetch,
     createUser,
+    updateUserProfile,
     assignTeam,
     changeRole,
     deactivateUser,

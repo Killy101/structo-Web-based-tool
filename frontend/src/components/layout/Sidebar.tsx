@@ -21,7 +21,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard",
     label: "Dashboard",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
     feature: "dashboard",
     icon: (
       <svg
@@ -42,7 +42,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/brd",
     label: "BRD Sources",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
     feature: ["brd-process", "brd-view-generate"],
     icon: (
       <svg
@@ -63,8 +63,13 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/compare",
     label: "Compare",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-    feature: "compare-basic",
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
+    feature: [
+      "compare-basic",
+      "compare-chunk",
+      "compare-merge",
+      "compare-pdf-xml-only",
+    ],
     icon: (
       <svg
         className="w-5 h-5"
@@ -90,8 +95,13 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/autocompare",
     label: "AutoCompare",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-    feature: "compare-basic",
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
+    feature: [
+      "compare-basic",
+      "compare-chunk",
+      "compare-merge",
+      "compare-pdf-xml-only",
+    ],
     icon: (
       <svg
         className="w-5 h-5"
@@ -111,7 +121,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/users",
     label: "User Management",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    roles: ["SUPER_ADMIN", "ADMIN"],
     feature: "user-management",
     icon: (
       <svg
@@ -132,7 +142,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard/tasks",
     label: "My Tasks",
-    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
     icon: (
       <svg
         className="w-5 h-5"

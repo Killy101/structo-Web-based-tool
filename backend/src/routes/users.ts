@@ -15,13 +15,18 @@ const CAN_CREATE: Partial<Record<Role, Role[]>> = {
 };
 
 const CAN_DEACTIVATE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 const CAN_CHANGE_ROLE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
+};
+
+const CAN_EDIT_PROFILE: Partial<Record<Role, Role[]>> = {
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 const ALLOWED_TARGET_ROLES: Partial<Record<Role, Role[]>> = {
@@ -234,6 +239,116 @@ router.post(
       });
     } catch (error) {
       console.error("Create user error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── PATCH /users/:id/profile ─────────────────────────────
+router.patch(
+  "/:id/profile",
+  authenticate,
+  authorize(["SUPER_ADMIN", "ADMIN"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const targetId = Number(req.params.id as string);
+      const actorRole = req.user!.role as Role;
+      const { userId, email, firstName, lastName } = req.body;
+
+      if (!Number.isFinite(targetId)) {
+        return res.status(400).json({ error: "Invalid user ID" });
+      }
+
+      const target = await prisma.user.findUnique({ where: { id: targetId } });
+      if (!target) return res.status(404).json({ error: "User not found" });
+
+      const allowedTargets = CAN_EDIT_PROFILE[actorRole] ?? [];
+      if (!allowedTargets.includes(target.role)) {
+        return res.status(403).json({
+          error: `You cannot edit profile details for ${target.role} users`,
+        });
+      }
+
+      const trimmedUserId = String(userId ?? "").trim().toUpperCase();
+      if (!/^[a-zA-Z0-9]{3,6}$/.test(trimmedUserId)) {
+        return res.status(400).json({
+          error: "User ID must be 3 to 6 alphanumeric characters",
+        });
+      }
+
+      const normalizedEmail = String(email ?? "").trim().toLowerCase();
+      if (!normalizedEmail) {
+        return res.status(400).json({ error: "Email is required" });
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ error: "Invalid email format" });
+      }
+
+      const normalizedFirstName = String(firstName ?? "").trim();
+      if (!normalizedFirstName) {
+        return res.status(400).json({ error: "First name is required" });
+      }
+
+      const normalizedLastName = String(lastName ?? "").trim();
+      if (!normalizedLastName) {
+        return res.status(400).json({ error: "Last name is required" });
+      }
+
+      const duplicateUserId = await prisma.user.findFirst({
+        where: {
+          userId: trimmedUserId,
+          id: { not: targetId },
+        },
+      });
+      if (duplicateUserId) {
+        return res
+          .status(409)
+          .json({ error: "A user with this User ID already exists" });
+      }
+
+      const duplicateEmail = await prisma.user.findFirst({
+        where: {
+          email: { equals: normalizedEmail, mode: "insensitive" },
+          id: { not: targetId },
+        },
+      });
+      if (duplicateEmail) {
+        return res
+          .status(409)
+          .json({ error: "A user with this email already exists" });
+      }
+
+      const updated = await prisma.user.update({
+        where: { id: targetId },
+        data: {
+          userId: trimmedUserId,
+          email: normalizedEmail,
+          firstName: normalizedFirstName,
+          lastName: normalizedLastName,
+        },
+        select: {
+          id: true,
+          userId: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+        },
+      });
+
+      await prisma.userLog.create({
+        data: {
+          userId: req.user!.userId,
+          action: "USER_PROFILE_UPDATED",
+          details: `Updated profile details for ${target.userId} -> ${updated.userId}`,
+        },
+      });
+
+      res.json({
+        message: "User profile updated successfully",
+        user: updated,
+      });
+    } catch (error) {
+      console.error("Update user profile error:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   },

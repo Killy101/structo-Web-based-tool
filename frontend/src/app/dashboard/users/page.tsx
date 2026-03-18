@@ -260,6 +260,24 @@ function EyeIcon() {
   );
 }
 
+function EditIcon() {
+  return (
+    <svg
+      className="w-4 h-4 text-slate-400"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M16.862 4.487a2.1 2.1 0 113 2.974L8.58 18.745l-4.33 1.356 1.357-4.33L16.862 4.487z"
+      />
+    </svg>
+  );
+}
+
 function ToggleIcon({ active }: { active: boolean }) {
   return (
     <svg
@@ -545,6 +563,7 @@ function UserActionsMenu({
   user,
   actorRole,
   currentUserId,
+  onEditUser,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -553,6 +572,7 @@ function UserActionsMenu({
   user: User;
   actorRole: Role;
   currentUserId: number | undefined;
+  onEditUser: (u: User) => void;
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -570,7 +590,12 @@ function UserActionsMenu({
   const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
   const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
 
-  if (!canManagePassword && !canManageRole && !canManageTeam && !canToggle)
+  if (
+    !canManagePassword &&
+    !canManageRole &&
+    !canManageTeam &&
+    !canToggle
+  )
     return null;
 
   return (
@@ -586,6 +611,14 @@ function UserActionsMenu({
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-full mt-1.5 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 p-1.5">
+            {canManagePassword && (
+              <button
+                onClick={() => { setOpen(false); onEditUser(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <EditIcon /> Edit Profile
+              </button>
+            )}
             {canManagePassword && (
               <button
                 onClick={() => { setOpen(false); onChangePassword(user); }}
@@ -738,6 +771,7 @@ function SortableTable({
   onSort,
   currentUserId,
   onViewDetails,
+  onEditUser,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -756,6 +790,7 @@ function SortableTable({
   onSort: (k: SortKey) => void;
   currentUserId: number | undefined;
   onViewDetails: (u: User) => void;
+  onEditUser: (u: User) => void;
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -904,6 +939,11 @@ function SortableTable({
                             {u.userId}
                           </p>
                         )}
+                        {u.email && (
+                          <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                            {u.email}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -952,6 +992,7 @@ function SortableTable({
                         user={u}
                         actorRole={actorRole}
                         currentUserId={currentUserId}
+                        onEditUser={onEditUser}
                         onChangePassword={onChangePassword}
                         onChangeRole={onChangeRole}
                         onAssignTeam={onAssignTeam}
@@ -979,6 +1020,7 @@ function UserDetailModal({
   user,
   actorRole,
   currentUserId,
+  onEditUser,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -989,6 +1031,7 @@ function UserDetailModal({
   user: User | null;
   actorRole: Role;
   currentUserId: number | undefined;
+  onEditUser: (u: User) => void;
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -1054,6 +1097,14 @@ function UserDetailModal({
           </div>
           <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3">
             <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
+              Email
+            </p>
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200 break-all">
+              {user.email ?? <span className="italic text-slate-400">No email</span>}
+            </p>
+          </div>
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
               Joined
             </p>
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
@@ -1087,6 +1138,14 @@ function UserDetailModal({
         <Button
           variant="secondary"
           className="w-full justify-center"
+          onClick={() => onEditUser(user)}
+        >
+          <EditIcon /> Edit Profile
+        </Button>
+
+        <Button
+          variant="secondary"
+          className="w-full justify-center"
           onClick={onClose}
         >
           Close
@@ -1105,6 +1164,7 @@ export function UserCard({
   actorRole,
   currentUserId,
   onViewDetails,
+  onEditUser,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -1114,6 +1174,7 @@ export function UserCard({
   actorRole: Role;
   currentUserId: number | undefined;
   onViewDetails: (u: User) => void;
+  onEditUser: (u: User) => void;
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -1186,6 +1247,17 @@ export function UserCard({
                   <button
                     onClick={() => {
                       setMenuOpen(false);
+                      onEditUser(user);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+                  >
+                    <EditIcon /> Edit Profile
+                  </button>
+                )}
+                {canManagePassword && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
                       onChangePassword(user);
                     }}
                     className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
@@ -1249,6 +1321,12 @@ export function UserCard({
       </div>
 
       <div className="space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
+        {user.email && (
+          <div className="truncate">
+            <span className="font-medium text-slate-600 dark:text-slate-300">Email:</span>{" "}
+            {user.email}
+          </div>
+        )}
         {user.team && (
           <div className="flex items-center gap-2">
             <UsersGroupIcon />
@@ -1617,7 +1695,12 @@ function ChangePasswordModal({
   onChangePassword: (userId: number, newPassword: string) => Promise<void>;
   onResetPassword: (
     userId: number,
-  ) => Promise<{ message: string; newPassword: string; targetUserId: string }>;
+  ) => Promise<{
+    message: string;
+    newPassword: string;
+    targetUserId: string;
+    emailSent?: boolean;
+  }>;
 }) {
   const policy = usePasswordPolicy();
   const [newPassword, setNewPassword] = useState("");
@@ -1693,7 +1776,11 @@ function ChangePasswordModal({
     try {
       const result = await onResetPassword(targetUser!.id);
       setResetResult(result.newPassword);
-      setEmailNotice("Password was reset successfully.");
+      setEmailNotice(
+        result.emailSent === false
+          ? `Password email was not sent${targetUser?.email ? ` to ${targetUser.email}` : ""}. Check RESEND_API_KEY / sender domain.`
+          : `Password email sent${targetUser?.email ? ` to ${targetUser.email}` : ""}.`,
+      );
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -1982,6 +2069,151 @@ function ChangeRoleModal({
             loading={loading}
           >
             Update Role
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   EDIT USER PROFILE MODAL
+   ────────────────────────────────────────────────────────── */
+
+function EditUserModal({
+  isOpen,
+  onClose,
+  targetUser,
+  onSubmit,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  targetUser: User | null;
+  onSubmit: (
+    userId: number,
+    payload: {
+      userId: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+    },
+  ) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    userId: "",
+    email: "",
+    firstName: "",
+    lastName: "",
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!targetUser) return;
+    setForm({
+      userId: targetUser.userId ?? "",
+      email: targetUser.email ?? "",
+      firstName: targetUser.firstName ?? "",
+      lastName: targetUser.lastName ?? "",
+    });
+    setErrors({});
+  }, [targetUser, isOpen]);
+
+  const validate = () => {
+    const next: Record<string, string> = {};
+
+    if (!/^[a-zA-Z0-9]{3,6}$/.test(form.userId.trim())) {
+      next.userId = "Must be 3-6 alphanumeric characters";
+    }
+    if (!form.email.trim()) {
+      next.email = "Required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      next.email = "Invalid email address";
+    }
+    if (!form.firstName.trim()) {
+      next.firstName = "Required";
+    }
+    if (!form.lastName.trim()) {
+      next.lastName = "Required";
+    }
+
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const handleSubmit = async () => {
+    if (!targetUser || !validate()) return;
+    setLoading(true);
+    try {
+      await onSubmit(targetUser.id, {
+        userId: form.userId.trim().toUpperCase(),
+        email: form.email.trim().toLowerCase(),
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+      });
+      onClose();
+    } catch (e) {
+      setErrors({ submit: getErrorMessage(e) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!targetUser) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Edit User Profile">
+      <div className="space-y-4">
+        <Input
+          label="Employee ID"
+          value={form.userId}
+          onChange={(e) => setForm({ ...form, userId: e.target.value.toUpperCase() })}
+          error={errors.userId}
+          required
+        />
+        <Input
+          label="Email"
+          type="email"
+          value={form.email}
+          onChange={(e) => setForm({ ...form, email: e.target.value })}
+          error={errors.email}
+          required
+        />
+        <div className="grid grid-cols-2 gap-3">
+          <Input
+            label="First Name"
+            value={form.firstName}
+            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+            error={errors.firstName}
+            required
+          />
+          <Input
+            label="Last Name"
+            value={form.lastName}
+            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+            error={errors.lastName}
+            required
+          />
+        </div>
+        {errors.submit && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
+            <p className="text-sm text-red-600 dark:text-red-400">{errors.submit}</p>
+          </div>
+        )}
+        <div className="flex gap-3 pt-1">
+          <Button
+            variant="secondary"
+            className="flex-1 justify-center"
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 justify-center"
+            onClick={handleSubmit}
+            loading={loading}
+          >
+            Save Changes
           </Button>
         </div>
       </div>
@@ -2311,6 +2543,7 @@ export default function UsersPage() {
     users,
     isLoading,
     error,
+    updateUserProfile,
     deactivateUser,
     activateUser,
     assignTeam,
@@ -2351,6 +2584,7 @@ export default function UsersPage() {
 
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showEditUser, setShowEditUser] = useState(false);
   const [showChangeRole, setShowChangeRole] = useState(false);
   const [showAssignTeam, setShowAssignTeam] = useState(false);
   const [showAssignCustomRole, setShowAssignCustomRole] = useState(false);
@@ -2751,6 +2985,11 @@ export default function UsersPage() {
     setTargetUser(u);
     setShowChangePassword(true);
   };
+  const handleOpenEditUser = (u: User) => {
+    setTargetUser(u);
+    setShowDetailModal(false);
+    setShowEditUser(true);
+  };
   const handleOpenChangeRole = (u: User) => {
     setTargetUser(u);
     setShowChangeRole(true);
@@ -2770,8 +3009,26 @@ export default function UsersPage() {
   };
   const handleResetPassword = async (userId: number) => {
     const result = await resetPassword(userId);
-    show("Password reset successfully", "success");
+    const target = users.find((u) => u.id === userId);
+    show(
+      result.emailSent === false
+        ? `Password reset. Email delivery failed${target?.email ? ` to ${target.email}` : ""}.`
+        : `Password reset and email sent${target?.email ? ` to ${target.email}` : ""}.`,
+      result.emailSent === false ? "warning" : "success",
+    );
     return result;
+  };
+  const handleUpdateUserProfile = async (
+    userId: number,
+    payload: {
+      userId: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+    },
+  ) => {
+    await updateUserProfile(userId, payload);
+    show("User profile updated", "success");
   };
   const handleChangeRole = async (userId: number, newRole: string) => {
     await changeRole(userId, newRole);
@@ -3091,6 +3348,7 @@ export default function UsersPage() {
             onSort={handleSort}
             currentUserId={currentUser?.id}
             onViewDetails={handleOpenViewDetails}
+            onEditUser={handleOpenEditUser}
             onChangePassword={handleOpenChangePassword}
             onChangeRole={handleOpenChangeRole}
             onAssignTeam={handleOpenAssignTeam}
@@ -3184,10 +3442,20 @@ export default function UsersPage() {
         user={targetUser}
         actorRole={actorRole}
         currentUserId={currentUser?.id}
+        onEditUser={handleOpenEditUser}
         onChangePassword={handleOpenChangePassword}
         onChangeRole={handleOpenChangeRole}
         onAssignTeam={handleOpenAssignTeam}
         onToggleStatus={handleToggle}
+      />
+      <EditUserModal
+        isOpen={showEditUser}
+        onClose={() => {
+          setShowEditUser(false);
+          setTargetUser(null);
+        }}
+        targetUser={targetUser}
+        onSubmit={handleUpdateUserProfile}
       />
       <ChangePasswordModal
         isOpen={showChangePassword}

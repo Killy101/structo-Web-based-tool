@@ -20,24 +20,18 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/tasks": [
     "SUPER_ADMIN",
     "ADMIN",
-    "MANAGER_QA",
-    "MANAGER_QC",
     "USER",
   ],
-  // SUPER_ADMIN + MANAGER_QA: full access (all tabs, can edit XML)
-  // MANAGER_QC / ADMIN / USER: compare-only, read-only XML
+  // SUPER_ADMIN: full access (all tabs, can edit XML)
+  // ADMIN / USER: compare-only, read-only XML
   "/dashboard/compare": [
     "SUPER_ADMIN",
-    "MANAGER_QA",
-    "MANAGER_QC",
     "ADMIN",
     "USER",
   ],
   // AutoCompare: same access as Compare
   "/dashboard/autocompare": [
     "SUPER_ADMIN",
-    "MANAGER_QA",
-    "MANAGER_QC",
     "ADMIN",
     "USER",
   ],
@@ -252,9 +246,19 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     (pathname.startsWith("/dashboard/brd") &&
       !hasFeature(["brd-process", "brd-view-generate"])) ||
     (pathname.startsWith("/dashboard/compare") &&
-      !hasFeature(["compare-basic", "compare-chunk", "compare-merge"])) ||
+      !hasFeature([
+        "compare-basic",
+        "compare-chunk",
+        "compare-merge",
+        "compare-pdf-xml-only",
+      ])) ||
     (pathname.startsWith("/dashboard/autocompare") &&
-      !hasFeature(["compare-basic", "compare-chunk", "compare-merge"]));
+      !hasFeature([
+        "compare-basic",
+        "compare-chunk",
+        "compare-merge",
+        "compare-pdf-xml-only",
+      ]));
 
   const isUnauthorized = roleUnauthorized || featureUnauthorized;
 
