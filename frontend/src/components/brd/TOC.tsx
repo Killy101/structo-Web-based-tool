@@ -13,6 +13,14 @@ interface TocRow {
   note: string;
   tocRequirements: string;
   smeComments: string;
+  // Previous values — captured the first time a field is manually edited,
+  // so both the original and the user's edit are visible in the Generate view.
+  _prevName?: string;
+  _prevDefinition?: string;
+  _prevExample?: string;
+  _prevNote?: string;
+  _prevTocRequirements?: string;
+  _prevSmeComments?: string;
 }
 
 interface CellImageMeta {
@@ -178,6 +186,13 @@ function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
         note: section.note ?? "",
         tocRequirements: section.tocRequirements ?? "",
         smeComments: section.smeComments ?? "",
+        // Restore previously captured original values from saved data
+        _prevName:             (section as Record<string, unknown>)._prevName as string | undefined,
+        _prevDefinition:       (section as Record<string, unknown>)._prevDefinition as string | undefined,
+        _prevExample:          (section as Record<string, unknown>)._prevExample as string | undefined,
+        _prevNote:             (section as Record<string, unknown>)._prevNote as string | undefined,
+        _prevTocRequirements:  (section as Record<string, unknown>)._prevTocRequirements as string | undefined,
+        _prevSmeComments:      (section as Record<string, unknown>)._prevSmeComments as string | undefined,
       };
     })
     .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
@@ -334,6 +349,13 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         level: r.level, name: r.name, required: r.required,
         definition: r.definition, example: r.example, note: r.note,
         tocRequirements: r.tocRequirements, smeComments: r.smeComments,
+        // Persist captured originals so they survive save/reload cycles
+        ...(r._prevName            && { _prevName: r._prevName }),
+        ...(r._prevDefinition      && { _prevDefinition: r._prevDefinition }),
+        ...(r._prevExample         && { _prevExample: r._prevExample }),
+        ...(r._prevNote            && { _prevNote: r._prevNote }),
+        ...(r._prevTocRequirements && { _prevTocRequirements: r._prevTocRequirements }),
+        ...(r._prevSmeComments     && { _prevSmeComments: r._prevSmeComments }),
       })),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -367,8 +389,27 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     fetchImages();
   }, [brdId]);
 
+  // Maps editable text columns to their _prev* sibling key
+  const PREV_KEY: Record<string, keyof TocRow> = {
+    name:             "_prevName",
+    definition:       "_prevDefinition",
+    example:          "_prevExample",
+    note:             "_prevNote",
+    tocRequirements:  "_prevTocRequirements",
+    smeComments:      "_prevSmeComments",
+  };
+
   function updateCell(rowId: string, col: string, value: string) {
-    setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, [col]: value } : r)));
+    setRows((prev) => prev.map((r) => {
+      if (r.id !== rowId) return r;
+      const prevKey = PREV_KEY[col];
+      const current = r[col as keyof TocRow] as string;
+      // Capture the original value the first time a text field is changed
+      if (prevKey && current && current !== value && !r[prevKey]) {
+        return { ...r, [col]: value, [prevKey]: current };
+      }
+      return { ...r, [col]: value };
+    }));
   }
 
   function addRow() {

@@ -94,6 +94,9 @@ interface TocRow {
   required: "true" | "false" | "Conditional" | "";
   definition: string; example: string; note: string;
   tocRequirements: string; smeComments: string;
+  // Original values captured on first user edit — shown alongside current in the view
+  _prevName?: string; _prevDefinition?: string; _prevExample?: string;
+  _prevNote?: string; _prevTocRequirements?: string; _prevSmeComments?: string;
 }
 interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; remarksNotes: string; }
 interface WhitespaceRow { id: string; tags: string; innodReplace: string; }
@@ -214,6 +217,13 @@ function buildTocRows(d?: Record<string, unknown>): TocRow[] {
         note: asString(s.note),
         tocRequirements: asString(s.tocRequirements),
         smeComments: asString(s.smeComments),
+        // Restore previously captured originals
+        _prevName:            s._prevName            ? asString(s._prevName)            : undefined,
+        _prevDefinition:      s._prevDefinition      ? asString(s._prevDefinition)      : undefined,
+        _prevExample:         s._prevExample         ? asString(s._prevExample)         : undefined,
+        _prevNote:            s._prevNote            ? asString(s._prevNote)            : undefined,
+        _prevTocRequirements: s._prevTocRequirements ? asString(s._prevTocRequirements) : undefined,
+        _prevSmeComments:     s._prevSmeComments     ? asString(s._prevSmeComments)     : undefined,
       };
     })
     .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
@@ -648,6 +658,31 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
   );
 }
 
+/**
+ * Shows a cell's current value alongside the original (pre-edit) value.
+ * When the user edits a TOC field for the first time, the original is stored
+ * in _prev*. This component renders both so neither is lost.
+ *
+ * Layout:
+ *   prev  "original value"        ← muted amber label + strikethrough
+ *   latest "user's edit"          ← normal weight, current value
+ */
+function DraftAndCurrent({ current, prev }: { current: string; prev?: string }) {
+  if (!prev) return <>{current || <Nil />}</>;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-[9px] font-bold uppercase tracking-wider text-amber-500 dark:text-amber-400 shrink-0" style={MONO}>prev</span>
+        <span className="text-[11px] text-slate-400 dark:text-slate-500 line-through whitespace-pre-wrap break-words">{prev}</span>
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-[9px] font-bold uppercase tracking-wider text-blue-500 dark:text-blue-400 shrink-0" style={MONO}>latest</span>
+        <span className="text-[11.5px] text-slate-700 dark:text-slate-200 font-medium whitespace-pre-wrap break-words">{current || <Nil />}</span>
+      </div>
+    </div>
+  );
+}
+
 function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildTocRows(tocData);
   if (rows.length === 0) return <Empty />;
@@ -689,20 +724,26 @@ function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown
             return (
               <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
                 <td className={TD}><LevelBadge val={row.level}/></td>
-                <td className={TD}>{row.name||<Nil/>}</td>
+                <td className={TD}>
+                  <DraftAndCurrent current={row.name} prev={row._prevName} />
+                </td>
                 <td className={TD}><RequiredBadge val={row.required}/></td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>{row.definition||<Nil/>}</td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {row.example||<Nil/>}
+                  <DraftAndCurrent current={row.definition} prev={row._prevDefinition} />
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  <DraftAndCurrent current={row.example} prev={row._prevExample} />
                   {getImgs("example").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {row.note||<Nil/>}
+                  <DraftAndCurrent current={row.note} prev={row._prevNote} />
                   {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>{row.tocRequirements||<Nil/>}</td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {row.smeComments||<Nil/>}
+                  <DraftAndCurrent current={row.tocRequirements} prev={row._prevTocRequirements} />
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  <DraftAndCurrent current={row.smeComments} prev={row._prevSmeComments} />
                   {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
               </tr>
