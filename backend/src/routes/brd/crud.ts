@@ -12,12 +12,31 @@ const VALID_STATUSES = ["DRAFT", "ONGOING", "PAUSED", "COMPLETED", "APPROVED", "
 async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
+
+  // Try the stored path first
   try {
     return await downloadJsonObject(storagePath);
   } catch {
-    console.warn(`⚠️ Missing file in storage: ${storagePath}`);
-    return null;
+    // fall through to alternate path attempt
   }
+
+  // Fallback: try the alternate spelling of the historic sectionns/sections typo
+  const alternatePath = storagePath.includes("/sectionns/")
+    ? storagePath.replace("/sectionns/", "/sections/")
+    : storagePath.includes("/sections/")
+    ? storagePath.replace("/sections/", "/sectionns/")
+    : null;
+
+  if (alternatePath) {
+    try {
+      return await downloadJsonObject(alternatePath);
+    } catch {
+      // fall through to warning
+    }
+  }
+
+  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+  return null;
 }
 
 // ── Title normalisation helper ─────────────────────────────────────────────
