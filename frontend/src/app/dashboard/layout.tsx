@@ -6,7 +6,8 @@ import { AuthProvider, useAuth } from "../../context/AuthContext";
 import { ThemeProvider } from "../../context/ThemContext";
 import Sidebar from "../../components/layout/Sidebar";
 import Unauthorized from "../../components/layout/Unauthorized";
-import { Spinner, Button } from "../../components/ui";
+import { Button } from "../../components/ui";
+import TetrisLoading from "../../components/ui/tetris-loader";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 import { getToken, settingsApi } from "../../services/api";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
@@ -188,10 +189,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
-        <div className="text-center space-y-3">
-          <Spinner className="w-8 h-8 mx-auto" />
-          <p className="text-sm text-slate-500">Loading...</p>
-        </div>
+        <TetrisLoading size="sm" speed="fast" loadingText="Loading..." />
       </div>
     );
   }
