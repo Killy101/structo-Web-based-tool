@@ -1693,11 +1693,7 @@ function ChangePasswordModal({
     try {
       const result = await onResetPassword(targetUser!.id);
       setResetResult(result.newPassword);
-      setEmailNotice(
-        result.emailSent
-          ? "Password was also sent to the user email."
-          : "Password email was not sent. Check RESEND_API_KEY / user email.",
-      );
+      setEmailNotice("Password was reset successfully.");
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {

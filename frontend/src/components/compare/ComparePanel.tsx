@@ -1099,7 +1099,7 @@ function XmlEditor({
   onChange?: (v: string) => void;
   canEdit: boolean;
   highlightText?: string | null;
-  editorRef: React.RefObject<HTMLTextAreaElement | null>;
+  editorRef: React.RefObject<HTMLTextAreaElement>;
 }) {
   useEffect(() => {
     if (!highlightText || !editorRef.current || !content) return;
