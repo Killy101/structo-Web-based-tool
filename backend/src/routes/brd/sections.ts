@@ -45,10 +45,21 @@ function storagePathForSection(brdId: string, name: SectionName): string {
   return `brd/${brdId}/sections/${name}.json`;
 }
 
+/** Fix historical typo: "sectionns" → "sections" in stored paths. */
+function normalizeStoragePath(p: string): string {
+  return p.replace(/\/sectionns\//g, "/sections/");
+}
+
 async function resolveSectionValue(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
-  return downloadJsonObject(storagePath);
+  const path = normalizeStoragePath(storagePath);
+  try {
+    return await downloadJsonObject(path);
+  } catch {
+    console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+    return null;
+  }
 }
 
 // ── GET /brd/:brdId/sections — all blobs ──────────────────────────────────

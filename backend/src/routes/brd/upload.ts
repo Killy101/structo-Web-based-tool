@@ -364,7 +364,7 @@ router.post(
   upload.single("file"),
   async (req: Request, res: Response) => {
     const file = req.file;
-    const { brdId } = req.params;
+    const brdId = String(req.params.brdId);
 
     if (!file) return res.status(400).json({ error: "No file uploaded" });
 
