@@ -1,7 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import Link from "next/link";
-import Image from "next/image";
+import { IdafLogo } from "../icons/IdafLogo";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemContext";
@@ -249,7 +249,7 @@ function LogoutModal({
           <h2
             className={`font-semibold text-base text-center leading-snug ${dark ? "text-white" : "text-slate-900"}`}
           >
-            Signing out of Structo?
+            Signing out of IDAF?
           </h2>
         </div>
         <div className="px-6 pb-5 flex gap-3">
@@ -347,21 +347,16 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           <div
-            className={`w-8 h-8 flex-shrink-0 relative transition-transform duration-300 ease-in-out ${collapsed ? "translate-x-[2px]" : "translate-x-0"}`}
+            className={`flex-shrink-0 transition-transform duration-300 ease-in-out ${collapsed ? "translate-x-[2px]" : "translate-x-0"}`}
           >
-            <Image
-              src="/assets/innodata.png"
-              alt="Innodata Logo"
-              fill
-              className="object-contain"
-            />
+            <IdafLogo size={32} />
           </div>
           <div
             className={`overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${collapsed ? "max-w-0 opacity-0 -translate-x-1" : "max-w-[220px] opacity-100 translate-x-0"}`}
           >
             <div>
               <p className={`font-bold text-sm leading-none tracking-wide ${dark ? "text-white" : "text-slate-900"}`}>
-                Structo
+                IDAF
               </p>
               <p className="text-[11px] mt-0.5 text-slate-500">
                 Legal Regulatory Delivery Unit

@@ -50,7 +50,7 @@ export default function HomePage() {
               Powered by LRDU · Enterprise Grade
             </div>
             <h1 className={styles.heroTitle}>
-              Structo: A Web-Based Platform for Intelligent Document Comparison,
+              IDAF: A Web-Based Platform for Intelligent Document Comparison,
               Change Detection, and Structuring
             </h1>
             <p className={styles.heroDesc}>
@@ -204,7 +204,7 @@ export default function HomePage() {
                 At Innodata&apos;s Legal Regulatory Delivery Unit, we empower
                 organizations to manage complex documents with clarity,
                 accuracy, and speed. Through our platform{" "}
-                <strong style={{ color: "#e8963a" }}>Structo</strong>, we
+                <strong style={{ color: "#e8963a" }}>IDAF</strong>, we
                 transform traditional document workflows into intelligent,
                 automated processes that reduce manual effort and improve
                 compliance confidence.
