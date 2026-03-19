@@ -135,12 +135,20 @@ router.post("/save", async (req: Request, res: Response) => {
     // Sanitize brdConfig before persistence
     const sanitizedBrdConfig = sanitizeBrdConfig(brdConfig);
 
-    const persistedScope = await persistSection(brdId, "scope", scope);
-    const persistedMetadata = await persistSection(brdId, "metadata", metadata);
-    const persistedToc = await persistSection(brdId, "toc", toc);
-    const persistedCitations = await persistSection(brdId, "citations", citations);
+    const persistedScope          = await persistSection(brdId, "scope", scope);
+    const persistedToc            = await persistSection(brdId, "toc", toc);
+    const persistedCitations      = await persistSection(brdId, "citations", citations);
     const persistedContentProfile = await persistSection(brdId, "contentProfile", contentProfile);
-    const persistedBrdConfig = await persistSection(brdId, "brdConfig", sanitizedBrdConfig);
+    const persistedBrdConfig      = await persistSection(brdId, "brdConfig", sanitizedBrdConfig);
+
+    // Metadata: upload to storage (backup) but store the inline value in the DB
+    // column so the list endpoint can read geography/version without a Supabase hit.
+    if (metadata !== undefined && metadata !== null) {
+      await persistSection(brdId, "metadata", metadata);
+    }
+    // metadataForDb follows the same undefined-means-skip, null-means-clear semantics
+    const metadataForDb: unknown | undefined =
+      metadata !== undefined ? (metadata ?? null) : undefined;
 
     // Upsert sections blob.
     //
@@ -155,7 +163,7 @@ router.post("/save", async (req: Request, res: Response) => {
       create: {
         brdId,
         scope:          toJsonValue(persistedScope),
-        metadata:       toJsonValue(persistedMetadata),
+        metadata:       toJsonValue(metadataForDb),
         toc:            toJsonValue(persistedToc),
         citations:      toJsonValue(persistedCitations),
         contentProfile: toJsonValue(persistedContentProfile),
@@ -163,7 +171,7 @@ router.post("/save", async (req: Request, res: Response) => {
       },
       update: {
         ...(persistedScope          !== undefined && { scope:          toJsonValue(persistedScope)          }),
-        ...(persistedMetadata       !== undefined && { metadata:       toJsonValue(persistedMetadata)       }),
+        ...(metadataForDb           !== undefined && { metadata:       toJsonValue(metadataForDb)           }),
         ...(persistedToc            !== undefined && { toc:            toJsonValue(persistedToc)            }),
         ...(persistedCitations      !== undefined && { citations:      toJsonValue(persistedCitations)      }),
         ...(persistedContentProfile !== undefined && { contentProfile: toJsonValue(persistedContentProfile) }),

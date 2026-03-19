@@ -20,28 +20,22 @@ interface CellImageMeta {
 
 // ── useCellImages hook ─────────────────────────────────────────────────────────
 function useCellImages(brdId?: string) {
-  const [images,  setImages]  = useState<CellImageMeta[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
+  const [images, setImages] = useState<CellImageMeta[]>([]);
 
   useEffect(() => {
     if (!brdId) return;
-    queueMicrotask(() => setLoading(true));
     api
       .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
       .then(r => {
-        setError(null);
         console.log(`[useCellImages] Fetched ${r.data.images?.length || 0} images for BRD ${brdId}`);
         setImages(r.data.images ?? []);
       })
       .catch((err) => {
         console.error("[useCellImages] Error fetching images:", err);
-        setError("Could not load images");
-      })
-      .finally(() => setLoading(false));
+      });
   }, [brdId]);
 
-  return { images, loading, error };
+  return { images };
 }
 
 // ── InlineImageCell component for displaying images in table cells ────────────

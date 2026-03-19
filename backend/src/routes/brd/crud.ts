@@ -28,25 +28,31 @@ async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
 
-  // downloadJsonObject returns null (not throws) for missing files, so check
-  // the return value rather than relying on catch to trigger the fallback.
-  const primary = await downloadJsonObject(storagePath);
-  if (primary !== null) return primary;
+  try {
+    // downloadJsonObject returns null (not throws) for missing files, so check
+    // the return value rather than relying on catch to trigger the fallback.
+    const primary = await downloadJsonObject(storagePath);
+    if (primary !== null) return primary;
 
-  // Fallback: try the alternate spelling of the historic sectionns/sections typo
-  const alternatePath = storagePath.includes("/sectionns/")
-    ? storagePath.replace("/sectionns/", "/sections/")
-    : storagePath.includes("/sections/")
-    ? storagePath.replace("/sections/", "/sectionns/")
-    : null;
+    // Fallback: try the alternate spelling of the historic sectionns/sections typo
+    const alternatePath = storagePath.includes("/sectionns/")
+      ? storagePath.replace("/sectionns/", "/sections/")
+      : storagePath.includes("/sections/")
+      ? storagePath.replace("/sections/", "/sectionns/")
+      : null;
 
-  if (alternatePath) {
-    const alternate = await downloadJsonObject(alternatePath);
-    if (alternate !== null) return alternate;
+    if (alternatePath) {
+      const alternate = await downloadJsonObject(alternatePath);
+      if (alternate !== null) return alternate;
+    }
+
+    console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+    return null;
+  } catch (err) {
+    // Degrade gracefully — storage auth/network errors must not 500 the whole endpoint
+    console.error(`⚠️ Storage download error for ${storagePath}:`, err);
+    return null;
   }
-
-  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
-  return null;
 }
 
 // ── Title normalisation helper ─────────────────────────────────────────────
@@ -68,6 +74,39 @@ function isSimilarTitle(a: string, b: string): boolean {
   let matches = 0;
   for (const w of smaller) if (larger.has(w)) matches++;
   return matches / smaller.size >= 0.80;
+}
+
+// ── Geography resolution ───────────────────────────────────────────────────
+// Returns the geography string from metadata, with two fallback layers:
+//   1. Empty string → infer from issuing_agency / content_category_name for
+//      well-known US federal agencies and US state administrative codes.
+//   2. Still nothing → "—"
+function resolveGeography(meta: Record<string, unknown> | null): string {
+  if (!meta) return "—";
+
+  const geo = ((meta.geography as string) ?? "").trim();
+  if (geo) return geo;
+
+  // Infer for US documents when geography field is absent / blank
+  const agency  = ((meta.issuing_agency       as string) ?? "").toLowerCase();
+  const catName = ((meta.content_category_name as string) ?? "").toLowerCase();
+  const auth    = ((meta.authoritative_source  as string) ?? "").toLowerCase();
+  const combined = `${agency} ${catName} ${auth}`;
+
+  // US federal document markers
+  if (/\b(code of federal regulations|federal register|cfr|epa|fda|osha|irs|sec|dot|hhs|usda|dol|dod|hud|uscis|ftc|fcc|ferc|cftc|fdic|nlrb|nlr|occ|treasury|federal aviation|federal highway)\b/.test(combined)) {
+    return "United States";
+  }
+
+  // US state administrative codes (e.g. "Alabama Administrative Code")
+  const STATE_RE = /\b(alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|district of columbia)\b/i;
+  const stateMatch = combined.match(STATE_RE);
+  if (stateMatch) {
+    const state = stateMatch[0].replace(/\b\w/g, (c) => c.toUpperCase());
+    return `${state}, United States`;
+  }
+
+  return "—";
 }
 
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
@@ -95,13 +134,11 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b: any) => {
+    const data = await Promise.all(brds.map(async (b: any) => {
       // Use only inline metadata for the list view — avoid downloading from
       // Supabase Storage (one request per BRD) which causes timeouts.
       const rawMeta = b.sections?.metadata ?? null;
-      const meta = extractStoragePath(rawMeta) === null
-        ? (rawMeta as Record<string, unknown> | null)
-        : null;
+      const meta = await resolveMaybeStoredJson(rawMeta) as Record<string, unknown> | null;
 
       const geography     = (meta?.geography as string) ?? "—";
 
@@ -126,7 +163,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    });
+    }));
 
     return res.json(data);
   } catch (err) {
