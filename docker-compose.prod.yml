@@ -1,0 +1,39 @@
+services:
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+  frontend:
+    image: killy101/structo-frontend:${TAG:-latest}
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./frontend/.env.production
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - processing
+
+  # ── Backend ───────────────────────────────────────────────────────────────────
+  backend:
+    image: killy101/structo-backend:${TAG:-latest}
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./backend/.env.production
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  # ── Processing ────────────────────────────────────────────────────────────────
+  processing:
+    image: killy101/structo-processing:${TAG:-latest}
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./processing/.env.production
+    restart: unless-stopped
+
+networks:
+  default:
+    name: structo_prod_network
