@@ -10,8 +10,8 @@ type SendPasswordEmailInput = {
 
 function buildSubject(action: "created" | "reset"): string {
   return action === "created"
-    ? "Your Structo account has been created"
-    : "Your Structo password has been reset";
+    ? "Your IDAF account has been created"
+    : "Your IDAF password has been reset";
 }
 
 function buildHtml({ userId, fullName, password, action }: SendPasswordEmailInput): string {
@@ -23,7 +23,7 @@ function buildHtml({ userId, fullName, password, action }: SendPasswordEmailInpu
 
   return `
     <div style="font-family:Arial,sans-serif;line-height:1.6;color:#0f172a;max-width:560px;margin:0 auto;padding:24px;">
-      <h2 style="margin:0 0 12px;">Structo Credentials</h2>
+      <h2 style="margin:0 0 12px;">IDAF Credentials</h2>
       <p style="margin:0 0 12px;">${greeting}</p>
       <p style="margin:0 0 16px;">${intro}</p>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:16px;">
@@ -40,7 +40,7 @@ export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) return false;
 
-  const from = process.env.RESEND_FROM_EMAIL?.trim() || "Structo <onboarding@resend.dev>";
+  const from = process.env.RESEND_FROM_EMAIL?.trim() || "IDAF <onboarding@resend.dev>";
 
   try {
     const resend = new Resend(apiKey);
