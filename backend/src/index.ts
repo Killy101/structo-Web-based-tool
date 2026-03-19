@@ -23,8 +23,18 @@ import {
 
 dotenv.config();
 
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable must be set before starting the server");
+}
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables must be set");
+}
+
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+// Trust first proxy so rate-limit and IP detection work correctly behind reverse proxies.
+app.set("trust proxy", 1);
 
 app.use(
   cors({
@@ -36,6 +46,10 @@ app.use(
 // ── Body parsers (MUST be before routes) ──────────────────────────────────────
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+// ── Trust proxy — required for req.ip to work behind any reverse proxy ────────
+// Without this, express-rate-limit throws ERR_ERL_UNDEFINED_IP_ADDRESS.
+app.set("trust proxy", 1);
 
 // ── Governance controls (maintenance mode + strict rate limit mode) ──────────
 app.use(governanceControlsMiddleware);

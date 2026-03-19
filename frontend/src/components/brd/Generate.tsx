@@ -63,6 +63,7 @@ interface Props {
   brdId?: string;
   title?: string;
   format?: "new" | "old";
+  status?: string;
   initialData?: {
     scope?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
@@ -75,6 +76,11 @@ interface Props {
   onComplete?: () => void;
   canEdit?: boolean;
 }
+
+type SaveStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
+
+/** Keys that require APPROVED status before generation is allowed. */
+const APPROVAL_RESTRICTED = new Set(["metajson", "innod", "content"]);
 
 type Format = "new" | "old";
 
@@ -94,6 +100,9 @@ interface TocRow {
   required: "true" | "false" | "Conditional" | "";
   definition: string; example: string; note: string;
   tocRequirements: string; smeComments: string;
+  // Original values captured on first user edit — shown alongside current in the view
+  _prevName?: string; _prevDefinition?: string; _prevExample?: string;
+  _prevNote?: string; _prevTocRequirements?: string; _prevSmeComments?: string;
 }
 interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; remarksNotes: string; }
 interface WhitespaceRow { id: string; tags: string; innodReplace: string; }
@@ -214,6 +223,13 @@ function buildTocRows(d?: Record<string, unknown>): TocRow[] {
         note: asString(s.note),
         tocRequirements: asString(s.tocRequirements),
         smeComments: asString(s.smeComments),
+        // Restore previously captured originals
+        _prevName:            s._prevName            ? asString(s._prevName)            : undefined,
+        _prevDefinition:      s._prevDefinition      ? asString(s._prevDefinition)      : undefined,
+        _prevExample:         s._prevExample         ? asString(s._prevExample)         : undefined,
+        _prevNote:            s._prevNote            ? asString(s._prevNote)            : undefined,
+        _prevTocRequirements: s._prevTocRequirements ? asString(s._prevTocRequirements) : undefined,
+        _prevSmeComments:     s._prevSmeComments     ? asString(s._prevSmeComments)     : undefined,
       };
     })
     .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
@@ -648,6 +664,31 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
   );
 }
 
+/**
+ * Shows a cell's current value alongside the original (pre-edit) value.
+ * When the user edits a TOC field for the first time, the original is stored
+ * in _prev*. This component renders both so neither is lost.
+ *
+ * Layout:
+ *   prev  "original value"        ← muted amber label + strikethrough
+ *   latest "user's edit"          ← normal weight, current value
+ */
+function DraftAndCurrent({ current, prev }: { current: string; prev?: string }) {
+  if (!prev) return <>{current || <Nil />}</>;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-[9px] font-bold uppercase tracking-wider text-amber-500 dark:text-amber-400 shrink-0" style={MONO}>prev</span>
+        <span className="text-[11px] text-slate-400 dark:text-slate-500 line-through whitespace-pre-wrap break-words">{prev}</span>
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-[9px] font-bold uppercase tracking-wider text-blue-500 dark:text-blue-400 shrink-0" style={MONO}>latest</span>
+        <span className="text-[11.5px] text-slate-700 dark:text-slate-200 font-medium whitespace-pre-wrap break-words">{current || <Nil />}</span>
+      </div>
+    </div>
+  );
+}
+
 function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildTocRows(tocData);
   if (rows.length === 0) return <Empty />;
@@ -689,20 +730,26 @@ function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown
             return (
               <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
                 <td className={TD}><LevelBadge val={row.level}/></td>
-                <td className={TD}>{row.name||<Nil/>}</td>
+                <td className={TD}>
+                  <DraftAndCurrent current={row.name} prev={row._prevName} />
+                </td>
                 <td className={TD}><RequiredBadge val={row.required}/></td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>{row.definition||<Nil/>}</td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {row.example||<Nil/>}
+                  <DraftAndCurrent current={row.definition} prev={row._prevDefinition} />
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  <DraftAndCurrent current={row.example} prev={row._prevExample} />
                   {getImgs("example").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {row.note||<Nil/>}
+                  <DraftAndCurrent current={row.note} prev={row._prevNote} />
                   {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>{row.tocRequirements||<Nil/>}</td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {row.smeComments||<Nil/>}
+                  <DraftAndCurrent current={row.tocRequirements} prev={row._prevTocRequirements} />
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  <DraftAndCurrent current={row.smeComments} prev={row._prevSmeComments} />
                   {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
               </tr>
@@ -871,7 +918,8 @@ const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; descriptio
   content:  { label:"Content Profile",  sublabel:"Export",   description:"Levels & whitespace rules as Excel",        iconKey:"content",  accentLight:"#f5f3ff", accentDark:"#2a1f45", iconColorLight:"#7c3aed", iconColorDark:"#a78bfa", btnBg:"#7c3aed", btnHover:"#6d28d9", badgeLabel:".xls"  },
 };
 
-export default function Generate({ brdId, title, format, initialData, onEdit, onComplete, canEdit = true }: Props) {
+export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true }: Props) {
+  const isApproved = status === "APPROVED";
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
   const [completed, setCompleted]   = useState<Record<string, boolean>>({});
@@ -899,6 +947,16 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   const activeFormat: Format   = format === "old" ? "old" : "new";
   const metadataValues         = buildTemplateMetadataValues(activeFormat, metadataData);
   const displayTitle           = deriveTitle(metadataData, title);
+  const resolvedSaveStatus: SaveStatus =
+    status === "PAUSED" || status === "COMPLETED" || status === "APPROVED" || status === "ON_HOLD"
+      ? status
+      : "DRAFT";
+  const saveStatusLabel =
+    resolvedSaveStatus === "COMPLETED"
+      ? "Complete"
+      : resolvedSaveStatus === "ON_HOLD"
+      ? "On Hold"
+      : resolvedSaveStatus.charAt(0) + resolvedSaveStatus.slice(1).toLowerCase();
 
   function markDone(key: string, ms = 1600) {
     if (doneResetTimers.current[key]) window.clearTimeout(doneResetTimers.current[key]);
@@ -921,7 +979,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null);
     try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: "COMPLETED", scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       setSavedToDB(true);
     } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
     finally { setSaving(false); }
@@ -1108,7 +1166,7 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
                 ) : (
                   <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-500/10">
                     <svg className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">Completed</span></p>
+                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">{saveStatusLabel}</span></p>
                     <button onClick={()=>setSavedToDB(false)} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
                   </div>
                 )}
@@ -1123,38 +1181,47 @@ export default function Generate({ brdId, title, format, initialData, onEdit, on
                 <span className="text-[10px] text-slate-300 dark:text-slate-600" style={MONO}>4 outputs</span>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:12,alignItems:"stretch"}}>
-                {(["brd","metajson","innod","content"] as const).map(key=>(
-                  <div key={key} className={`gen-btn-card flex flex-col${done[key]?" gen-btn-done":""}`}
-                    style={{border:done[key]?"1.5px solid #bbf7d0":"1.5px solid #e2e8f0",borderRadius:8,background:done[key]?"#f0fdf4":"#ffffff",boxShadow:"0 1px 4px rgba(0,0,0,0.05)",overflow:"hidden",transition:"border-color 0.2s, background 0.2s"}}>
-                    <div className="flex items-start gap-3 p-4 pb-2.5" style={{flex:1}}>
-                      <div className={`gen-btn-icon-wrap icon-${key}${done[key]?" icon-done":""} flex-shrink-0 flex items-center justify-center rounded-lg`}
-                        style={{width:38,height:38,background:done[key]?"#dcfce7":GEN_BTN_CONFIG[key].accentLight,color:done[key]?"#16a34a":GEN_BTN_CONFIG[key].iconColorLight,transition:"background 0.2s, color 0.2s"}}>
-                        {done[key]?<svg viewBox="0 0 20 20" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth="2"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>:GenBtnIcons[GEN_BTN_CONFIG[key].iconKey]}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 mb-0.5">
-                          <span className={`gen-btn-sublabel${done[key]?" done":""} text-[10px] font-bold uppercase tracking-[0.14em]`} style={{...MONO,color:done[key]?"#15803d":"#94a3b8"}}>{done[key]?"Done":GEN_BTN_CONFIG[key].sublabel}</span>
-                          <span className={`gen-btn-badge${done[key]?" done":""} text-[9px] font-semibold px-1.5 py-0.5 rounded`} style={{...MONO,background:done[key]?"#bbf7d0":"#f1f5f9",color:done[key]?"#15803d":"#64748b"}}>{GEN_BTN_CONFIG[key].badgeLabel}</span>
+                {(["brd","metajson","innod","content"] as const).map(key=>{
+                  const locked = APPROVAL_RESTRICTED.has(key) && !isApproved;
+                  return (
+                    <div key={key} className={`gen-btn-card flex flex-col${done[key]?" gen-btn-done":""}${locked?" opacity-60":""}`}
+                      style={{border:done[key]?"1.5px solid #bbf7d0":locked?"1.5px solid #e2e8f0":"1.5px solid #e2e8f0",borderRadius:8,background:done[key]?"#f0fdf4":locked?"#f8fafc":"#ffffff",boxShadow:"0 1px 4px rgba(0,0,0,0.05)",overflow:"hidden",transition:"border-color 0.2s, background 0.2s",position:"relative"}}>
+                      {locked && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 z-10 rounded-lg" style={{background:"rgba(248,250,252,0.92)"}}>
+                          <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                          <p className="text-[11px] font-semibold text-slate-500 text-center px-3">Requires <span className="text-violet-600 dark:text-violet-400">Approved</span> status</p>
                         </div>
-                        <p className={`gen-btn-title${done[key]?" done":""} text-[13px] font-semibold leading-snug`} style={{color:done[key]?"#15803d":"#1e293b"}}>{GEN_BTN_CONFIG[key].label}</p>
-                        <p className="gen-btn-desc text-[11px] text-slate-400 mt-0.5 leading-snug">{GEN_BTN_CONFIG[key].description}</p>
+                      )}
+                      <div className="flex items-start gap-3 p-4 pb-2.5" style={{flex:1}}>
+                        <div className={`gen-btn-icon-wrap icon-${key}${done[key]?" icon-done":""} flex-shrink-0 flex items-center justify-center rounded-lg`}
+                          style={{width:38,height:38,background:done[key]?"#dcfce7":GEN_BTN_CONFIG[key].accentLight,color:done[key]?"#16a34a":GEN_BTN_CONFIG[key].iconColorLight,transition:"background 0.2s, color 0.2s"}}>
+                          {done[key]?<svg viewBox="0 0 20 20" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth="2"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>:GenBtnIcons[GEN_BTN_CONFIG[key].iconKey]}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className={`gen-btn-sublabel${done[key]?" done":""} text-[10px] font-bold uppercase tracking-[0.14em]`} style={{...MONO,color:done[key]?"#15803d":"#94a3b8"}}>{done[key]?"Done":GEN_BTN_CONFIG[key].sublabel}</span>
+                            <span className={`gen-btn-badge${done[key]?" done":""} text-[9px] font-semibold px-1.5 py-0.5 rounded`} style={{...MONO,background:done[key]?"#bbf7d0":"#f1f5f9",color:done[key]?"#15803d":"#64748b"}}>{GEN_BTN_CONFIG[key].badgeLabel}</span>
+                          </div>
+                          <p className={`gen-btn-title${done[key]?" done":""} text-[13px] font-semibold leading-snug`} style={{color:done[key]?"#15803d":"#1e293b"}}>{GEN_BTN_CONFIG[key].label}</p>
+                          <p className="gen-btn-desc text-[11px] text-slate-400 mt-0.5 leading-snug">{GEN_BTN_CONFIG[key].description}</p>
+                        </div>
+                      </div>
+                      <div className="px-4 pb-4 pt-1">
+                        <button
+                          onClick={key==="brd"?runGenerateBrdExcel:key==="metajson"?runGenerateMetajson:key==="innod"?runGenerateInnod:runGenerateContentProfileExcel}
+                          disabled={!!generating[key]||!!done[key]||locked}
+                          className="w-full py-2 rounded-md text-[12px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                          style={{background:done[key]?"#16a34a":GEN_BTN_CONFIG[key].btnBg,transition:"background 0.15s"}}
+                          onMouseEnter={e=>{if(!done[key]&&!generating[key]&&!locked)(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnHover;}}
+                          onMouseLeave={e=>{if(!done[key]&&!generating[key]&&!locked)(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnBg;}}>
+                          {generating[key]?(<><svg className="animate-spin w-3.5 h-3.5 text-white/80" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>Generating…</>)
+                            :done[key]?(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2.5"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>Generated</>)
+                            :(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><path d="M10 3v11M5 9l5 5 5-5" strokeLinecap="round" strokeLinejoin="round"/></svg>{GEN_BTN_CONFIG[key].sublabel} {GEN_BTN_CONFIG[key].label}</>)}
+                        </button>
                       </div>
                     </div>
-                    <div className="px-4 pb-4 pt-1">
-                      <button
-                        onClick={key==="brd"?runGenerateBrdExcel:key==="metajson"?runGenerateMetajson:key==="innod"?runGenerateInnod:runGenerateContentProfileExcel}
-                        disabled={!!generating[key]||!!done[key]}
-                        className="w-full py-2 rounded-md text-[12px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                        style={{background:done[key]?"#16a34a":GEN_BTN_CONFIG[key].btnBg,transition:"background 0.15s"}}
-                        onMouseEnter={e=>{if(!done[key]&&!generating[key])(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnHover;}}
-                        onMouseLeave={e=>{if(!done[key]&&!generating[key])(e.currentTarget as HTMLButtonElement).style.background=GEN_BTN_CONFIG[key].btnBg;}}>
-                        {generating[key]?(<><svg className="animate-spin w-3.5 h-3.5 text-white/80" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>Generating…</>)
-                          :done[key]?(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2.5"><path d="M4 10l4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/></svg>Generated</>)
-                          :(<><svg viewBox="0 0 20 20" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><path d="M10 3v11M5 9l5 5 5-5" strokeLinecap="round" strokeLinejoin="round"/></svg>{GEN_BTN_CONFIG[key].sublabel} {GEN_BTN_CONFIG[key].label}</>)}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

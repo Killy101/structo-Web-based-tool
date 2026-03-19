@@ -1099,7 +1099,7 @@ function XmlEditor({
   onChange?: (v: string) => void;
   canEdit: boolean;
   highlightText?: string | null;
-  editorRef: React.RefObject<HTMLTextAreaElement | null>;
+  editorRef: React.RefObject<HTMLTextAreaElement>;
 }) {
   useEffect(() => {
     if (!highlightText || !editorRef.current || !content) return;
@@ -1214,7 +1214,7 @@ export default function ComparePanel({
   activeJob,
 }: ComparePanelProps) {
   const { user } = useAuth();
-  const canEdit = user?.role === "SUPER_ADMIN" || user?.role === "MANAGER_QA";
+  const canEdit = user?.role === "SUPER_ADMIN";
 
   const [oldPdf, setOldPdf] = useState<File | null>(null);
   const [newPdf, setNewPdf] = useState<File | null>(null);

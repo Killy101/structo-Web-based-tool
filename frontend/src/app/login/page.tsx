@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import Image from "next/image";
+import { IdafLogo } from "@/components/icons/IdafLogo";
 import styles from "./page.module.css";
 import api from "@/app/lib/api";
 import axios from "axios";
@@ -152,17 +152,11 @@ export default function LoginPage() {
           <div className={styles.brandBlock}>
             <div className={styles.logoRow}>
               <div className={styles.logoIcon}>
-                <Image
-                  src="/assets/innodata.png"
-                  alt="Innodata Logo"
-                  width={32}
-                  height={32}
-                  priority
-                />
+                <IdafLogo size={36} />
               </div>
             </div>
             <h1 className={styles.brandTitle}>
-              STRUCT<span className={styles.brandO}>O</span>
+              <span className={styles.brandO}>I</span>DAF
             </h1>
             <p className={styles.brandSubtitle}>
               Legal Regulatory Delivery Unit
@@ -282,7 +276,7 @@ export default function LoginPage() {
             <h2 className={styles.formTitle}>Welcome back!</h2>
             <div className={styles.accentBar} />
             <p className={styles.formSubtitle}>
-              Sign in to your STRUCTO account to continue.
+              Sign in to your IDAF account to continue.
             </p>
           </div>
 

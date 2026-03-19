@@ -89,7 +89,7 @@ function DuplicateBlockedModal({
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-slate-700 dark:text-slate-300">
-            <span className="font-semibold text-slate-900 dark:text-white">"{fileName}"</span> already
+            <span className="font-semibold text-slate-900 dark:text-white">{fileName}</span> already
             exists in the BRD registry. You cannot re-upload a file that has already been ingested.
           </p>
           {dupInfo.brdId && (
@@ -163,7 +163,7 @@ function TitleDuplicateModal({
           <p className="text-sm text-slate-700 dark:text-slate-300">
             The extracted title{" "}
             <span className="font-semibold text-slate-900 dark:text-white">
-              "{extractedTitle}"
+              {extractedTitle}
             </span>{" "}
             {isFuzzy ? "closely matches" : "is the same as"} an existing BRD in the registry.
           </p>

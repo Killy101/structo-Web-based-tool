@@ -5,9 +5,9 @@ import {
   CardHeader,
   Badge,
   Button,
-  Spinner,
   EmptyState,
 } from "../../components/ui";
+import TetrisLoading from "../../components/ui/tetris-loader";
 import { useAuth } from "../../context/AuthContext";
 import { useBrds, useDashboard, useUserLogs } from "../../hooks";
 import {
@@ -117,10 +117,7 @@ export default function DashboardPage() {
   if (allBusy) {
     return (
       <div className="flex items-center justify-center h-72">
-        <div className="text-center space-y-3">
-          <Spinner className="w-8 h-8 mx-auto" />
-          <p className="text-sm text-slate-500">Loading dashboard...</p>
-        </div>
+        <TetrisLoading size="sm" speed="fast" loadingText="Loading dashboard..." />
       </div>
     );
   }

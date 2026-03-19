@@ -9,6 +9,8 @@ import {
   validatePasswordPolicy,
   generateCompliantPassword,
 } from "../lib/password-policy";
+import { getSecurityPolicy } from "../lib/get-security-policy";
+import { sendPasswordEmail } from "../lib/email";
 
 const router = Router();
 
@@ -93,10 +95,16 @@ function defaultTeamRoleFeatures(
   };
 }
 
+function resolvePolicyRole(role: string): "ADMIN" | "USER" | null {
+  if (role === "ADMIN") return "ADMIN";
+  if (role === "USER") return "USER";
+  return null;
+}
+
 // ─── Who can change whose password ───────────────────────
 const CAN_CHANGE_PASSWORD: Record<string, string[]> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 // ─── RATE LIMITER ────────────────────────────────────────
@@ -108,6 +116,26 @@ const loginLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+});
+
+// ─── GET PASSWORD POLICY (public — no auth required) ─────
+router.get("/password-policy", async (_req: Request, res: Response) => {
+  try {
+    const policy = await getSecurityPolicy();
+    res.json({
+      minPasswordLength:  policy.minPasswordLength,
+      requireUppercase:   policy.requireUppercase,
+      requireNumber:      policy.requireNumber,
+      minSpecialChars:    policy.minSpecialChars,
+    });
+  } catch {
+    res.json({
+      minPasswordLength: 15,
+      requireUppercase:  true,
+      requireNumber:     true,
+      minSpecialChars:   1,
+    });
+  }
 });
 
 // ─── LOGIN (userId + password only) ──────────────────────
@@ -166,9 +194,9 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid User ID or password" });
     }
 
-    // Max password age: 90 days
+    const secPolicy = await getSecurityPolicy();
     const expiresAt = new Date(user.passwordChangedAt);
-    expiresAt.setDate(expiresAt.getDate() + PASSWORD_POLICY.maxAgeDays);
+    expiresAt.setDate(expiresAt.getDate() + secPolicy.maxPasswordAgeDays);
     if (new Date() > expiresAt) {
       return res.status(403).json({
         error: "Password expired. Please contact your administrator.",
@@ -233,6 +261,7 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
         createdAt: true,
         teamId: true,
         team: { select: { id: true, name: true, slug: true } },
+        userRole: { select: { slug: true, features: true } },
       },
     });
 
@@ -243,19 +272,31 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
     let effectiveFeatures: string[] = [];
     if (user.role === "SUPER_ADMIN") {
       effectiveFeatures = ["*"];
-    } else if (
-      (user.role === "ADMIN" || user.role === "USER") &&
-      user.team?.slug
-    ) {
+    } else if (user.team?.slug) {
+      const policyRole = resolvePolicyRole(user.role);
+
+      if (!policyRole) {
+        return res.json({ user: { ...user, effectiveFeatures } });
+      }
+
       const policy = await prisma.userRole.findUnique({
         where: {
-          slug: policySlug(user.team.slug, user.role),
+          slug: policySlug(user.team.slug, policyRole),
         },
         select: { features: true },
       });
 
       effectiveFeatures =
-        policy?.features ?? defaultTeamRoleFeatures(user.team.slug)[user.role];
+        policy?.features ?? defaultTeamRoleFeatures(user.team.slug)[policyRole];
+
+      if (
+        user.userRole &&
+        !user.userRole.slug.startsWith(TEAM_POLICY_PREFIX)
+      ) {
+        effectiveFeatures = Array.from(
+          new Set([...effectiveFeatures, ...user.userRole.features]),
+        );
+      }
     }
 
     res.json({ user: { ...user, effectiveFeatures } });
@@ -266,8 +307,8 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // ─── CHANGE PASSWORD ──────────────────────────────────────
-// SuperAdmin → ADMIN, MANAGER_QA, MANAGER_QC, USER
-// Admin      → MANAGER_QA, MANAGER_QC, USER
+// SuperAdmin → ADMIN, USER
+// Admin      → USER
 // NOTE: Min-age (7 days) is intentionally skipped for admin-initiated changes.
 //       Only password history reuse check is enforced.
 router.post(
@@ -282,7 +323,8 @@ router.post(
         return res.status(400).json({ error: "Target user ID is required" });
       }
 
-      const policyError = validatePasswordPolicy(String(newPassword ?? ""));
+      const secPolicy = await getSecurityPolicy();
+      const policyError = validatePasswordPolicy(String(newPassword ?? ""), secPolicy);
       if (policyError) {
         return res.status(400).json({ error: policyError });
       }
@@ -312,7 +354,7 @@ router.post(
       // Check against current password
       if (await bcrypt.compare(newPassword, target.password)) {
         return res.status(400).json({
-          error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
+          error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.`,
         });
       }
 
@@ -320,13 +362,13 @@ router.post(
       const recentHistory = await prisma.passwordHistory.findMany({
         where: { userId: target.id },
         orderBy: { createdAt: "desc" },
-        take: PASSWORD_POLICY.rememberedCount,
+        take: secPolicy.rememberedCount,
       });
 
       for (const h of recentHistory) {
         if (await bcrypt.compare(newPassword, h.hash)) {
           return res.status(400).json({
-            error: `New password must not match any of the last ${PASSWORD_POLICY.rememberedCount} passwords.`,
+            error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.`,
           });
         }
       }
@@ -394,7 +436,8 @@ router.post(
         });
       }
 
-      const newPassword = generateCompliantPassword();
+      const resetPolicy = await getSecurityPolicy();
+      const newPassword = generateCompliantPassword(resetPolicy.minPasswordLength);
       const hash = await bcrypt.hash(newPassword, 10);
       const now = new Date();
 
@@ -416,10 +459,22 @@ router.post(
         },
       });
 
+      const targetAny = target as any;
+      const emailSent = targetAny.email
+        ? await sendPasswordEmail({
+            to: String(targetAny.email),
+            userId: target.userId,
+            fullName: [targetAny.firstName, targetAny.lastName].filter(Boolean).join(" "),
+            password: newPassword,
+            action: "reset",
+          })
+        : false;
+
       res.json({
         message: "Password reset successfully",
         newPassword,
         targetUserId: target.userId,
+        emailSent,
       });
     } catch (error) {
       console.error("Reset user password error:", error);

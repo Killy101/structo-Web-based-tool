@@ -45,10 +45,30 @@ function storagePathForSection(brdId: string, name: SectionName): string {
   return `brd/${brdId}/sections/${name}.json`;
 }
 
+
 async function resolveSectionValue(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
-  return downloadJsonObject(storagePath);
+
+  // downloadJsonObject returns null (not throws) for missing files, so check
+  // the return value rather than relying on catch to trigger the fallback.
+  const primary = await downloadJsonObject(storagePath);
+  if (primary !== null) return primary;
+
+  // Fallback: try the alternate spelling of the historic sectionns/sections typo
+  const alternatePath = storagePath.includes("/sectionns/")
+    ? storagePath.replace("/sectionns/", "/sections/")
+    : storagePath.includes("/sections/")
+    ? storagePath.replace("/sections/", "/sectionns/")
+    : null;
+
+  if (alternatePath) {
+    const alternate = await downloadJsonObject(alternatePath);
+    if (alternate !== null) return alternate;
+  }
+
+  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+  return null;
 }
 
 // ── GET /brd/:brdId/sections — all blobs ──────────────────────────────────
@@ -131,6 +151,11 @@ router.put("/:brdId/sections/:name", async (req: Request, res: Response) => {
   }
 
   try {
+    const brd = await prisma.brd.findUnique({ where: { brdId }, select: { deletedAt: true } });
+    if (!brd || brd.deletedAt !== null) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+
     const storagePath = storagePathForSection(brdId, name);
     await uploadJsonObject(storagePath, data);
     const pointer = makeStoragePointer(storagePath);

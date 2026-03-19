@@ -1,8 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import prisma from "../lib/prisma";
 
-const prismaAny = prisma as any;
-
 const GOVERNANCE_OPERATIONS_KEY = "governance.operations";
 const GOVERNANCE_CACHE_TTL_MS = 10_000;
 const STRICT_WINDOW_MS = 60_000;
@@ -21,14 +19,6 @@ type StrictCounterState = {
 let cachedFlags: (OperationsFlags & { fetchedAt: number }) | null = null;
 const strictCounter = new Map<string, StrictCounterState>();
 
-function getAppSettingDelegate():
-  | { findMany: (args: unknown) => Promise<Array<{ key: string; value: unknown }>> }
-  | null {
-  const delegate = prismaAny?.appSetting;
-  if (!delegate || typeof delegate.findMany !== "function") return null;
-  return delegate;
-}
-
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -42,32 +32,30 @@ function normalizeOperationsFlags(input: unknown): OperationsFlags {
   };
 }
 
+const GOVERNANCE_ERROR_CACHE_TTL_MS = 30_000; // retry DB after 30s on error
+
 async function getOperationsFlags(): Promise<OperationsFlags> {
   const now = Date.now();
   if (cachedFlags && now - cachedFlags.fetchedAt < GOVERNANCE_CACHE_TTL_MS) {
     return cachedFlags;
   }
 
-  const appSetting = getAppSettingDelegate();
-  if (!appSetting) {
-    const fallback = normalizeOperationsFlags(undefined);
-    cachedFlags = { ...fallback, fetchedAt: now };
-    return fallback;
+  try {
+    const row = await prisma.appSetting.findUnique({
+      where: { key: GOVERNANCE_OPERATIONS_KEY },
+      select: { value: true },
+    });
+    const ops = normalizeOperationsFlags(row?.value);
+    cachedFlags = { ...ops, fetchedAt: now };
+    return ops;
+  } catch (err) {
+    // DB unreachable — keep serving from cache if available, otherwise use safe defaults.
+    // Use a longer TTL on error so we don't hammer a struggling DB every request.
+    if (cachedFlags) return cachedFlags;
+    const safe: OperationsFlags = { maintenanceMode: false, strictRateLimitMode: false };
+    cachedFlags = { ...safe, fetchedAt: now - GOVERNANCE_CACHE_TTL_MS + GOVERNANCE_ERROR_CACHE_TTL_MS };
+    return safe;
   }
-
-  const rows = await appSetting.findMany({
-    where: { key: GOVERNANCE_OPERATIONS_KEY },
-    select: { key: true, value: true },
-    take: 1,
-  });
-
-  const ops = normalizeOperationsFlags(rows[0]?.value);
-  cachedFlags = {
-    ...ops,
-    fetchedAt: now,
-  };
-
-  return ops;
 }
 
 function isMutationMethod(method: string): boolean {

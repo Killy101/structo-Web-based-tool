@@ -2,17 +2,51 @@
 import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
 import { authenticate, AuthRequest } from "../../middleware/authenticate";
+import { authorize } from "../../middleware/authorize";
 import { notifyMany } from "../../lib/notify";
-import { downloadJsonObject, extractStoragePath } from "../../lib/supabase-storage";
+import { downloadJsonObject, extractStoragePath, removeObjects } from "../../lib/supabase-storage";
+import { repairBrdSectionStoragePaths } from "../../lib/brd-storage-repair";
 
 const router = Router();
 
 const VALID_STATUSES = ["DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"];
+const ALLOWED_STATUS_TRANSITIONS: Record<string, string[]> = {
+  DRAFT: ["DRAFT", "COMPLETED", "ON_HOLD"],
+  PAUSED: ["PAUSED", "DRAFT", "COMPLETED", "ON_HOLD"],
+  COMPLETED: ["COMPLETED", "APPROVED", "ON_HOLD"],
+  APPROVED: ["APPROVED", "ON_HOLD"],
+  ON_HOLD: ["ON_HOLD", "DRAFT", "COMPLETED", "APPROVED"],
+};
+
+function normalizeBrdStatus(status: unknown): string {
+  const upper = String(status ?? "").toUpperCase();
+  // Backward compatibility: ONGOING should map to the persisted DRAFT status.
+  return upper === "ONGOING" ? "DRAFT" : upper;
+}
 
 async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
-  return downloadJsonObject(storagePath);
+
+  // downloadJsonObject returns null (not throws) for missing files, so check
+  // the return value rather than relying on catch to trigger the fallback.
+  const primary = await downloadJsonObject(storagePath);
+  if (primary !== null) return primary;
+
+  // Fallback: try the alternate spelling of the historic sectionns/sections typo
+  const alternatePath = storagePath.includes("/sectionns/")
+    ? storagePath.replace("/sectionns/", "/sections/")
+    : storagePath.includes("/sections/")
+    ? storagePath.replace("/sections/", "/sectionns/")
+    : null;
+
+  if (alternatePath) {
+    const alternate = await downloadJsonObject(alternatePath);
+    if (alternate !== null) return alternate;
+  }
+
+  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+  return null;
 }
 
 // ── Title normalisation helper ─────────────────────────────────────────────
@@ -43,6 +77,7 @@ function isSimilarTitle(a: string, b: string): boolean {
 router.get("/", async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       orderBy: { createdAt: "asc" },
       select: {
         id:        true,
@@ -58,8 +93,13 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = await Promise.all(brds.map(async (b) => {
-      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
+    const data = brds.map((b) => {
+      // Use only inline metadata for the list view — avoid downloading from
+      // Supabase Storage (one request per BRD) which causes timeouts.
+      const rawMeta = b.sections?.metadata ?? null;
+      const meta = extractStoragePath(rawMeta) === null
+        ? (rawMeta as Record<string, unknown> | null)
+        : null;
 
       const geography     = (meta?.geography              as string) ?? "—";
 
@@ -82,7 +122,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    }));
+    });
 
     return res.json(data);
   } catch (err) {
@@ -91,10 +131,55 @@ router.get("/", async (_req: Request, res: Response) => {
   }
 });
 
+// ── GET /brd/deleted — list soft-deleted BRDs ─────────────────────────────
+router.get("/deleted", async (_req: Request, res: Response) => {
+  try {
+    const brds = await prisma.brd.findMany({
+      where: { deletedAt: { not: null } },
+      orderBy: { deletedAt: "desc" },
+      select: {
+        id:        true,
+        brdId:     true,
+        title:     true,
+        format:    true,
+        status:    true,
+        deletedAt: true,
+        sections: { select: { metadata: true } },
+      },
+    });
+
+    const data = await Promise.all(brds.map(async (b) => {
+      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
+      const geography = (meta?.geography as string) ?? "—";
+      const storedFormat = (meta?._format as string) ?? "";
+      const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
+      const derivedFormat: "old" | "new" =
+        storedFormat === "old" ? "old" :
+        storedFormat === "new" ? "new" :
+        hasLegacyKeys           ? "old" :
+        b.format === "OLD"      ? "old" : "new";
+
+      return {
+        id:        b.brdId,
+        title:     b.title.charAt(0).toUpperCase() + b.title.slice(1),
+        format:    derivedFormat,
+        status:    b.status,
+        geography,
+        deletedAt: b.deletedAt!.toISOString().split("T")[0],
+      };
+    }));
+
+    return res.json(data);
+  } catch (err) {
+    console.error("[GET /brd/deleted]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── GET /brd/next-id ───────────────────────────────────────────────────────
 router.get("/next-id", async (_req: Request, res: Response) => {
   try {
-    const allBrdIds = await prisma.brd.findMany({ select: { brdId: true } });
+    const allBrdIds = await prisma.brd.findMany({ where: { deletedAt: null }, select: { brdId: true } });
     const maxNum = allBrdIds.reduce((max, { brdId }) => {
       const n = parseInt(brdId.replace("BRD-", ""), 10);
       return isNaN(n) ? max : Math.max(max, n);
@@ -130,6 +215,7 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
     const normalised = normalizeTitle(candidateTitle);
 
     const allBrds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       select: { brdId: true, title: true, status: true },
     });
 
@@ -193,6 +279,7 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
 
     // Fetch all BRD titles — the table is small enough that a full scan is fine
     const allBrds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       select: { brdId: true, title: true, status: true },
     });
 
@@ -230,6 +317,47 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /brd/admin/repair-section-paths — repair legacy storage pointers ──
+router.post(
+  "/admin/repair-section-paths",
+  authenticate,
+  authorize(["SUPER_ADMIN", "ADMIN"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const modeRaw = String(req.body?.mode ?? req.query.mode ?? "dry-run").toLowerCase();
+      const dryRun = modeRaw !== "live";
+      const targetBrdIdRaw = req.body?.brdId ?? req.query.brdId;
+      const targetBrdId = targetBrdIdRaw ? String(targetBrdIdRaw).trim() : undefined;
+
+      const summary = await repairBrdSectionStoragePaths({
+        dryRun,
+        brdId: targetBrdId,
+        log: (line) => console.log(`[POST /brd/admin/repair-section-paths] ${line}`),
+      });
+
+      const maxEntries = 250;
+      const repairs = summary.repairs.slice(0, maxEntries);
+
+      return res.json({
+        success: true,
+        mode: summary.dryRun ? "dry-run" : "live",
+        targetBrdId: summary.targetBrdId,
+        rowsScanned: summary.rowsScanned,
+        rowsUpdated: summary.rowsUpdated,
+        pointersScanned: summary.pointersScanned,
+        pointersUpdated: summary.pointersUpdated,
+        pointersUnresolved: summary.pointersUnresolved,
+        repairs,
+        repairsTruncated: summary.repairs.length > repairs.length,
+        totalRepairs: summary.repairs.length,
+      });
+    } catch (err) {
+      console.error("[POST /brd/admin/repair-section-paths]", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
 // ── GET /brd/:brdId — single BRD with all section blobs ───────────────────
 router.get("/:brdId", async (req: Request, res: Response) => {
   try {
@@ -237,9 +365,46 @@ router.get("/:brdId", async (req: Request, res: Response) => {
       where:   { brdId: String(req.params.brdId) },
       include: { sections: true },
     });
-    if (!brd) return res.status(404).json({ error: "BRD not found" });
+    if (!brd || brd.deletedAt !== null) return res.status(404).json({ error: "BRD not found" });
 
     const meta = await resolveMaybeStoredJson(brd.sections?.metadata ?? null) as Record<string, unknown> | null;
+
+    const storedFormat2  = (meta?._format        as string) ?? "";
+    const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
+    const derivedFormat2: "old" | "new" =
+      storedFormat2 === "old" ? "old" :
+      storedFormat2 === "new" ? "new" :
+      hasLegacyKeys2           ? "old" :
+      brd.format === "OLD"     ? "old" : "new";
+
+    const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
+
+    const scope = await resolveMaybeStoredJson(brd.sections?.scope ?? null);
+    const metadata = await resolveMaybeStoredJson(brd.sections?.metadata ?? null);
+    const toc = await resolveMaybeStoredJson(brd.sections?.toc ?? null);
+    const citations = await resolveMaybeStoredJson(brd.sections?.citations ?? null);
+    const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
+    const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
+
+    return res.json({
+      id:             brd.brdId,
+      title:          displayName,
+      format:         derivedFormat2,
+      status:         brd.status,
+      version:        "v1.0",
+      lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
+      scope,
+      metadata,
+      toc,
+      citations,
+      contentProfile,
+      brdConfig,
+    });
+  } catch (err) {
+    console.error("[GET /brd/:brdId]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ── POST /brd/:brdId/query — send a BRD query to Pre-Production ───────────
 router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Response) => {
@@ -307,62 +472,139 @@ router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Respons
   }
 });
 
-    const storedFormat2  = (meta?._format        as string) ?? "";
-    const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
-    const derivedFormat2: "old" | "new" =
-      storedFormat2 === "old" ? "old" :
-      storedFormat2 === "new" ? "new" :
-      hasLegacyKeys2           ? "old" :
-      brd.format === "OLD"     ? "old" : "new";
-
-    const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
-
-    const scope = await resolveMaybeStoredJson(brd.sections?.scope ?? null);
-    const metadata = await resolveMaybeStoredJson(brd.sections?.metadata ?? null);
-    const toc = await resolveMaybeStoredJson(brd.sections?.toc ?? null);
-    const citations = await resolveMaybeStoredJson(brd.sections?.citations ?? null);
-    const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
-    const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
-
-    return res.json({
-      id:             brd.brdId,
-      title:          displayName,
-      format:         derivedFormat2,
-      status:         brd.status,
-      version:        "v1.0",
-      lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
-      scope,
-      metadata,
-      toc,
-      citations,
-      contentProfile,
-      brdConfig,
-    });
-  } catch (err) {
-    console.error("[GET /brd/:brdId]", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// ── DELETE /brd/:brdId ─────────────────────────────────────────────────────
-router.delete("/:brdId", async (req: Request, res: Response) => {
+// ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
+router.delete("/:brdId", authenticate, async (req: Request, res: Response) => {
   try {
-    await prisma.brd.delete({ where: { brdId: String(req.params.brdId) } });
+    const brd = await prisma.brd.findUnique({
+      where: { brdId: String(req.params.brdId) },
+      select: { deletedAt: true },
+    });
+    if (!brd || brd.deletedAt !== null) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+    await prisma.brd.update({
+      where: { brdId: String(req.params.brdId) },
+      data:  { deletedAt: new Date() },
+    });
     return res.json({ success: true });
   } catch {
     return res.status(404).json({ error: "BRD not found" });
   }
 });
 
+// ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
+router.post("/:brdId/restore", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
+  try {
+    const brd = await prisma.brd.findUnique({
+      where: { brdId: String(req.params.brdId) },
+      select: { deletedAt: true },
+    });
+    if (!brd) return res.status(404).json({ error: "BRD not found" });
+    if (brd.deletedAt === null) {
+      return res.status(400).json({ error: "BRD is not deleted" });
+    }
+    await prisma.brd.update({
+      where: { brdId: String(req.params.brdId) },
+      data:  { deletedAt: null },
+    });
+    return res.json({ success: true });
+  } catch {
+    return res.status(404).json({ error: "BRD not found" });
+  }
+});
+
+// ── DELETE /brd/:brdId/permanent — hard delete (trash only) ───────────────
+router.delete("/:brdId/permanent", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
+  try {
+    const brdId = String(req.params.brdId);
+
+    const brd = await prisma.brd.findUnique({
+      where: { brdId },
+      select: {
+        deletedAt: true,
+        sections: {
+          select: {
+            scope: true,
+            metadata: true,
+            toc: true,
+            citations: true,
+            contentProfile: true,
+            brdConfig: true,
+            innodMetajson: true,
+            simpleMetajson: true,
+            cellImages: {
+              select: { blobUrl: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!brd) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+
+    if (brd.deletedAt === null) {
+      return res.status(400).json({ error: "BRD must be soft-deleted before permanent delete" });
+    }
+
+    const sectionPaths = [
+      extractStoragePath(brd.sections?.scope),
+      extractStoragePath(brd.sections?.metadata),
+      extractStoragePath(brd.sections?.toc),
+      extractStoragePath(brd.sections?.citations),
+      extractStoragePath(brd.sections?.contentProfile),
+      extractStoragePath(brd.sections?.brdConfig),
+      extractStoragePath(brd.sections?.innodMetajson),
+      extractStoragePath(brd.sections?.simpleMetajson),
+    ].filter((path): path is string => !!path);
+
+    const imagePaths = (brd.sections?.cellImages ?? [])
+      .map((image) => image.blobUrl)
+      .filter((path): path is string => !!path);
+
+    await prisma.brd.delete({ where: { brdId } });
+
+    try {
+      await removeObjects([...sectionPaths, ...imagePaths]);
+    } catch (storageErr) {
+      console.warn(`[DELETE /brd/${brdId}/permanent] Storage cleanup failed:`, storageErr);
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[DELETE /brd/:brdId/permanent]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── PATCH /brd/:brdId — update status, title, or format ──────────────────
-router.patch("/:brdId", async (req: Request, res: Response) => {
+router.patch("/:brdId", authenticate, async (req: Request, res: Response) => {
   try {
     const { status, title, format } = req.body;
+    const normalizedStatus = status ? normalizeBrdStatus(status) : undefined;
 
-    if (status && !VALID_STATUSES.includes(status)) {
+    const existing = await prisma.brd.findUnique({
+      where: { brdId: String(req.params.brdId) },
+      select: { deletedAt: true, status: true },
+    });
+    if (!existing || existing.deletedAt !== null) {
+      return res.status(404).json({ error: "BRD not found" });
+    }
+
+    if (normalizedStatus && !VALID_STATUSES.includes(normalizedStatus)) {
       return res.status(400).json({
         error: `Invalid status: "${status}". Must be one of: ${VALID_STATUSES.join(", ")}`,
       });
+    }
+
+    if (normalizedStatus) {
+      const allowed = ALLOWED_STATUS_TRANSITIONS[existing.status] ?? [existing.status];
+      if (!allowed.includes(normalizedStatus)) {
+        return res.status(400).json({
+          error: `Invalid status transition: ${existing.status} -> ${normalizedStatus}. Allowed: ${allowed.join(", ")}`,
+        });
+      }
     }
 
     const dbFormat = format ? String(format).toUpperCase() : undefined;
@@ -374,7 +616,7 @@ router.patch("/:brdId", async (req: Request, res: Response) => {
       where: { brdId: String(req.params.brdId) },
       data: {
         ...(title     && { title }),
-        ...(status    && { status: status as any }),
+        ...(normalizedStatus && { status: normalizedStatus as any }),
         ...(dbFormat  && { format: dbFormat as any }),
       },
     });
@@ -385,9 +627,10 @@ router.patch("/:brdId", async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/fix-formats — backfill format for existing records ──────────
-router.post("/fix-formats", async (_req: Request, res: Response) => {
+router.post("/fix-formats", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
+      where: { deletedAt: null },
       select: { brdId: true, format: true, sections: { select: { metadata: true } } },
     });
 

@@ -4,7 +4,6 @@ import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { authorize } from "../middleware/authorize";
 
 const router = Router();
-const prismaAny = prisma as any;
 
 const GOVERNANCE_SECURITY_KEY = "governance.security";
 const GOVERNANCE_OPERATIONS_KEY = "governance.operations";
@@ -48,23 +47,6 @@ const DEFAULT_OPERATIONS_POLICY: OperationsPolicyState = {
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
-}
-
-function getAppSettingDelegate():
-  | {
-      findMany: (args: unknown) => Promise<Array<{ key: string; value: unknown }>>;
-      upsert: (args: unknown) => unknown;
-    }
-  | null {
-  const delegate = prismaAny?.appSetting;
-  if (
-    !delegate ||
-    typeof delegate.findMany !== "function" ||
-    typeof delegate.upsert !== "function"
-  ) {
-    return null;
-  }
-  return delegate;
 }
 
 function normalizeSecurityPolicy(input: unknown): SecurityPolicyState {
@@ -139,51 +121,31 @@ function normalizeOperationsPolicy(input: unknown): OperationsPolicyState {
 }
 
 async function loadGovernanceSettings() {
-  const appSetting = getAppSettingDelegate();
-  if (!appSetting) {
-    return {
-      securityPolicy: normalizeSecurityPolicy(undefined),
-      operationsPolicy: normalizeOperationsPolicy(undefined),
-    };
-  }
-
-  const rows = await appSetting.findMany({
-    where: {
-      key: {
-        in: [GOVERNANCE_SECURITY_KEY, GOVERNANCE_OPERATIONS_KEY],
-      },
-    },
+  const rows = await prisma.appSetting.findMany({
+    where: { key: { in: [GOVERNANCE_SECURITY_KEY, GOVERNANCE_OPERATIONS_KEY] } },
   });
 
-  const byKey = new Map(
-    rows.map((row: { key: string; value: unknown }) => [row.key, row.value]),
-  );
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
 
   return {
     securityPolicy: normalizeSecurityPolicy(byKey.get(GOVERNANCE_SECURITY_KEY)),
-    operationsPolicy: normalizeOperationsPolicy(
-      byKey.get(GOVERNANCE_OPERATIONS_KEY),
-    ),
+    operationsPolicy: normalizeOperationsPolicy(byKey.get(GOVERNANCE_OPERATIONS_KEY)),
   };
 }
 
 async function loadOperationsStatus() {
-  const appSetting = getAppSettingDelegate();
-  if (!appSetting) {
-    return { operationsPolicy: normalizeOperationsPolicy(undefined) };
-  }
-
-  const rows = await appSetting.findMany({
-    where: {
-      key: GOVERNANCE_OPERATIONS_KEY,
-    },
-    take: 1,
+  const rows = await prisma.appSetting.findMany({
+    where: { key: { in: [GOVERNANCE_OPERATIONS_KEY, GOVERNANCE_SECURITY_KEY] } },
+    select: { key: true, value: true },
   });
-
-  const operationsPolicy = normalizeOperationsPolicy(rows[0]?.value);
-  return { operationsPolicy };
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  const operationsPolicy = normalizeOperationsPolicy(byKey.get(GOVERNANCE_OPERATIONS_KEY));
+  const sec = byKey.get(GOVERNANCE_SECURITY_KEY) as Record<string, unknown> | undefined;
+  const sessionTimeoutMinutes = Math.max(5, Number(sec?.sessionTimeoutMinutes ?? 30));
+  return { operationsPolicy, sessionTimeoutMinutes };
 }
 
+// ── GET /settings/operations-status ───────────────────────────────────────────
 router.get(
   "/operations-status",
   authenticate,
@@ -198,6 +160,7 @@ router.get(
   },
 );
 
+// ── GET /settings/governance ───────────────────────────────────────────────────
 router.get(
   "/governance",
   authenticate,
@@ -213,6 +176,32 @@ router.get(
   },
 );
 
+// ── GET /settings/governance-history ─────────────────────
+router.get(
+  "/governance-history",
+  authenticate,
+  authorize(["SUPER_ADMIN"]),
+  async (_req: AuthRequest, res: Response) => {
+    try {
+      const logs = await prisma.userLog.findMany({
+        where: { action: "GOVERNANCE_SETTINGS_UPDATED" },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        include: {
+          user: {
+            select: { id: true, userId: true, firstName: true, lastName: true, role: true },
+          },
+        },
+      });
+      return res.json({ logs });
+    } catch (error) {
+      console.error("Get governance history error:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── PATCH /settings/governance ────────────────────────────────────────────────
 router.patch(
   "/governance",
   authenticate,
@@ -220,44 +209,25 @@ router.patch(
   async (req: AuthRequest, res: Response) => {
     try {
       const securityPolicy = normalizeSecurityPolicy(req.body?.securityPolicy);
-      const operationsPolicy = normalizeOperationsPolicy(
-        req.body?.operationsPolicy,
-      );
+      const operationsPolicy = normalizeOperationsPolicy(req.body?.operationsPolicy);
 
-      const appSetting = getAppSettingDelegate();
-      if (!appSetting) {
-        return res
-          .status(503)
-          .json({ error: "Settings storage is unavailable. Run Prisma generate." });
-      }
-
-      await prismaAny.$transaction([
-        appSetting.upsert({
-          where: { key: GOVERNANCE_SECURITY_KEY },
-          create: {
-            key: GOVERNANCE_SECURITY_KEY,
-            value: securityPolicy as any,
-          },
-          update: {
-            value: securityPolicy as any,
-          },
+      await prisma.$transaction([
+        prisma.appSetting.upsert({
+          where:  { key: GOVERNANCE_SECURITY_KEY },
+          create: { key: GOVERNANCE_SECURITY_KEY,  value: securityPolicy  as any },
+          update: { value: securityPolicy  as any },
         }),
-        appSetting.upsert({
-          where: { key: GOVERNANCE_OPERATIONS_KEY },
-          create: {
-            key: GOVERNANCE_OPERATIONS_KEY,
-            value: operationsPolicy as any,
-          },
-          update: {
-            value: operationsPolicy as any,
-          },
+        prisma.appSetting.upsert({
+          where:  { key: GOVERNANCE_OPERATIONS_KEY },
+          create: { key: GOVERNANCE_OPERATIONS_KEY, value: operationsPolicy as any },
+          update: { value: operationsPolicy as any },
         }),
       ]);
 
       await prisma.userLog.create({
         data: {
-          userId: req.user!.userId,
-          action: "GOVERNANCE_SETTINGS_UPDATED",
+          userId:  req.user!.userId,
+          action:  "GOVERNANCE_SETTINGS_UPDATED",
           details: "Updated governance security and operations settings",
         },
       });

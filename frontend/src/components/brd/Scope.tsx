@@ -75,6 +75,31 @@ function buildRows(d?: Record<string, unknown>): ScopeRow[] {
   asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toRow(e, `${now}-out-${i}`, true, `out-${i}`)));
   return rows;
 }
+
+function normalizeScopeRow(row: ScopeRow) {
+  return {
+    stableKey: row.stableKey,
+    title: row.title,
+    referenceLink: row.referenceLink,
+    contentUrl: row.contentUrl,
+    issuingAuth: row.issuingAuth,
+    asrbId: row.asrbId,
+    smeComments: row.smeComments,
+    initialEvergreen: row.initialEvergreen,
+    dateOfIngestion: row.dateOfIngestion,
+    isOutOfScope: row.isOutOfScope,
+  };
+}
+
+function scopeRowsEqualIgnoringIds(a: ScopeRow[], b: ScopeRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (JSON.stringify(normalizeScopeRow(a[i])) !== JSON.stringify(normalizeScopeRow(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
 function hasExtraCols(rows: ScopeRow[]) {
   return { evergreen: rows.some((r) => r.initialEvergreen), ingestion: rows.some((r) => r.dateOfIngestion) };
 }
@@ -853,6 +878,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
   });
   const highlightRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
   const isInitializing = useRef(false);
+  const rowsRef = useRef<ScopeRow[]>([]);
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   const API_BASE_SCOPE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
@@ -860,7 +886,18 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
   function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
 
-  useEffect(() => { isInitializing.current = true; setRows(buildRows(initialData)); setSaved(false); }, [initialData]);
+  useEffect(() => {
+    const nextRows = buildRows(initialData);
+    if (scopeRowsEqualIgnoringIds(rowsRef.current, nextRows)) return;
+
+    isInitializing.current = true;
+    setRows(nextRows);
+    setSaved(false);
+  }, [initialData]);
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
   useEffect(() => {
     if (!brdId) return;

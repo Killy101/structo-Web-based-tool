@@ -4,8 +4,6 @@ import { Role, Status, TaskStatus, AssignmentStatus, User } from "../types";
 export const ROLE_LABELS: Record<Role, string> = {
   SUPER_ADMIN: "Super Admin",
   ADMIN: "Admin",
-  MANAGER_QA: "Manager QA",
-  MANAGER_QC: "Manager QC",
   USER: "User",
 };
 
@@ -14,18 +12,12 @@ export const ROLE_BADGE_COLORS: Record<Role, string> = {
     "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
   ADMIN:
     "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-  MANAGER_QA:
-    "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-  MANAGER_QC:
-    "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400",
   USER: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
 };
 
 export const ROLE_CHART_COLORS: Record<Role, string> = {
   SUPER_ADMIN: "#6366f1",
   ADMIN: "#8b5cf6",
-  MANAGER_QA: "#f59e0b",
-  MANAGER_QC: "#14b8a6",
   USER: "#3b82f6",
 };
 
@@ -121,8 +113,8 @@ export const CAN_CREATE_ROLES: Partial<Record<Role, Role[]>> = {
 
 // Who can deactivate which roles
 export const CAN_DEACTIVATE_ROLES: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 // Which roles can a user be changed TO by each actor
@@ -133,8 +125,8 @@ export const ALLOWED_TARGET_ROLES: Partial<Record<Role, Role[]>> = {
 
 // Who can change/reset passwords for whom
 export const CAN_CHANGE_PASSWORD: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "MANAGER_QA", "MANAGER_QC", "USER"],
-  ADMIN: ["MANAGER_QA", "MANAGER_QC", "USER"],
+  SUPER_ADMIN: ["ADMIN", "USER"],
+  ADMIN: ["USER"],
 };
 
 export const canCreate = (actor: Role, target: Role) =>

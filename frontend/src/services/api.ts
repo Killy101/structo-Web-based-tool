@@ -18,6 +18,8 @@ import {
   UserLog,
   Notification,
   TaskComment,
+  UpdateUserProfilePayload,
+  UpdateUserProfileResponse,
 } from "../types";
 
 export const getToken = () =>
@@ -43,7 +45,17 @@ export const authApi = {
         message: string;
         newPassword: string;
         targetUserId: string;
+        emailSent?: boolean;
       }>("/auth/reset-user-password", { targetUserId })
+      .then((r) => r.data),
+  getPasswordPolicy: () =>
+    api
+      .get<{
+        minPasswordLength: number;
+        requireUppercase: boolean;
+        requireNumber: boolean;
+        minSpecialChars: number;
+      }>("/auth/password-policy")
       .then((r) => r.data),
 };
 
@@ -51,6 +63,10 @@ export const usersApi = {
   getAll: () => api.get<{ users: User[] }>("/users").then((r) => r.data),
   create: (data: CreateUserPayload) =>
     api.post<CreateUserResponse>("/users/create", data).then((r) => r.data),
+  updateProfile: (id: number, data: UpdateUserProfilePayload) =>
+    api
+      .patch<UpdateUserProfileResponse>(`/users/${id}/profile`, data)
+      .then((r) => r.data),
   assignTeam: (id: number, teamId: number | null) =>
     api
       .patch<{ message: string }>(`/users/${id}/team`, { teamId })
@@ -65,6 +81,10 @@ export const usersApi = {
       .then((r) => r.data),
   activate: (id: number) =>
     api.patch<{ message: string }>(`/users/${id}/activate`).then((r) => r.data),
+  assignUserRole: (id: number, userRoleId: number | null) =>
+    api
+      .patch<{ message: string }>(`/users/${id}/user-role`, { userRoleId })
+      .then((r) => r.data),
 };
 
 export const teamsApi = {
@@ -133,9 +153,13 @@ export const settingsApi = {
       .then((r) => r.data),
   getOperationsStatus: () =>
     api
-      .get<{ operationsPolicy: OperationsPolicyState }>(
+      .get<{ operationsPolicy: OperationsPolicyState; sessionTimeoutMinutes: number }>(
         "/settings/operations-status",
       )
+      .then((r) => r.data),
+  getGovernanceHistory: () =>
+    api
+      .get<{ logs: UserLog[] }>("/settings/governance-history")
       .then((r) => r.data),
 };
 

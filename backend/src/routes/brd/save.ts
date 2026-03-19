@@ -9,6 +9,12 @@ const router = Router();
 const VALID_STATUSES = ["DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"];
 const VALID_FORMATS  = ["NEW", "OLD"];
 
+function normalizeBrdStatus(status: unknown): string {
+  const upper = String(status ?? "DRAFT").toUpperCase();
+  // Backward compatibility: UI label "Ongoing" historically posted ONGOING.
+  return upper === "ONGOING" ? "DRAFT" : upper;
+}
+
 /**
  * Sanitize brdConfig before storing it.
  *
@@ -104,7 +110,7 @@ router.post("/save", async (req: Request, res: Response) => {
     }
 
     const dbFormat = String(format).toUpperCase();
-    const dbStatus = String(status).toUpperCase();
+    const dbStatus = normalizeBrdStatus(status);
 
     if (!VALID_FORMATS.includes(dbFormat)) {
       return res.status(400).json({ error: `Invalid format: "${format}". Must be NEW or OLD.` });

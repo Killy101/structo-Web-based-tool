@@ -3,14 +3,30 @@ dotenv.config()
 
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
+import { Pool } from 'pg'
 
-const connectionString = process.env.DATABASE_URL
+const databaseUrl = process.env.DATABASE_URL?.trim()
+const directUrl = process.env.DIRECT_URL?.trim()
+
+// Prefer a real Postgres URL for the pg adapter.
+// Some setups keep DATABASE_URL for pooled/proxy urls and DIRECT_URL for direct DB access.
+const connectionString =
+  databaseUrl && databaseUrl.startsWith('postgres')
+    ? databaseUrl
+    : directUrl || databaseUrl
 
 if (!connectionString) {
-  throw new Error('DATABASE_URL is not defined in .env file')
+  throw new Error('DATABASE_URL or DIRECT_URL must be defined in .env file')
 }
 
-const adapter = new PrismaPg({ connectionString })
+const pool = new Pool({
+  connectionString,
+  max: 10,                      // max simultaneous connections
+  connectionTimeoutMillis: 8000, // fail fast instead of hanging indefinitely
+  idleTimeoutMillis: 30000,
+})
+
+const adapter = new PrismaPg(pool)
 
 const prisma = new PrismaClient({ adapter })
 

@@ -6,7 +6,8 @@ import { AuthProvider, useAuth } from "../../context/AuthContext";
 import { ThemeProvider } from "../../context/ThemContext";
 import Sidebar from "../../components/layout/Sidebar";
 import Unauthorized from "../../components/layout/Unauthorized";
-import { Spinner, Button } from "../../components/ui";
+import { Button } from "../../components/ui";
+import TetrisLoading from "../../components/ui/tetris-loader";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 import { getToken, settingsApi } from "../../services/api";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
@@ -20,24 +21,18 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/tasks": [
     "SUPER_ADMIN",
     "ADMIN",
-    "MANAGER_QA",
-    "MANAGER_QC",
     "USER",
   ],
-  // SUPER_ADMIN + MANAGER_QA: full access (all tabs, can edit XML)
-  // MANAGER_QC / ADMIN / USER: compare-only, read-only XML
+  // SUPER_ADMIN: full access (all tabs, can edit XML)
+  // ADMIN / USER: compare-only, read-only XML
   "/dashboard/compare": [
     "SUPER_ADMIN",
-    "MANAGER_QA",
-    "MANAGER_QC",
     "ADMIN",
     "USER",
   ],
   // AutoCompare: same access as Compare
   "/dashboard/autocompare": [
     "SUPER_ADMIN",
-    "MANAGER_QA",
-    "MANAGER_QC",
     "ADMIN",
     "USER",
   ],
@@ -90,11 +85,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
-  useAutoLogout(15);
+  const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(15);
+  useAutoLogout(sessionTimeoutMinutes);
   const [collapsed, setCollapsed] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [strictRateLimitMode, setStrictRateLimitMode] = useState(false);
   const splashCheckedRef = useRef(false);
   const redirectedRef = useRef(false);
 
@@ -148,12 +145,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
     const fetchOperationsStatus = async () => {
       try {
-        const { operationsPolicy } = await settingsApi.getOperationsStatus();
+        const { operationsPolicy, sessionTimeoutMinutes: timeout } =
+          await settingsApi.getOperationsStatus();
         if (!active) return;
         setMaintenanceMode(Boolean(operationsPolicy.maintenanceMode));
+        setStrictRateLimitMode(Boolean(operationsPolicy.strictRateLimitMode));
+        if (typeof timeout === "number" && timeout >= 5) {
+          setSessionTimeoutMinutes(timeout);
+        }
       } catch {
         if (!active) return;
         setMaintenanceMode(false);
+        setStrictRateLimitMode(false);
       }
     };
 
@@ -186,10 +189,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
-        <div className="text-center space-y-3">
-          <Spinner className="w-8 h-8 mx-auto" />
-          <p className="text-sm text-slate-500">Loading...</p>
-        </div>
+        <TetrisLoading size="sm" speed="fast" loadingText="Loading..." />
       </div>
     );
   }
@@ -244,9 +244,19 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     (pathname.startsWith("/dashboard/brd") &&
       !hasFeature(["brd-process", "brd-view-generate"])) ||
     (pathname.startsWith("/dashboard/compare") &&
-      !hasFeature(["compare-basic", "compare-chunk", "compare-merge"])) ||
+      !hasFeature([
+        "compare-basic",
+        "compare-chunk",
+        "compare-merge",
+        "compare-pdf-xml-only",
+      ])) ||
     (pathname.startsWith("/dashboard/autocompare") &&
-      !hasFeature(["compare-basic", "compare-chunk", "compare-merge"]));
+      !hasFeature([
+        "compare-basic",
+        "compare-chunk",
+        "compare-merge",
+        "compare-pdf-xml-only",
+      ]));
 
   const isUnauthorized = roleUnauthorized || featureUnauthorized;
 
@@ -262,7 +272,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex flex-col overflow-hidden">
         {maintenanceMode && (
           <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
-            Maintenance mode is active. Some actions are temporarily restricted.
+            Maintenance mode is active — write operations are temporarily restricted.
+          </div>
+        )}
+        {!maintenanceMode && strictRateLimitMode && (
+          <div className="flex-shrink-0 border-b border-orange-200 bg-orange-50 px-6 py-2 text-xs font-medium text-orange-800 dark:border-orange-900/40 dark:bg-orange-900/20 dark:text-orange-300">
+            Strict rate-limit mode is active — requests are limited to 60 per minute per IP.
           </div>
         )}
         {!isBrdRoute && (

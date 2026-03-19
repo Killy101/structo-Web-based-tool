@@ -5,15 +5,13 @@ import {
   Card,
   Badge,
   Button,
-  DashboardListHeader,
   Modal,
   Input,
   Select,
-  SortChipBar,
   EmptyState,
   ToastContainer,
 } from "../../../components/ui";
-import { useUsers, useTeams, useRoles, useToast } from "../../../hooks/index";
+import { useUsers, useTeams, useRoles, useToast, usePasswordPolicy } from "../../../hooks/index";
 import { useAuth } from "../../../context/AuthContext";
 import {
   ROLE_LABELS,
@@ -257,6 +255,24 @@ function EyeIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
         d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+      />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg
+      className="w-4 h-4 text-slate-400"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M16.862 4.487a2.1 2.1 0 113 2.974L8.58 18.745l-4.33 1.356 1.357-4.33L16.862 4.487z"
       />
     </svg>
   );
@@ -540,6 +556,113 @@ function TeamAssignIcon() {
 }
 
 /* ──────────────────────────────────────────────────────────
+   USER ACTIONS MENU (dots dropdown for table rows)
+   ────────────────────────────────────────────────────────── */
+
+function UserActionsMenu({
+  user,
+  actorRole,
+  currentUserId,
+  onEditUser,
+  onChangePassword,
+  onChangeRole,
+  onAssignTeam,
+  onToggleStatus,
+}: {
+  user: User;
+  actorRole: Role;
+  currentUserId: number | undefined;
+  onEditUser: (u: User) => void;
+  onChangePassword: (u: User) => void;
+  onChangeRole: (u: User) => void;
+  onAssignTeam: (u: User) => void;
+  onToggleStatus: (u: User) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const isActive = user.status === "ACTIVE";
+  const isSelf = user.id === currentUserId;
+
+  const canManagePassword = canChangePassword(actorRole, user.role);
+  const canManageRole =
+    actorRole === "SUPER_ADMIN"
+      ? user.role !== "SUPER_ADMIN"
+      : actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role);
+  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
+
+  if (
+    !canManagePassword &&
+    !canManageRole &&
+    !canManageTeam &&
+    !canToggle
+  )
+    return null;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        title="Actions"
+        className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+      >
+        <DotsIcon />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1.5 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 p-1.5">
+            {canManagePassword && (
+              <button
+                onClick={() => { setOpen(false); onEditUser(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <EditIcon /> Edit Profile
+              </button>
+            )}
+            {canManagePassword && (
+              <button
+                onClick={() => { setOpen(false); onChangePassword(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <KeyIcon /> Change Password
+              </button>
+            )}
+            {canManageRole && (
+              <button
+                onClick={() => { setOpen(false); onChangeRole(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <ShieldIcon /> Change Role
+              </button>
+            )}
+            {canManageTeam && (
+              <button
+                onClick={() => { setOpen(false); onAssignTeam(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <UsersGroupIcon /> Assign Team
+              </button>
+            )}
+            {canToggle && (
+              <>
+                <div className="mx-2 my-1 h-px bg-slate-100 dark:bg-slate-700" />
+                <button
+                  onClick={() => { setOpen(false); onToggleStatus(user); }}
+                  className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center gap-2 ${isActive ? "text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}
+                >
+                  <ToggleIcon active={isActive} />
+                  {isActive ? "Deactivate" : "Activate"}
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
    AVATAR PALETTES
    ────────────────────────────────────────────────────────── */
 
@@ -648,6 +771,12 @@ function SortableTable({
   onSort,
   currentUserId,
   onViewDetails,
+  onEditUser,
+  onChangePassword,
+  onChangeRole,
+  onAssignTeam,
+  onToggleStatus,
+  actorRole,
   selectedUserIds,
   allPageSelected,
   somePageSelected,
@@ -661,6 +790,12 @@ function SortableTable({
   onSort: (k: SortKey) => void;
   currentUserId: number | undefined;
   onViewDetails: (u: User) => void;
+  onEditUser: (u: User) => void;
+  onChangePassword: (u: User) => void;
+  onChangeRole: (u: User) => void;
+  onAssignTeam: (u: User) => void;
+  onToggleStatus: (u: User) => void;
+  actorRole: Role;
   selectedUserIds: Set<number>;
   allPageSelected: boolean;
   somePageSelected: boolean;
@@ -804,6 +939,11 @@ function SortableTable({
                             {u.userId}
                           </p>
                         )}
+                        {u.email && (
+                          <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                            {u.email}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -839,13 +979,26 @@ function SortableTable({
                     </span>
                   </td>
 
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => onViewDetails(u)}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white text-xs font-semibold shadow-sm hover:shadow-md transition-all"
-                    >
-                      <EyeIcon /> View Details
-                    </button>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => onViewDetails(u)}
+                        title="View profile"
+                        className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all"
+                      >
+                        <EyeIcon />
+                      </button>
+                      <UserActionsMenu
+                        user={u}
+                        actorRole={actorRole}
+                        currentUserId={currentUserId}
+                        onEditUser={onEditUser}
+                        onChangePassword={onChangePassword}
+                        onChangeRole={onChangeRole}
+                        onAssignTeam={onAssignTeam}
+                        onToggleStatus={onToggleStatus}
+                      />
+                    </div>
                   </td>
                 </tr>
               );
@@ -867,6 +1020,7 @@ function UserDetailModal({
   user,
   actorRole,
   currentUserId,
+  onEditUser,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -877,6 +1031,7 @@ function UserDetailModal({
   user: User | null;
   actorRole: Role;
   currentUserId: number | undefined;
+  onEditUser: (u: User) => void;
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -884,17 +1039,6 @@ function UserDetailModal({
 }) {
   if (!user) return null;
 
-  const canManagePassword = canChangePassword(actorRole, user.role);
-  // FIX: consistent permission check — SUPER_ADMIN and ADMIN can both manage roles within their scope
-  const canManageRole =
-    actorRole === "SUPER_ADMIN" ||
-    (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
-  // FIX: consistent with UserCard — SUPER_ADMIN can assign any team, ADMIN can reassign within their scope
-  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
-  const canToggle =
-    canDeactivate(actorRole, user.role) && user.id !== currentUserId;
-  const showRoleChange =
-    actorRole === "SUPER_ADMIN" ? user.role !== "SUPER_ADMIN" : canManageRole;
   const isActive = user.status === "ACTIVE";
   const isSelf = user.id === currentUserId;
 
@@ -953,6 +1097,14 @@ function UserDetailModal({
           </div>
           <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3">
             <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
+              Email
+            </p>
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200 break-all">
+              {user.email ?? <span className="italic text-slate-400">No email</span>}
+            </p>
+          </div>
+          <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
               Joined
             </p>
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
@@ -983,158 +1135,13 @@ function UserDetailModal({
           )}
         </div>
 
-        {/* Actions */}
-        <div className="space-y-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            Actions
-          </p>
-          <div className="grid grid-cols-1 gap-2">
-            {canManagePassword && (
-              <button
-                onClick={() => {
-                  onChangePassword(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-amber-600 dark:text-amber-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Change Password
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Reset or set a new password
-                  </p>
-                </div>
-              </button>
-            )}
-            {showRoleChange && (
-              <button
-                onClick={() => {
-                  onChangeRole(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-indigo-600 dark:text-indigo-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Change Role
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Update user permissions
-                  </p>
-                </div>
-              </button>
-            )}
-            {canManageTeam && (
-              <button
-                onClick={() => {
-                  onAssignTeam(user);
-                  onClose();
-                }}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all text-left group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/30 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <svg
-                    className="w-4 h-4 text-teal-600 dark:text-teal-400"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    Assign Team
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Move to a different team
-                  </p>
-                </div>
-              </button>
-            )}
-            {canToggle && (
-              <button
-                onClick={() => {
-                  onToggleStatus(user);
-                  onClose();
-                }}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left group ${isActive ? "border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-900/20" : "border-emerald-200 dark:border-emerald-900/50 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}
-              >
-                <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center group-hover:scale-105 transition-transform ${isActive ? "bg-red-100 dark:bg-red-900/30" : "bg-emerald-100 dark:bg-emerald-900/30"}`}
-                >
-                  <svg
-                    className={`w-4 h-4 ${isActive ? "text-red-500" : "text-emerald-600"}`}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    {isActive ? (
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                      />
-                    ) : (
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    )}
-                  </svg>
-                </div>
-                <div>
-                  <p
-                    className={`text-sm font-semibold ${isActive ? "text-red-500 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}
-                  >
-                    {isActive ? "Deactivate User" : "Activate User"}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {isActive ? "Disable access" : "Re-enable access"}
-                  </p>
-                </div>
-              </button>
-            )}
-          </div>
-        </div>
+        <Button
+          variant="secondary"
+          className="w-full justify-center"
+          onClick={() => onEditUser(user)}
+        >
+          <EditIcon /> Edit Profile
+        </Button>
 
         <Button
           variant="secondary"
@@ -1157,6 +1164,7 @@ export function UserCard({
   actorRole,
   currentUserId,
   onViewDetails,
+  onEditUser,
   onChangePassword,
   onChangeRole,
   onAssignTeam,
@@ -1166,6 +1174,7 @@ export function UserCard({
   actorRole: Role;
   currentUserId: number | undefined;
   onViewDetails: (u: User) => void;
+  onEditUser: (u: User) => void;
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
@@ -1238,6 +1247,17 @@ export function UserCard({
                   <button
                     onClick={() => {
                       setMenuOpen(false);
+                      onEditUser(user);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+                  >
+                    <EditIcon /> Edit Profile
+                  </button>
+                )}
+                {canManagePassword && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
                       onChangePassword(user);
                     }}
                     className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
@@ -1301,6 +1321,12 @@ export function UserCard({
       </div>
 
       <div className="space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
+        {user.email && (
+          <div className="truncate">
+            <span className="font-medium text-slate-600 dark:text-slate-300">Email:</span>{" "}
+            {user.email}
+          </div>
+        )}
         {user.team && (
           <div className="flex items-center gap-2">
             <UsersGroupIcon />
@@ -1341,7 +1367,7 @@ function CreateUserModal({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (password: string, user: Partial<User>) => void;
+  onSuccess: (password: string, user: Partial<User>, emailSent?: boolean) => void;
   actorRole: Role;
   teams: { id: number; name: string }[];
   actorTeamId: number | null;
@@ -1350,11 +1376,11 @@ function CreateUserModal({
   const { createUser } = useUsers();
   const [form, setForm] = useState({
     userId: "",
+    email: "",
     firstName: "",
     lastName: "",
     role: "USER" as Role,
     teamId: actorTeamId ?? 0,
-    userRoleId: 0,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -1367,14 +1393,17 @@ function CreateUserModal({
         ]
       : [{ value: "USER", label: "User" }];
 
-  const selectedCustomRole = customRoles.find((r) => r.id === form.userRoleId);
-
   const validate = () => {
     const e: Record<string, string> = {};
     if (!form.userId.trim()) {
       e.userId = "Required";
     } else if (!/^[a-zA-Z0-9]{3,6}$/.test(form.userId.trim())) {
       e.userId = "Must be 3–6 alphanumeric characters";
+    }
+    if (!form.email.trim()) {
+      e.email = "Required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      e.email = "Invalid email address";
     }
     if (!form.firstName.trim()) e.firstName = "Required";
     if (!form.lastName.trim()) e.lastName = "Required";
@@ -1388,34 +1417,27 @@ function CreateUserModal({
     try {
       const payload: CreateUserPayload = {
         userId: form.userId.trim().toUpperCase(),
+        email: form.email.trim().toLowerCase(),
         firstName: form.firstName.trim(),
         lastName: form.lastName.trim(),
         role: form.role,
         teamId: form.teamId || undefined,
-        userRoleId: form.userRoleId || undefined,
       };
       const result = await createUser(payload);
       onSuccess(result.generatedPassword, {
         userId: payload.userId,
+        email: payload.email,
         firstName: payload.firstName,
         lastName: payload.lastName,
         role: payload.role,
-        userRole: selectedCustomRole
-          ? {
-              id: selectedCustomRole.id,
-              name: selectedCustomRole.name,
-              slug: selectedCustomRole.slug,
-              features: selectedCustomRole.features,
-            }
-          : undefined,
-      });
+      }, result.emailSent);
       setForm({
         userId: "",
+        email: "",
         firstName: "",
         lastName: "",
         role: "USER",
         teamId: actorTeamId ?? 0,
-        userRoleId: 0,
       });
       setErrors({});
       onClose();
@@ -1444,6 +1466,17 @@ function CreateUserModal({
           <p className="text-[11px] text-slate-400 mt-1">
             3–6 alphanumeric characters
           </p>
+        </div>
+        <div>
+          <Input
+            label="Email"
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            placeholder="name@company.com"
+            error={errors.email}
+            required
+          />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Input
@@ -1477,39 +1510,6 @@ function CreateUserModal({
             </option>
           ))}
         </Select>
-        {customRoles.length > 0 && (
-          <Select
-            label="Custom Role (Optional)"
-            value={String(form.userRoleId)}
-            onChange={(e) =>
-              setForm({ ...form, userRoleId: parseInt(e.target.value) || 0 })
-            }
-          >
-            <option value="0">— No Custom Role —</option>
-            {customRoles.map((r) => (
-              <option key={r.id} value={String(r.id)}>
-                {r.name}
-              </option>
-            ))}
-          </Select>
-        )}
-        {selectedCustomRole && selectedCustomRole.features.length > 0 && (
-          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-3">
-            <p className="text-xs font-semibold text-blue-800 dark:text-blue-300 mb-2">
-              Feature Access — {selectedCustomRole.name}
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {selectedCustomRole.features.map((f) => (
-                <span
-                  key={f}
-                  className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-blue-100/80 text-blue-700 dark:bg-blue-800/30 dark:text-blue-300"
-                >
-                  {FEATURE_LABELS[f] ?? f}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
         {actorRole === "SUPER_ADMIN" && (
           <Select
             label="Assign to Team"
@@ -1642,6 +1642,43 @@ function PasswordModal({
 }
 
 /* ──────────────────────────────────────────────────────────
+   POLICY CHECK ROW (reused inside ChangePasswordModal)
+   ────────────────────────────────────────────────────────── */
+
+function PolicyCheck({ met, label }: { met: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+          met
+            ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
+            : "bg-slate-200 dark:bg-slate-700 text-slate-400"
+        }`}
+      >
+        {met ? (
+          <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        ) : (
+          <svg className="w-2 h-2" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        )}
+      </span>
+      <span
+        className={`text-xs transition-colors ${
+          met
+            ? "text-emerald-700 dark:text-emerald-400 line-through decoration-emerald-400/60"
+            : "text-slate-600 dark:text-slate-300"
+        }`}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
    CHANGE PASSWORD MODAL
    ────────────────────────────────────────────────────────── */
 
@@ -1658,19 +1695,62 @@ function ChangePasswordModal({
   onChangePassword: (userId: number, newPassword: string) => Promise<void>;
   onResetPassword: (
     userId: number,
-  ) => Promise<{ message: string; newPassword: string; targetUserId: string }>;
+  ) => Promise<{
+    message: string;
+    newPassword: string;
+    targetUserId: string;
+    emailSent?: boolean;
+  }>;
 }) {
+  const policy = usePasswordPolicy();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [resetResult, setResetResult] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Derive active requirements from policy (fall back to safe defaults while loading)
+  const minLen = policy?.minPasswordLength ?? 8;
+  const needUpper = policy?.requireUppercase ?? false;
+  const needNumber = policy?.requireNumber ?? false;
+  const minSpecial = policy?.minSpecialChars ?? 0;
+
+  // Per-requirement checks (used for both the checklist and validation)
+  const checks = {
+    length: newPassword.length >= minLen,
+    upper: needUpper ? /[A-Z]/.test(newPassword) : true,
+    number: needNumber ? /[0-9]/.test(newPassword) : true,
+    special:
+      minSpecial > 0
+        ? (newPassword.match(/[^A-Za-z0-9]/g) ?? []).length >= minSpecial
+        : true,
+    match: confirmPassword.length > 0 && newPassword === confirmPassword,
+  };
+
+  const allMet =
+    checks.length && checks.upper && checks.number && checks.special;
+
+  // Strength: count how many of the 4 policy criteria pass
+  const strength = [
+    checks.length,
+    checks.upper && needUpper,
+    checks.number && needNumber,
+    checks.special && minSpecial > 0,
+  ].filter(Boolean).length;
+
+  const strengthMeta = [
+    { label: "Weak",   color: "bg-red-500" },
+    { label: "Fair",   color: "bg-amber-500" },
+    { label: "Good",   color: "bg-yellow-400" },
+    { label: "Strong", color: "bg-emerald-500" },
+  ];
 
   const handleManualChange = async () => {
     setError("");
-    if (!newPassword || newPassword.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (!allMet) {
+      setError("Password does not meet all security requirements.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -1696,6 +1776,11 @@ function ChangePasswordModal({
     try {
       const result = await onResetPassword(targetUser!.id);
       setResetResult(result.newPassword);
+      setEmailNotice(
+        result.emailSent === false
+          ? `Password email was not sent${targetUser?.email ? ` to ${targetUser.email}` : ""}. Check RESEND_API_KEY / sender domain.`
+          : `Password email sent${targetUser?.email ? ` to ${targetUser.email}` : ""}.`,
+      );
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -1715,6 +1800,7 @@ function ChangePasswordModal({
     setConfirmPassword("");
     setError("");
     setResetResult(null);
+    setEmailNotice(null);
     setCopied(false);
     onClose();
   };
@@ -1739,6 +1825,9 @@ function ChangePasswordModal({
               <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
                 Password reset successfully!
               </p>
+              {emailNotice && (
+                <p className="text-xs text-emerald-700 dark:text-emerald-300">{emailNotice}</p>
+              )}
               <div className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 flex items-center justify-between">
                 <code className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tracking-[0.15em]">
                   {resetResult}
@@ -1785,20 +1874,75 @@ function ChangePasswordModal({
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
                 Set password manually
               </p>
-              <Input
-                label="New Password"
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Min. 8 characters"
-              />
-              <Input
-                label="Confirm Password"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Repeat password"
-              />
+
+              {/* New Password + strength bar */}
+              <div className="space-y-1.5">
+                <Input
+                  label="New Password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder={`Min. ${minLen} characters`}
+                  autoComplete="new-password"
+                />
+                {newPassword && (
+                  <div className="space-y-1 px-0.5">
+                    <div className="flex gap-1">
+                      {[0, 1, 2, 3].map((i) => (
+                        <div
+                          key={i}
+                          className={`h-1 flex-1 rounded-full transition-all duration-300 ${
+                            i < strength
+                              ? (strengthMeta[strength - 1]?.color ?? "bg-slate-300")
+                              : "bg-slate-200 dark:bg-slate-700"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {strengthMeta[strength - 1]?.label ?? ""}{strength > 0 ? " password" : ""}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Real-time policy requirements */}
+              {newPassword && (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3 space-y-1.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                    Password Requirements
+                  </p>
+                  <PolicyCheck met={checks.length} label={`At least ${minLen} characters`} />
+                  {needUpper && (
+                    <PolicyCheck met={checks.upper} label="At least one uppercase letter" />
+                  )}
+                  {needNumber && (
+                    <PolicyCheck met={checks.number} label="At least one number" />
+                  )}
+                  {minSpecial > 0 && (
+                    <PolicyCheck
+                      met={checks.special}
+                      label={`At least ${minSpecial} special character${minSpecial > 1 ? "s" : ""}`}
+                    />
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Input
+                  label="Confirm Password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Repeat password"
+                  autoComplete="new-password"
+                />
+                {confirmPassword && (
+                  <p className={`text-[11px] px-0.5 ${checks.match ? "text-emerald-500" : "text-red-500"}`}>
+                    {checks.match ? "✓ Passwords match" : "✗ Passwords do not match"}
+                  </p>
+                )}
+              </div>
             </div>
             {error && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
@@ -1819,6 +1963,7 @@ function ChangePasswordModal({
                 className="flex-1 justify-center"
                 onClick={handleManualChange}
                 loading={loading}
+                disabled={!allMet || !checks.match}
               >
                 Change Password
               </Button>
@@ -1924,6 +2069,245 @@ function ChangeRoleModal({
             loading={loading}
           >
             Update Role
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   EDIT USER PROFILE MODAL
+   ────────────────────────────────────────────────────────── */
+
+function EditUserModal({
+  isOpen,
+  onClose,
+  targetUser,
+  onSubmit,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  targetUser: User | null;
+  onSubmit: (
+    userId: number,
+    payload: {
+      userId: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+    },
+  ) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    userId: "",
+    email: "",
+    firstName: "",
+    lastName: "",
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!targetUser) return;
+    setForm({
+      userId: targetUser.userId ?? "",
+      email: targetUser.email ?? "",
+      firstName: targetUser.firstName ?? "",
+      lastName: targetUser.lastName ?? "",
+    });
+    setErrors({});
+  }, [targetUser, isOpen]);
+
+  const validate = () => {
+    const next: Record<string, string> = {};
+
+    if (!/^[a-zA-Z0-9]{3,6}$/.test(form.userId.trim())) {
+      next.userId = "Must be 3-6 alphanumeric characters";
+    }
+    if (!form.email.trim()) {
+      next.email = "Required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      next.email = "Invalid email address";
+    }
+    if (!form.firstName.trim()) {
+      next.firstName = "Required";
+    }
+    if (!form.lastName.trim()) {
+      next.lastName = "Required";
+    }
+
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const handleSubmit = async () => {
+    if (!targetUser || !validate()) return;
+    setLoading(true);
+    try {
+      await onSubmit(targetUser.id, {
+        userId: form.userId.trim().toUpperCase(),
+        email: form.email.trim().toLowerCase(),
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+      });
+      onClose();
+    } catch (e) {
+      setErrors({ submit: getErrorMessage(e) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!targetUser) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Edit User Profile">
+      <div className="space-y-4">
+        <Input
+          label="Employee ID"
+          value={form.userId}
+          onChange={(e) => setForm({ ...form, userId: e.target.value.toUpperCase() })}
+          error={errors.userId}
+          required
+        />
+        <Input
+          label="Email"
+          type="email"
+          value={form.email}
+          onChange={(e) => setForm({ ...form, email: e.target.value })}
+          error={errors.email}
+          required
+        />
+        <div className="grid grid-cols-2 gap-3">
+          <Input
+            label="First Name"
+            value={form.firstName}
+            onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+            error={errors.firstName}
+            required
+          />
+          <Input
+            label="Last Name"
+            value={form.lastName}
+            onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+            error={errors.lastName}
+            required
+          />
+        </div>
+        {errors.submit && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3">
+            <p className="text-sm text-red-600 dark:text-red-400">{errors.submit}</p>
+          </div>
+        )}
+        <div className="flex gap-3 pt-1">
+          <Button
+            variant="secondary"
+            className="flex-1 justify-center"
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 justify-center"
+            onClick={handleSubmit}
+            loading={loading}
+          >
+            Save Changes
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────
+   ASSIGN CUSTOM ROLE MODAL
+   ────────────────────────────────────────────────────────── */
+
+function AssignCustomRoleModal({
+  isOpen,
+  onClose,
+  targetUser,
+  roles,
+  onAssign,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  targetUser: User | null;
+  roles: UserRole[];
+  onAssign: (userId: number, userRoleId: number | null) => Promise<void>;
+}) {
+  const TEAM_POLICY_PREFIX = "__TEAM_ROLE_POLICY__";
+  const selectableRoles = roles.filter(
+    (r) => !r.slug.startsWith(TEAM_POLICY_PREFIX),
+  );
+  const [selectedId, setSelectedId] = useState<number | null>(
+    targetUser?.userRoleId ?? null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (targetUser) setSelectedId(targetUser.userRoleId ?? null);
+  }, [targetUser]);
+
+  const handleSubmit = async () => {
+    if (!targetUser) return;
+    setLoading(true);
+    setError("");
+    try {
+      await onAssign(targetUser.id, selectedId);
+      onClose();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!targetUser) return null;
+  const currentRoleName = targetUser.userRole?.name ?? "None";
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Assign Custom Role" size="sm">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Assign a custom feature role to{" "}
+          <span className="font-semibold text-slate-900 dark:text-white">
+            {getDisplayName(targetUser)}
+          </span>
+          .{" "}
+          <span className="text-xs">
+            Currently:{" "}
+            <span className="font-medium">{currentRoleName}</span>
+          </span>
+        </p>
+
+        <Select
+          label="Custom Role"
+          value={String(selectedId ?? "")}
+          onChange={(e) =>
+            setSelectedId(e.target.value === "" ? null : Number(e.target.value))
+          }
+        >
+          <option value="">— No custom role —</option>
+          {selectableRoles.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </Select>
+
+        {error && (
+          <p className="text-xs text-red-500 dark:text-red-400">{error}</p>
+        )}
+        <div className="flex gap-3 pt-1">
+          <Button variant="secondary" className="flex-1 justify-center" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button className="flex-1 justify-center" onClick={handleSubmit} loading={loading}>
+            Save
           </Button>
         </div>
       </div>
@@ -2159,12 +2543,14 @@ export default function UsersPage() {
     users,
     isLoading,
     error,
+    updateUserProfile,
     deactivateUser,
     activateUser,
     assignTeam,
     changeRole,
     changePassword,
     resetPassword,
+    assignUserRole,
     refetch,
   } = useUsers();
   const { teams } = useTeams();
@@ -2198,8 +2584,10 @@ export default function UsersPage() {
 
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showEditUser, setShowEditUser] = useState(false);
   const [showChangeRole, setShowChangeRole] = useState(false);
   const [showAssignTeam, setShowAssignTeam] = useState(false);
+  const [showAssignCustomRole, setShowAssignCustomRole] = useState(false);
   const [targetUser, setTargetUser] = useState<User | null>(null);
 
   const actorRole = (currentUser?.role ?? "USER") as Role;
@@ -2576,11 +2964,16 @@ export default function UsersPage() {
     }
   };
 
-  const handleCreateSuccess = (pwd: string, data: Partial<User>) => {
+  const handleCreateSuccess = (pwd: string, data: Partial<User>, emailSent?: boolean) => {
     setGenPwd(pwd);
     setNewUser(data);
     setShowPwd(true);
-    show("User created successfully!", "success");
+    show(
+      emailSent === false
+        ? "User created. Password email failed to send; share the generated password manually."
+        : "User created successfully. Password email sent.",
+      emailSent === false ? "warning" : "success",
+    );
     refetch();
   };
 
@@ -2592,6 +2985,11 @@ export default function UsersPage() {
     setTargetUser(u);
     setShowChangePassword(true);
   };
+  const handleOpenEditUser = (u: User) => {
+    setTargetUser(u);
+    setShowDetailModal(false);
+    setShowEditUser(true);
+  };
   const handleOpenChangeRole = (u: User) => {
     setTargetUser(u);
     setShowChangeRole(true);
@@ -2600,6 +2998,10 @@ export default function UsersPage() {
     setTargetUser(u);
     setShowAssignTeam(true);
   };
+  const handleOpenAssignCustomRole = (u: User) => {
+    setTargetUser(u);
+    setShowAssignCustomRole(true);
+  };
 
   const handleChangePassword = async (userId: number, newPassword: string) => {
     await changePassword(userId, newPassword);
@@ -2607,8 +3009,26 @@ export default function UsersPage() {
   };
   const handleResetPassword = async (userId: number) => {
     const result = await resetPassword(userId);
-    show("Password reset successfully", "success");
+    const target = users.find((u) => u.id === userId);
+    show(
+      result.emailSent === false
+        ? `Password reset. Email delivery failed${target?.email ? ` to ${target.email}` : ""}.`
+        : `Password reset and email sent${target?.email ? ` to ${target.email}` : ""}.`,
+      result.emailSent === false ? "warning" : "success",
+    );
     return result;
+  };
+  const handleUpdateUserProfile = async (
+    userId: number,
+    payload: {
+      userId: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+    },
+  ) => {
+    await updateUserProfile(userId, payload);
+    show("User profile updated", "success");
   };
   const handleChangeRole = async (userId: number, newRole: string) => {
     await changeRole(userId, newRole);
@@ -2619,6 +3039,16 @@ export default function UsersPage() {
     await assignTeam(userId, teamId);
     show("Team assignment updated", "success");
     refetch();
+  };
+  const handleAssignCustomRole = async (
+    userId: number,
+    userRoleId: number | null,
+  ) => {
+    await assignUserRole(userId, userRoleId);
+    show(
+      userRoleId ? "Custom role assigned" : "Custom role cleared",
+      "success",
+    );
   };
 
   const handleBulkActivate = async () => {
@@ -2691,48 +3121,151 @@ export default function UsersPage() {
     );
   };
 
-  const filterSelectClasses =
-    "px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 hover:border-slate-300 dark:hover:border-slate-600 transition-all cursor-pointer";
+  const chevronDown = (
+    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+      </svg>
+    </span>
+  );
+
+  const dropdownCls =
+    "appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer";
 
   return (
-    <div className="h-full w-full min-h-0 px-6 py-5 text-xs flex flex-col gap-5">
-      <DashboardListHeader
-        title={headerTitle}
-       
-        searchValue={search}
-        onSearchChange={handleSearchChange}
-        searchPlaceholder="Search by ID, name, or role..."
-        controls={
-          <>
-            <button
-              onClick={refetch}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+    <div className="h-full w-full min-h-0 flex flex-col text-xs">
+      {/* ── BRD-style flat toolbar ── */}
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        {/* Left: Refresh + Export */}
+        <button
+          onClick={refetch}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+        >
+          <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
+        </button>
+        <button
+          onClick={handleExportCSV}
+          disabled={filtered.length === 0}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <DownloadIcon /> <span className="hidden sm:inline">Export CSV</span>
+        </button>
+
+        {/* Filters */}
+        {actorRole !== "ADMIN" && (
+          <div className="relative">
+            <select
+              value={roleFilter}
+              onChange={(e) => handleRoleChange(e.target.value)}
+              className={dropdownCls}
             >
-              <RefreshIcon /> Refresh
-            </button>
-            <button
-              onClick={handleExportCSV}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-emerald-600 transition-all hover:border-emerald-300 hover:bg-emerald-50 dark:border-slate-700 dark:text-emerald-400 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/20"
+              <option value="ALL">All Roles</option>
+              <option value="ADMIN">Admin</option>
+              <option value="USER">User</option>
+              {customRoles.map((r) => (
+                <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            {chevronDown}
+          </div>
+        )}
+        {actorRole === "SUPER_ADMIN" && (
+          <div className="relative">
+            <select
+              value={teamFilter}
+              onChange={(e) => handleTeamChange(e.target.value)}
+              className={dropdownCls}
             >
-              <DownloadIcon />
-              Export CSV
-            </button>
-            {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
-              <Button onClick={() => setShowCreate(true)}>
-                <PlusIcon /> Add User
-              </Button>
+              <option value="ALL">All Teams</option>
+              <option value="NONE">No Team</option>
+              {teams.map((t) => (
+                <option key={t.id} value={String(t.id)}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            {chevronDown}
+          </div>
+        )}
+        <div className="relative">
+          <select
+            value={statusFilter}
+            onChange={(e) => handleStatusChange(e.target.value as StatusFilterChip)}
+            className={dropdownCls}
+          >
+            <option value="ALL">All Status</option>
+            <option value="ACTIVE">Active</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
+          {chevronDown}
+        </div>
+        <div className="relative">
+          <select
+            value={sortKey === "created" ? "created" : "name"}
+            onChange={(e) => handleToolbarSortChange(e.target.value as ToolbarSortKey)}
+            className={dropdownCls}
+          >
+            <option value="name">Sort by Name</option>
+            <option value="created">Sort by Date</option>
+          </select>
+          {chevronDown}
+        </div>
+        <div className="relative">
+          <select
+            value={sortDir}
+            onChange={(e) => handleSortDirectionChange(e.target.value as SortDir)}
+            className={dropdownCls}
+          >
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+          {chevronDown}
+        </div>
+        {isFiltering && (
+          <button
+            onClick={handleClearFilters}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+          >
+            <XIcon /> Clear
+          </button>
+        )}
+
+        {/* Right: search + add */}
+        <div className="ml-auto flex items-center gap-2">
+          <div className="relative flex items-center">
+            <span className="absolute left-2.5 text-slate-400 pointer-events-none">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+              </svg>
+            </span>
+            <input
+              value={search}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Search by ID, name…"
+              autoComplete="off"
+              name="user-search"
+              className="pl-8 pr-7 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors"
+            />
+            {search && (
+              <button
+                onClick={() => handleSearchChange("")}
+                className="absolute right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <XIcon />
+              </button>
             )}
-          </>
-        }
-        presets={[
-          { key: "default", label: "All Users", count: users.length },
-          { key: "newest", label: "Newest First" },
-          { key: "active", label: "Active", count: activeCount },
-          { key: "inactive", label: "Inactive", count: inactiveCount },
-        ]}
-        activePreset={activePreset}
-        onPresetChange={(key) => applyPreset(key as UserPresetKey)}
-      />
+          </div>
+          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
+            <Button onClick={() => setShowCreate(true)}>
+              <PlusIcon /> Add User
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 px-6 py-5 flex flex-col gap-5 overflow-auto">
 
       {selectedUsers.length > 0 && (
         <Card className="p-3 border-blue-200/70 dark:border-blue-800/40 bg-blue-50/50 dark:bg-blue-900/10">
@@ -2795,101 +3328,6 @@ export default function UsersPage() {
         ))}
       </div>
 
-      {/* ── Status Chips + Sort ── */}
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          {STATUS_FILTER_CHIPS.map((chip) => {
-            const count =
-              chip === "ALL"
-                ? users.length
-                : users.filter((u) => u.status === chip).length;
-            const active = statusFilter === chip;
-            const styles = STATUS_FILTER_STYLES[chip];
-            return (
-              <button
-                key={chip}
-                onClick={() => handleStatusChange(chip)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 whitespace-nowrap ${active ? styles.active : styles.base}`}
-              >
-                <span className="font-mono font-bold">{count}</span>
-                {chip === "ALL"
-                  ? "All"
-                  : chip === "ACTIVE"
-                    ? "Active"
-                    : "Inactive"}
-              </button>
-            );
-          })}
-          {actorTeamName && (
-            <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 dark:border-blue-800/40 dark:bg-blue-900/30 dark:text-blue-400">
-              Team: {actorTeamName}
-            </span>
-          )}
-        </div>
-        <SortChipBar
-          options={[
-            { key: "name", label: "Name" },
-            { key: "created", label: "Date" },
-          ]}
-          activeKey={sortKey === "created" ? "created" : "name"}
-          onChange={(key) => handleToolbarSortChange(key as ToolbarSortKey)}
-          direction={sortDir}
-          onDirectionChange={handleSortDirectionChange}
-        />
-      </div>
-
-      {/* ── Filter Controls ── */}
-      <Card className="p-3">
-        <div className="flex flex-wrap items-center gap-2.5">
-          {actorRole !== "ADMIN" && (
-            <select
-              value={roleFilter}
-              onChange={(e) => handleRoleChange(e.target.value)}
-              className={filterSelectClasses}
-            >
-              <option value="ALL">All Roles</option>
-              <option value="ADMIN">Admin</option>
-              <option value="USER">User</option>
-              {customRoles.map((r) => (
-                <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          )}
-          {actorRole === "SUPER_ADMIN" && (
-            <select
-              value={teamFilter}
-              onChange={(e) => handleTeamChange(e.target.value)}
-              className={filterSelectClasses}
-            >
-              <option value="ALL">All Teams</option>
-              <option value="NONE">No Team</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {/* NEW: result count + clear filters button */}
-          {isFiltering && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
-                {filtered.length} result{filtered.length !== 1 ? "s" : ""}
-              </span>
-              <button
-                onClick={handleClearFilters}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 border border-slate-200 dark:border-slate-700 hover:border-red-200 dark:hover:border-red-800 transition-all"
-              >
-                <XIcon /> Clear filters
-              </button>
-            </div>
-          )}
-        </div>
-      </Card>
-
       {/* ── Content: List or Grid ── */}
       {error ? (
         <Card className="overflow-hidden">
@@ -2910,6 +3348,12 @@ export default function UsersPage() {
             onSort={handleSort}
             currentUserId={currentUser?.id}
             onViewDetails={handleOpenViewDetails}
+            onEditUser={handleOpenEditUser}
+            onChangePassword={handleOpenChangePassword}
+            onChangeRole={handleOpenChangeRole}
+            onAssignTeam={handleOpenAssignTeam}
+            onToggleStatus={handleToggle}
+            actorRole={actorRole}
             selectedUserIds={selectedUserIds}
             allPageSelected={allPageSelected}
             somePageSelected={somePageSelected}
@@ -2969,6 +3413,8 @@ export default function UsersPage() {
         </Card>
       )}
 
+      </div>{/* end inner content div */}
+
       {/* ── Modals ── */}
       <CreateUserModal
         isOpen={showCreate}
@@ -2996,10 +3442,20 @@ export default function UsersPage() {
         user={targetUser}
         actorRole={actorRole}
         currentUserId={currentUser?.id}
+        onEditUser={handleOpenEditUser}
         onChangePassword={handleOpenChangePassword}
         onChangeRole={handleOpenChangeRole}
         onAssignTeam={handleOpenAssignTeam}
         onToggleStatus={handleToggle}
+      />
+      <EditUserModal
+        isOpen={showEditUser}
+        onClose={() => {
+          setShowEditUser(false);
+          setTargetUser(null);
+        }}
+        targetUser={targetUser}
+        onSubmit={handleUpdateUserProfile}
       />
       <ChangePasswordModal
         isOpen={showChangePassword}
@@ -3030,6 +3486,17 @@ export default function UsersPage() {
         targetUser={targetUser}
         teams={teams}
         onAssignTeam={handleAssignTeam}
+      />
+
+      <AssignCustomRoleModal
+        isOpen={showAssignCustomRole}
+        onClose={() => {
+          setShowAssignCustomRole(false);
+          setTargetUser(null);
+        }}
+        targetUser={targetUser}
+        roles={customRoles}
+        onAssign={handleAssignCustomRole}
       />
 
       <BulkAssignTeamModal

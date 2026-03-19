@@ -29,6 +29,7 @@ model Team {
 model User {
   id                Int               @id @default(autoincrement())
   password          String
+  email             String?           @unique
   firstName         String?
   lastName          String?
   role              Role              @default(USER)
@@ -64,6 +65,7 @@ model TaskAssignment {
   percentage  Int              @default(0)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+  deletedAt   DateTime?
   dueDate     DateTime?
   teamId      Int
   createdById Int
@@ -147,8 +149,6 @@ model PasswordHistory {
 enum Role {
   SUPER_ADMIN
   ADMIN
-  MANAGER_QA
-  MANAGER_QC
   USER
 }
 
@@ -218,6 +218,7 @@ model Brd {
   status      BrdStatus @default(DRAFT)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
   createdById Int
   uploadId    Int?      @unique
 
