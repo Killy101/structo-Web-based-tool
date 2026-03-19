@@ -9,6 +9,10 @@ RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 RUN npm install
 
+# Generate Prisma client so @prisma/client exports are available at runtime
+COPY prisma ./prisma
+RUN npx prisma generate
+
 EXPOSE 4000
 # Source code is bind-mounted at runtime.
 # nodemon (configured by nodemon.json) watches src/ and restarts on changes.
