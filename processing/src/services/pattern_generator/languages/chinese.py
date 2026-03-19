@@ -119,6 +119,49 @@ CHINESE_META_DEFAULT_LEVEL_PATTERNS: dict[str, list[str]] = {
     "6": [r"^[（(][一二三四五六七八九十百千零两〇]+[）)]$"],
 }
 
+
+# ── Compact canonical patterns (used by _infer_pattern) ──────────────────────
+_COMPACT_ZHANG = r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*章$"
+_COMPACT_JIE   = r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*[节節]$"
+_COMPACT_TIAO  = (
+    r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*[条條]"
+    r"(?:之(?:[一二三四五六七八九十百千零两〇]+|[0-9]+))?$"
+)
+_COMPACT_KUAN  = r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*款$"
+_COMPACT_MU    = r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*目$"
+_COMPACT_XIANG = r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*[項项]$"
+_COMPACT_BIAN  = r"^第[\s　]*(?:[一二三四五六七八九十百千零两〇]+|[0-9]+)[\s　]*編$"
+# L6 levelPattern includes \s* so " (一) " (with spaces from redjayXmlTag)
+# is matched even before whitespace normalisation fires.
+_COMPACT_PAREN = r"^\s*[（(][一二三四五六七八九十百千零两〇]+[）)]\s*$"
+
+
+# ── Path transform cleanup rules ─────────────────────────────────────────────
+# Handles three artifacts in Chinese legal document XML title tags:
+#   1. HTML bold markup:         <b>第一章 总则</b>   → strip <b>/</b>
+#   2. Trailing title text:      "第一章 总则"         → strip " 总则"
+#   3. Surrounding whitespace:   " (一) "             → strip leading/trailing spaces
+#      The redjayXmlTag for L6 is <title> (—) </title> with spaces around the
+#      placeholder; real values arrive as " (一) " and need trimming.
+#   4. Full-width parentheses:   （一）               → normalize to (一)
+# All rules are idempotent — no-op on clean input.
+CHINESE_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
+    # 章/节/条 levels: strip bold markup then trailing title text
+    "3":  [[r"</?b>", "", 0, ""], [r"\s+\S.*$", "", 0, ""]],
+    "4":  [[r"</?b>", "", 0, ""], [r"\s+\S.*$", "", 0, ""]],
+    "5":  [[r"</?b>", "", 0, ""], [r"\s+\S.*$", "", 0, ""]],
+    # Parenthetical levels: bold strip, trim spaces, full-width → half-width
+    # Order matters: trim spaces BEFORE paren normalisation so "（ 一 ）" edge
+    # cases are handled correctly.
+    "6":  [[r"</?b>", "", 0, ""], [r"^\s+|\s+$", "", 0, ""],
+           [r"（", "(", 0, ""], [r"）", ")", 0, ""]],
+    "7":  [[r"</?b>", "", 0, ""], [r"\s+\S.*$", "", 0, ""]],
+    "8":  [[r"</?b>", "", 0, ""], [r"^\s+|\s+$", "", 0, ""],
+           [r"（", "(", 0, ""], [r"）", ")", 0, ""]],
+    "9":  [[r"</?b>", "", 0, ""], [r"^\s+|\s+$", "", 0, ""],
+           [r"（", "(", 0, ""], [r"）", ")", 0, ""]],
+}
+
 # Inference helper
 def _infer_pattern(definition: str, examples: list[str]) -> list[str]:
     defn = definition.lower()
@@ -130,31 +173,31 @@ def _infer_pattern(definition: str, examples: list[str]) -> list[str]:
 
     # 編
     if re.search(r'第.{0,4}編', first) or "編" in defn:
-        return [BIAN_PATTERN]
+        return [_COMPACT_BIAN]
 
     # 章
     if re.search(r'第.{0,4}章', probe) or "章" in defn:
-        return [ZHANG_PATTERN, MIXED_ZHANG_PATTERN]
+        return [_COMPACT_ZHANG]
 
     # 節
     if re.search(r'第.{0,4}[節节]', probe) or "節" in defn or "节" in defn:
-        return [JIE_PATTERN, MIXED_JIE_PATTERN]
+        return [_COMPACT_JIE]
 
     # 條 (articles) — most common legal unit
     if re.search(r'第.{0,4}[條条]', probe) or "條" in defn or "条" in defn:
-        return [TIAO_PATTERN, MIXED_TIAO_PATTERN]
+        return [_COMPACT_TIAO]
 
     # 款
     if re.search(r'第.{0,4}款', first) or "款" in defn:
-        return [KUAN_PATTERN, MIXED_KUAN_PATTERN]
+        return [_COMPACT_KUAN]
 
     # 目
     if re.search(r'第.{0,4}目', first) or "目" in defn:
-        return [MU_PATTERN]
+        return [_COMPACT_MU]
 
     # 項
     if re.search(r'第.{0,4}[項项]', probe) or "項" in defn or "项" in defn:
-        return [XIANG_PATTERN]
+        return [_COMPACT_XIANG]
 
     # --- 圓圈數字 / circled numerals ---
     if re.search(r'[①-⑳]', probe):
@@ -169,7 +212,7 @@ def _infer_pattern(definition: str, examples: list[str]) -> list[str]:
 
     # --- 括弧中文數字 / parenthetical CJK ---
     if re.search(r'[（(][一二三四五六七八九十百]+[）)]', probe):
-        return [PAREN_CN_PATTERN]
+        return [_COMPACT_PAREN]
 
     # --- 裸中文數字 / bare CJK numeral paragraph marker ---
     if re.search(rf'^({_N})$', first):

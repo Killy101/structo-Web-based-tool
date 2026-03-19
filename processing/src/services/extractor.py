@@ -1,10 +1,16 @@
 """
 src/services/extractor.py
 Orchestrates all individual BRD extractors into one combined result.
+
+extract_all() now delegates to brd_data.extract_brd() — all cleaning,
+merging, and normalization happens there.  This file retains:
+  - extract_text()          file → raw text (PDF / DOCX / DOC)
+  - extract_all()           .docx path → combined result dict (via brd_data)
+  - extract_all_sections()  async entry point for the FastAPI router
+  - _fallback_from_text()   heuristic extraction when only raw text is available
 """
 
 import re
-import json
 import os
 import subprocess
 import tempfile
@@ -16,13 +22,10 @@ import docx2txt
 import fitz  # PyMuPDF
 from docx import Document
 
-from .extractors.toc_extractor import extract_toc
-from .extractors.metadata_extractor import extract_metadata
-from .extractors.scope_extractor import extract_scope
-from .extractors.citations_extractor import extract_citations
-from .extractors.content_profile_extractor import extract_content_profile
-from .extractors.image_extractor import extract_and_store_images  # ← Updated for PostgreSQL
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Public: file-type text extraction
+# ─────────────────────────────────────────────────────────────────────────────
 
 def extract_text(file_path: str, suffix: str) -> str:
     """Extract raw text from PDF, DOCX, or legacy DOC files."""
@@ -38,9 +41,7 @@ def extract_text(file_path: str, suffix: str) -> str:
 
 def _extract_pdf(path: str) -> str:
     doc = fitz.open(path)
-    pages = []
-    for page in doc:
-        pages.append(page.get_text("text"))
+    pages = [page.get_text("text") for page in doc]
     doc.close()
     return "\n\n".join(pages)
 
@@ -53,21 +54,18 @@ def _extract_docx(path: str) -> str:
 
 
 def _extract_doc(path: str) -> str:
-    """Extract text from legacy .doc by converting to temporary .docx."""
+    """Extract text from legacy .doc by converting to a temporary .docx."""
     temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
     os.close(temp_fd)
     temp_docx = Path(temp_docx_path)
-
     try:
         if _convert_doc_to_docx_with_word(path, str(temp_docx)):
             return _extract_docx(str(temp_docx))
-
         if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
             return _extract_docx(str(temp_docx))
-
         raise ValueError(
-            "Failed to read legacy .doc file. Install pywin32 in the active environment with Microsoft Word, "
-            "or install LibreOffice and ensure 'soffice' is available in PATH."
+            "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
+            "or LibreOffice ('soffice' in PATH)."
         )
     finally:
         try:
@@ -92,7 +90,6 @@ def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
         word = win32com.client.DispatchEx("Word.Application")
         word.Visible = False
         word.DisplayAlerts = 0
-
         document = word.Documents.Open(os.path.abspath(src_path), ReadOnly=True)
         document.SaveAs(os.path.abspath(dst_docx_path), FileFormat=16)
         document.Close(False)
@@ -118,682 +115,96 @@ def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
 def _convert_doc_to_docx_with_soffice(src_path: str, dst_docx_path: str) -> bool:
     source = Path(src_path)
     target = Path(dst_docx_path)
-
     with tempfile.TemporaryDirectory() as out_dir:
-        cmd = [
-            "soffice",
-            "--headless",
-            "--convert-to",
-            "docx",
-            "--outdir",
-            out_dir,
-            str(source),
-        ]
+        cmd = ["soffice", "--headless", "--convert-to", "docx", "--outdir", out_dir, str(source)]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
-
         if result.returncode != 0:
             return False
-
         converted = Path(out_dir) / f"{source.stem}.docx"
         if not converted.exists():
             return False
-
         target.write_bytes(converted.read_bytes())
         return True
 
 
-def _collect_document_text(doc: Document) -> str:
-    """Collect paragraph and table text for relaxed config parsing."""
-    lines: list[str] = []
-    for p in doc.paragraphs:
-        t = (p.text or "").strip()
-        if t:
-            lines.append(t)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                t = (cell.text or "").strip()
-                if t:
-                    lines.append(t)
-    return "\n".join(lines)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# JSON-like block extraction helpers (simplified for brevity)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _extract_braced_block(text: str, open_brace_idx: int) -> str | None:
-    if open_brace_idx < 0 or open_brace_idx >= len(text) or text[open_brace_idx] != "{":
-        return None
-    depth = 0
-    in_string = False
-    quote_char = ""
-    escaped = False
-    for i in range(open_brace_idx, len(text)):
-        ch = text[i]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == quote_char:
-                in_string = False
-            continue
-        if ch in ('"', "'"):
-            in_string = True
-            quote_char = ch
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[open_brace_idx:i + 1]
-    return None
-
-
-def _cleanup_json_like(raw: str) -> str:
-    raw = (
-        raw.replace("\u201c", '"').replace("\u201d", '"')
-           .replace("\u2018", "'").replace("\u2019", "'")
-           .replace("\uff1a", ":")
-    )
-    cleaned = re.sub(r"//.*?$", "", raw, flags=re.MULTILINE)
-    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
-    return cleaned.strip()
-
-
-def _parse_json_like_object(raw_obj: str) -> dict | None:
-    cleaned = _cleanup_json_like(raw_obj)
-    try:
-        parsed = json.loads(cleaned)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
-def _extract_config_object(text: str, *keys: str) -> dict | None:
-    for key in keys:
-        m = re.search(
-            rf"(?:\"{re.escape(key)}\"|'{re.escape(key)}'|\b{re.escape(key)}\b)\s*:\s*{{",
-            text,
-        )
-        if not m:
-            continue
-        brace_idx = text.find("{", m.end() - 1)
-        if brace_idx < 0:
-            continue
-        block = _extract_braced_block(text, brace_idx)
-        if not block:
-            continue
-        parsed = _parse_json_like_object(block)
-        if isinstance(parsed, dict) and parsed:
-            return parsed
-    return None
-
-
-def _extract_config_scalar(text: str, *keys: str) -> str | None:
-    for key in keys:
-        m = re.search(
-            rf"(?:\"{re.escape(key)}\"|'{re.escape(key)}'|\b{re.escape(key)}\b)\s*:\s*\"([^\"]+)\"",
-            text,
-        )
-        if m and m.group(1).strip():
-            return m.group(1).strip()
-    return None
-
-
-def _extract_bracket_block(text: str, open_bracket_idx: int) -> str | None:
-    if open_bracket_idx < 0 or open_bracket_idx >= len(text) or text[open_bracket_idx] != "[":
-        return None
-    depth = 0
-    in_string = False
-    quote_char = ""
-    escaped = False
-    for i in range(open_bracket_idx, len(text)):
-        ch = text[i]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == quote_char:
-                in_string = False
-            continue
-        if ch in ('"', "'"):
-            in_string = True
-            quote_char = ch
-            continue
-        if ch == "[":
-            depth += 1
-        elif ch == "]":
-            depth -= 1
-            if depth == 0:
-                return text[open_bracket_idx:i + 1]
-    return None
-
-
-def _extract_list_items(list_block: str) -> list[str]:
-    items: list[str] = []
-    if not list_block or not list_block.startswith("["):
-        return items
-    i = 0
-    while i < len(list_block):
-        if list_block[i] != "[":
-            i += 1
-            continue
-        block = _extract_bracket_block(list_block, i)
-        if not block:
-            break
-        if i != 0:
-            items.append(block)
-        i += len(block)
-    return items
-
-
-def _parse_pattern_row(row_block: str) -> list | None:
-    row = row_block.strip()
-    m = re.match(
-        r"^\[\s*(['\"])(.*?)\1\s*,\s*(['\"])(.*?)\3\s*,\s*(-?\d+)\s*,\s*(['\"])(.*?)\6\s*\]$",
-        row,
-        flags=re.DOTALL,
-    )
-    if not m:
-        return None
-
-    def _u(val: str) -> str:
-        return val.replace(r"\"", '"').replace(r"\\'", "'").strip()
-
-    return [_u(m.group(2)), _u(m.group(4)), int(m.group(5)), _u(m.group(7))]
-
-
-def _extract_path_transform_relaxed(text: str) -> dict | None:
-    """Parse pathTransform even when BRD text is not strict JSON."""
-    cleaned = _cleanup_json_like(text)
-    marker = re.search(
-        r"(?is)(?:\"pathTransform\"|'pathTransform'|pathTransform"
-        r"|path_transform|\"path_transform\"|'path_transform')\s*:\s*{",
-        cleaned,
-    )
-    if not marker:
-        return None
-
-    root_open = cleaned.find("{", marker.end() - 1)
-    if root_open < 0:
-        return None
-    root_block = _extract_braced_block(cleaned, root_open)
-    if not root_block:
-        return None
-
-    strict = _parse_json_like_object(root_block)
-    if isinstance(strict, dict) and strict:
-        return strict
-
-    out: dict[str, dict] = {}
-    for level_match in re.finditer(r"(?is)['\"]?(\d{1,2})['\"]?\s*:\s*{", root_block):
-        level = level_match.group(1)
-        level_open = root_block.find("{", level_match.end() - 1)
-        if level_open < 0:
-            continue
-        level_block = _extract_braced_block(root_block, level_open)
-        if not level_block:
-            continue
-
-        pat_match = re.search(
-            r"(?is)(?:\"patterns\"|'patterns'|patterns)\s*:\s*\[", level_block
-        )
-        if not pat_match:
-            continue
-        pat_open = level_block.find("[", pat_match.end() - 1)
-        if pat_open < 0:
-            continue
-        pat_block = _extract_bracket_block(level_block, pat_open)
-        if not pat_block:
-            continue
-
-        patterns: list[list] = []
-        for item in _extract_list_items(pat_block):
-            parsed = _parse_pattern_row(item)
-            if parsed:
-                patterns.append(parsed)
-
-        case_match = re.search(
-            r"(?is)(?:\"case\"|'case'|case)\s*:\s*(['\"])(.*?)\1", level_block
-        )
-        case_val = case_match.group(2) if case_match else ""
-
-        if patterns:
-            out[level] = {"patterns": patterns, "case": case_val}
-
-    return out or None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# pathTransform derivation from extracted BRD sections
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _normalize_language_key(language: str) -> str:
-    key = (language or "").strip().lower()
-    if any(t in key for t in ["spanish", "español", "espanol", "castellano", "es-"]):
-        return "spanish"
-    if any(t in key for t in ["portuguese", "português", "portugues", "pt-"]):
-        return "portuguese"
-    if any(t in key for t in ["chinese", "中文", "汉语", "漢語", "zh", "zh-"]):
-        return "chinese"
-    if any(t in key for t in ["japanese", "日本語", "ja", "ja-"]):
-        return "japanese"
-    if any(t in key for t in ["korean", "한국어", "ko", "ko-"]):
-        return "korean"
-    return "english"
-
-
-def _extract_korean_title(title: str) -> str:
-    """
-    Pull the Korean portion from a mixed-language title.
-    'Act (금융회사의 지배구조에 관한 법률)' → '금융회사의 지배구조에 관한 법률'
-    """
-    m = re.search(r'\((?=[^)]*[가-힣])', title)
-    if m:
-        return title[m.start() + 1:].rstrip(')').strip()
-    if re.search(r'[가-힣]', title):
-        return title.strip()
-    return ""
-
-
-def _language_cleanup_patterns(language: str) -> dict[str, list[list]]:
-    lang = _normalize_language_key(language)
-
-    if lang == "portuguese":
-        gc = [[" \u2013 [^>]+", "", 0, ""], [":$|\\.$", "", 0, ""]]
-        return {
-            "3":  [["T\u00cdTULO", "T\u00edtulo", 0, ""]] + gc,
-            "4":  gc,
-            "5":  [["ANEXO", "Anexo", 0, ""], ["COMPLEMENTAR", "Complementar", 0, ""]] + gc,
-            "6":  [["AP\u00caNDICE", "Ap\u00eandice", 0, ""]] + gc,
-            "7":  [["—[^>]+", "", 0, ""], ["CAP\u00cdTULO", "", 0, ""], [":$|\\.$", "", 0, ""]],
-            "8":  gc,
-            "9":  gc,
-            "10": [["—[^>]+", "", 0, ""], [" \u2013 [^>]+", "", 0, ""], ["\\.$", "", 0, ""]],
-            "11": [["—[^>]+", "", 0, ""], [" \u2013 [^>]+", "", 0, ""], ["\\.$", "", 0, ""]],
-            "15": [["—[^>]+", "", 0, ""], [" \u2013 [^>]+", "", 0, ""], [":$|\\.$", "", 0, ""]],
-        }
-
-    if lang == "spanish":
-        gc = [["\\([0-9]+\\) ", "", 0, ""], ["\\.—$", "", 0, ""]]
-        return {
-            "3":  [["ANEXO", "Anexo", 0, ""], ["BIS", "Bis", 0, ""],
-                   ["ÚNICO", "Único", 0, ""], ["\\.—$", "", 0, ""]] + gc,
-            "4":  [["T\u00cdTULO|T\u00edtulo", "T\u00edt.", 0, ""],
-                   ["PRIMERO", "Primero", 0, ""], ["SEGUNDO", "Segundo", 0, ""],
-                   ["TERCERO", "Tercero", 0, ""], ["CUARTO", "Cuarto", 0, ""],
-                   ["QUINTO", "Quinto", 0, ""]] + gc,
-            "5":  [["CAP\u00cdTULO|CAPITULO|Cap\u00edtulo", "Cap.", 0, ""],
-                   ["BIS", "Bis", 0, ""]] + gc,
-            "6":  [["Secci\u00f3n", "Sec.", 0, ""], ["BIS", "Bis", 0, ""]] + gc,
-            "7":  [["BIS", "Bis", 0, ""]] + gc,
-            "9":  [["Art\u00edculo", "Art.", 0, ""], ["\\.-$", "", 0, ""],
-                   ["o", "", 0, ""], ["\u00ba", "", 0, ""], ["\u00b0", "", 0, ""],
-                   ["\u00ba.-$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "10": [["\\.-$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "11": [["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "12": [["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "13": [["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "14": [["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "15": [["\\([0-9]+\\)", "", 0, ""], ["\\)$", "", 0, ""],
-                   ["\\.$", "", 0, ""]] + gc,
-            "17": [["TRANSITORIOS", "Transitorios", 0, ""],
-                   ["TRANSITORIO", "Transitorio", 0, ""],
-                   ["TRANSITORIA", "Transitoria", 0, ""],
-                   ["TRANSITORIAS", "Transitorias", 0, ""],
-                   ["CONSIDERANDO", "Considerando", 0, ""],
-                   ["REFERENCIAS", "Referencias", 0, ""],
-                   ["ANEXO", "Anexo", 0, ""],
-                   ["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "18": [["ÚNICO", "Único", 0, ""], ["PRIMERA", "Primera", 0, ""],
-                   ["SEGUNDA", "Segunda", 0, ""], ["TERCERA", "Tercera", 0, ""],
-                   ["CUARTA", "Cuarta", 0, ""], ["QUINTA", "Quinta", 0, ""],
-                   ["SEXTA", "Sexta", 0, ""], ["UNICA", "Unica", 0, ""],
-                   ["PRIMERO", "Primero", 0, ""], ["SEGUNDO", "Segundo", 0, ""],
-                   ["TERCERO", "Tercero", 0, ""], ["CUARTO", "Cuarto", 0, ""],
-                   ["ÚNICA", "Única", 0, ""], ["UNICO", "Unico", 0, ""],
-                   ["\\)$", "", 0, ""], ["\\.-$", "", 0, ""],
-                   ["\\. -$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "19": [["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-            "20": [["\\)$", "", 0, ""], ["\\.$", "", 0, ""]] + gc,
-        }
-
-    if lang == "japanese":
-        tc = [[" [^>]+", "", 0, ""]]
-        return {
-            "3":  tc,
-            "4":  tc,
-            "5":  tc,
-            "6":  tc,
-            "7":  tc,
-            "8":  tc + [["か[^>]+", "", 0, ""], ["及[^>]+", "", 0, ""]],
-            "17": [["則 [^>]+", "則", 0, ""], ["：$", "", 0, ""]],
-        }
-
-    if lang == "korean":
-        return {}
-
-    return {}
-
-
-def _pick_scope_title(entry: dict) -> str:
-    for key in (
-        "document_title", "documentTitle",
-        "title", "name",
-        "source_name", "sourceName",
-        "document_name", "documentName",
-    ):
-        val = entry.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    return ""
-
-
-def _pick_citations_refs(citations: dict | None) -> list[dict]:
-    if not citations:
-        return []
-    inner = citations.get("citations")
-    source = inner if isinstance(inner, dict) else citations
-    refs = source.get("references") or []
-    if not isinstance(refs, list):
-        return []
-    return [
-        r for r in refs
-        if isinstance(r, dict) and r.get("level") is not None
-    ]
-
-
-def _extract_patterns_from_citation_text(text: str) -> list[str]:
-    if not text or not text.strip():
-        return []
-
-    def _looks_regex(raw: str) -> bool:
-        lowered = raw.lower()
-        if "<level" in lowered or "example:" in lowered:
-            return False
-        if re.search(r"\+\s*\"", raw):
-            return False
-        return bool(
-            re.search(r"(\^|\$|\\[dDsSwWbBAZz]|\\\\.)", raw)
-            or re.search(r"\[[^\]]+\](?:\{\d+(?:,\d*)?\}|[+*?])?", raw)
-            or re.search(r"\([^)]*\|[^)]*\)", raw)
-            or re.search(r"(?:\)|\]|\.|[A-Za-z0-9])[+*?]", raw)
-        )
-
-    lines = text.replace("\r", "\n").replace("\t", " ").split("\n")
-    cleaned: list[str] = []
-    plain_candidates: list[str] = []
-
-    def _infer_heading_regex(raw_text: str) -> str | None:
-        candidate = re.sub(r"\s+", " ", raw_text).strip(" \"'`")
-        if not candidate:
-            return None
-        candidate = re.sub(r"^level\s*\d+\s*", "", candidate, flags=re.IGNORECASE).strip(" :-")
-        candidate = re.sub(r"^(example|examples|pattern|regex|rule)\s*:\s*", "", candidate, flags=re.IGNORECASE).strip()
-        if not candidate:
-            return None
-        m = re.match(
-            r"^(chapter|part|division|subdivision|section|article|rule|title|subtitle|subpart|subchapter|appendix|schedule|exhibit|attachment|form)\s+([0-9]+(?:[A-Z])?(?:[-.][0-9A-Z]+)*)$",
-            candidate,
-            flags=re.IGNORECASE,
-        )
-        if not m:
-            return None
-        keyword = m.group(1)
-        if keyword.lower() == "article":
-            kw = r"(ARTICLE|Article|Art\.?)"
-        else:
-            kw = f"({keyword.upper()}|{keyword.title()})"
-        return f"^{kw} ?[0-9]+[A-Z]?(?:[-.][0-9A-Z]+)*$"
-
-    for line in lines:
-        cur = line.strip()
-        if not cur:
-            continue
-        cur = re.sub(r"^<\s*level\s*\d+\s*>\s*", "", cur, flags=re.IGNORECASE).strip()
-        cur = re.sub(r"^level\s*\d+\s*[:\-]?\s*", "", cur, flags=re.IGNORECASE).strip()
-        cur = re.sub(r"^[-*\d.)\s]+", "", cur).strip()
-        cur = re.sub(
-            r"^(pattern|regex|rule|example|examples|notes?)\s*:\s*", "", cur,
-            flags=re.IGNORECASE,
-        ).strip()
-        cur = cur.strip('"\'`').strip().rstrip(",")
-        cur = re.sub(r"\bexample\s*:.*$", "", cur, flags=re.IGNORECASE).strip()
-        cur = re.sub(r"\*\s*note\s*:.*$", "", cur, flags=re.IGNORECASE).strip()
-        if not cur:
-            continue
-        slash_wrapped = re.match(r"^/(.+)/[gimsuy]*$", cur)
-        if slash_wrapped:
-            cur = slash_wrapped.group(1)
-        if _looks_regex(cur):
-            cleaned.append(cur)
-            continue
-        for segment in re.split(r"[;\n]+", cur):
-            segment = segment.strip()
-            if segment:
-                plain_candidates.append(segment)
-
-    for candidate in plain_candidates:
-        inferred = _infer_heading_regex(candidate)
-        if inferred:
-            cleaned.append(inferred)
-
-    dedup: list[str] = []
-    seen: set[str] = set()
-    for item in cleaned:
-        if item in seen:
-            continue
-        seen.add(item)
-        dedup.append(item)
-    return dedup
-
-
-def _build_path_transform_from_extracted(
-    scope: dict | None,
-    citations: dict | None,
-    language: str,
-) -> dict:
-    pt: dict = {}
-    lang = _normalize_language_key(language)
-
-    in_scope: list = []
-    if isinstance(scope, dict):
-        raw = scope.get("in_scope") or scope.get("inScope") or []
-        if isinstance(raw, list):
-            in_scope = raw
-
-    level2_patterns: list[list] = []
-    seen_titles: set[str] = set()
-
-    for entry in in_scope:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("strikethrough") or entry.get("strikeThrough"):
-            continue
-        raw_title = _pick_scope_title(entry)
-        if not raw_title or raw_title in seen_titles:
-            continue
-        seen_titles.add(raw_title)
-        if lang == "korean":
-            ko_title = _extract_korean_title(raw_title)
-            match_key = ko_title if ko_title else raw_title
-        else:
-            match_key = raw_title
-        level2_patterns.append([match_key, raw_title, 0, ""])
-
-    if level2_patterns:
-        pt["2"] = {"patterns": level2_patterns, "case": ""}
-
-    citation_pattern_map: dict[str, list[list]] = {}
-    for ref in _pick_citations_refs(citations):
-        raw_level = str(ref.get("level") or "").strip()
-        level_m = re.search(r"\d+", raw_level)
-        if not level_m:
-            continue
-        level_key = level_m.group(0)
-        if int(level_key) < 3:
-            continue
-        rules_text = (
-            ref.get("citationRules")
-            or ref.get("citation_rules")
-            or ref.get("rules")
-            or ref.get("rule")
-            or ""
-        )
-        if not isinstance(rules_text, str) or not rules_text.strip():
-            continue
-        extracted = _extract_patterns_from_citation_text(rules_text)
-        if extracted:
-            citation_pattern_map[level_key] = [[p, p, 0, ""] for p in extracted]
-
-    lang_cleanup = _language_cleanup_patterns(language)
-
-    all_keys = set(citation_pattern_map.keys()) | set(lang_cleanup.keys())
-    for key in all_keys:
-        if key == "2":
-            continue
-        if key in citation_pattern_map:
-            pt[key] = {"patterns": citation_pattern_map[key], "case": ""}
-        elif key in lang_cleanup and lang_cleanup[key]:
-            pt[key] = {"patterns": lang_cleanup[key], "case": ""}
-
-    return pt
-
-
-def _extract_brd_config(
-    text: str,
-    scope: dict | None = None,
-    citations: dict | None = None,
-    language: str = "English",
-) -> dict:
-    config: dict = {}
-
-    path_transform = (
-        _extract_path_transform_relaxed(text)
-        or _extract_config_object(text, "pathTransform", "path_transform")
-    )
-    if path_transform:
-        config["pathTransform"] = path_transform
-    else:
-        derived = _build_path_transform_from_extracted(scope, citations, language)
-        if derived:
-            config["pathTransform"] = derived
-
-    custom_toc = _extract_config_object(text, "custom_toc", "customToc")
-    if custom_toc:
-        config["custom_toc"] = custom_toc
-
-    whitespace = _extract_config_object(text, "whitespaceHandling", "whitespace_handling")
-    if whitespace:
-        config["whitespaceHandling"] = whitespace
-
-    level_patterns = _extract_config_object(text, "levelPatterns", "level_patterns")
-    if level_patterns:
-        config["levelPatterns"] = level_patterns
-
-    root_path = _extract_config_scalar(text, "rootPath", "root_path")
-    if root_path:
-        config["rootPath"] = root_path
-
-    return config
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# .docx path → full structured extraction
+# Public: .docx → structured dict  (delegates to brd_data)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_all(docx_path: str, brd_id: str | None = None) -> dict:
     """
-    Run all extractors on a .docx file and return the combined result.
+    Run all extractors on a .docx file and return the combined result dict.
+
+    Delegates to brd_data.extract_brd() for all extraction, cleaning, and
+    merging.  brd_to_metajson_input() converts the result back to the same
+    dict shape this function has always returned, so all callers continue to
+    work without changes.
 
     Parameters
     ----------
     docx_path : path to the .docx file on disk
-    brd_id    : the BRD's brdId string (e.g. "BRD-001").
-                When provided, cell images are extracted and Prisma-ready
-                records are included in the returned dict under "cell_images".
+    brd_id    : when provided, cell images are also extracted and included
+                in the returned dict under "cell_images"
     """
     print(f"[DEBUG extract_all] Starting extraction for {docx_path}, brd_id={brd_id}")
-    
-    doc      = Document(docx_path)
-    doc_text = _collect_document_text(doc)
 
-    toc             = extract_toc(doc)
-    metadata        = extract_metadata(doc)
-    scope           = extract_scope(doc)
-    citations       = extract_citations(doc)
-    content_profile = extract_content_profile(doc)
+    from .brd_data import extract_brd, brd_to_metajson_input
 
-    language = (
-        (metadata or {}).get("language")
-        or (metadata or {}).get("Language")
-        or "English"
-    )
+    brd    = extract_brd(docx_path, brd_id=brd_id)
+    result = brd_to_metajson_input(brd)
 
-    brd_config = _extract_brd_config(
-        doc_text,
-        scope=scope,
-        citations=citations,
-        language=language,
-    )
-
-    # ── Image extraction for PostgreSQL BYTEA ───────────────────────────────
-    image_records: list[dict] = []
-    if brd_id:
-        print(f"[DEBUG extract_all] brd_id provided ({brd_id}), extracting images...")
-        try:
-            from .extractors.image_extractor import extract_and_store_images
-            
-            # Simply call the PostgreSQL BYTEA version
-            image_records = extract_and_store_images(
-                doc, 
-                docx_path, 
-                brd_id=brd_id,  # No Azure parameters!
-            )
-            print(f"[DEBUG extract_all] Extracted {len(image_records)} images")
-            
-            # Log first image info if any
-            if image_records and len(image_records) > 0:
-                print(f"[DEBUG extract_all] First image size: {len(image_records[0].get('imageData', b''))} bytes")
-                
-        except Exception as e:
-            print(f"[DEBUG extract_all] Image extraction failed: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("[DEBUG extract_all] No brd_id provided, skipping image extraction")
-
-    return {
-        "extracted_at":    datetime.utcnow().isoformat() + "Z",
-        "source_file":     Path(docx_path).name,
-        "toc":             toc,
-        "metadata":        metadata,
-        "scope":           scope,
-        "citations":       citations,
-        "content_profile": content_profile,
-        "brd_config":      brd_config,
-        "cell_images":     image_records,   # [] when brd_id not provided
-    }
+    print(f"[DEBUG extract_all] Done. levels={len(brd.levels)}, "
+          f"scope={len(brd.scope_entries)}, images={len(brd.cell_images)}")
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Raw text fallback (PDF / .doc scraper output)
+# Async entry point for process.py router
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def extract_all_sections(
+    docx_path_or_text: str,
+    format: str = "new",
+    brd_id: str | None = None,
+) -> dict:
+    """
+    Async entry point called by the FastAPI router.
+
+    - If given a .docx file path → full structured extraction via brd_data.
+    - If given raw text (PDF / scraper output) → heuristic fallback.
+      Cell images are not available from raw text; cell_images will be [].
+    """
+    arg = docx_path_or_text.strip()
+    is_docx_path = (
+        len(arg) < 512
+        and arg.endswith(".docx")
+        and "\n" not in arg
+        and Path(arg).exists()
+    )
+
+    if is_docx_path:
+        print(f"[DEBUG extract_all_sections] Calling extract_all with brd_id={brd_id}")
+        return extract_all(arg, brd_id=brd_id)
+
+    print("[DEBUG extract_all_sections] Using fallback from text")
+    return _fallback_from_text(docx_path_or_text, format)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Raw-text fallback  (PDF / .doc scraper output — no python-docx available)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fallback_from_text(text: str, format: str) -> dict:
     """
-    Heuristic extraction from raw text (used when we only have scraper output).
-    Called when the input is not a .docx file path.
-    Images cannot be extracted from raw text — cell_images is always [].
+    Heuristic extraction from raw text.
+    Used when the input is not a .docx path (e.g. PDF-scraped text).
+    Cell images are never available here — cell_images is always [].
     """
+    import json as _json
+
     lines   = [line.strip() for line in text.splitlines() if line.strip()]
     joined  = "\n".join(lines)
     lowered = joined.lower()
@@ -973,13 +384,6 @@ def _fallback_from_text(text: str, format: str) -> dict:
         "summary":      f"Scope covers {len(in_scope)} active documents.",
     }
 
-    brd_config = _extract_brd_config(
-        joined,
-        scope=scope_dict,
-        citations=citations,
-        language=language,
-    )
-
     return {
         "extracted_at":    datetime.now().isoformat() + "Z",
         "source_file":     "",
@@ -988,39 +392,6 @@ def _fallback_from_text(text: str, format: str) -> dict:
         "scope":           scope_dict,
         "citations":       citations,
         "content_profile": content_profile,
-        "brd_config":      brd_config,
-        "cell_images":     [],   # not available from raw text
+        "brd_config":      None,
+        "cell_images":     [],
     }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Async entry point for process.py router
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def extract_all_sections(
-    docx_path_or_text: str,
-    format: str = "new",
-    brd_id: str | None = None,
-) -> dict:
-    """
-    Async entry point called by the FastAPI router.
-
-    - If given a .docx file path → full structured extraction via python-docx.
-      Pass brd_id to also extract and store cell images.
-    - If given raw text (from scraper) → heuristic fallback extraction.
-      Cell images are not available from raw text; cell_images will be [].
-    """
-    arg = docx_path_or_text.strip()
-    is_docx_path = (
-        len(arg) < 512
-        and arg.endswith(".docx")
-        and "\n" not in arg
-        and Path(arg).exists()
-    )
-
-    if is_docx_path:
-        print(f"[DEBUG extract_all_sections] Calling extract_all with brd_id={brd_id}")
-        return extract_all(arg, brd_id=brd_id)
-
-    print("[DEBUG extract_all_sections] Using fallback from text")
-    return _fallback_from_text(docx_path_or_text, format)

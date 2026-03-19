@@ -57,7 +57,6 @@ router.get("/", async (_req: Request, res: Response) => {
         sections: {
           select: { metadata: true },
         },
-        // ── Fetch the latest version label in one query ──────────────────
         versions: {
           orderBy: { versionNum: "desc" },
           take:    1,
@@ -81,7 +80,6 @@ router.get("/", async (_req: Request, res: Response) => {
 
       const displayName = b.title.charAt(0).toUpperCase() + b.title.slice(1);
 
-      // Use the latest version label if one exists, otherwise fall back to "—"
       const latestVersion = b.versions?.[0]?.label ?? "—";
 
       return {

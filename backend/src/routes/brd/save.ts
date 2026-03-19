@@ -12,44 +12,31 @@ const VALID_FORMATS  = ["NEW", "OLD"];
 /**
  * Sanitize brdConfig before storing it.
  *
- * Problem: pathTransform.patterns arrays can contain thousands of entries
- * generated from scope documents — easily pushing the JSON body past 100 KB
- * and triggering a 413 "Request Entity Too Large" from Express's body-parser.
+ * pathTransform is intentionally STRIPPED before saving.
+ * Rationale: pathTransform is always re-derived at generate time by the Python
+ * pattern generator from the BRD's definitions, examples, and language cleanup
+ * rules. Storing a stale pathTransform in brdConfig causes the generator to
+ * load old rules and override the freshly-computed cleanup patterns — which is
+ * exactly the bug where levels 3-7 showed wrong/old patterns after every save.
  *
- * Fix: cap each level's patterns array to MAX_PATTERNS_PER_LEVEL entries.
- * The full patterns are re-derived at generate time anyway, so storing a
- * truncated copy is fine for the registry / re-open flow.
+ * levelPatterns is similarly stripped for the same reason — the Python service
+ * always re-infers them from the BRD definitions and examples.
+ *
+ * Everything else in brdConfig (rootPath, whitespaceHandling, custom_toc, etc.)
+ * is preserved as-is since those fields are NOT re-derived and must persist.
  */
-const MAX_PATTERNS_PER_LEVEL = 100;
-
 function sanitizeBrdConfig(config: unknown): unknown {
   if (!config || typeof config !== "object" || Array.isArray(config)) return config;
 
-  const c = config as Record<string, unknown>;
+  const c = { ...(config as Record<string, unknown>) };
 
-  if (!c.pathTransform || typeof c.pathTransform !== "object") return c;
+  // Strip re-derivable fields so the generator always produces fresh values
+  delete c.pathTransform;
+  delete c.path_transform;
+  delete c.levelPatterns;
+  delete c.level_patterns;
 
-  const pt = c.pathTransform as Record<string, unknown>;
-  const capped: Record<string, unknown> = {};
-
-  for (const [levelKey, levelVal] of Object.entries(pt)) {
-    if (
-      levelVal &&
-      typeof levelVal === "object" &&
-      !Array.isArray(levelVal) &&
-      Array.isArray((levelVal as Record<string, unknown>).patterns)
-    ) {
-      const lv = levelVal as Record<string, unknown>;
-      capped[levelKey] = {
-        ...lv,
-        patterns: (lv.patterns as unknown[]).slice(0, MAX_PATTERNS_PER_LEVEL),
-      };
-    } else {
-      capped[levelKey] = levelVal;
-    }
-  }
-
-  return { ...c, pathTransform: capped };
+  return c;
 }
 
 /**

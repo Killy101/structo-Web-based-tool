@@ -982,13 +982,28 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
     };
 
     // Prefer Python processing output because it preserves BRD-driven fields
-    // like pathTransform/custom_toc/whitespaceHandling from the uploaded BRD.
+    // like custom_toc/whitespaceHandling from the uploaded BRD.
+    //
+    // IMPORTANT: Strip pathTransform and levelPatterns from brdConfig before
+    // sending to Python. These are always re-derived by the pattern generator
+    // from BRD definitions and language cleanup rules. Sending stale stored
+    // values causes Python to load old patterns and override fresh cleanup —
+    // which is why levelPatterns/pathTransform were wrong after every save.
     const processingUrl = (process.env.PROCESSING_SERVICE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
     try {
+      const brdConfigClean = (() => {
+        const cfg = body.brdConfig || body.brd_config;
+        if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return cfg;
+        const { pathTransform, path_transform, levelPatterns, level_patterns, ...rest } =
+          cfg as Record<string, unknown>;
+        void pathTransform; void path_transform; void levelPatterns; void level_patterns;
+        return rest;
+      })();
+
       const upstream = await fetch(`${processingUrl}/generate/metajson`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, brdConfig: brdConfigClean, brd_config: undefined }),
       });
 
       if (upstream.ok) {

@@ -96,32 +96,21 @@ _INTRO_BLOB_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ── Scope-entry patterns ──────────────────────────────────────────────────────
-# Matches "Title 5", "Title 13A", "Chapter 98", "Chapter 31A", "Rule 10",
-# "Rule 20", "TITLE 7", "TITLE 16", "Part 3", "Article 16", etc.
 _SCOPE_ENTRY_RE = re.compile(
     r"^(Title|Chapter|Rule|Part|Article|Section|Subchapter|Division|Code)\s+"
-    r"[0-9A-Za-z][A-Za-z0-9\-\.]*\s*$"  # end-anchored: "Title 13 from..." won't match
+    r"[0-9A-Za-z][A-Za-z0-9\-\.]*\s*$"
     r"|^(TITLE|CHAPTER)\s+[0-9]+[A-Za-z]*\s*$",
     re.IGNORECASE,
 )
 
-# Matches short alphanumeric chapter codes like "286", "487N", "38", "4", "412A"
 _CHAPTER_ID_RE = re.compile(r"^[0-9]+[A-Za-z]*$")
-
-# Pipe and box-drawing vertical bar used as delimiters in inline lists
 _PIPE_SPLIT_RE = re.compile(r"[|│]")
 
-# Matches entries like "Attorney General[61] Chapters 14, 15"
-# where multiple chapters are listed comma-separated after the agency prefix.
-# Group 1 = prefix (e.g. "Attorney General[61]")
-# Group 2 = comma-separated chapter numbers (e.g. "14, 15")
 _MULTI_CHAPTER_RE = re.compile(
     r"^(.+?)\s+Chapters?\s+([\d\w]+(?:\s*,\s*[\d\w]+)+)\s*$",
     re.IGNORECASE,
 )
 
-# Sentence-embedded scope: "Article 16 from…", "Rule 10 is…", "Title 21 should…"
 _SENTENCE_SCOPE_RE = re.compile(
     r"\b((?:Title|Chapter|Rule|Part|Article|Acticle|Section)\s+[0-9][A-Za-z0-9\-\.]*)",
     re.IGNORECASE,
@@ -129,11 +118,6 @@ _SENTENCE_SCOPE_RE = re.compile(
 
 
 def _expand_multi_chapter(title: str, ref_url: str = "", content_url: str = "") -> list[dict]:
-    """
-    If *title* matches "Agency[Code] Chapters N, M" expand it into one
-    entry per chapter: ["Agency[Code] Chapter N", "Agency[Code] Chapter M"].
-    Otherwise returns a single-element list with the original title.
-    """
     m = _MULTI_CHAPTER_RE.match(title.strip())
     if m:
         prefix   = m.group(1).strip()
@@ -195,10 +179,6 @@ def _row_is_header(row) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_chapter_grid_table(table) -> bool:
-    """
-    True when table is a grid of short chapter-number identifiers (Hawaii-style).
-    Criteria: 2+ cols, 3+ rows, >=60% cells match _CHAPTER_ID_RE.
-    """
     if not table.rows or len(table.rows) < 3:
         return False
     if len(table.rows[0].cells) < 2:
@@ -216,12 +196,6 @@ def _is_chapter_grid_table(table) -> bool:
 
 
 def _find_scope_section_table(doc):
-    """
-    Return a table placed directly under the Scope heading that is:
-      - A single-column title list (Alaska/Oklahoma/Utah Code style), OR
-      - A multi-column chapter-number grid (Hawaii-style).
-    Returns None if no such table is found.
-    """
     body_els = list(doc.element.body)
     in_scope_section = False
 
@@ -474,12 +448,21 @@ def _is_legacy_format(doc) -> bool:
     col_map     = _detect_column_map(header_rows)
     data_start  = _find_data_start_row(scope_table, col_map)
     title_col   = col_map.get("title", 0)
+    ref_col     = col_map.get("ref_url", 1)
+    content_col = col_map.get("content_url", 2)
     useful_rows = 0
     for row in scope_table.rows[data_start:]:
         cells = row.cells
-        if title_col is not None and title_col < len(cells):
-            title = cells[title_col].text.strip()
-            if title and not _is_non_data_scope_row(title, "", "", ""):
+        n     = len(cells)
+        if title_col is not None and title_col < n:
+            title       = cells[title_col].text.strip()
+            # Pass actual URL columns so long-title rows (>80 chars) are not
+            # wrongly rejected by the "no URL and len > 80" guard in
+            # _is_non_data_scope_row — which would cause the extractor to
+            # fall through to extract_scope_legacy and pick up boilerplate.
+            ref_url     = cells[ref_col].text.strip()     if ref_col     is not None and ref_col     < n else ""
+            content_url = cells[content_col].text.strip() if content_col is not None and content_col < n else ""
+            if title and not _is_non_data_scope_row(title, ref_url, content_url, ""):
                 useful_rows += 1
     return useful_rows == 0
 
@@ -522,12 +505,10 @@ _INTRO_PREFIXES = (
 
 
 def _is_intro_paragraph(text_norm: str) -> bool:
-    """True when the paragraph is a preamble sentence, not a scope entry."""
     if any(text_norm.startswith(pfx) for pfx in _INTRO_PREFIXES):
         return True
     if _INTRO_BLOB_RE.search(text_norm):
         return True
-    # "Note: ..." lines are instructions, not scope entries
     if re.match(r"^note\s*:", text_norm):
         return True
     return False
@@ -541,7 +522,6 @@ def _get_source_url(doc) -> str:
         m = url_re.search(p.text)
         if m:
             return m.group(0).rstrip(".,;")
-    # Also look in scope section itself for a bare URL paragraph
     for p in _legacy_paragraphs_in_section(doc, "Scope", _SCOPE_STOP_HEADINGS):
         text = p.text.strip()
         if _URL_RE.match(text):
@@ -554,17 +534,6 @@ def _get_source_url(doc) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_pipe_delimited(text: str, ref_url: str = "") -> list[dict]:
-    """
-    Parse a paragraph like:
-      "| Chapter 98 | Chapter 93 | Chapter 90 |"
-      "Titles 152\u2502164 \u2502331\u2502"
-      "Titles \u2013 | 9 | 11 | 12A |"
-
-    Detects leading prefix "Titles"/"Chapters"/etc. and prepends it to bare
-    numeric tokens so output is "Title 152" not just "152".
-    Returns a list of _make_entry() dicts.
-    """
-    # Detect optional leading label e.g. "Titles", "Chapters", "Rules"
     prefix_match = re.match(r"^(Title[s]?|Chapter[s]?|Rule[s]?)\s*[\u2013\-]?\s*", text, re.IGNORECASE)
     prefix_word = ""
     if prefix_match:
@@ -579,7 +548,6 @@ def _parse_pipe_delimited(text: str, ref_url: str = "") -> list[dict]:
         title = part.strip().replace("\xa0", " ")
         if not title:
             continue
-        # Prepend prefix when entry is a bare numeric/alphanumeric code
         if prefix_word and re.match(r"^[0-9]+[A-Za-z]*$", title):
             title = f"{prefix_word} {title}"
         if any(m in title.lower() for m in _BOILERPLATE_MARKERS):
@@ -592,7 +560,6 @@ def _parse_pipe_delimited(text: str, ref_url: str = "") -> list[dict]:
 
 
 def _is_pipe_delimited(text: str) -> bool:
-    """True when the paragraph contains 2+ pipe / box-drawing separators."""
     return len(_PIPE_SPLIT_RE.findall(text)) >= 2
 
 
@@ -601,11 +568,6 @@ def _is_pipe_delimited(text: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_sentence_scope(text: str, ref_url: str = "") -> list[dict]:
-    """
-    Extract scope identifier(s) from a sentence like:
-      "Article 16 from the Texas Constitution, which can be found at the above URL."
-      "Rule 10 is …"
-    """
     matches = _SENTENCE_SCOPE_RE.findall(text)
     entries = []
     seen: set[str] = set()
@@ -665,15 +627,6 @@ def _extract_scope_chapter_grid(table, ref_url: str = "") -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_scope_legacy(doc) -> dict:
-    """
-    Handles all paragraph-based scope formats:
-      4a  Simple per-line list ("Title 5", "Chapter 98", …)
-      4b  Title + following URL
-      4c  Inline "(link: <url>)" appended to title
-      5   Pipe/box-drawing delimited inline ("| Ch 98 | Ch 93 |")
-      6   Department/agency name list
-      7   Sentence-embedded scope ("Article 16 from …")
-    """
     ref_url         = _get_source_url(doc)
     _inline_link_re = re.compile(r"\s*\(link:\s*(https?://\S+?)\)\s*$", re.IGNORECASE)
     url_re          = re.compile(r"https?://\S+")
@@ -687,22 +640,18 @@ def extract_scope_legacy(doc) -> dict:
             return _inline_link_re.sub("", text).strip(), m.group(1).rstrip(".,;)")
         return text, ""
 
-    # ── Collect raw paragraphs from the Scope section ─────────────────────
     raw_paras: list[str] = []
     for p in _legacy_paragraphs_in_section(doc, "Scope", _SCOPE_STOP_HEADINGS):
         text = p.text.replace("\xa0", " ").strip()
         if not text:
             continue
         text_norm = _normalise(text)
-        # Keep intro paragraphs that have pipes (format 5) or embedded
-        # scope identifiers (format 7 e.g. Michigan Admin multi-rule sentence)
         if _is_intro_paragraph(text_norm):
             if _is_pipe_delimited(text) or _SENTENCE_SCOPE_RE.search(text):
                 raw_paras.append(text)
             continue
         raw_paras.append(text)
 
-    # ── Process each paragraph ─────────────────────────────────────────────
     in_scope: list[dict] = []
     seen: set[str]       = set()
 
@@ -710,12 +659,10 @@ def extract_scope_legacy(doc) -> dict:
     while i < len(raw_paras):
         text = raw_paras[i]
 
-        # Skip bare URL paragraphs (they'll be consumed as content_url below)
         if _is_url(text):
             i += 1
             continue
 
-        # ── Format 5: Pipe-delimited inline ───────────────────────────────
         if _is_pipe_delimited(text):
             for entry in _parse_pipe_delimited(text, ref_url):
                 if entry["document_title"] not in seen:
@@ -724,17 +671,13 @@ def extract_scope_legacy(doc) -> dict:
             i += 1
             continue
 
-        # ── Format 4c: inline link "(link: <url>)" ────────────────────────
         title, content_url = _extract_inline_link(text)
 
         if not content_url:
-            # ── Format 4b: next paragraph is bare URL ─────────────────────
             if i + 1 < len(raw_paras) and _is_url(raw_paras[i + 1]):
                 content_url = raw_paras[i + 1].rstrip(".,;")
                 i += 2
             else:
-                # ── Format 7: sentence-embedded scope ─────────────────────
-                # Only apply when text doesn't look like a simple list entry
                 text_norm = _normalise(text)
                 is_simple = bool(
                     _SCOPE_ENTRY_RE.match(text.strip()) or
@@ -747,7 +690,6 @@ def extract_scope_legacy(doc) -> dict:
                             in_scope.append(entry)
                     i += 1
                     continue
-                # ── Format 4a / 6: simple entry or department name ─────────
                 i += 1
         else:
             i += 1
@@ -755,7 +697,6 @@ def extract_scope_legacy(doc) -> dict:
         title_key = re.sub(r"[\u2018\u2019\u201a\u201b\u2032\u2035\u0060\u00b4]", "'", title)
         if title_key in seen:
             continue
-        # Expand "Agency Chapters N, M" → one entry per chapter
         expanded = _expand_multi_chapter(title, ref_url, content_url)
         for entry in expanded:
             ekey = re.sub(r"[\u2018\u2019\u201a\u201b\u2032\u2035\u0060\u00b4]", "'", entry["document_title"])
@@ -763,8 +704,6 @@ def extract_scope_legacy(doc) -> dict:
                 seen.add(ekey)
                 in_scope.append(entry)
 
-    # If no entries were extracted but we have a ref URL, return it as a
-    # single whole-source entry (e.g. SC Regulations: all chapters in scope).
     if not in_scope and ref_url:
         in_scope.append(_make_entry("All chapters (see source URL)", ref_url))
 
@@ -788,7 +727,6 @@ def extract_scope(doc) -> dict:
       3. Legacy paragraph extractor (formats 4–7)
       4. Standard scored multi-column scope table
     """
-    # ── Path 1 & 2: table directly under the Scope heading ────────────────
     section_table = _find_scope_section_table(doc)
     if section_table is not None:
         ref_url = _get_source_url(doc)
@@ -796,11 +734,9 @@ def extract_scope(doc) -> dict:
             return _extract_scope_chapter_grid(section_table, ref_url)
         return _extract_scope_single_col_table(section_table, ref_url)
 
-    # ── Path 3: legacy paragraph / inline formats ─────────────────────────
     if _is_legacy_format(doc):
         return extract_scope_legacy(doc)
 
-    # ── Path 4: standard scored multi-column scope table ─────────────────
     scope_table = _find_scope_table(doc)
     if scope_table is None:
         return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}
@@ -872,16 +808,12 @@ def extract_scope(doc) -> dict:
         "summary": f"Scope covers {len(active)} active and {len(struck)} struck-through documents.",
     }
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# MHTML / legacy .doc parser  (e.g. New Mexico Administrative Code)
+# MHTML / legacy .doc parser
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_scope_from_mhtml(path: str) -> dict:
-    """
-    Handle .doc files that are actually Confluence MHTML exports.
-    Parses the embedded HTML, finds the scope table (identified by a header row
-    containing "document title" and "reference url"), and extracts entries.
-    """
     import quopri
 
     with open(path, "rb") as f:
@@ -910,7 +842,6 @@ def _extract_scope_from_mhtml(path: str) -> dict:
         if "document title" not in header_text or "reference url" not in header_text:
             continue
 
-        # Found the scope table — detect column positions from header
         header_cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", rows[0], re.DOTALL | re.IGNORECASE)
         header_texts = [strip_tags(c).lower() for c in header_cells]
 
@@ -941,7 +872,6 @@ def _extract_scope_from_mhtml(path: str) -> dict:
             if not doc_title:
                 continue
 
-            # Skip header/instruction rows
             title_low = doc_title.lower()
             if any(m in title_low for m in _BOILERPLATE_MARKERS):
                 continue
@@ -950,7 +880,6 @@ def _extract_scope_from_mhtml(path: str) -> dict:
 
             ref_url     = gcell(ref_col)
             content_url = gcell(content_col)
-            # Strip trailing NOTE: ... from URLs
             ref_url     = re.split(r"\s+NOTE\s*:", ref_url)[0].strip()
             content_url = re.split(r"\s+NOTE\s*:", content_url)[0].strip()
             issuing_raw = gcell(auth_col)
@@ -994,7 +923,6 @@ def _extract_scope_from_mhtml(path: str) -> dict:
 
 
 def _row_is_header_text(text_lower: str) -> bool:
-    """Quick check for header/instruction row by text content."""
     return any(lbl in text_lower for lbl in [
         "issuing authority", "innodata to capture", "asrb id",
         "sme check", "document title innodata",
@@ -1002,7 +930,6 @@ def _row_is_header_text(text_lower: str) -> bool:
 
 
 def _is_mhtml_doc(path: str) -> bool:
-    """True when the file is an MHTML export disguised as .doc."""
     try:
         with open(path, "rb") as f:
             header = f.read(256)
@@ -1012,16 +939,10 @@ def _is_mhtml_doc(path: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# File-level entry point  (handles .docx and .doc MHTML)
+# File-level entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_scope_from_file(path: str) -> dict:
-    """
-    Top-level entry point that accepts a file path.
-    Handles:
-      - .docx  → python-docx → extract_scope()
-      - .doc   → MHTML/Confluence export → _extract_scope_from_mhtml()
-    """
     import docx as _docx
 
     if path.lower().endswith(".doc") and _is_mhtml_doc(path):
