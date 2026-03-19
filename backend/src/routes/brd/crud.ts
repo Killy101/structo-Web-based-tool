@@ -93,8 +93,13 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = await Promise.all(brds.map(async (b) => {
-      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
+    const data = brds.map((b) => {
+      // Use only inline metadata for the list view — avoid downloading from
+      // Supabase Storage (one request per BRD) which causes timeouts.
+      const rawMeta = b.sections?.metadata ?? null;
+      const meta = extractStoragePath(rawMeta) === null
+        ? (rawMeta as Record<string, unknown> | null)
+        : null;
 
       const geography     = (meta?.geography              as string) ?? "—";
 
@@ -117,7 +122,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    }));
+    });
 
     return res.json(data);
   } catch (err) {
