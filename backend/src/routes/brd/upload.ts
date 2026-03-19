@@ -212,6 +212,12 @@ router.post(
       // Use format auto-detected by Python; fall back to "new"
       const detectedFormat = extracted.detected_format === "old" ? "old" : "new";
 
+      // Seed version "1" when the document doesn't supply one — stored inline
+      // so the list view can show "v1" immediately without a storage download.
+      if (extracted.metadata && !((extracted.metadata as any).version ?? "").toString().trim()) {
+        (extracted.metadata as any).version = "1";
+      }
+
       const storageSectionPaths = {
         scope: await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope ?? null),
         metadata: await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata ?? null),

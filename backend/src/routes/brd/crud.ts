@@ -79,6 +79,39 @@ function isSimilarTitle(a: string, b: string): boolean {
   return matches / smaller.size >= 0.80;
 }
 
+// ── Geography resolution ───────────────────────────────────────────────────
+// Returns the geography string from metadata, with two fallback layers:
+//   1. Empty string → infer from issuing_agency / content_category_name for
+//      well-known US federal agencies and US state administrative codes.
+//   2. Still nothing → "—"
+function resolveGeography(meta: Record<string, unknown> | null): string {
+  if (!meta) return "—";
+
+  const geo = ((meta.geography as string) ?? "").trim();
+  if (geo) return geo;
+
+  // Infer for US documents when geography field is absent / blank
+  const agency  = ((meta.issuing_agency       as string) ?? "").toLowerCase();
+  const catName = ((meta.content_category_name as string) ?? "").toLowerCase();
+  const auth    = ((meta.authoritative_source  as string) ?? "").toLowerCase();
+  const combined = `${agency} ${catName} ${auth}`;
+
+  // US federal document markers
+  if (/\b(code of federal regulations|federal register|cfr|epa|fda|osha|irs|sec|dot|hhs|usda|dol|dod|hud|uscis|ftc|fcc|ferc|cftc|fdic|nlrb|nlr|occ|treasury|federal aviation|federal highway)\b/.test(combined)) {
+    return "United States";
+  }
+
+  // US state administrative codes (e.g. "Alabama Administrative Code")
+  const STATE_RE = /\b(alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|district of columbia)\b/i;
+  const stateMatch = combined.match(STATE_RE);
+  if (stateMatch) {
+    const state = stateMatch[0].replace(/\b\w/g, (c) => c.toUpperCase());
+    return `${state}, United States`;
+  }
+
+  return "—";
+}
+
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
 router.get("/", async (_req: Request, res: Response) => {
   try {
@@ -107,9 +140,9 @@ router.get("/", async (_req: Request, res: Response) => {
       const rawMeta = b.sections?.metadata ?? null;
       const meta = await resolveMaybeStoredJson(rawMeta) as Record<string, unknown> | null;
 
-      const geography     = (meta?.geography as string) ?? "—";
+      const geography     = resolveGeography(meta);
       const metaVersion   = (meta?.version  as string)?.trim();
-      const version       = metaVersion ? `v${metaVersion}` : "v1.0";
+      const version       = metaVersion ? `v${metaVersion}` : "v1";
 
       const storedFormat  = (meta?._format        as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -395,7 +428,7 @@ router.get("/:brdId", async (req: Request, res: Response) => {
     const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
 
     const metaVersion2  = (meta?.version as string)?.trim();
-    const version2      = metaVersion2 ? `v${metaVersion2}` : "v1.0";
+    const version2      = metaVersion2 ? `v${metaVersion2}` : "v1";
 
     return res.json({
       id:             brd.brdId,
