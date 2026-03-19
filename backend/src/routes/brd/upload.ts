@@ -212,13 +212,25 @@ router.post(
       // Use format auto-detected by Python; fall back to "new"
       const detectedFormat = extracted.detected_format === "old" ? "old" : "new";
 
+      // Strip pathTransform and levelPatterns from brdConfig before storing.
+      // These are always re-derived at generate time by the Python pattern
+      // generator — storing stale versions causes the generator to load old
+      // rules and override freshly-computed cleanup patterns.
+      const rawBrdConfig = extracted.brd_config || extracted.brdConfig || null;
+      let cleanBrdConfig: Record<string, unknown> | null = null;
+      if (rawBrdConfig && typeof rawBrdConfig === "object" && !Array.isArray(rawBrdConfig)) {
+        const { pathTransform, path_transform, levelPatterns, level_patterns, ...rest } = rawBrdConfig as Record<string, unknown>;
+        void pathTransform; void path_transform; void levelPatterns; void level_patterns;
+        cleanBrdConfig = rest;
+      }
+
       const storageSectionPaths = {
         scope: await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope ?? null),
         metadata: await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata ?? null),
         toc: await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc ?? null),
         citations: await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations ?? null),
         contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extracted.content_profile ?? null),
-        brdConfig: await uploadJsonObject(sectionPath(brdId, "brdConfig"), extracted.brd_config || extracted.brdConfig || null),
+        brdConfig: await uploadJsonObject(sectionPath(brdId, "brdConfig"), cleanBrdConfig),
       };
 
       const imageRecords = await Promise.all((extracted.image_metadata ?? []).map(async (img, index) => {
@@ -336,7 +348,7 @@ router.post(
         toc: extracted.toc,
         citations: extracted.citations,
         contentProfile: extracted.content_profile,
-        brdConfig: extracted.brd_config || extracted.brdConfig || null,
+        brdConfig: cleanBrdConfig,
         imageMetadata: responseImageMetadata,
       });
 

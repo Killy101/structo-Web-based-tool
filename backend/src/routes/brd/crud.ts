@@ -50,14 +50,11 @@ async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
 }
 
 // ── Title normalisation helper ─────────────────────────────────────────────
-// Strips punctuation, collapses whitespace, lowercases — used for both the
-// stored title and the candidate title so minor formatting differences don't
-// produce false negatives.
 function normalizeTitle(t: string): string {
   return t
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ") // punctuation → space
-    .replace(/\s+/g, " ")          // collapse runs
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -90,6 +87,11 @@ router.get("/", async (_req: Request, res: Response) => {
         sections: {
           select: { metadata: true },
         },
+        versions: {
+          orderBy: { versionNum: "desc" },
+          take:    1,
+          select:  { versionNum: true, label: true },
+        },
       },
     });
 
@@ -101,9 +103,9 @@ router.get("/", async (_req: Request, res: Response) => {
         ? (rawMeta as Record<string, unknown> | null)
         : null;
 
-      const geography     = (meta?.geography              as string) ?? "—";
+      const geography     = (meta?.geography as string) ?? "—";
 
-      const storedFormat  = (meta?._format        as string) ?? "";
+      const storedFormat  = (meta?._format as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
       const derivedFormat: "old" | "new" =
         storedFormat === "old" ? "old" :
@@ -113,12 +115,14 @@ router.get("/", async (_req: Request, res: Response) => {
 
       const displayName = b.title.charAt(0).toUpperCase() + b.title.slice(1);
 
+      const latestVersion = b.versions?.[0]?.label ?? "—";
+
       return {
         id:          b.brdId,
         title:       displayName,
         format:      derivedFormat,
         status:      b.status,
-        version:     "v1.0",
+        version:     latestVersion,
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
@@ -191,10 +195,6 @@ router.get("/next-id", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/check-duplicate?filename=xxx ─────────────────────────────────
-// Derives a candidate title from the filename (strip extension + underscores)
-// and checks it against existing BRD titles using the same fuzzy logic as
-// check-duplicate-title. This replaces the old fileUpload table query which
-// was never populated and always returned { exists: false } incorrectly.
 router.get("/check-duplicate", async (req: Request, res: Response) => {
   try {
     const raw      = String(req.query.filename ?? "");
@@ -204,7 +204,6 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "filename query param is required" });
     }
 
-    // Derive a readable title from the filename the same way upload.ts does
     const candidateTitle = filename
       .replace(/\.(pdf|doc|docx)$/i, "")
       .replace(/_{2,}/g, " ")
@@ -219,7 +218,6 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
       select: { brdId: true, title: true, status: true },
     });
 
-    // 1. Exact match
     const exact = allBrds.find(b => normalizeTitle(b.title) === normalised);
     if (exact) {
       return res.json({
@@ -231,7 +229,6 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
       });
     }
 
-    // 2. Fuzzy match
     const fuzzy = allBrds.find(b => isSimilarTitle(b.title, candidateTitle));
     if (fuzzy) {
       return res.json({
@@ -251,17 +248,6 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
 });
 
 // ── GET /brd/check-duplicate-title?title=xxx ──────────────────────────────
-// Checks whether a BRD with a sufficiently similar title already exists.
-// Called after extraction returns the resolved title so we compare the actual
-// content/source name rather than the raw filename.
-//
-// Matching rules (applied in order — first match wins):
-//   1. Exact match (case-insensitive, after normalisation)
-//   2. Fuzzy word-overlap ≥ 80 % of the shorter title's words
-//
-// Response:
-//   { exists: false }
-//   { exists: true, brdId, title, status, matchType: "exact" | "fuzzy" }
 router.get("/check-duplicate-title", async (req: Request, res: Response) => {
   try {
     const raw   = String(req.query.title ?? "").trim();
@@ -271,22 +257,16 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "title query param is required" });
     }
 
-    // Optional: exclude a specific BRD ID from the match (used to prevent a
-    // newly-created BRD from matching itself immediately after upload).
     const excludeId = req.query.excludeId ? String(req.query.excludeId).trim() : null;
-
     const normalised = normalizeTitle(title);
 
-    // Fetch all BRD titles — the table is small enough that a full scan is fine
     const allBrds = await prisma.brd.findMany({
       where: { deletedAt: null },
       select: { brdId: true, title: true, status: true },
     });
 
-    // Filter out the excluded ID (e.g. the BRD just created by this upload)
     const candidates = excludeId ? allBrds.filter(b => b.brdId !== excludeId) : allBrds;
 
-    // 1. Exact match
     const exact = candidates.find(b => normalizeTitle(b.title) === normalised);
     if (exact) {
       return res.json({
@@ -298,7 +278,6 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
       });
     }
 
-    // 2. Fuzzy match
     const fuzzy = candidates.find(b => isSimilarTitle(b.title, title));
     if (fuzzy) {
       return res.json({
@@ -367,7 +346,45 @@ router.get("/:brdId", async (req: Request, res: Response) => {
     });
     if (!brd || brd.deletedAt !== null) return res.status(404).json({ error: "BRD not found" });
 
-    const meta = await resolveMaybeStoredJson(brd.sections?.metadata ?? null) as Record<string, unknown> | null;
+    const [scope, metadata, toc, citations, contentProfile, brdConfig] = await Promise.all([
+      resolveMaybeStoredJson(brd.sections?.scope          ?? null),
+      resolveMaybeStoredJson(brd.sections?.metadata       ?? null),
+      resolveMaybeStoredJson(brd.sections?.toc            ?? null),
+      resolveMaybeStoredJson(brd.sections?.citations      ?? null),
+      resolveMaybeStoredJson(brd.sections?.contentProfile ?? null),
+      resolveMaybeStoredJson(brd.sections?.brdConfig      ?? null),
+    ]);
+
+    const meta = metadata as Record<string, unknown> | null;
+
+    const storedFormat2  = (meta?._format as string) ?? "";
+    const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
+    const derivedFormat2: "old" | "new" =
+      storedFormat2 === "old" ? "old" :
+      storedFormat2 === "new" ? "new" :
+      hasLegacyKeys2           ? "old" :
+      brd.format === "OLD"     ? "old" : "new";
+
+    const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
+
+    return res.json({
+      id:             brd.brdId,
+      title:          displayName,
+      format:         derivedFormat2,
+      status:         brd.status,
+      lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
+      scope,
+      metadata,
+      toc,
+      citations,
+      contentProfile,
+      brdConfig,
+    });
+  } catch (err) {
+    console.error("[GET /brd/:brdId]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
 
     const storedFormat2  = (meta?._format        as string) ?? "";
     const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -639,7 +656,7 @@ router.post("/fix-formats", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), a
       const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
       if (!meta) continue;
 
-      const storedFmt   = (meta._format        as string) ?? "";
+      const storedFmt   = (meta._format as string) ?? "";
       const hasLegacy   = !!(meta.payload_subtype || meta.source_type || meta.authoritative_source);
       const shouldBeOld = storedFmt === "old" || (hasLegacy && storedFmt !== "new");
 

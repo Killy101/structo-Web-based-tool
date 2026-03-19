@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from src.services.pattern_generator import generate_level_patterns
+from src.services.pattern_generator.languages.spanish import SPANISH_PATH_TRANSFORM_CLEANUP
 
 
 def assemble_metajson(
@@ -125,6 +126,24 @@ def assemble_metajson(
     elif whitespace_handling:
         metajson["whitespaceHandling"] = whitespace_handling
 
+    # ── 4b. Inject/merge language-specific pathTransform cleanup ──────────
+    # Always applied for Spanish regardless of whether brd_config had a
+    # pathTransform — our cleanup rules take precedence because they fix
+    # known issues (leading whitespace, .- suffix, ALL-CAPS ordinal words).
+    if _is_spanish_language(language):
+        metajson["pathTransform"] = _build_path_transform(
+            SPANISH_PATH_TRANSFORM_CLEANUP, level_patterns
+        )
+
+    # ── 4c. For Spanish: title-case the document-title metadata field ──────
+    # Level-2 paths are derived from the raw document title. When the source is
+    # ALL-CAPS we normalise it here so scope matching and path display are correct.
+    if "pathTransform" in metajson and _is_spanish_language(language):
+        for key in ("Content Category Name", "Source Name", "document_title"):
+            raw_title = metadata.get(key, "")
+            if raw_title and raw_title == raw_title.upper():
+                metadata[key] = _spanish_title_case(raw_title)
+
     # ── 5. Derive a suggested filename ────────────────────────────────────
     source_name = (
         metadata.get("Content Category Name")
@@ -136,6 +155,99 @@ def assemble_metajson(
 
     return metajson, filename
 
+
+
+def _is_spanish_language(language: str) -> bool:
+    lang = (language or "").strip().lower()
+    return any(t in lang for t in [
+        "spanish", "español", "espanol", "castellano", "castilian", "es-",
+    ])
+
+
+# Spanish stop words that stay lowercase in title-case conversion
+# (prepositions, articles, conjunctions — except at the start of the string)
+_SPANISH_STOPWORDS = frozenset([
+    "a", "al", "con", "de", "del", "e", "el", "en",
+    "la", "las", "lo", "los", "o", "para", "por",
+    "que", "se", "sin", "un", "una", "unos", "unas", "y",
+])
+
+
+def _spanish_title_case(text: str) -> str:
+    """
+    Convert an ALL-CAPS Spanish string to Title Case, keeping known
+    prepositions / articles / conjunctions lowercase (except the first word).
+
+    Examples
+    --------
+    "REGLAS PARA EL ORDENAMIENTO"
+        → "Reglas para el Ordenamiento"
+    " REGLAS A LAS QUE HABRAN DE SUJETARSE"
+        → "Reglas a las que Habrán de Sujetarse"   (accent already in source)
+    """
+    text = text.strip()
+    if not text:
+        return text
+    words = text.split()
+    result = []
+    for i, word in enumerate(words):
+        # Preserve digits and already-mixed-case tokens (e.g. "Bis", "1")
+        if word.isdigit():
+            result.append(word)
+            continue
+        lower = word.lower()
+        if i > 0 and lower in _SPANISH_STOPWORDS:
+            result.append(lower)
+        else:
+            # Capitalise first letter, lowercase the rest
+            result.append(word[0].upper() + word[1:].lower() if len(word) > 1 else word.upper())
+    return " ".join(result)
+
+
+def _build_path_transform(
+    cleanup: dict[str, list[list]],
+    level_patterns: dict[str, list[str]],
+) -> dict[str, dict]:
+    """
+    Convert a SPANISH_PATH_TRANSFORM_CLEANUP-style dict into the pathTransform
+    structure consumed by _sanitize_path_transform_output in process.py:
+
+        { "3": { "patterns": [["find", "replace", flag, extra], ...], "case": "" } }
+
+    Levels present in level_patterns but absent from cleanup get a minimal
+    entry with only the three shared cleanup rules so trailing punctuation
+    and leading whitespace are always stripped.
+    """
+    _SHARED = [
+        [r"^\s+", "", 0, ""],
+        [r"\s*\.-$", "", 0, ""],
+        [r"[.,;)\-]+$", "", 0, ""],
+    ]
+
+    pt: dict[str, dict] = {}
+
+    # Merge: levels with explicit rules come first
+    all_levels = set(cleanup.keys()) | set(level_patterns.keys())
+    for lvl_key in all_levels:
+        try:
+            lvl_num = int(lvl_key)
+        except ValueError:
+            continue
+        if lvl_num < 3:
+            continue
+
+        rules = cleanup.get(lvl_key)
+        if rules is not None:
+            patterns = [list(r) for r in rules]
+        else:
+            # No explicit rules — inject shared cleanup so punct is still stripped
+            patterns = [list(r) for r in _SHARED]
+
+        pt[lvl_key] = {"patterns": patterns, "case": ""}
+
+    # Level 2 always needs the catch-all identity pattern
+    pt["2"] = {"patterns": [["^.*$", "", 0, ""]], "case": ""}
+    return pt
 
 # ---------------------------------------------------------------------------
 # Helpers

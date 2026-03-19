@@ -2,10 +2,11 @@
 import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "react";
 import { Card, CardHeader } from "@/components/ui";
 import BrdFlow from "@/components/brd/BrdFlow";
+import Generate from "@/components/brd/Generate";
 import api from "@/app/lib/api";
 
 type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
-type SortField = "name" | "date";
+type SortField = "name" | "date" | "id";
 type SortDirection = "asc" | "desc";
 
 interface Brd {
@@ -18,6 +19,23 @@ interface Brd {
   lastUpdated:  string;
   geography:    string;
   format:       "new" | "old";
+}
+
+interface BrdVersionSummary {
+  id:         number;
+  brdId:      string;
+  versionNum: number;
+  label:      string;
+  savedAt:    string;
+}
+
+interface BrdVersionDetail extends BrdVersionSummary {
+  scope?:          Record<string, unknown>;
+  metadata?:       Record<string, unknown>;
+  toc?:            Record<string, unknown>;
+  citations?:      Record<string, unknown>;
+  contentProfile?: Record<string, unknown>;
+  brdConfig?:      Record<string, unknown>;
 }
 
 function displayTitle(brd: Brd): string {
@@ -35,7 +53,6 @@ const STATUS_TRANSITIONS: Record<BrdStatus, BrdStatus[]> = {
   APPROVED: ["APPROVED", "ON_HOLD"],
   ON_HOLD: ["ON_HOLD", "DRAFT", "COMPLETED", "APPROVED"],
 };
-
 const STATUS_BADGE: Record<BrdStatus, string> = {
   DRAFT:     "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
   PAUSED:    "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
@@ -43,7 +60,6 @@ const STATUS_BADGE: Record<BrdStatus, string> = {
   APPROVED:  "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
   ON_HOLD:   "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
 };
-
 const STATUS_DOT: Record<BrdStatus, string> = {
   DRAFT:     "bg-sky-500 animate-pulse",
   PAUSED:    "bg-amber-500",
@@ -55,17 +71,13 @@ const STATUS_DOT: Record<BrdStatus, string> = {
 const STATUS_HELPER: Record<BrdStatus, string> = {
   DRAFT: "Initial draft uploaded. Re-upload final BRD while in Draft.",
   PAUSED: "Work in progress and temporarily paused.",
-  COMPLETED: "Final BRD processed. Waiting for client approval.",
   APPROVED: "Client approved. View BRD and generate all outputs.",
   ON_HOLD: "Production questions or client comments pending.",
 };
 
 // ── Continent / Geography ─────────────────────────────────────────
 type Continent = "Asia" | "Europe" | "Americas" | "Africa" | "Oceania" | "Global";
-
 const CONTINENT_COLOR: Record<Continent, string> = {
-  Asia: "#f59e0b", Europe: "#3b82f6", Americas: "#10b981",
-  Africa: "#ef4444", Oceania: "#8b5cf6", Global: "#64748b",
 };
 
 const US_STATES_FULL = [
@@ -78,18 +90,12 @@ const US_STATES_FULL = [
   "south carolina","south dakota","tennessee","texas","utah","vermont",
   "virginia","washington","west virginia","wisconsin","wyoming",
   "washington dc","district of columbia","puerto rico","guam",
-  // US administrative / legal references
   "administrative code","code of federal regulations","cfr","federal register",
-  // Common misspellings of US states
-  "lousiana","louisianna","luisiana","louisana",
-  "califonia","califronia","calfornia",
-  "tennesse","tenessee","tennesee",
-  "missisippi","mississipi","misssissippi",
-  "pensilvania","pennslyvania","pennsilvania",
-  "massechusetts","massachusets","massachussetts",
+  "lousiana","louisianna","luisiana","louisana","califonia","califronia","calfornia",
+  "tennesse","tenessee","tennesee","missisippi","mississipi","misssissippi",
+  "pensilvania","pennslyvania","pennsilvania","massechusetts","massachusets","massachussetts",
   "connecticutt","conneticut","conneticut",
 ];
-
 const US_STATE_ABBR = new Set([
   "al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il","in","ia",
   "ks","ky","la","me","md","ma","mi","mn","ms","mo","mt","ne","nv","nh","nj",
@@ -110,11 +116,8 @@ const CONTINENT_KEYWORDS: Record<Continent, string[]> = {
   Oceania:  ["oceania","australia","new zealand","pacific","anz","fiji","papua","samoa","tonga","vanuatu"],
   Global:   ["global","worldwide","international","all regions","ww","cross-region","multi-region","all markets"],
 };
-
 function detectContinent(geography: string): Continent {
-  const raw = geography.trim();
-  const geo = raw.toLowerCase();
-  // Check US states and US-specific terms first
+  const raw = geography.trim(); const geo = raw.toLowerCase();
   for (const state of US_STATES_FULL) { if (geo.includes(state)) return "Americas"; }
   const tokens = geo.split(/[\s,./|&()\-]+/).filter(Boolean);
   for (const token of tokens) {
@@ -143,19 +146,333 @@ const PlusIcon    = () => <svg className="w-3.5 h-3.5" fill="none" stroke="curre
 const ReuploadIcon = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5-5m0 0l5 5m-5-5v12"/></svg>;
 const StatusIcon  = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 0h6"/></svg>;
 
-// Stat pill icons
 const ReceivedIcon  = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>;
-const ProcessingIcon= () => <svg className="w-5 h-5 animate-spin" style={{animationDuration:"3s"}} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>;
-const PausedIcon    = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>;
-const CompletedIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>;
-
-const HISTORY_MOCK = (brd: Brd) => [
-  { ver: brd.version, date: brd.lastUpdated, note: "Current version",        latest: true  },
-  { ver: "v1.0",      date: "2025-02-14",    note: "Initial draft published", latest: false },
-];
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 
+// ── Version History Modal ─────────────────────────────────────────
+function VersionHistoryModal({ brd, onClose }: { brd: Brd; onClose: () => void }) {
+  const [versions,        setVersions]        = useState<BrdVersionSummary[]>([]);
+  const [loading,         setLoading]         = useState(true);
+  const [error,           setError]           = useState<string | null>(null);
+  const [viewingVersion,  setViewingVersion]  = useState<BrdVersionDetail | null>(null);
+  const [editingVersion,  setEditingVersion]  = useState<BrdVersionDetail | null>(null);
+  const [versionLoading,  setVersionLoading]  = useState(false);
+  const [loadingId,       setLoadingId]       = useState<number | null>(null);
+  const [deletingId,      setDeletingId]      = useState<number | null>(null);
+  const [confirmDelete,   setConfirmDelete]   = useState<BrdVersionSummary | null>(null);
+  const snapshotFired = useRef(false);
+
+  // Fetch versions; if none exist, silently create v1.0 from current sections.
+  // useRef guard prevents duplicate snapshot if the component re-renders.
+  useEffect(() => {
+    setLoading(true);
+    api.get<{ versions: BrdVersionSummary[] }>(`/brd/${brd.id}/versions`)
+      .then(async r => {
+        const list = r.data.versions ?? [];
+        if (list.length > 0) {
+          setVersions(list);
+          setLoading(false);
+          return;
+        }
+        // No versions yet — show spinner, snapshot in background (once only)
+        setLoading(false);
+        if (snapshotFired.current) return;
+        snapshotFired.current = true;
+        try {
+          const sectionsRes = await api.get<{
+            scope?: unknown; metadata?: unknown; toc?: unknown;
+            citations?: unknown; contentProfile?: unknown; brdConfig?: unknown;
+          }>(`/brd/${brd.id}/sections`);
+          const snap = await api.post<BrdVersionSummary>(`/brd/${brd.id}/versions`, {
+            ...sectionsRes.data,
+            label: "v1.0",
+          });
+          setVersions([snap.data]);
+        } catch {
+          // Snapshot failed silently — empty state is fine
+          snapshotFired.current = false; // allow retry next open
+        }
+      })
+      .catch(() => {
+        setError("Failed to load version history.");
+        setLoading(false);
+      });
+  }, [brd.id]);
+
+  async function handleViewVersion(v: BrdVersionSummary) {
+    setVersionLoading(true);
+    setLoadingId(v.id);
+    try {
+      const r = await api.get<BrdVersionDetail>(`/brd/${brd.id}/versions/${v.versionNum}`);
+      setViewingVersion(r.data);
+    } catch {
+      setError("Failed to load that version.");
+    } finally {
+      setVersionLoading(false);
+      setLoadingId(null);
+    }
+  }
+
+  async function handleEditVersion(v: BrdVersionSummary) {
+    setVersionLoading(true);
+    setLoadingId(v.id);
+    try {
+      const r = await api.get<BrdVersionDetail>(`/brd/${brd.id}/versions/${v.versionNum}`);
+      setEditingVersion(r.data);
+    } catch {
+      setError("Failed to load that version.");
+    } finally {
+      setVersionLoading(false);
+      setLoadingId(null);
+    }
+  }
+
+  async function confirmDeleteVersion() {
+    if (!confirmDelete) return;
+    const v = confirmDelete;
+    setConfirmDelete(null);
+    setDeletingId(v.id);
+    try {
+      await api.delete(`/brd/${brd.id}/versions/${v.versionNum}`);
+      setVersions(prev => prev.filter(x => x.id !== v.id));
+    } catch {
+      setError("Failed to delete that version.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const name = displayTitle(brd);
+
+  // ── Full-screen version viewer ────────────────────────────────
+  if (viewingVersion) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-slate-900">
+        <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex-shrink-0">
+          <button onClick={() => setViewingVersion(null)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            <BackIcon /> Back to History
+          </button>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="font-mono text-xs text-blue-600 dark:text-blue-400 font-semibold">{brd.id}</span>
+            <span className="text-slate-300 dark:text-slate-600">·</span>
+            <span className="text-xs text-slate-600 dark:text-slate-300 truncate">{name}</span>
+            <span className="text-slate-300 dark:text-slate-600">·</span>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-700/40">
+              {viewingVersion.label}
+            </span>
+            <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">
+              · Saved {new Date(viewingVersion.savedAt).toLocaleString()}
+            </span>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+            <CloseIcon />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5">
+          <Generate
+            brdId={brd.id}
+            title={name}
+            format={brd.format}
+            initialData={{
+              scope:          viewingVersion.scope,
+              metadata:       viewingVersion.metadata,
+              toc:            viewingVersion.toc,
+              citations:      viewingVersion.citations,
+              contentProfile: viewingVersion.contentProfile,
+              brdConfig:      viewingVersion.brdConfig,
+            }}
+            canEdit={false}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Full-screen version editor ────────────────────────────────
+  if (editingVersion) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-slate-900">
+        <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex-shrink-0">
+          <button onClick={() => setEditingVersion(null)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            <BackIcon /> Back to History
+          </button>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="font-mono text-xs text-blue-600 dark:text-blue-400 font-semibold">{brd.id}</span>
+            <span className="text-slate-300 dark:text-slate-600">·</span>
+            <span className="text-xs text-slate-600 dark:text-slate-300 truncate">{name}</span>
+            <span className="text-slate-300 dark:text-slate-600">·</span>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700/40">
+              Editing {editingVersion.label}
+            </span>
+            <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">
+              · Saved {new Date(editingVersion.savedAt).toLocaleString()}
+            </span>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+            <CloseIcon />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5">
+          <Generate
+            brdId={brd.id}
+            title={name}
+            format={brd.format}
+            initialData={{
+              scope:          editingVersion.scope,
+              metadata:       editingVersion.metadata,
+              toc:            editingVersion.toc,
+              citations:      editingVersion.citations,
+              contentProfile: editingVersion.contentProfile,
+              brdConfig:      editingVersion.brdConfig,
+            }}
+            canEdit={true}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Delete confirmation modal ─────────────────────────────────
+  if (confirmDelete) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmDelete(null)} />
+        <div className="relative w-full max-w-sm z-10">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="h-1 w-full bg-gradient-to-r from-red-500 to-rose-500" />
+            <div className="p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-full bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0 border border-red-100 dark:border-red-800/40">
+                  <TrashIcon />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Delete version?</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                    This will permanently delete <span className="font-semibold text-slate-700 dark:text-slate-200">{confirmDelete.label}</span> saved on {new Date(confirmDelete.savedAt).toLocaleString()}. This cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5 mt-5">
+                <button onClick={() => setConfirmDelete(null)}
+                  className="flex-1 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                  Cancel
+                </button>
+                <button onClick={confirmDeleteVersion}
+                  className="flex-1 py-2 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-700 active:scale-[0.98] transition-all">
+                  Delete version
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Version list modal ────────────────────────────────────────
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md z-10">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+            <div>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">Version History</p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 font-mono">
+                {brd.id} · {name.length > 34 ? name.slice(0, 34) + "…" : name}
+              </p>
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+              <CloseIcon />
+            </button>
+          </div>
+
+          <div className="p-5">
+            {loading ? (
+              <div className="flex flex-col gap-2">
+                {[1,2,3].map(i => <div key={i} className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />)}
+              </div>
+            ) : error ? (
+              <p className="text-xs text-red-500 text-center py-4">{error}</p>
+            ) : versions.length === 0 ? (
+              <div className="text-center py-8">
+                <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3">
+                  <svg className="w-5 h-5 text-slate-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2"/>
+                    <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8"/>
+                  </svg>
+                </div>
+                <p className="text-sm font-medium text-slate-600 dark:text-slate-400">Creating v1.0…</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Capturing the current version as a snapshot.</p>
+              </div>
+            ) : (
+              <div className="relative">
+                <div className="absolute left-[19px] top-5 bottom-5 w-px bg-slate-200 dark:bg-slate-700" />
+                <div className="space-y-3">
+                  {versions.map((v, i) => {
+                    const isLatest = i === 0;
+                    const isDeleting = deletingId === v.id;
+                    return (
+                      <div key={v.id} className="flex items-start gap-3">
+                        <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center border-2 z-10 ${isLatest ? "bg-emerald-50 dark:bg-emerald-900/30 border-emerald-400 dark:border-emerald-600" : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"}`}>
+                          {isLatest
+                            ? <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/></svg>
+                            : <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                          }
+                        </div>
+                        <div className={`flex-1 flex items-center justify-between p-3 rounded-xl border transition-colors ${isLatest ? "bg-emerald-50/80 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-900/40" : "bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700/60"}`}>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2 py-0.5 rounded-md">{v.label}</span>
+                              {isLatest && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">Current</span>}
+                            </div>
+                            <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">{new Date(v.savedAt).toLocaleString()}</div>
+                          </div>
+                          {/* Actions */}
+                          <div className="ml-3 flex items-center gap-1 flex-shrink-0">
+                            <button onClick={() => handleViewVersion(v)} disabled={versionLoading || isDeleting}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-700/40 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 transition-colors whitespace-nowrap">
+                              {versionLoading && loadingId === v.id && !isDeleting
+                                ? <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>
+                                : <EyeIcon />
+                              }
+                              View
+                            </button>
+                            <button onClick={() => handleEditVersion(v)} disabled={versionLoading || isDeleting}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50 transition-colors whitespace-nowrap">
+                              <EditIcon />
+                              Edit
+                            </button>
+                            <button onClick={() => setConfirmDelete(v)} disabled={versionLoading || isDeleting}
+                              title="Delete this version"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 disabled:opacity-40 transition-colors">
+                              {isDeleting
+                                ? <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>
+                                : <TrashIcon />
+                              }
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <button onClick={onClose} className="w-full mt-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────
 export default function BrdPage() {
   const [brds,            setBrds]            = useState<Brd[]>([]);
   const [loading,         setLoading]         = useState(true);
@@ -174,7 +491,7 @@ export default function BrdPage() {
   const [deleteTarget,    setDeleteTarget]    = useState<Brd | null>(null);
   const [deleteLoading,   setDeleteLoading]   = useState(false);
   const [bulkDeleteOpen,  setBulkDeleteOpen]  = useState(false);
-  const [sortField,       setSortField]       = useState<SortField>("name");
+  const [sortField,       setSortField]       = useState<SortField>("id");
   const [sortDirection,   setSortDirection]   = useState<SortDirection>("asc");
   const [trashOpen,       setTrashOpen]       = useState(false);
   const [deletedBrds,     setDeletedBrds]     = useState<(Brd & { deletedAt: string })[]>([]);
@@ -203,7 +520,6 @@ export default function BrdPage() {
 
   useEffect(() => { fetchBrds(); }, [fetchBrds]);
   const handleFlowClose = useCallback(() => { setShowBrdFlow(false); fetchBrds(); }, [fetchBrds]);
-  const handleRemove = (brd: Brd) => setDeleteTarget(brd);
 
   const exportToCsv = () => {
     const headers = ["BRD ID", "Title", "Geography", "Status", "Version", "Format", "Last Updated"];
@@ -271,8 +587,8 @@ export default function BrdPage() {
     setDeleteLoading(true);
     try {
       await api.delete(`/brd/${deleteTarget.id}`);
-      setBrds((prev) => prev.filter((b) => b.id !== deleteTarget.id));
-      setSelected((s) => { const n = new Set(s); n.delete(deleteTarget.id); return n; });
+      setBrds(prev => prev.filter(b => b.id !== deleteTarget.id));
+      setSelected(s => { const n = new Set(s); n.delete(deleteTarget.id); return n; });
       setDeleteTarget(null);
     } catch (err) { console.error("Failed to delete BRD:", err); }
     finally { setDeleteLoading(false); }
@@ -282,9 +598,8 @@ export default function BrdPage() {
     setDeleteLoading(true);
     try {
       await Promise.all([...selected].map(id => api.delete(`/brd/${id}`)));
-      setBrds((prev) => prev.filter((b) => !selected.has(b.id)));
-      setSelected(new Set());
-      setBulkDeleteOpen(false);
+      setBrds(prev => prev.filter(b => !selected.has(b.id)));
+      setSelected(new Set()); setBulkDeleteOpen(false);
     } catch (err) { console.error("Failed to bulk delete:", err); }
     finally { setDeleteLoading(false); }
   };
@@ -365,34 +680,30 @@ export default function BrdPage() {
     acc[b.status] = (acc[b.status] || 0) + 1; return acc;
   }, {});
 
-  const filtered = brds.filter((b) => {
-    const q = search.toLowerCase();
-    const name = displayTitle(b).toLowerCase();
+  const filtered = brds.filter(b => {
+    const q = search.toLowerCase(); const name = displayTitle(b).toLowerCase();
     const matchSearch = !q || name.includes(q) || b.title.toLowerCase().includes(q) || b.id.toLowerCase().includes(q) || b.geography.toLowerCase().includes(q);
     const matchStatus = activeFilter === "All" || b.status === activeFilter;
     const matchContinent = activeContinent === null || detectContinent(b.geography) === activeContinent;
     return matchSearch && matchStatus && matchContinent;
   });
 
-  // Sort
   const sorted = [...filtered].sort((a, b) => {
     if (sortField === "date") {
-      const dateA = new Date(a.lastUpdated).getTime();
-      const dateB = new Date(b.lastUpdated).getTime();
-      return sortDirection === "asc" ? dateA - dateB : dateB - dateA;
+      const dA = new Date(a.lastUpdated).getTime(); const dB = new Date(b.lastUpdated).getTime();
+      return sortDirection === "asc" ? dA - dB : dB - dA;
     }
-
-    const nameA = displayTitle(a).toLowerCase();
-    const nameB = displayTitle(b).toLowerCase();
-    return sortDirection === "asc" ? nameA.localeCompare(nameB) : nameB.localeCompare(nameA);
+    if (sortField === "id") {
+      const nA = parseInt(a.id.replace(/\D/g, ""), 10) || 0; const nB = parseInt(b.id.replace(/\D/g, ""), 10) || 0;
+      return sortDirection === "asc" ? nA - nB : nB - nA;
+    }
+    const nA = displayTitle(a).toLowerCase(); const nB = displayTitle(b).toLowerCase();
+    return sortDirection === "asc" ? nA.localeCompare(nB) : nB.localeCompare(nA);
   });
 
-  // Pagination
   const totalPages = Math.max(1, Math.ceil(sorted.length / rowsPerPage));
-  const safePage = Math.min(page, totalPages);
-  const paginated = sorted.slice((safePage - 1) * rowsPerPage, safePage * rowsPerPage);
-
-  // Selection
+  const safePage   = Math.min(page, totalPages);
+  const paginated  = sorted.slice((safePage - 1) * rowsPerPage, safePage * rowsPerPage);
   const allPageSelected = paginated.length > 0 && paginated.every(b => selected.has(b.id));
   const toggleAll = () => {
     if (allPageSelected) setSelected(s => { const n = new Set(s); paginated.forEach(b => n.delete(b.id)); return n; });
@@ -400,7 +711,6 @@ export default function BrdPage() {
   };
   const toggleOne = (id: string) => setSelected(s => { const n = new Set(s); if (n.has(id)) { n.delete(id); } else { n.add(id); } return n; });
 
-  // Page numbers to show
   const pageNums = (() => {
     if (totalPages <= 7) return Array.from({length: totalPages}, (_, i) => i + 1);
     if (safePage <= 4) return [1,2,3,4,5,"...",totalPages];
@@ -421,12 +731,8 @@ export default function BrdPage() {
 
       {/* ── Page Header ── */}
       <div className="px-6 pt-5 pb-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">BRD Registry</h1>
-            <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">Business requirements document management</p>
-          </div>
-        </div>
+        <h1 className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">BRD Registry</h1>
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">Business requirements document management</p>
       </div>
 
       {/* ── Stat Pills ── */}
@@ -438,9 +744,7 @@ export default function BrdPage() {
           { label: "Completed", value: statusCounts["COMPLETED"] || 0,icon: <CompletedIcon />,  color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-900/20", border: "" },
         ].map((s) => (
           <div key={s.label} className={`flex items-center gap-3 px-6 py-4 flex-1 min-w-[140px] ${s.border}`}>
-            <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${s.bg}`}>
-              <span className={s.color}>{s.icon}</span>
-            </div>
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${s.bg}`}><span className={s.color}>{s.icon}</span></div>
             <div>
               <div className="text-[10px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider">{s.label}</div>
               <div className="text-xl font-bold text-slate-800 dark:text-slate-100 leading-tight tabular-nums">
@@ -453,10 +757,8 @@ export default function BrdPage() {
 
       {/* ── Toolbar ── */}
       <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-
-        {/* Refresh */}
         <button onClick={fetchBrds} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-          <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
+          <RefreshIcon /><span className="hidden sm:inline">Refresh</span>
         </button>
 
         {/* Export CSV */}
@@ -475,29 +777,19 @@ export default function BrdPage() {
             <TrashIcon /> Delete ({selected.size})
           </button>
         )}
-
-        {/* Region dropdown */}
+        {/* Region */}
         <div className="relative">
-          <select
-            value={activeContinent ?? "All"}
-            onChange={e => { const v = e.target.value; setActiveContinent(v === "All" ? null : v as Continent); setPage(1); }}
+          <select value={activeContinent ?? "All"} onChange={e => { const v = e.target.value; setActiveContinent(v === "All" ? null : v as Continent); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer"
             style={activeContinent ? { borderColor: CONTINENT_COLOR[activeContinent], color: CONTINENT_COLOR[activeContinent] } : {}}>
             <option value="All">All Regions</option>
-            {(["Asia","Europe","Americas","Africa","Oceania","Global"] as Continent[]).map(c => (
-              <option key={c} value={c}>{c}</option>
-            ))}
+            {(["Asia","Europe","Americas","Africa","Oceania","Global"] as Continent[]).map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
-          </span>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg></span>
         </div>
-
-        {/* Status dropdown */}
+        {/* Status */}
         <div className="relative">
-          <select
-            value={activeFilter}
-            onChange={e => { setActiveFilter(e.target.value as BrdStatus | "All"); setPage(1); }}
+          <select value={activeFilter} onChange={e => { setActiveFilter(e.target.value as BrdStatus | "All"); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
             <option value="All">All Status</option>
             <option value="DRAFT">Draft</option>
@@ -506,66 +798,40 @@ export default function BrdPage() {
             <option value="APPROVED">Approved</option>
             <option value="ON_HOLD">On Hold</option>
           </select>
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
-          </span>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg></span>
         </div>
-
-        {/* Sort controls */}
+        {/* Sort field */}
         <div className="relative">
-          <select
-            value={sortField}
-            onChange={e => { setSortField(e.target.value as SortField); setPage(1); }}
+          <select value={sortField} onChange={e => { setSortField(e.target.value as SortField); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
+            <option value="id">Sort by BRD ID</option>
             <option value="name">Sort by Name</option>
             <option value="date">Sort by Date</option>
           </select>
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
-          </span>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg></span>
         </div>
-
+        {/* Sort dir */}
         <div className="relative">
-          <select
-            value={sortDirection}
-            onChange={e => { setSortDirection(e.target.value as SortDirection); setPage(1); }}
+          <select value={sortDirection} onChange={e => { setSortDirection(e.target.value as SortDirection); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
             <option value="asc">Ascending</option>
             <option value="desc">Descending</option>
           </select>
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
-          </span>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg></span>
         </div>
-
-        {/* Right-side: Search + New BRD */}
         <div className="ml-auto flex items-center gap-2">
-          {/* Search */}
           <div className="relative flex items-center">
             <span className="absolute left-3 text-slate-400 pointer-events-none"><SearchIcon /></span>
-            <input
-              value={search}
-              onChange={e => { setSearch(e.target.value); setPage(1); }}
-              placeholder="Search title, ID, geography…"
-              className="pl-8 pr-8 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors"
-            />
-            {search && (
-              <button onClick={() => setSearch("")} className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
-              </button>
-            )}
+            <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search title, ID, geography…"
+              className="pl-8 pr-8 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors" />
+            {search && <button onClick={() => setSearch("")} className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg></button>}
           </div>
-
-          {/* New BRD */}
-          <button onClick={startNewBrd}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
-            <PlusIcon />
-            New BRD
+          <button onClick={startNewBrd} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
+            <PlusIcon /> New BRD
           </button>
         </div>
       </div>
 
-      {/* ── Error ── */}
       {fetchError && (
         <div className="mx-4 mt-3 px-4 py-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-xs font-medium">
           ⚠ Backend error: <span className="font-mono">{fetchError}</span>
@@ -597,10 +863,7 @@ export default function BrdPage() {
         <table className="w-full text-xs border-collapse">
           <thead className="sticky top-0 z-10">
             <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-300 dark:border-[#1e3a5f]">
-              <th className="w-10 px-3 py-3 text-center">
-                <input type="checkbox" checked={allPageSelected} onChange={toggleAll}
-                  className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" />
-              </th>
+              <th className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={allPageSelected} onChange={toggleAll} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" /></th>
               <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">BRD ID</th>
               <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Source / Content Name</th>
               <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Geography</th>
@@ -612,26 +875,14 @@ export default function BrdPage() {
           </thead>
           <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-200 dark:divide-[#1e3a5f]">
             {loading ? (
-              Array.from({length: 8}).map((_, i) => (
-                <tr key={i}>
-                  {Array.from({length: 8}).map((_, j) => (
-                    <td key={j} className="px-3 py-3.5">
-                      <div className="h-3.5 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" style={{width: `${60 + Math.random()*30}%`}} />
-                    </td>
-                  ))}
-                </tr>
-              ))
+              Array.from({length:8}).map((_,i) => <tr key={i}>{Array.from({length:8}).map((_,j) => <td key={j} className="px-3 py-3.5"><div className="h-3.5 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" style={{width:`${60+Math.random()*30}%`}}/></td>)}</tr>)
             ) : paginated.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-20 text-center text-slate-400 dark:text-slate-500">
-                  <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3">
-                    <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                  </div>
-                  <div className="text-sm font-medium text-slate-600 dark:text-slate-400">{brds.length === 0 ? "No BRDs yet" : "No results found"}</div>
-                  <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? "Click \"New BRD\" to get started." : "Try adjusting your search or filters."}</div>
-                </td>
-              </tr>
-            ) : paginated.map((brd) => {
+              <tr><td colSpan={8} className="px-4 py-20 text-center text-slate-400 dark:text-slate-500">
+                <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3"><svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
+                <div className="text-sm font-medium text-slate-600 dark:text-slate-400">{brds.length === 0 ? "No BRDs yet" : "No results found"}</div>
+                <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? 'Click "New BRD" to get started.' : "Try adjusting your search or filters."}</div>
+              </td></tr>
+            ) : paginated.map(brd => {
               const name = displayTitle(brd);
               const hasSourceLabel = !!(brd.sourceName?.trim() || brd.contentName?.trim());
               const canView = true;
@@ -640,34 +891,21 @@ export default function BrdPage() {
               const isSelected = selected.has(brd.id);
               const continent = detectContinent(brd.geography);
               return (
-                <tr key={brd.id}
-                  className={`transition-colors group ${isSelected ? "bg-blue-50/60 dark:bg-blue-900/10" : "hover:bg-slate-50/80 dark:hover:bg-slate-800/30"}`}>
-                  {/* Checkbox */}
-                  <td className="w-10 px-3 py-3 text-center">
-                    <input type="checkbox" checked={isSelected} onChange={() => toggleOne(brd.id)}
-                      className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" />
-                  </td>
-                  {/* BRD ID */}
+                <tr key={brd.id} className={`transition-colors group ${isSelected ? "bg-blue-50/60 dark:bg-blue-900/10" : "hover:bg-slate-50/80 dark:hover:bg-slate-800/30"}`}>
+                  <td className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={isSelected} onChange={() => toggleOne(brd.id)} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" /></td>
                   <td className="px-3 py-3 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium hover:underline cursor-pointer">
-                      <TagIcon />{brd.id}
-                    </span>
+                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium hover:underline cursor-pointer"><TagIcon />{brd.id}</span>
                   </td>
-                  {/* Name */}
                   <td className="px-3 py-3 max-w-[220px]">
                     <div className="font-medium text-slate-800 dark:text-slate-100 truncate text-[12px]" title={name}>{name}</div>
-                    {hasSourceLabel && brd.title && brd.title !== name && (
-                      <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5" title={brd.title}>{brd.title}</div>
-                    )}
+                    {hasSourceLabel && brd.title && brd.title !== name && <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5" title={brd.title}>{brd.title}</div>}
                   </td>
-                  {/* Geography */}
                   <td className="px-3 py-3 whitespace-nowrap">
                     <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300 text-[12px]">
                       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{backgroundColor: CONTINENT_COLOR[continent]}} />
                       {brd.geography}
                     </span>
                   </td>
-                  {/* Status */}
                   <td className="px-3 py-3 whitespace-nowrap">
                     <span
                       title={STATUS_HELPER[brd.status]}
@@ -682,7 +920,6 @@ export default function BrdPage() {
                       </div>
                     )}
                   </td>
-                  {/* Version */}
                   <td className="px-3 py-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded">{brd.version}</span>
@@ -692,11 +929,7 @@ export default function BrdPage() {
                       }
                     </div>
                   </td>
-                  {/* Date */}
-                  <td className="px-3 py-3 whitespace-nowrap">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400">{brd.lastUpdated}</span>
-                  </td>
-                  {/* Actions */}
+                  <td className="px-3 py-3 whitespace-nowrap"><span className="text-[11px] text-slate-500 dark:text-slate-400">{brd.lastUpdated}</span></td>
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
                       <button disabled={!canView}
@@ -752,41 +985,23 @@ export default function BrdPage() {
 
       {/* ── Footer / Pagination ── */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
-        {/* Rows per page */}
         <div className="flex items-center gap-2">
           <span>Showing</span>
-          <select value={rowsPerPage} onChange={e => { setRowsPerPage(Number(e.target.value)); setPage(1); }}
-            className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs focus:outline-none focus:border-blue-400">
+          <select value={rowsPerPage} onChange={e => { setRowsPerPage(Number(e.target.value)); setPage(1); }} className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs focus:outline-none focus:border-blue-400">
             {ROWS_PER_PAGE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
           <span>out of <strong className="text-slate-700 dark:text-slate-200">{sorted.length}</strong></span>
         </div>
-
-        {/* Page numbers */}
         <div className="flex items-center gap-1">
-          <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={safePage === 1}
-            className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">
-            ← Prev
-          </button>
-          {pageNums.map((n, i) =>
-            n === "..." ? (
-              <span key={`dots-${i}`} className="px-2 py-1 text-slate-400">…</span>
-            ) : (
-              <button key={n} onClick={() => setPage(n as number)}
-                className={`w-7 h-7 rounded-md text-xs font-medium transition-colors ${safePage === n ? "bg-blue-600 text-white shadow-sm" : "border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"}`}>
-                {n}
-              </button>
-            )
-          )}
-          <button onClick={() => setPage(p => Math.min(totalPages, p+1))} disabled={safePage === totalPages}
-            className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">
-            Next →
-          </button>
+          <button onClick={() => setPage(p => Math.max(1,p-1))} disabled={safePage===1} className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">← Prev</button>
+          {pageNums.map((n,i) => n==="..." ? <span key={`dots-${i}`} className="px-2 py-1 text-slate-400">…</span> : (
+            <button key={n} onClick={() => setPage(n as number)} className={`w-7 h-7 rounded-md text-xs font-medium transition-colors ${safePage===n?"bg-blue-600 text-white shadow-sm":"border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"}`}>{n}</button>
+          ))}
+          <button onClick={() => setPage(p => Math.min(totalPages,p+1))} disabled={safePage===totalPages} className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">Next →</button>
         </div>
       </div>
 
-
-      {/* ── Delete Confirmation Modal (single) ── */}
+      {/* ── Delete Modal (single) ── */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !deleteLoading && setDeleteTarget(null)} />
@@ -796,9 +1011,7 @@ export default function BrdPage() {
               <div className="p-6">
                 <div className="flex items-start gap-4">
                   <div className="w-11 h-11 rounded-full bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0 border border-red-100 dark:border-red-800/40">
-                    <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                    </svg>
+                    <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Delete BRD?</h3>
@@ -816,8 +1029,7 @@ export default function BrdPage() {
                     <div className="flex-shrink-0 text-right">
                       <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Status</div>
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${STATUS_BADGE[deleteTarget.status]}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[deleteTarget.status]}`} />
-                        {STATUS_LABEL[deleteTarget.status]}
+                        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[deleteTarget.status]}`} />{STATUS_LABEL[deleteTarget.status]}
                       </span>
                     </div>
                   </div>
@@ -840,7 +1052,7 @@ export default function BrdPage() {
         </div>
       )}
 
-      {/* ── Bulk Delete Confirmation Modal ── */}
+      {/* ── Bulk Delete Modal ── */}
       {bulkDeleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !deleteLoading && setBulkDeleteOpen(false)} />
@@ -850,9 +1062,7 @@ export default function BrdPage() {
               <div className="p-6">
                 <div className="flex items-start gap-4">
                   <div className="w-11 h-11 rounded-full bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0 border border-red-100 dark:border-red-800/40">
-                    <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                    </svg>
+                    <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                   </div>
                   <div className="flex-1">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Delete {selected.size} BRD{selected.size > 1 ? "s" : ""}?</h3>
@@ -892,7 +1102,6 @@ export default function BrdPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setTrashOpen(false)} />
           <div className="relative w-full max-w-2xl z-10">
-            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col max-h-[80vh]">
               <div className="h-1 w-full bg-gradient-to-r from-slate-400 to-slate-500" />
               {/* Header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
@@ -1154,5 +1363,3 @@ export default function BrdPage() {
         </div>
       )}
     </div>
-  );
-}

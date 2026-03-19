@@ -42,19 +42,20 @@ model User {
   teamId            Int?
   userRoleId        Int?
   passwordChangedAt DateTime          @default(now())
+  email             String?           @unique
+  createdBrds       Brd[]             @relation("BrdCreatedBy")
   uploads           FileUpload[]
+  notifications     Notification[]
   passwordHistories PasswordHistory[]
   taskAssignees     TaskAssignee[]
   createdTasks      TaskAssignment[]  @relation("CreatedByUser")
+  taskComments      TaskComment[]
   createdBy         User?             @relation("UserCreatedBy", fields: [createdById], references: [id])
   createdUsers      User[]            @relation("UserCreatedBy")
   team              Team?             @relation(fields: [teamId], references: [id])
   userRole          UserRole?         @relation(fields: [userRoleId], references: [id])
   userLogs          UserLog[]
   validations       Validation[]
-  createdBrds       Brd[]             @relation("BrdCreatedBy")
-  notifications     Notification[]
-  taskComments      TaskComment[]
 }
 
 model TaskAssignment {
@@ -70,11 +71,12 @@ model TaskAssignment {
   teamId      Int
   createdById Int
   brdFileId   Int?
+  deletedAt   DateTime?
   assignees   TaskAssignee[]
-  comments    TaskComment[]
   brdFile     FileUpload?      @relation(fields: [brdFileId], references: [id])
   createdBy   User             @relation("CreatedByUser", fields: [createdById], references: [id])
   team        Team             @relation(fields: [teamId], references: [id])
+  comments    TaskComment[]
 }
 
 model TaskAssignee {
@@ -108,11 +110,11 @@ model FileUpload {
   processedAt  DateTime?
   submittedAt  DateTime?
   uploadedById Int
+  brd          Brd?             @relation("BrdSourceFile")
   output       FileOutput?
   uploadedBy   User             @relation(fields: [uploadedById], references: [id])
   tasks        TaskAssignment[]
   validation   Validation?
-  brd          Brd?             @relation("BrdSourceFile")
 }
 
 model FileOutput {
@@ -146,6 +148,117 @@ model PasswordHistory {
   @@index([userId, createdAt])
 }
 
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  type      String
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  meta      Json?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TaskComment {
+  id           Int            @id @default(autoincrement())
+  assignmentId Int
+  authorId     Int
+  body         String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  assignment   TaskAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  author       User           @relation(fields: [authorId], references: [id])
+}
+
+model Brd {
+  id          Int          @id @default(autoincrement())
+  brdId       String       @unique
+  title       String
+  format      BrdFormat    @default(NEW)
+  status      BrdStatus    @default(DRAFT)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  createdById Int
+  uploadId    Int?         @unique
+  deletedAt   DateTime?
+  createdBy   User         @relation("BrdCreatedBy", fields: [createdById], references: [id])
+  upload      FileUpload?  @relation("BrdSourceFile", fields: [uploadId], references: [id])
+  sections    BrdSections?
+  versions    BrdVersion[]
+}
+
+model BrdVersion {
+  id             Int      @id @default(autoincrement())
+  brdId          String
+  versionNum     Int
+  label          String
+  savedAt        DateTime @default(now())
+  scope          Json?
+  metadata       Json?
+  toc            Json?
+  citations      Json?
+  contentProfile Json?
+  brdConfig      Json?
+  brd            Brd      @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
+
+  @@unique([brdId, versionNum])
+  @@index([brdId])
+  @@map("brd_versions")
+}
+
+model BrdSections {
+  id             Int            @id @default(autoincrement())
+  brdId          String         @unique
+  scope          Json?
+  metadata       Json?
+  toc            Json?
+  citations      Json?
+  contentProfile Json?
+  brdConfig      Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  innodMetajson  Json?
+  simpleMetajson Json?
+  cellImages     BrdCellImage[]
+  brd            Brd            @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
+
+  @@map("brd_sections")
+}
+
+model BrdCellImage {
+  id          Int         @id @default(autoincrement())
+  brdId       String
+  tableIndex  Int
+  rowIndex    Int
+  colIndex    Int
+  rid         String
+  mediaName   String
+  mimeType    String
+  cellText    String      @default("")
+  section     String      @default("unknown")
+  fieldLabel  String      @default("")
+  imageData   Bytes?
+  blobUrl     String?
+  extractedAt DateTime    @default(now())
+  brdSections BrdSections @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
+
+  @@unique([brdId, tableIndex, rowIndex, colIndex, rid])
+  @@index([brdId])
+  @@index([brdId, section])
+  @@map("brd_cell_images")
+}
+
+model AppSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
 enum Role {
   SUPER_ADMIN
   ADMIN
@@ -171,31 +284,6 @@ enum AssignmentStatus {
   IN_PROGRESS
   COMPLETED
 }
-
-model Notification {
-  id        Int      @id @default(autoincrement())
-  userId    Int
-  type      String   // TASK_ASSIGNED | TASK_UPDATED | BRD_STATUS | SYSTEM
-  title     String
-  message   String
-  isRead    Boolean  @default(false)
-  meta      Json?    // optional payload (taskId, brdId, etc.)
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model TaskComment {
-  id           Int            @id @default(autoincrement())
-  assignmentId Int
-  authorId     Int
-  body         String
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  assignment   TaskAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  author       User           @relation(fields: [authorId], references: [id])
-}
-
-// ── BRD ───────────────────────────────────────────────────────────────────────
 
 enum BrdFormat {
   NEW

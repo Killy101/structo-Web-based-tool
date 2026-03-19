@@ -106,6 +106,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
+  // ── FIX: only reset values when initialData or format genuinely changes ──
   useEffect(() => {
     const nextValues = buildMetadataValues(format, initialData);
     const signature = `${format}:${JSON.stringify(nextValues)}`;
@@ -355,7 +356,8 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function stripQuotes(value: string): string {
-  return value.trim().replace(/^["']+|["']+$/g, "").trim();
+  // ── FIX: only strip leading/trailing quote characters, do NOT trim internal whitespace ──
+  return value.replace(/^["']+|["']+$/g, "");
 }
 
 function buildMetadataValues(

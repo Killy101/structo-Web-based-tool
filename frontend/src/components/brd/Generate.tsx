@@ -984,6 +984,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
     } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
     finally { setSaving(false); }
   }
+}
 
   async function runGenerateBrdExcel() {
     setGenerating(p=>({...p,brd:true}));

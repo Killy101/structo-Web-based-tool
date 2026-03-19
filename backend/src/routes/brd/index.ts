@@ -6,6 +6,7 @@ import crud     from "./crud";
 import sections from "./sections";
 import generate from "./generate";
 import images   from "./images";
+import versions from "./Versions";
 
 const router = Router();
 
@@ -14,6 +15,7 @@ router.use("/", upload);    // POST   /brd/upload
 router.use("/", save);      // POST   /brd/save
 router.use("/", sections);  // GET|PUT /brd/:brdId/sections[/:name]
 router.use("/", images);    // GET    /brd/:brdId/images  +  /brd/:brdId/images/:id/blob
+router.use("/", versions);  // GET|POST /brd/:brdId/versions[/:versionNum]
 router.use("/", crud);      // GET    /brd, GET /brd/:brdId, DELETE, PATCH
 router.use("/", generate);  // POST   /brd/:brdId/generate/...
 
