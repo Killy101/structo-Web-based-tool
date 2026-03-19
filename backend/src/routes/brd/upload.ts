@@ -260,25 +260,28 @@ router.post(
         });
         console.log(`   ✅ BRD record created/updated: ${brd.brdId}`);
 
-        // ── 4. Store pointers for BRD sections (payload is in Supabase) ────
+        // ── 4. Store sections — metadata inline, others as storage pointers ─
+        // Metadata is stored inline in the DB column so the list endpoint can
+        // read geography/version without downloading from Supabase Storage.
+        // All other sections are stored as pointers (fetched lazily when viewing).
         const brdSections = await tx.brdSections.upsert({
           where: { brdId: brdId },
           create: {
             brdId: brdId,
-            scope: (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
-            metadata: (makeStoragePointer(storageSectionPaths.metadata) as any) || Prisma.JsonNull,
-            toc: (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
-            citations: (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
+            scope:          (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
+            toc:            (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
+            citations:      (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
             contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig: (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
+            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
           },
           update: {
-            scope: (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
-            metadata: (makeStoragePointer(storageSectionPaths.metadata) as any) || Prisma.JsonNull,
-            toc: (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
-            citations: (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
+            scope:          (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
+            toc:            (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
+            citations:      (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
             contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig: (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
+            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
           }
         });
         console.log(`   ✅ BrdSections record created/verified: ${brdSections.brdId}`);
@@ -458,13 +461,13 @@ router.post(
       );
 
       await prisma.$transaction(async (tx) => {
-        // Update brdSections (upsert in case row is missing)
+        // Update brdSections — metadata stored inline, others as pointers
         await tx.brdSections.upsert({
           where:  { brdId },
           create: {
             brdId,
             scope:          (scopePointer as any) || Prisma.JsonNull,
-            metadata:       (metadataPointer as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
             toc:            (tocPointer as any) || Prisma.JsonNull,
             citations:      (citationsPointer as any) || Prisma.JsonNull,
             contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
@@ -472,7 +475,7 @@ router.post(
           },
           update: {
             scope:          (scopePointer as any) || Prisma.JsonNull,
-            metadata:       (metadataPointer as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
             toc:            (tocPointer as any) || Prisma.JsonNull,
             citations:      (citationsPointer as any) || Prisma.JsonNull,
             contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,

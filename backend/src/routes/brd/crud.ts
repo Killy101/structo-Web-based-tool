@@ -28,25 +28,31 @@ async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
 
-  // downloadJsonObject returns null (not throws) for missing files, so check
-  // the return value rather than relying on catch to trigger the fallback.
-  const primary = await downloadJsonObject(storagePath);
-  if (primary !== null) return primary;
+  try {
+    // downloadJsonObject returns null (not throws) for missing files, so check
+    // the return value rather than relying on catch to trigger the fallback.
+    const primary = await downloadJsonObject(storagePath);
+    if (primary !== null) return primary;
 
-  // Fallback: try the alternate spelling of the historic sectionns/sections typo
-  const alternatePath = storagePath.includes("/sectionns/")
-    ? storagePath.replace("/sectionns/", "/sections/")
-    : storagePath.includes("/sections/")
-    ? storagePath.replace("/sections/", "/sectionns/")
-    : null;
+    // Fallback: try the alternate spelling of the historic sectionns/sections typo
+    const alternatePath = storagePath.includes("/sectionns/")
+      ? storagePath.replace("/sectionns/", "/sections/")
+      : storagePath.includes("/sections/")
+      ? storagePath.replace("/sections/", "/sectionns/")
+      : null;
 
-  if (alternatePath) {
-    const alternate = await downloadJsonObject(alternatePath);
-    if (alternate !== null) return alternate;
+    if (alternatePath) {
+      const alternate = await downloadJsonObject(alternatePath);
+      if (alternate !== null) return alternate;
+    }
+
+    console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+    return null;
+  } catch (err) {
+    // Degrade gracefully — storage auth/network errors must not 500 the whole endpoint
+    console.error(`⚠️ Storage download error for ${storagePath}:`, err);
+    return null;
   }
-
-  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
-  return null;
 }
 
 // ── Title normalisation helper ─────────────────────────────────────────────
@@ -93,15 +99,17 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b) => {
-      // Use only inline metadata for the list view — avoid downloading from
-      // Supabase Storage (one request per BRD) which causes timeouts.
+    // Resolve metadata for all BRDs concurrently.
+    // For new uploads metadata is stored inline (no Supabase hit needed).
+    // For old pointer-based records resolveMaybeStoredJson downloads from storage
+    // and degrades to null on any error — the endpoint never 500s.
+    const data = await Promise.all(brds.map(async (b) => {
       const rawMeta = b.sections?.metadata ?? null;
-      const meta = extractStoragePath(rawMeta) === null
-        ? (rawMeta as Record<string, unknown> | null)
-        : null;
+      const meta = await resolveMaybeStoredJson(rawMeta) as Record<string, unknown> | null;
 
-      const geography     = (meta?.geography              as string) ?? "—";
+      const geography     = (meta?.geography as string) ?? "—";
+      const metaVersion   = (meta?.version  as string)?.trim();
+      const version       = metaVersion ? `v${metaVersion}` : "v1.0";
 
       const storedFormat  = (meta?._format        as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -118,11 +126,11 @@ router.get("/", async (_req: Request, res: Response) => {
         title:       displayName,
         format:      derivedFormat,
         status:      b.status,
-        version:     "v1.0",
+        version,
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    });
+    }));
 
     return res.json(data);
   } catch (err) {
@@ -386,12 +394,15 @@ router.get("/:brdId", async (req: Request, res: Response) => {
     const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
     const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
 
+    const metaVersion2  = (meta?.version as string)?.trim();
+    const version2      = metaVersion2 ? `v${metaVersion2}` : "v1.0";
+
     return res.json({
       id:             brd.brdId,
       title:          displayName,
       format:         derivedFormat2,
       status:         brd.status,
-      version:        "v1.0",
+      version:        version2,
       lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
       scope,
       metadata,
