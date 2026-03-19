@@ -20,14 +20,10 @@ interface CellImageMeta {
 
 // ── useCellImages hook ─────────────────────────────────────────────────────────
 function useCellImages(brdId?: string) {
-  const [images,  setImages]  = useState<CellImageMeta[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
+  const [images, setImages] = useState<CellImageMeta[]>([]);
 
   useEffect(() => {
     if (!brdId) return;
-    setLoading(true);
-    setError(null);
     api
       .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
       .then(r => {
@@ -36,12 +32,10 @@ function useCellImages(brdId?: string) {
       })
       .catch((err) => {
         console.error("[useCellImages] Error fetching images:", err);
-        setError("Could not load images");
-      })
-      .finally(() => setLoading(false));
+      });
   }, [brdId]);
 
-  return { images, loading, error };
+  return { images };
 }
 
 // ── InlineImageCell component for displaying images in table cells ────────────
@@ -50,6 +44,7 @@ function InlineImageCell({ brdId, image }: { brdId?: string; image: CellImageMet
   if (!brdId) return null;
   const imgSrc = image.blobUrl || `${API_BASE}/brd/${brdId}/images/${image.id}/blob`;
   return (
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={imgSrc}
       alt={image.cellText || image.mediaName}
@@ -981,7 +976,10 @@ export default function Generate({ brdId, title, format, status, initialData, on
     try {
       await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       setSavedToDB(true);
-    } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setSaveError(error.response?.data?.error ?? error.message ?? "Save failed.");
+    }
     finally { setSaving(false); }
   }
 
