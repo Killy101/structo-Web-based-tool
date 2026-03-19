@@ -28,12 +28,10 @@ async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
 
-  // Try the stored path first
-  try {
-    return await downloadJsonObject(storagePath);
-  } catch {
-    // fall through to alternate path attempt
-  }
+  // downloadJsonObject returns null (not throws) for missing files, so check
+  // the return value rather than relying on catch to trigger the fallback.
+  const primary = await downloadJsonObject(storagePath);
+  if (primary !== null) return primary;
 
   // Fallback: try the alternate spelling of the historic sectionns/sections typo
   const alternatePath = storagePath.includes("/sectionns/")
@@ -43,11 +41,8 @@ async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
     : null;
 
   if (alternatePath) {
-    try {
-      return await downloadJsonObject(alternatePath);
-    } catch {
-      // fall through to warning
-    }
+    const alternate = await downloadJsonObject(alternatePath);
+    if (alternate !== null) return alternate;
   }
 
   console.warn(`⚠️ Missing file in storage: ${storagePath}`);
@@ -369,6 +364,43 @@ router.get("/:brdId", async (req: Request, res: Response) => {
 
     const meta = await resolveMaybeStoredJson(brd.sections?.metadata ?? null) as Record<string, unknown> | null;
 
+    const storedFormat2  = (meta?._format        as string) ?? "";
+    const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
+    const derivedFormat2: "old" | "new" =
+      storedFormat2 === "old" ? "old" :
+      storedFormat2 === "new" ? "new" :
+      hasLegacyKeys2           ? "old" :
+      brd.format === "OLD"     ? "old" : "new";
+
+    const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
+
+    const scope = await resolveMaybeStoredJson(brd.sections?.scope ?? null);
+    const metadata = await resolveMaybeStoredJson(brd.sections?.metadata ?? null);
+    const toc = await resolveMaybeStoredJson(brd.sections?.toc ?? null);
+    const citations = await resolveMaybeStoredJson(brd.sections?.citations ?? null);
+    const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
+    const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
+
+    return res.json({
+      id:             brd.brdId,
+      title:          displayName,
+      format:         derivedFormat2,
+      status:         brd.status,
+      version:        "v1.0",
+      lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
+      scope,
+      metadata,
+      toc,
+      citations,
+      contentProfile,
+      brdConfig,
+    });
+  } catch (err) {
+    console.error("[GET /brd/:brdId]", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── POST /brd/:brdId/query — send a BRD query to Pre-Production ───────────
 router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -435,45 +467,8 @@ router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Respons
   }
 });
 
-    const storedFormat2  = (meta?._format        as string) ?? "";
-    const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
-    const derivedFormat2: "old" | "new" =
-      storedFormat2 === "old" ? "old" :
-      storedFormat2 === "new" ? "new" :
-      hasLegacyKeys2           ? "old" :
-      brd.format === "OLD"     ? "old" : "new";
-
-    const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
-
-    const scope = await resolveMaybeStoredJson(brd.sections?.scope ?? null);
-    const metadata = await resolveMaybeStoredJson(brd.sections?.metadata ?? null);
-    const toc = await resolveMaybeStoredJson(brd.sections?.toc ?? null);
-    const citations = await resolveMaybeStoredJson(brd.sections?.citations ?? null);
-    const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
-    const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
-
-    return res.json({
-      id:             brd.brdId,
-      title:          displayName,
-      format:         derivedFormat2,
-      status:         brd.status,
-      version:        "v1.0",
-      lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
-      scope,
-      metadata,
-      toc,
-      citations,
-      contentProfile,
-      brdConfig,
-    });
-  } catch (err) {
-    console.error("[GET /brd/:brdId]", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 // ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
-router.delete("/:brdId", async (req: Request, res: Response) => {
+router.delete("/:brdId", authenticate, async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -493,7 +488,7 @@ router.delete("/:brdId", async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
-router.post("/:brdId/restore", async (req: Request, res: Response) => {
+router.post("/:brdId/restore", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -514,7 +509,7 @@ router.post("/:brdId/restore", async (req: Request, res: Response) => {
 });
 
 // ── DELETE /brd/:brdId/permanent — hard delete (trash only) ───────────────
-router.delete("/:brdId/permanent", async (req: Request, res: Response) => {
+router.delete("/:brdId/permanent", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId);
 
@@ -579,7 +574,7 @@ router.delete("/:brdId/permanent", async (req: Request, res: Response) => {
 });
 
 // ── PATCH /brd/:brdId — update status, title, or format ──────────────────
-router.patch("/:brdId", async (req: Request, res: Response) => {
+router.patch("/:brdId", authenticate, async (req: Request, res: Response) => {
   try {
     const { status, title, format } = req.body;
     const normalizedStatus = status ? normalizeBrdStatus(status) : undefined;
@@ -627,7 +622,7 @@ router.patch("/:brdId", async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/fix-formats — backfill format for existing records ──────────
-router.post("/fix-formats", async (_req: Request, res: Response) => {
+router.post("/fix-formats", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
       where: { deletedAt: null },

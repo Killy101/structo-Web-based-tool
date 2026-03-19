@@ -1,3 +1,5 @@
+import { randomInt } from "crypto";
+
 /** Hardcoded fallback constants – used only when the DB is unreachable. */
 export const PASSWORD_POLICY = {
   minLength: 15,
@@ -61,13 +63,13 @@ export function generateCompliantPassword(
 
   const chars: string[] = [];
   for (let i = 0; i < Math.max(length - 1, 14); i++) {
-    chars.push(pool[Math.floor(Math.random() * pool.length)]);
+    chars.push(pool[randomInt(pool.length)]);
   }
-  chars.push(special[Math.floor(Math.random() * special.length)]);
+  chars.push(special[randomInt(special.length)]);
 
   // Fisher-Yates shuffle
   for (let i = chars.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randomInt(i + 1);
     [chars[i], chars[j]] = [chars[j], chars[i]];
   }
 

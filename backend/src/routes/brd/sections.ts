@@ -50,12 +50,10 @@ async function resolveSectionValue(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
 
-  // Try the stored path first
-  try {
-    return await downloadJsonObject(storagePath);
-  } catch {
-    // fall through to alternate path attempt
-  }
+  // downloadJsonObject returns null (not throws) for missing files, so check
+  // the return value rather than relying on catch to trigger the fallback.
+  const primary = await downloadJsonObject(storagePath);
+  if (primary !== null) return primary;
 
   // Fallback: try the alternate spelling of the historic sectionns/sections typo
   const alternatePath = storagePath.includes("/sectionns/")
@@ -65,11 +63,8 @@ async function resolveSectionValue(raw: unknown): Promise<unknown> {
     : null;
 
   if (alternatePath) {
-    try {
-      return await downloadJsonObject(alternatePath);
-    } catch {
-      // fall through to warning
-    }
+    const alternate = await downloadJsonObject(alternatePath);
+    if (alternate !== null) return alternate;
   }
 
   console.warn(`⚠️ Missing file in storage: ${storagePath}`);

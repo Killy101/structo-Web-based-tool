@@ -348,7 +348,9 @@ router.post(
     } finally {
       // Clean up temp file
       if (file?.path) {
-        fs.unlink(file.path, () => {});
+        fs.unlink(file.path, (err) => {
+          if (err) console.warn(`⚠️ Failed to clean up temp file ${file.path}:`, err);
+        });
         console.log(`🧹 Cleaned up temp file: ${file.path}`);
       }
     }

@@ -23,6 +23,13 @@ import {
 
 dotenv.config();
 
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable must be set before starting the server");
+}
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables must be set");
+}
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 
