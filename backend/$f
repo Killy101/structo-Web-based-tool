@@ -1,0 +1,1 @@
+-- Migration already applied directly to database

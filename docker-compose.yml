@@ -1,0 +1,56 @@
+services:
+
+  # ── Frontend (Next.js) ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development        # uses the hot-reload stage
+    volumes:
+      - ./frontend:/app          # bind-mount source for hot reload
+      - frontend_nm:/app/node_modules   # keep container node_modules isolated
+      - frontend_next:/app/.next        # persist Next.js build cache
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./frontend/.env.local    # create from frontend/.env.example
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - backend
+      - processing
+
+  # ── Backend (Express + Prisma) ────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development        # uses the hot-reload stage
+    volumes:
+      - ./backend:/app           # bind-mount source for hot reload
+      - backend_nm:/app/node_modules    # keep container node_modules isolated
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./backend/.env           # create from backend/.env.example
+    environment:
+      - NODE_ENV=development
+
+  # ── Processing (FastAPI + Python) ─────────────────────────────────────────────
+  processing:
+    build:
+      context: ./processing
+      dockerfile: Dockerfile
+      target: development        # uses the hot-reload stage
+    volumes:
+      - ./processing:/app        # bind-mount source for hot reload
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./processing/.env        # create from processing/.env.example
+
+# Named volumes prevent node_modules / Python cache from being overwritten by host mounts
+volumes:
+  frontend_nm:
+  frontend_next:
+  backend_nm:
