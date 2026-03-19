@@ -19,3 +19,4 @@ backend/dist/
 # Temporary files
 *.tmp
 tmp/
+.env
