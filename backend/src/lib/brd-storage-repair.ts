@@ -86,8 +86,8 @@ function candidatePaths(path: string, brdId: string, field: SectionField): strin
 
 async function pathExists(path: string): Promise<boolean> {
   try {
-    await downloadJsonObject(path);
-    return true;
+    const result = await downloadJsonObject(path);
+    return result !== null;
   } catch {
     return false;
   }
