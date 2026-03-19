@@ -26,11 +26,11 @@ function useCellImages(brdId?: string) {
 
   useEffect(() => {
     if (!brdId) return;
-    setLoading(true);
-    setError(null);
+    queueMicrotask(() => setLoading(true));
     api
       .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
       .then(r => {
+        setError(null);
         console.log(`[useCellImages] Fetched ${r.data.images?.length || 0} images for BRD ${brdId}`);
         setImages(r.data.images ?? []);
       })
@@ -50,6 +50,7 @@ function InlineImageCell({ brdId, image }: { brdId?: string; image: CellImageMet
   if (!brdId) return null;
   const imgSrc = image.blobUrl || `${API_BASE}/brd/${brdId}/images/${image.id}/blob`;
   return (
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={imgSrc}
       alt={image.cellText || image.mediaName}
@@ -387,7 +388,7 @@ function AssistiveTouch() {
     const SZ = 52;
     setPos({ x: Math.max(0, Math.min(window.innerWidth - SZ, dragStart.current.px + dx)), y: Math.max(0, Math.min(window.innerHeight - SZ, dragStart.current.py + dy)) });
   }
-  function onPointerUp(_e: React.PointerEvent) {
+  function onPointerUp() {
     if (!dragStart.current) return; dragStart.current = null; setDragging(false);
     const SZ = 52; const cx = pos.x + SZ / 2;
     setPos(p => ({ ...p, x: cx < window.innerWidth / 2 ? 12 : window.innerWidth - SZ - 12 }));
@@ -935,7 +936,12 @@ export default function Generate({ brdId, title, format, status, initialData, on
   
   const { images } = useCellImages(brdId);
 
-  useEffect(() => { return () => { Object.values(doneResetTimers.current).forEach(t => window.clearTimeout(t)); }; }, []);
+  useEffect(() => {
+    const timers = doneResetTimers.current;
+    return () => {
+      Object.values(timers).forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
 
   const scopeData          = asRecord(initialData?.scope);
   const metadataData       = asRecord(initialData?.metadata);
@@ -981,10 +987,12 @@ export default function Generate({ brdId, title, format, status, initialData, on
     try {
       await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       setSavedToDB(true);
-    } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setSaveError(error?.response?.data?.error ?? error?.message ?? "Save failed.");
+    }
     finally { setSaving(false); }
   }
-}
 
   async function runGenerateBrdExcel() {
     setGenerating(p=>({...p,brd:true}));

@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "react";
-import { Card, CardHeader } from "@/components/ui";
 import BrdFlow from "@/components/brd/BrdFlow";
 import Generate from "@/components/brd/Generate";
 import api from "@/app/lib/api";
@@ -71,6 +70,7 @@ const STATUS_DOT: Record<BrdStatus, string> = {
 const STATUS_HELPER: Record<BrdStatus, string> = {
   DRAFT: "Initial draft uploaded. Re-upload final BRD while in Draft.",
   PAUSED: "Work in progress and temporarily paused.",
+  COMPLETED: "Ready for review and approval.",
   APPROVED: "Client approved. View BRD and generate all outputs.",
   ON_HOLD: "Production questions or client comments pending.",
 };
@@ -78,6 +78,12 @@ const STATUS_HELPER: Record<BrdStatus, string> = {
 // ── Continent / Geography ─────────────────────────────────────────
 type Continent = "Asia" | "Europe" | "Americas" | "Africa" | "Oceania" | "Global";
 const CONTINENT_COLOR: Record<Continent, string> = {
+  Asia: "#0ea5e9",
+  Europe: "#6366f1",
+  Americas: "#10b981",
+  Africa: "#f59e0b",
+  Oceania: "#f97316",
+  Global: "#64748b",
 };
 
 const US_STATES_FULL = [
@@ -147,6 +153,10 @@ const ReuploadIcon = () => <svg className="w-3.5 h-3.5" fill="none" stroke="curr
 const StatusIcon  = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 0h6"/></svg>;
 
 const ReceivedIcon  = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>;
+const BackIcon      = () => <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>;
+const ProcessingIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12 6v6l4 2"/><circle cx="12" cy="12" r="8" strokeWidth={1.75}/></svg>;
+const PausedIcon    = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 7v10M14 7v10"/><circle cx="12" cy="12" r="8" strokeWidth={1.75}/></svg>;
+const CompletedIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.25} d="M5 13l4 4L19 7"/><circle cx="12" cy="12" r="8" strokeWidth={1.5}/></svg>;
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 
@@ -592,6 +602,10 @@ export default function BrdPage() {
       setDeleteTarget(null);
     } catch (err) { console.error("Failed to delete BRD:", err); }
     finally { setDeleteLoading(false); }
+  };
+
+  const handleRemove = (brd: Brd) => {
+    setDeleteTarget(brd);
   };
 
   const confirmBulkDelete = async () => {
@@ -1102,6 +1116,7 @@ export default function BrdPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setTrashOpen(false)} />
           <div className="relative w-full max-w-2xl z-10">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden max-h-[85vh] flex flex-col">
               <div className="h-1 w-full bg-gradient-to-r from-slate-400 to-slate-500" />
               {/* Header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
@@ -1252,52 +1267,7 @@ export default function BrdPage() {
 
       {/* ── History Modal ── */}
       {historyBrd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setHistoryBrd(null)} />
-          <div className="relative w-full max-w-sm z-10">
-            <Card className="shadow-2xl">
-              <CardHeader
-                title="Version History"
-                subtitle={`${historyBrd.id} — ${displayTitle(historyBrd).length > 34 ? displayTitle(historyBrd).slice(0,34)+"…" : displayTitle(historyBrd)}`}
-                action={
-                  <button onClick={() => setHistoryBrd(null)} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                    <CloseIcon />
-                  </button>
-                }
-              />
-              <div className="p-5 space-y-3">
-                <div className="relative">
-                  <div className="absolute left-[19px] top-5 bottom-5 w-px bg-slate-200 dark:bg-slate-700" />
-                  <div className="space-y-3">
-                    {HISTORY_MOCK(historyBrd).map((h, i) => (
-                      <div key={i} className="flex items-start gap-3">
-                        <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center border-2 z-10 ${h.latest ? "bg-emerald-50 dark:bg-emerald-900/30 border-emerald-400 dark:border-emerald-600" : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"}`}>
-                          {h.latest
-                            ? <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/></svg>
-                            : <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                          }
-                        </div>
-                        <div className={`flex-1 flex items-center justify-between p-3 rounded-xl border ${h.latest ? "bg-emerald-50/80 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-900/40" : "bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700/60"}`}>
-                          <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2 py-0.5 rounded-md">{h.ver}</span>
-                              {h.latest && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">Latest</span>}
-                            </div>
-                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{h.note}</div>
-                          </div>
-                          <span className="font-mono text-[10px] text-slate-400 whitespace-nowrap ml-3">{h.date}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={() => setHistoryBrd(null)} className="w-full py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                  Close
-                </button>
-              </div>
-            </Card>
-          </div>
-        </div>
+        <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} />
       )}
 
       {/* ── Status Modal ── */}
@@ -1363,3 +1333,5 @@ export default function BrdPage() {
         </div>
       )}
     </div>
+  );
+}

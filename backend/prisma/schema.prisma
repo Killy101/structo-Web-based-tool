@@ -42,7 +42,6 @@ model User {
   teamId            Int?
   userRoleId        Int?
   passwordChangedAt DateTime          @default(now())
-  email             String?           @unique
   createdBrds       Brd[]             @relation("BrdCreatedBy")
   uploads           FileUpload[]
   notifications     Notification[]
@@ -71,7 +70,6 @@ model TaskAssignment {
   teamId      Int
   createdById Int
   brdFileId   Int?
-  deletedAt   DateTime?
   assignees   TaskAssignee[]
   brdFile     FileUpload?      @relation(fields: [brdFileId], references: [id])
   createdBy   User             @relation("CreatedByUser", fields: [createdById], references: [id])
@@ -296,80 +294,4 @@ enum BrdStatus {
   COMPLETED
   APPROVED
   ON_HOLD
-}
-
-model Brd {
-  id          Int       @id @default(autoincrement())
-  brdId       String    @unique
-  title       String
-  format      BrdFormat @default(NEW)
-  status      BrdStatus @default(DRAFT)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  deletedAt   DateTime?
-  createdById Int
-  uploadId    Int?      @unique
-
-  upload    FileUpload?  @relation("BrdSourceFile", fields: [uploadId], references: [id])
-  createdBy User         @relation("BrdCreatedBy", fields: [createdById], references: [id])
-  sections  BrdSections?
-}
-
-// One row per BRD. All section data stored as JSON blobs.
-model BrdSections {
-  id    Int    @id @default(autoincrement())
-  brdId String @unique
-  brd   Brd    @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
-
-  scope          Json?   // { in_scope: [], out_of_scope: [] }
-  metadata       Json?   // flat key-value object (new or old format)
-  toc            Json?   // { sections: [] }
-  citations      Json?   // { references: [] }
-  contentProfile Json?   // { rc_filename, heading_annotation, levels: [], whitespace: [] }
-  brdConfig      Json?   // catch-all for extractor extras
-  innodMetajson Json?   // original innod metadata JSON blob (for debugging)
-  simpleMetajson Json?   // simplified metadata JSON blob (for easier frontend use)
-
-  cellImages BrdCellImage[] 
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("brd_sections")
-}
-model BrdCellImage {
-  id          Int         @id @default(autoincrement())
-  brdId       String
-  brdSections BrdSections @relation(fields: [brdId], references: [brdId], onDelete: Cascade)
-
-  tableIndex  Int
-  rowIndex    Int
-  colIndex    Int
-  rid         String
-  mediaName   String
-  mimeType    String
-  cellText    String      @default("")
-
-  // ── NEW: semantic location fields (populated by updated image_extractor.py)
-  section     String      @default("unknown") 
-  fieldLabel  String      @default("")        
-
-  imageData   Bytes?     
-  blobUrl     String?     
-  extractedAt DateTime    @default(now())
-
-  @@unique([brdId, tableIndex, rowIndex, colIndex, rid])
-  @@index([brdId])
-  @@index([brdId, section])   
-  @@map("brd_cell_images")
-}
-
-model AppSetting {
-  id        Int      @id @default(autoincrement())
-  key       String   @unique
-  value     Json
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("app_settings")
 }

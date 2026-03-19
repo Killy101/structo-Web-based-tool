@@ -325,10 +325,12 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                 />
                 {/* DB-extracted images */}
                 {fieldImgs.map(img => (
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img key={img.id} src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                 ))}
                 {/* Manually uploaded images */}
                 {getFieldImgsUploaded(field.key).map(img => (
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img key={`m-${img.id}`} src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                 ))}
               </div>

@@ -73,7 +73,7 @@ function isSimilarTitle(a: string, b: string): boolean {
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    const brds = await prisma.brd.findMany({
+    const brds = await (prisma as any).brd.findMany({
       where: { deletedAt: null },
       orderBy: { createdAt: "asc" },
       select: {
@@ -95,7 +95,7 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b) => {
+    const data = brds.map((b: any) => {
       // Use only inline metadata for the list view — avoid downloading from
       // Supabase Storage (one request per BRD) which causes timeouts.
       const rawMeta = b.sections?.metadata ?? null;
@@ -372,43 +372,6 @@ router.get("/:brdId", async (req: Request, res: Response) => {
       title:          displayName,
       format:         derivedFormat2,
       status:         brd.status,
-      lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
-      scope,
-      metadata,
-      toc,
-      citations,
-      contentProfile,
-      brdConfig,
-    });
-  } catch (err) {
-    console.error("[GET /brd/:brdId]", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-    const storedFormat2  = (meta?._format        as string) ?? "";
-    const hasLegacyKeys2 = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
-    const derivedFormat2: "old" | "new" =
-      storedFormat2 === "old" ? "old" :
-      storedFormat2 === "new" ? "new" :
-      hasLegacyKeys2           ? "old" :
-      brd.format === "OLD"     ? "old" : "new";
-
-    const displayName = brd.title.charAt(0).toUpperCase() + brd.title.slice(1);
-
-    const scope = await resolveMaybeStoredJson(brd.sections?.scope ?? null);
-    const metadata = await resolveMaybeStoredJson(brd.sections?.metadata ?? null);
-    const toc = await resolveMaybeStoredJson(brd.sections?.toc ?? null);
-    const citations = await resolveMaybeStoredJson(brd.sections?.citations ?? null);
-    const contentProfile = await resolveMaybeStoredJson(brd.sections?.contentProfile ?? null);
-    const brdConfig = await resolveMaybeStoredJson(brd.sections?.brdConfig ?? null);
-
-    return res.json({
-      id:             brd.brdId,
-      title:          displayName,
-      format:         derivedFormat2,
-      status:         brd.status,
-      version:        "v1.0",
       lastUpdated:    brd.updatedAt.toISOString().split("T")[0],
       scope,
       metadata,
