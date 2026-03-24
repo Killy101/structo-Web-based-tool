@@ -11,7 +11,9 @@
  * #7  Validate-All results reflected as per-chunk icons in ChunkList
  * #8  Download All button (ZIP or sequential fallback)
  * #9  Session persistence: session_id stored in localStorage, restored on load
- * #10 Batch auto-generate for all changed chunks (with progress modal)
+ * #10 Export status report (JSON/CSV) for all chunks
+ * #11 Unchanged chunks auto-flagged as reviewed on load
+ * #12 XML diff view (original vs current) in XmlEditor
  *
  * Layout (review stage)
  * ─────────────────────
@@ -37,10 +39,9 @@ import type {
   ValidateResponse,
 } from "../../../components/autocompare/types";
 import {
-  autoGenerateAllChanged,
-  autoGenerateXml,
   downloadAllChunks,
   downloadChunkXml,
+  exportStatusReport,
   fetchChunkDetail,
   fetchChunks,
   getPdfUrl,
@@ -482,77 +483,6 @@ function ReuploadModal({
   );
 }
 
-// ── Batch Auto-Generate Modal (Feature #10) ───────────────────────────────────
-
-function BatchGenerateModal({
-  total,
-  completed,
-  generated,
-  failed,
-  running,
-  onClose,
-}: {
-  total: number;
-  completed: number;
-  generated: number;
-  failed: number;
-  running: boolean;
-  onClose: () => void;
-}) {
-  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div
-        className="w-full max-w-sm rounded-2xl border border-violet-500/30 p-6 space-y-4 bg-white shadow-2xl dark:bg-[rgba(11,26,46,0.95)]"
-      >
-        <div className="flex items-center gap-3">
-          {running ? (
-            <div className="w-8 h-8 rounded-full border-2 border-t-transparent border-violet-400 animate-spin flex-shrink-0" />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-violet-500/20 flex items-center justify-center flex-shrink-0 text-violet-300">
-              ✓
-            </div>
-          )}
-          <div>
-            <p className="text-sm font-bold text-slate-900 dark:text-white">
-              {running ? "Generating XML for all changed chunks…" : "Batch Generation Complete"}
-            </p>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              {completed}/{total} processed · {generated} generated · {failed} failed
-            </p>
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="flex justify-between text-xs">
-            <span className="text-slate-400">Progress</span>
-            <span className="text-violet-300 font-semibold">{pct}%</span>
-          </div>
-          <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-300"
-              style={{
-                width: `${pct}%`,
-                background: "linear-gradient(90deg,#8b5cf6,#a78bfa)",
-              }}
-            />
-          </div>
-        </div>
-
-        {!running && (
-          <button
-            onClick={onClose}
-            className="w-full py-2 rounded-xl text-xs font-semibold text-white"
-            style={{ background: "linear-gradient(135deg,#8b5cf6,#6d28d9)" }}
-          >
-            Done
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function AutoComparePage() {
@@ -580,8 +510,8 @@ export default function AutoComparePage() {
 
   // XML editor
   const [xmlDraft,        setXmlDraft]        = useState("");
+  const [xmlOriginal,     setXmlOriginal]     = useState("");  // original XML for diff view
   const [isSaving,        setIsSaving]        = useState(false);
-  const [isGenerating,    setIsGenerating]    = useState(false);
   const [isValidating,    setIsValidating]    = useState(false);
   const [xmlFocusLine,    setXmlFocusLine]    = useState<number | null>(null);
   const [xmlFocusRequestId, setXmlFocusRequestId] = useState(0);
@@ -603,14 +533,6 @@ export default function AutoComparePage() {
 
   // Re-upload
   const [showReupload, setShowReupload] = useState(false);
-
-  // Feature #10: batch auto-generate
-  const [showBatchGenerate, setShowBatchGenerate] = useState(false);
-  const [batchGenRunning,   setBatchGenRunning]   = useState(false);
-  const [batchGenTotal,     setBatchGenTotal]     = useState(0);
-  const [batchGenCompleted, setBatchGenCompleted] = useState(0);
-  const [batchGenGenerated, setBatchGenGenerated] = useState(0);
-  const [batchGenFailed,    setBatchGenFailed]    = useState(0);
 
   // Session expiry
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
@@ -651,7 +573,10 @@ export default function AutoComparePage() {
           const chunksResp = await fetchChunks(saved);
           setSessionId(saved);
           setSourceName(chunksResp.source_name);
-          setChunks(chunksResp.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
+          setChunks(chunksResp.chunks.map((c) => ({
+            ...c,
+            reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
+          })));
           setSummary(chunksResp.summary);
           // Restore PDF URLs for viewer fallback (File objects are not persisted).
           setOldPdfUrl(getPdfUrl(saved, "old"));
@@ -742,7 +667,11 @@ export default function AutoComparePage() {
           setTimeout(async () => {
             try {
               const cr = await fetchChunks(response.session_id);
-              setChunks(cr.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
+              // Auto-flag unchanged chunks as "reviewed" so users focus on changed ones.
+              setChunks(cr.chunks.map((c) => ({
+                ...c,
+                reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
+              })));
               setStage("review");
             } catch (err: unknown) {
               showToast(err instanceof Error ? err.message : "Failed to load chunks", "error");
@@ -781,6 +710,7 @@ export default function AutoComparePage() {
       const resp = await fetchChunkDetail(sessionId, chunk.index);
       setSelected(resp.chunk);
       setXmlDraft(resp.chunk.xml_saved ?? resp.chunk.xml_content);
+      setXmlOriginal(resp.chunk.xml_content);  // always the unedited original for diff view
       setSelectedDiffLineIndex(null);
       setXmlFocusLine(null);
       setOldHighlightText("");
@@ -841,63 +771,13 @@ export default function AutoComparePage() {
     if (chunk) void handleSelectChunk(chunk);
   }, [chunks, handleSelectChunk]);
 
-  // ── Auto-generate XML ──────────────────────────────────────────────────────
+  // ── Export status report ───────────────────────────────────────────────────
 
-  const handleAutoGenerate = useCallback(async (lineContext?: {
-    diff_index?: number;
-    diff_text?: string;
-    old_text?: string;
-    new_text?: string;
-    category?: string;
-  }) => {
-    if (!sessionId || !selected) return;
-    setIsGenerating(true);
-    try {
-      const resp = await autoGenerateXml(sessionId, selected.index, lineContext);
-      setXmlDraft(resp.suggested_xml);
-      showToast(resp.generation_scope === "line"
-        ? "Line-based XML generation applied. Review and save."
-        : "AI-generated XML applied. Review and save.");
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Auto-generate failed", "error");
-    } finally {
-      setIsGenerating(false);
-    }
-  }, [sessionId, selected, showToast]);
-
-  // ── Feature #10: Batch auto-generate all changed chunks ───────────────────
-
-  const handleBatchGenerate = useCallback(async () => {
+  const handleExportReport = useCallback((fmt: "json" | "csv") => {
     if (!sessionId) return;
-    const changedIds = chunks.filter((c) => c.has_changes).map((c) => c.index);
-    if (changedIds.length === 0) {
-      showToast("No changed chunks to generate.", "error");
-      return;
-    }
-    setShowBatchGenerate(true);
-    setBatchGenRunning(true);
-    setBatchGenTotal(changedIds.length);
-    setBatchGenCompleted(0);
-    setBatchGenGenerated(0);
-    setBatchGenFailed(0);
-
-    const result = await autoGenerateAllChanged(
-      sessionId,
-      changedIds,
-      (completed, total) => {
-        setBatchGenCompleted(completed);
-        setBatchGenTotal(total);
-      },
-    );
-    setBatchGenGenerated(result.generated);
-    setBatchGenFailed(result.failed);
-    setBatchGenRunning(false);
-
-    showToast(
-      `Batch complete: ${result.generated} generated, ${result.failed} failed.`,
-      result.failed > 0 ? "error" : "success",
-    );
-  }, [sessionId, chunks, showToast]);
+    exportStatusReport(sessionId, sourceName, fmt);
+    showToast(`Downloading ${fmt.toUpperCase()} report…`);
+  }, [sessionId, sourceName, showToast]);
 
   // ── Diff line selection ────────────────────────────────────────────────────
 
@@ -938,20 +818,6 @@ export default function AutoComparePage() {
       setXmlFocusRequestId((v) => v + 1);
     }
   }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine]);
-
-  const handleGenerateFromDiffLine = useCallback((line: DiffLine, index: number) => {
-    handleDiffLineSelect(line, index);
-    const fallbackText = line.text.trim();
-    const oldText = (line.old_text ?? "").trim();
-    const newText = (line.new_text ?? "").trim();
-    void handleAutoGenerate({
-      diff_index: index,
-      diff_text: fallbackText,
-      old_text: oldText || undefined,
-      new_text: newText || undefined,
-      category: line.category,
-    });
-  }, [handleDiffLineSelect, handleAutoGenerate]);
 
   // ── Save XML (Feature #1: marks chunk as saved) ───────────────────────────
 
@@ -1080,7 +946,10 @@ export default function AutoComparePage() {
           setTimeout(async () => {
             try {
               const cr = await fetchChunks(sessionId);
-              setChunks(cr.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
+              setChunks(cr.chunks.map((c) => ({
+                ...c,
+                reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
+              })));
               setStage("review");
             } catch (err: unknown) {
               showToast(err instanceof Error ? err.message : "Failed to load chunks", "error");
@@ -1108,6 +977,7 @@ export default function AutoComparePage() {
     setChunks([]);
     setSelected(null);
     setXmlDraft("");
+    setXmlOriginal("");
     setXmlFocusLine(null);
     setXmlFocusRequestId(0);
     setSelectedDiffLineIndex(null);
@@ -1231,19 +1101,35 @@ export default function AutoComparePage() {
                 </button>
               )}
 
-              {/* Feature #10: Batch Auto-Generate */}
-              {chunks.some((c) => c.has_changes) && (
-                <button
-                  onClick={handleBatchGenerate}
-                  disabled={batchGenRunning}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-violet-200 border border-violet-500/30 hover:bg-violet-500/10 transition-all"
-                  title="Auto-generate XML for all changed chunks"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  Generate All
-                </button>
+              {/* Export Report */}
+              {chunks.length > 0 && (
+                <div className="relative group">
+                  <button
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/10 transition-all"
+                    title="Export status report"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Report
+                  </button>
+                  {/* Dropdown */}
+                  <div className="absolute right-0 top-full mt-1 w-32 rounded-lg border border-cyan-500/25 shadow-xl z-20 overflow-hidden hidden group-hover:block"
+                    style={{ background: "rgba(11,26,46,0.97)" }}>
+                    <button
+                      onClick={() => handleExportReport("json")}
+                      className="w-full text-left px-3 py-2 text-[11px] text-cyan-200 hover:bg-cyan-500/10 transition-colors"
+                    >
+                      Download JSON
+                    </button>
+                    <button
+                      onClick={() => handleExportReport("csv")}
+                      className="w-full text-left px-3 py-2 text-[11px] text-cyan-200 hover:bg-cyan-500/10 transition-colors border-t border-cyan-500/15"
+                    >
+                      Download CSV
+                    </button>
+                  </div>
+                </div>
               )}
 
               {/* Download current chunk */}
@@ -1389,7 +1275,6 @@ export default function AutoComparePage() {
                     similarity={selected.similarity}
                     selectedLineIndex={selectedDiffLineIndex}
                     onSelectLine={handleDiffLineSelect}
-                    onGenerateFromLine={handleGenerateFromDiffLine}
                   />
                 </div>
 
@@ -1448,25 +1333,10 @@ export default function AutoComparePage() {
                     </div>
                   </div>
 
-                  {/* Panel: XML Editor with Generate bar */}
+                  {/* Panel: XML Editor */}
                   <div className="flex-[0.95] min-h-0 overflow-hidden flex flex-col gap-0.5">
-                    {/* Inline generate bar */}
+                    {/* Info bar */}
                     <div className="flex-shrink-0 flex items-center gap-1.5 px-1">
-                      <button
-                        onClick={() => void handleAutoGenerate()}
-                        disabled={isGenerating || !selected?.has_changes}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-semibold text-violet-200 border border-violet-500/30 hover:bg-violet-500/10 transition-all disabled:opacity-40"
-                        title="Auto-generate XML update from PDF diff"
-                      >
-                        {isGenerating ? (
-                          <div className="w-3 h-3 rounded-full border border-t-transparent border-violet-300 animate-spin" />
-                        ) : (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                          </svg>
-                        )}
-                        {isGenerating ? "Generating…" : "Auto-Generate"}
-                      </button>
                       {selected && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${similarityColor(selected.similarity ?? 1)}`}>
                           {Math.round((selected.similarity ?? 1) * 100)}% similar
@@ -1474,12 +1344,13 @@ export default function AutoComparePage() {
                       )}
                       <span className="flex-1" />
                       <span className="text-[9px] text-slate-600 italic">
-                        Right-click diff line → Generate from line
+                        Ctrl+S to save · click Diff to compare with original
                       </span>
                     </div>
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <XmlEditor
                         value={xmlDraft}
+                        originalValue={xmlOriginal}
                         onChange={setXmlDraft}
                         onSave={handleSave}
                         onAutoSave={handleAutoSave}
@@ -1523,18 +1394,6 @@ export default function AutoComparePage() {
           sessionId={sessionId}
           onDone={handleReuploadDone}
           onClose={() => setShowReupload(false)}
-        />
-      )}
-
-      {/* Feature #10: Batch generate modal */}
-      {showBatchGenerate && (
-        <BatchGenerateModal
-          total={batchGenTotal}
-          completed={batchGenCompleted}
-          generated={batchGenGenerated}
-          failed={batchGenFailed}
-          running={batchGenRunning}
-          onClose={() => setShowBatchGenerate(false)}
         />
       )}
 

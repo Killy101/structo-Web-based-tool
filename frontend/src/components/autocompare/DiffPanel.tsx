@@ -424,7 +424,6 @@ interface DiffPanelProps {
   similarity?:        number;
   selectedLineIndex?: number | null;
   onSelectLine?:      (line: DiffLine, index: number) => void;
-  onGenerateFromLine?: (line: DiffLine, index: number) => void;
 }
 
 export default function DiffPanel({
@@ -435,7 +434,6 @@ export default function DiffPanel({
   similarity,
   selectedLineIndex = null,
   onSelectLine,
-  onGenerateFromLine,
 }: DiffPanelProps) {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; line: DiffLine; idx: number } | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
@@ -560,13 +558,13 @@ export default function DiffPanel({
         >
           <button
             type="button"
-            className="w-full px-3 py-2 text-left text-[11px] font-semibold text-violet-200 hover:bg-violet-500/15 transition-colors"
+            className="w-full px-3 py-2 text-left text-[11px] font-semibold text-slate-300 hover:bg-slate-700/50 transition-colors"
             onClick={() => {
-              onGenerateFromLine?.(ctxMenu.line, ctxMenu.idx);
+              onSelectLine?.(ctxMenu.line, ctxMenu.idx);
               setCtxMenu(null);
             }}
           >
-            Generate
+            Jump to line
           </button>
         </div>
       )}

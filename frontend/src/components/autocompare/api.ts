@@ -7,7 +7,6 @@
  */
 
 import type {
-  AutoGenerateResponse,
   ChunksResponse,
   CompareChunkResponse,
   ReuploadResponse,
@@ -151,60 +150,6 @@ export async function saveChunkXml(
   return handleResponse(res);
 }
 
-// ── Auto-generate XML ─────────────────────────────────────────────────────────
-
-export async function autoGenerateXml(
-  sessionId: string,
-  chunkId: string | number,
-  lineContext?: {
-    diff_index?: number;
-    diff_text?: string;
-    old_text?: string;
-    new_text?: string;
-    category?: string;
-  },
-): Promise<AutoGenerateResponse> {
-  const res = await fetch(`${BASE}/autocompare/autogenerate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId,
-      chunk_id: String(chunkId),
-      ...lineContext,
-    }),
-  });
-  return handleResponse(res);
-}
-
-// ── Batch auto-generate for all changed chunks ────────────────────────────────
-
-/**
- * Sequentially auto-generates XML for every chunk that has PDF changes.
- * Calls onProgress(completed, total) after each chunk.
- * Returns counts of { generated, failed }.
- */
-export async function autoGenerateAllChanged(
-  sessionId: string,
-  changedChunkIds: (string | number)[],
-  onProgress?: (completed: number, total: number) => void,
-): Promise<{ generated: number; failed: number }> {
-  let generated = 0;
-  let failed = 0;
-  const total = changedChunkIds.length;
-
-  for (let i = 0; i < total; i++) {
-    try {
-      await autoGenerateXml(sessionId, changedChunkIds[i]);
-      generated++;
-    } catch {
-      failed++;
-    }
-    onProgress?.(i + 1, total);
-  }
-
-  return { generated, failed };
-}
-
 // ── Validate XML ──────────────────────────────────────────────────────────────
 
 export async function validateChunkXml(
@@ -289,6 +234,27 @@ export async function downloadAllChunks(
       }, i * 300);
     });
   }
+}
+
+// ── Export status report ──────────────────────────────────────────────────────
+
+/**
+ * Downloads a status report for all chunks in the session.
+ * `fmt` is "json" (default) or "csv".
+ */
+export function exportStatusReport(
+  sessionId: string,
+  sourceName: string,
+  fmt: "json" | "csv" = "json",
+): void {
+  const url = `${BASE}/autocompare/export-report/${encodeURIComponent(sessionId)}?fmt=${fmt}`;
+  const ext  = fmt === "csv" ? "csv" : "json";
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `${sourceName || "autocompare"}_report.${ext}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 // ── Re-upload XML chunks ──────────────────────────────────────────────────────
