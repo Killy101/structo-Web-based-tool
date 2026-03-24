@@ -57,6 +57,10 @@ export const authApi = {
         minSpecialChars: number;
       }>("/auth/password-policy")
       .then((r) => r.data),
+  logout: () =>
+    api
+      .post<{ message: string }>("/auth/logout")
+      .then((r) => r.data),
 };
 
 export const usersApi = {

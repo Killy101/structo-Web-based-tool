@@ -16,7 +16,7 @@ interface AuthCtx {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (userId: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
@@ -103,7 +103,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(res.user as unknown as User);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // Record the logout on the backend BEFORE clearing the token so the
+    // authenticate middleware still sees a valid session.
+    try {
+      await Promise.race([
+        authApi.logout(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("logout-timeout")), 3000),
+        ),
+      ]);
+    } catch {
+      // Best effort only — proceed with local logout regardless.
+    }
     removeToken();
     setUser(null);
     if (typeof window !== "undefined") {

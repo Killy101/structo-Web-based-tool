@@ -871,6 +871,34 @@ export default function AutoComparePage() {
     }
   }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine]);
 
+  // ── Save XML (Feature #1: marks chunk as saved) ───────────────────────────
+
+  const handleSave = useCallback(async (xmlContent: string) => {
+    if (!sessionId || !selected) return;
+    setIsSaving(true);
+    try {
+      await saveChunkXml(sessionId, selected.index, xmlContent);
+      // Feature #1: mark chunk as saved
+      setChunks((prev) =>
+        prev.map((c) =>
+          c.index === selected.index ? { ...c, has_changes: false, reviewStatus: "saved" } : c,
+        ),
+      );
+      showToast("XML saved successfully");
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : "Save failed", "error");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [sessionId, selected, showToast]);
+
+  // ── Feature #6: Auto-save draft (does NOT mark as "saved" — just persists draft) ──
+
+  const handleAutoSave = useCallback((xmlContent: string) => {
+    // Silently persist draft to state so navigating away and back doesn't lose it
+    setXmlDraft(xmlContent);
+  }, []);
+
   const applySelectedDiffToXml = useCallback(() => {
     if (!selectedDiffLine) {
       showToast("Select a diff line first.", "error");
@@ -924,34 +952,6 @@ export default function AutoComparePage() {
     handleAutoSave(updated);
     showToast("Applied replacement to XML draft.", "success");
   }, [selectedDiffLine, xmlDraft, handleAutoSave, showToast]);
-
-  // ── Save XML (Feature #1: marks chunk as saved) ───────────────────────────
-
-  const handleSave = useCallback(async (xmlContent: string) => {
-    if (!sessionId || !selected) return;
-    setIsSaving(true);
-    try {
-      await saveChunkXml(sessionId, selected.index, xmlContent);
-      // Feature #1: mark chunk as saved
-      setChunks((prev) =>
-        prev.map((c) =>
-          c.index === selected.index ? { ...c, has_changes: false, reviewStatus: "saved" } : c,
-        ),
-      );
-      showToast("XML saved successfully");
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Save failed", "error");
-    } finally {
-      setIsSaving(false);
-    }
-  }, [sessionId, selected, showToast]);
-
-  // ── Feature #6: Auto-save draft (does NOT mark as "saved" — just persists draft) ──
-
-  const handleAutoSave = useCallback((xmlContent: string) => {
-    // Silently persist draft to state so navigating away and back doesn't lose it
-    setXmlDraft(xmlContent);
-  }, []);
 
   // ── Validate chunk XML ─────────────────────────────────────────────────────
 

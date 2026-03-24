@@ -1718,11 +1718,12 @@ export default function SettingsPage() {
                               >
                                 {isExpanded
                                   ? "Hide field-level changes"
+
                                   : `Show field-level changes (${changeCount})`}
                               </button>
                               {isExpanded && (
                                 <div className="mt-2 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/40">
-                                  {(parsedDetails.changes ?? []).map((change) => (
+                                  {(parsedDetails?.changes ?? []).map((change) => (
                                     <div key={`${log.id}-${change.section}-${change.field}`} className="text-xs text-slate-600 dark:text-slate-300">
                                       <span className="font-semibold">{change.field}</span>{" "}
                                       <span className="text-slate-400">({change.section})</span>

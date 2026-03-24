@@ -306,6 +306,25 @@ router.get("/me", authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── LOGOUT ──────────────────────────────────────────────
+router.post("/logout", authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    await prisma.userLog.create({
+      data: {
+        userId: req.user!.userId,
+        action: "LOGOUT",
+        details: "User logged out",
+      },
+    });
+
+    // JWT is stateless; client clears token after this succeeds.
+    res.json({ message: "Logged out" });
+  } catch (error) {
+    console.error("Logout error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ─── CHANGE PASSWORD ──────────────────────────────────────
 // SuperAdmin → ADMIN, USER
 // Admin      → USER

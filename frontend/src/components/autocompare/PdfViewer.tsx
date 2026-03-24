@@ -130,6 +130,8 @@ export default function PdfViewer({
   const pdfDocRef    = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const viewportRef  = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const renderTaskRef = useRef<any>(null);
   const textItemsRef = useRef<StoredTextItem[]>([]);
 
   // Keep latest highlightText in a ref so async effects don't go stale
@@ -145,6 +147,15 @@ export default function PdfViewer({
   // ── Load PDF from File ─────────────────────────────────────────────────────
 
 useEffect(() => {
+  if (renderTaskRef.current) {
+    try {
+      renderTaskRef.current.cancel();
+    } catch {
+      // Ignore cancellation errors during teardown.
+    }
+    renderTaskRef.current = null;
+  }
+
   // Destroy previous document
   if (pdfDocRef.current) {
     pdfDocRef.current.destroy();
@@ -293,6 +304,18 @@ useEffect(() => {
 
     (async () => {
       try {
+        // Cancel any in-flight render on this viewer before starting another.
+        if (renderTaskRef.current) {
+          try {
+            renderTaskRef.current.cancel();
+            await renderTaskRef.current.promise;
+          } catch {
+            // Expected when cancelling previous task.
+          } finally {
+            renderTaskRef.current = null;
+          }
+        }
+
         const pdf  = pdfDocRef.current;
         const page = await pdf.getPage(currentPage);
         if (cancelled) { page.cleanup(); return; }
@@ -309,7 +332,17 @@ useEffect(() => {
         const ctx = canvas.getContext("2d")!;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        const renderTask = page.render({ canvasContext: ctx, viewport });
+        renderTaskRef.current = renderTask;
+
+        try {
+          await renderTask.promise;
+        } finally {
+          if (renderTaskRef.current === renderTask) {
+            renderTaskRef.current = null;
+          }
+        }
+
         if (cancelled) { page.cleanup(); return; }
 
         viewportRef.current = viewport;
@@ -334,11 +367,24 @@ useEffect(() => {
         // Draw highlights using the latest highlight text
         if (!cancelled) drawHighlights(highlightTextRef.current);
       } catch (e) {
-        if (!cancelled) console.error("[PdfViewer] render error:", e);
+        const err = e as { name?: string };
+        // pdf.js throws this when a render task is intentionally cancelled.
+        if (!cancelled && err?.name !== "RenderingCancelledException") {
+          console.error("[PdfViewer] render error:", e);
+        }
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch {
+          // Ignore cancellation errors during cleanup.
+        }
+      }
+    };
   }, [pdfLoaded, currentPage, drawHighlights]);
 
   // ── Re-draw highlights when highlightText changes ─────────────────────────

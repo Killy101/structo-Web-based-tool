@@ -1,9 +1,11 @@
 "use client";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, Filter, Search, Shield, Activity } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Filter, Search, Shield, Activity, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "./index";
 import { Button } from "./index";
+import { userLogsApi } from "../../services/api";
+import type { UserLog } from "../../types";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -18,10 +20,9 @@ export interface LogEntry {
   duration: string;
   status: string;
   tags: string[];
-  /** Only present in superadmin logs */
   triggeredBy?: string;
-  /** Only present in superadmin logs */
-  ip?: string;
+  userId?: number;
+  userDisplayId?: string;
 }
 
 type Filters = {
@@ -30,219 +31,72 @@ type Filters = {
   status: string[];
 };
 
+// ─── MAP DB LOG → DISPLAY ENTRY ──────────────────────────────────────────────
+
+function inferLevel(action: string): LogLevel {
+  const a = action.toUpperCase();
+  if (a.includes("FAIL") || a.includes("ERROR") || a.includes("INVALID")) return "error";
+  if (a.includes("LOGIN") || a.includes("MFA") || a.includes("PASSWORD") || a.includes("SECURITY") || a.includes("BLOCKED") || a.includes("LOCK")) return "security";
+  if (a.includes("DELETE") || a.includes("ROLE") || a.includes("PROMOTE") || a.includes("DEACTIVAT") || a.includes("SETTING") || a.includes("POLICY") || a.includes("PERMISSION")) return "audit";
+  if (a.includes("WARN") || a.includes("SLOW") || a.includes("RATE_LIMIT")) return "warning";
+  return "info";
+}
+
+function inferService(action: string): string {
+  const a = action.toUpperCase();
+  if (a.includes("LOGIN") || a.includes("LOGOUT") || a.includes("AUTH") || a.includes("MFA") || a.includes("PASSWORD") || a.includes("REGISTER")) return "auth-service";
+  if (a.includes("TASK")) return "task-manager";
+  if (a.includes("BRD") || a.includes("DOCUMENT") || a.includes("FILE") || a.includes("UPLOAD")) return "brd-processor";
+  if (a.includes("TEAM")) return "team-service";
+  if (a.includes("ROLE") || a.includes("USER") || a.includes("SETTING") || a.includes("POLICY")) return "admin-panel";
+  if (a.includes("NOTIF")) return "notification-service";
+  return "system";
+}
+
+function inferTags(action: string): string[] {
+  const tags: string[] = [];
+  const a = action.toUpperCase();
+  if (a.includes("LOGIN")) tags.push("login");
+  if (a.includes("LOGOUT")) tags.push("logout");
+  if (a.includes("PASSWORD")) tags.push("password");
+  if (a.includes("TASK")) tags.push("task");
+  if (a.includes("BRD")) tags.push("brd");
+  if (a.includes("FILE") || a.includes("UPLOAD")) tags.push("upload");
+  if (a.includes("TEAM")) tags.push("team");
+  if (a.includes("ROLE")) tags.push("role-change");
+  if (a.includes("FAIL") || a.includes("ERROR")) tags.push("failed");
+  if (a.includes("DELETE")) tags.push("delete");
+  if (a.includes("UPDATE") || a.includes("SETTING")) tags.push("update");
+  if (tags.length === 0) tags.push("activity");
+  return tags;
+}
+
+function mapUserLogToEntry(log: UserLog): LogEntry {
+  const level = inferLevel(log.action);
+  const service = inferService(log.action);
+  const tags = inferTags(log.action);
+  const userName = log.user
+    ? `${log.user.firstName} ${log.user.lastName}`.trim()
+    : `User #${log.userId}`;
+  const message = log.details || log.action.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  return {
+    id: String(log.id),
+    timestamp: log.createdAt,
+    level,
+    service,
+    message,
+    duration: "—",
+    status: level === "error" ? "500" : level === "security" ? (log.action.toUpperCase().includes("FAIL") ? "401" : "200") : "200",
+    tags,
+    triggeredBy: userName,
+    userId: log.userId,
+    userDisplayId: log.user?.userId,
+  };
+}
+
 // ─── SUPERADMIN SAMPLE DATA ───────────────────────────────────────────────────
 // System-wide audit & security logs — every user action, security event, and
 // config change across all services.
-
-const SUPERADMIN_LOGS: LogEntry[] = [
-  {
-    id: "sa-1",
-    timestamp: "2024-11-08T14:32:45Z",
-    level: "security",
-    service: "auth-service",
-    message: "Failed login attempt — invalid credentials",
-    duration: "82ms",
-    status: "401",
-    tags: ["security", "login", "failed"],
-    triggeredBy: "unknown",
-    ip: "192.168.4.23",
-  },
-  {
-    id: "sa-2",
-    timestamp: "2024-11-08T14:31:10Z",
-    level: "audit",
-    service: "admin-panel",
-    message: "Role changed: user john.doe@idaf.org promoted to ADMIN",
-    duration: "145ms",
-    status: "200",
-    tags: ["role-change", "audit", "user-management"],
-    triggeredBy: "superadmin@idaf.org",
-    ip: "10.0.0.5",
-  },
-  {
-    id: "sa-3",
-    timestamp: "2024-11-08T14:30:00Z",
-    level: "audit",
-    service: "admin-panel",
-    message: "Security policy updated — min password length changed to 12",
-    duration: "210ms",
-    status: "200",
-    tags: ["settings", "security-policy", "audit"],
-    triggeredBy: "superadmin@idaf.org",
-    ip: "10.0.0.5",
-  },
-  {
-    id: "sa-4",
-    timestamp: "2024-11-08T14:28:55Z",
-    level: "error",
-    service: "database",
-    message: "Connection timeout to replica node — failover triggered",
-    duration: "5.1s",
-    status: "503",
-    tags: ["db", "error", "failover"],
-    triggeredBy: "system",
-    ip: "internal",
-  },
-  {
-    id: "sa-5",
-    timestamp: "2024-11-08T14:27:30Z",
-    level: "security",
-    service: "auth-service",
-    message: "MFA bypass attempted on admin account",
-    duration: "55ms",
-    status: "403",
-    tags: ["mfa", "security", "blocked"],
-    triggeredBy: "unknown",
-    ip: "203.0.113.47",
-  },
-  {
-    id: "sa-6",
-    timestamp: "2024-11-08T14:26:10Z",
-    level: "warning",
-    service: "api-gateway",
-    message: "Rate limit threshold reached for tenant: idaf-org",
-    duration: "145ms",
-    status: "429",
-    tags: ["rate-limit", "warning", "api"],
-    triggeredBy: "system",
-    ip: "internal",
-  },
-  {
-    id: "sa-7",
-    timestamp: "2024-11-08T14:25:00Z",
-    level: "audit",
-    service: "admin-panel",
-    message: "Maintenance mode enabled by superadmin",
-    duration: "190ms",
-    status: "200",
-    tags: ["maintenance", "audit", "ops"],
-    triggeredBy: "superadmin@idaf.org",
-    ip: "10.0.0.5",
-  },
-  {
-    id: "sa-8",
-    timestamp: "2024-11-08T14:23:45Z",
-    level: "info",
-    service: "payment-service",
-    message: "Payment gateway health check passed",
-    duration: "320ms",
-    status: "200",
-    tags: ["payment", "health"],
-    triggeredBy: "system",
-    ip: "internal",
-  },
-  {
-    id: "sa-9",
-    timestamp: "2024-11-08T14:22:00Z",
-    level: "audit",
-    service: "admin-panel",
-    message: "User account deactivated: contractor.temp@external.com",
-    duration: "165ms",
-    status: "200",
-    tags: ["user-deactivation", "audit"],
-    triggeredBy: "admin@idaf.org",
-    ip: "10.0.0.12",
-  },
-  {
-    id: "sa-10",
-    timestamp: "2024-11-08T14:20:30Z",
-    level: "error",
-    service: "cache-service",
-    message: "Redis cluster node unreachable — cache degraded",
-    duration: "2.8s",
-    status: "500",
-    tags: ["cache", "redis", "error"],
-    triggeredBy: "system",
-    ip: "internal",
-  },
-];
-
-// ─── ADMIN SAMPLE DATA ────────────────────────────────────────────────────────
-// Operational logs — document processing, task management, and team activity
-// scoped to the admin's own team and features.
-
-const ADMIN_LOGS: LogEntry[] = [
-  {
-    id: "adm-1",
-    timestamp: "2024-11-08T14:32:45Z",
-    level: "info",
-    service: "brd-processor",
-    message: "BRD document uploaded and queued for processing",
-    duration: "245ms",
-    status: "201",
-    tags: ["brd", "upload"],
-  },
-  {
-    id: "adm-2",
-    timestamp: "2024-11-08T14:31:20Z",
-    level: "info",
-    service: "compare-engine",
-    message: "PDF vs XML comparison completed — 14 differences found",
-    duration: "3.4s",
-    status: "200",
-    tags: ["compare", "pdf", "xml"],
-  },
-  {
-    id: "adm-3",
-    timestamp: "2024-11-08T14:29:55Z",
-    level: "warning",
-    service: "brd-processor",
-    message: "BRD processing slow — large document detected (42 MB)",
-    duration: "12.1s",
-    status: "warning",
-    tags: ["brd", "performance"],
-  },
-  {
-    id: "adm-4",
-    timestamp: "2024-11-08T14:28:10Z",
-    level: "info",
-    service: "task-manager",
-    message: "Task assigned to user: jane.smith@idaf.org",
-    duration: "98ms",
-    status: "201",
-    tags: ["task", "assignment"],
-  },
-  {
-    id: "adm-5",
-    timestamp: "2024-11-08T14:26:40Z",
-    level: "error",
-    service: "document-store",
-    message: "File upload failed — unsupported format (.docm)",
-    duration: "310ms",
-    status: "422",
-    tags: ["upload", "validation", "error"],
-  },
-  {
-    id: "adm-6",
-    timestamp: "2024-11-08T14:25:15Z",
-    level: "info",
-    service: "compare-engine",
-    message: "AutoCompare job started for project: IDAF-BRD-2024-Q4",
-    duration: "560ms",
-    status: "202",
-    tags: ["autocompare", "job"],
-  },
-  {
-    id: "adm-7",
-    timestamp: "2024-11-08T14:23:50Z",
-    level: "info",
-    service: "task-manager",
-    message: "Task status updated to APPROVED by reviewer",
-    duration: "114ms",
-    status: "200",
-    tags: ["task", "approved"],
-  },
-  {
-    id: "adm-8",
-    timestamp: "2024-11-08T14:22:05Z",
-    level: "warning",
-    service: "brd-processor",
-    message: "Citation extraction incomplete — 3 references could not be resolved",
-    duration: "870ms",
-    status: "warning",
-    tags: ["brd", "citation", "warning"],
-  },
-];
 
 // ─── STYLE MAPS ───────────────────────────────────────────────────────────────
 
@@ -314,7 +168,7 @@ function LogRow({
             {log.service}
           </span>
 
-          {isSuperAdmin && log.triggeredBy && (
+          {log.triggeredBy && (
             <span className="hidden lg:block flex-shrink-0 text-xs text-slate-500 dark:text-slate-400 font-mono min-w-[140px]">
               {log.triggeredBy}
             </span>
@@ -374,10 +228,10 @@ function LogRow({
                   </p>
                 </div>
 
-                {isSuperAdmin && log.triggeredBy && (
+                {log.triggeredBy && (
                   <div>
                     <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                      Triggered By
+                      User
                     </p>
                     <p className="font-mono text-xs text-slate-900 dark:text-slate-100">
                       {log.triggeredBy}
@@ -385,13 +239,13 @@ function LogRow({
                   </div>
                 )}
 
-                {isSuperAdmin && log.ip && (
+                {log.userDisplayId && (
                   <div>
                     <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                      IP Address
+                      User ID
                     </p>
                     <p className="font-mono text-xs text-slate-900 dark:text-slate-100">
-                      {log.ip}
+                      {log.userDisplayId}
                     </p>
                   </div>
                 )}
@@ -510,24 +364,46 @@ interface InteractiveLogsTableProps {
 
 export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
   const isSuperAdmin = role === "SUPER_ADMIN";
-  const SOURCE_LOGS = isSuperAdmin ? SUPERADMIN_LOGS : ADMIN_LOGS;
 
+  const PAGE_SIZE = 20;
+
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   const [filters, setFilters] = useState<Filters>({
     level: [],
     service: [],
     status: [],
   });
 
+  const fetchLogs = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await userLogsApi.getAll();
+      setLogs(data.logs.map(mapUserLogToEntry));
+    } catch (err) {
+      setError("Failed to load logs. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLogs();
+  }, []);
+
   const filteredLogs = useMemo(() => {
-    return SOURCE_LOGS.filter((log) => {
+    return logs.filter((log) => {
       const lowerQuery = searchQuery.toLowerCase();
       const matchSearch =
         log.message.toLowerCase().includes(lowerQuery) ||
         log.service.toLowerCase().includes(lowerQuery) ||
-        (isSuperAdmin && log.triggeredBy?.toLowerCase().includes(lowerQuery));
+        (log.triggeredBy?.toLowerCase().includes(lowerQuery) ?? false);
       const matchLevel =
         filters.level.length === 0 || filters.level.includes(log.level);
       const matchService =
@@ -536,35 +412,58 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
         filters.status.length === 0 || filters.status.includes(log.status);
       return matchSearch && matchLevel && matchService && matchStatus;
     });
-  }, [SOURCE_LOGS, filters, searchQuery, isSuperAdmin]);
+  }, [logs, filters, searchQuery]);
 
   const activeFilters =
     filters.level.length + filters.service.length + filters.status.length;
+
+  // Reset to page 1 whenever filters or search change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filters]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / PAGE_SIZE));
+  const paginatedLogs = filteredLogs.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  );
 
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex-shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-4">
         <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            {isSuperAdmin ? (
-              <Shield className="h-4 w-4 text-purple-500" />
-            ) : (
-              <Activity className="h-4 w-4 text-blue-500" />
-            )}
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              {filteredLogs.length} of {SOURCE_LOGS.length} entries
-              {isSuperAdmin && (
-                <span className="ml-2 inline-flex items-center rounded-full bg-purple-500/10 px-2 py-0.5 text-[10px] font-semibold text-purple-600 dark:text-purple-400">
-                  System-wide audit
-                </span>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {isSuperAdmin ? (
+                <Shield className="h-4 w-4 text-purple-500" />
+              ) : (
+                <Activity className="h-4 w-4 text-blue-500" />
               )}
-              {!isSuperAdmin && (
-                <span className="ml-2 inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                  Operational
-                </span>
-              )}
-            </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {loading ? (
+                  "Loading…"
+                ) : (
+                  <>
+                    {filteredLogs.length} of {logs.length} entries
+                    {isSuperAdmin && (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-purple-500/10 px-2 py-0.5 text-[10px] font-semibold text-purple-600 dark:text-purple-400">
+                        System-wide audit
+                      </span>
+                    )}
+                    {!isSuperAdmin && (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+                        Team logs
+                      </span>
+                    )}
+                  </>
+                )}
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={fetchLogs} disabled={loading}>
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </Button>
           </div>
 
           <div className="flex gap-2">
@@ -572,11 +471,7 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder={
-                  isSuperAdmin
-                    ? "Search by message, service, or user..."
-                    : "Search by message or service..."
-                }
+                placeholder="Search by message, service, or user..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1a56f0] focus:border-transparent transition-all"
@@ -617,7 +512,7 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
               <FilterPanel
                 filters={filters}
                 onChange={setFilters}
-                logs={SOURCE_LOGS}
+                logs={logs}
               />
             </motion.div>
           )}
@@ -630,49 +525,134 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
             <span className="w-16 flex-shrink-0">Level</span>
             <span className="w-20 flex-shrink-0">Time</span>
             <span className="flex-shrink-0 min-w-[110px]">Service</span>
-            {isSuperAdmin && (
-              <span className="hidden lg:block flex-shrink-0 min-w-[140px]">Triggered By</span>
-            )}
+            <span className="hidden lg:block flex-shrink-0 min-w-[140px]">User</span>
             <span className="flex-1">Message</span>
             <span className="flex-shrink-0 w-12 text-right">Status</span>
             <span className="w-16 flex-shrink-0 text-right">Duration</span>
           </div>
 
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            <AnimatePresence mode="popLayout">
-              {filteredLogs.length > 0 ? (
-                filteredLogs.map((log, index) => (
-                  <motion.div
-                    key={log.id}
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={{ duration: 0.15, delay: index * 0.02 }}
-                  >
-                    <LogRow
-                      log={log}
-                      expanded={expandedId === log.id}
-                      onToggle={() =>
-                        setExpandedId((cur) => (cur === log.id ? null : log.id))
-                      }
-                      isSuperAdmin={isSuperAdmin}
-                    />
-                  </motion.div>
-                ))
-              ) : (
-                <motion.div
-                  key="empty"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="p-12 text-center"
+            {loading ? (
+              <div className="flex items-center justify-center p-12">
+                <RefreshCw className="h-6 w-6 animate-spin text-slate-400" />
+              </div>
+            ) : error ? (
+              <div className="p-12 text-center">
+                <p className="text-sm text-red-500 dark:text-red-400">{error}</p>
+                <button
+                  onClick={fetchLogs}
+                  className="mt-3 text-xs text-[#1a56f0] hover:underline"
                 >
-                  <p className="text-sm text-slate-400 dark:text-slate-500">
-                    No logs match your filters.
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+                  Try again
+                </button>
+              </div>
+            ) : (
+              <AnimatePresence mode="popLayout">
+                {paginatedLogs.length > 0 ? (
+                  paginatedLogs.map((log, index) => (
+                    <motion.div
+                      key={log.id}
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.15, delay: index * 0.02 }}
+                    >
+                      <LogRow
+                        log={log}
+                        expanded={expandedId === log.id}
+                        onToggle={() =>
+                          setExpandedId((cur) => (cur === log.id ? null : log.id))
+                        }
+                        isSuperAdmin={isSuperAdmin}
+                      />
+                    </motion.div>
+                  ))
+                ) : (
+                  <motion.div
+                    key="empty"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="p-12 text-center"
+                  >
+                    <p className="text-sm text-slate-400 dark:text-slate-500">
+                      No logs match your filters.
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            )}
           </div>
+
+          {/* Pagination */}
+          {!loading && !error && filteredLogs.length > 0 && (
+            <div className="flex-shrink-0 flex items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Showing{" "}
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  {(currentPage - 1) * PAGE_SIZE + 1}–
+                  {Math.min(currentPage * PAGE_SIZE, filteredLogs.length)}
+                </span>{" "}
+                of{" "}
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  {filteredLogs.length}
+                </span>{" "}
+                logs
+              </p>
+
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => {
+                    if (totalPages <= 7) return true;
+                    if (p === 1 || p === totalPages) return true;
+                    return Math.abs(p - currentPage) <= 2;
+                  })
+                  .reduce<(number | "...")[]>((acc, p, idx, arr) => {
+                    if (idx > 0 && typeof arr[idx - 1] === "number" && (p as number) - (arr[idx - 1] as number) > 1) {
+                      acc.push("...");
+                    }
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) =>
+                    p === "..." ? (
+                      <span key={`ellipsis-${i}`} className="px-1 text-xs text-slate-400">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={p}
+                        onClick={() => setCurrentPage(p as number)}
+                        className={`h-7 min-w-[28px] px-2 rounded-md border text-xs font-medium transition-colors ${
+                          currentPage === p
+                            ? "border-[#1a56f0] bg-[#1a56f0] text-white"
+                            : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ),
+                  )}
+
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  aria-label="Next page"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
