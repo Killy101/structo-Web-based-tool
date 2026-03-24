@@ -36,6 +36,7 @@ function formatMaintenanceBanner(operationsPolicy: {
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/settings": ["SUPER_ADMIN"],
+  "/dashboard/logs": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/validate": [],
   "/dashboard/history": [],
   "/dashboard/tasks": [
@@ -94,6 +95,10 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard/tasks": {
     title: "My Tasks",
     subtitle: "View and manage assigned tasks",
+  },
+  "/dashboard/logs": {
+    title: "Logs",
+    subtitle: "Activity and audit logs",
   },
   "/dashboard/settings": {
     title: "Settings",
@@ -248,7 +253,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const isBrdRoute =
     pathname.startsWith("/dashboard/brd") ||
     pathname.startsWith("/dashboard/compare") ||
-    pathname.startsWith("/dashboard/autocompare");
+    pathname.startsWith("/dashboard/autocompare") ||
+    pathname.startsWith("/dashboard/logs");
 
   const hasFeature = (feature: string | string[]) => {
     if (user?.role === "SUPER_ADMIN") return true;
