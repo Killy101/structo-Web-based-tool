@@ -38,7 +38,8 @@ interface ProcessingResult {
   metadata:         Record<string, unknown>;
   toc:              Record<string, unknown>;
   citations:        Record<string, unknown>;
-  content_profile:  Record<string, unknown>;
+  content_profile?: Record<string, unknown>;
+  contentProfile?:  Record<string, unknown>;
   brd_config?:      Record<string, unknown>;
   brdConfig?:       Record<string, unknown>;
   image_metadata?:  ImageMeta[];
@@ -224,12 +225,14 @@ router.post(
         cleanBrdConfig = rest;
       }
 
+      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile ?? null;
+
       const storageSectionPaths = {
         scope: await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope ?? null),
         metadata: await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata ?? null),
         toc: await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc ?? null),
         citations: await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations ?? null),
-        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extracted.content_profile ?? null),
+        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile),
         brdConfig: await uploadJsonObject(sectionPath(brdId, "brdConfig"), cleanBrdConfig),
       };
 
@@ -350,7 +353,7 @@ router.post(
         metadata: extracted.metadata,
         toc: extracted.toc,
         citations: extracted.citations,
-        contentProfile: extracted.content_profile,
+        contentProfile: extractedContentProfile,
         brdConfig: cleanBrdConfig,
         imageMetadata: responseImageMetadata,
       });
@@ -444,7 +447,7 @@ router.post(
         ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations)) as any)
         : ((existingSections?.citations as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), null)) as any));
 
-      const extractedContentProfile = extracted.content_profile;
+      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile;
       const contentProfilePointer = extractedContentProfile !== undefined && extractedContentProfile !== null
         ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile)) as any)
         : ((existingSections?.contentProfile as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), null)) as any));
@@ -511,7 +514,7 @@ router.post(
         metadata:       extracted.metadata,
         toc:            extracted.toc,
         citations:      extracted.citations,
-        contentProfile: extracted.content_profile,
+        contentProfile: extractedContentProfile,
         brdConfig:      extracted.brd_config || extracted.brdConfig || null,
         imageMetadata:  responseImageMetadata,
       });
