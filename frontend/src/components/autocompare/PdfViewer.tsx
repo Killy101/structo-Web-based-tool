@@ -33,6 +33,14 @@ interface PdfViewerProps {
   targetPage?: number;
   /** Text snippet to highlight within the rendered page */
   highlightText?: string;
+  /** Optional semantic type so highlight color matches diff panel categories */
+  highlightKind?: "added" | "removed" | "modified";
+  /** Optional list of diff-derived highlights for this chunk (ILovePDF-style view). */
+  highlightEntries?: Array<{
+    text: string;
+    kind: "added" | "removed" | "modified";
+    page?: number | null;
+  }>;
 }
 
 type StoredTextItem = {
@@ -63,6 +71,39 @@ const COLOR_MAP = {
   },
 };
 
+const HIGHLIGHT_KIND_MAP = {
+  added: {
+    fill: "rgba(34,197,94,0.35)",
+    stroke: "rgba(134,239,172,0.95)",
+    border: "rgba(34,197,94,0.6)",
+    shadow: "0 0 0 1px rgba(34,197,94,0.25), 0 0 16px rgba(34,197,94,0.10)",
+    bannerBg: "rgba(34,197,94,0.05)",
+    bannerBorder: "rgba(34,197,94,0.25)",
+    bannerText: "text-emerald-300",
+    badge: "Addition",
+  },
+  removed: {
+    fill: "rgba(239,68,68,0.35)",
+    stroke: "rgba(252,165,165,0.95)",
+    border: "rgba(239,68,68,0.6)",
+    shadow: "0 0 0 1px rgba(239,68,68,0.25), 0 0 16px rgba(239,68,68,0.10)",
+    bannerBg: "rgba(239,68,68,0.05)",
+    bannerBorder: "rgba(239,68,68,0.25)",
+    bannerText: "text-red-300",
+    badge: "Removal",
+  },
+  modified: {
+    fill: "rgba(245,158,11,0.35)",
+    stroke: "rgba(252,211,77,0.95)",
+    border: "rgba(245,158,11,0.6)",
+    shadow: "0 0 0 1px rgba(245,158,11,0.25), 0 0 16px rgba(245,158,11,0.10)",
+    bannerBg: "rgba(245,158,11,0.05)",
+    bannerBorder: "rgba(245,158,11,0.25)",
+    bannerText: "text-amber-300",
+    badge: "Modification",
+  },
+} as const;
+
 // Singleton flag — worker URL is set once for the entire app lifetime
 let pdfjsWorkerConfigured = false;
 
@@ -77,6 +118,8 @@ export default function PdfViewer({
   pageEnd,
   targetPage,
   highlightText,
+  highlightKind,
+  highlightEntries,
 }: PdfViewerProps) {
   const styles = COLOR_MAP[color];
   const containerRef = useRef<HTMLDivElement>(null);
@@ -184,40 +227,62 @@ useEffect(() => {
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
 
-    if (!searchText || searchText.length < 2) return;
-
     const norm  = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-    const query = norm(searchText);
-    const words = (query.match(/[a-z0-9][a-z0-9'\-/]{2,}/g) ?? []).slice(0, 12);
-    if (words.length === 0 && query.length < 3) return;
+    const drawByText = (
+      text: string,
+      kind: "added" | "removed" | "modified" | null,
+      strong = false,
+    ) => {
+      if (!text || text.length < 2) return;
+      const query = norm(text);
+      const words = (query.match(/[a-z0-9][a-z0-9'\-/]{2,}/g) ?? []).slice(0, 12);
+      if (words.length === 0 && query.length < 3) return;
 
-    for (const item of textItemsRef.current) {
-      if (!item.str.trim() || item.width <= 0) continue;
-      const itemNorm = norm(item.str);
-      const isMatch =
-        words.some((w) => itemNorm.includes(w)) ||
-        (query.length > 8 && itemNorm.includes(query.slice(0, 20)));
+      const palette = kind ? HIGHLIGHT_KIND_MAP[kind] : null;
 
-      if (!isMatch) continue;
+      for (const item of textItemsRef.current) {
+        if (!item.str.trim() || item.width <= 0) continue;
+        const itemNorm = norm(item.str);
+        const isMatch =
+          words.some((w) => itemNorm.includes(w)) ||
+          (query.length > 8 && itemNorm.includes(query.slice(0, 20)));
 
-      // Convert PDF text-origin point to canvas coordinates
-      // convertToViewportPoint handles scale + y-axis flip
-      const [vx, vy] = viewport.convertToViewportPoint(
-        item.transform[4],
-        item.transform[5],
-      ) as [number, number];
+        if (!isMatch) continue;
 
-      // In pdfjs-dist v5 the item dimensions are in device (canvas) pixels
-      const w = item.width;
-      const h = Math.max(item.height, 8);
+        const [vx, vy] = viewport.convertToViewportPoint(
+          item.transform[4],
+          item.transform[5],
+        ) as [number, number];
 
-      ctx.fillStyle   = styles.highlightFill;
-      ctx.strokeStyle = styles.highlightStroke;
-      ctx.lineWidth   = 1;
-      ctx.fillRect  (vx, vy - h, w, h + 2);
-      ctx.strokeRect(vx, vy - h, w, h + 2);
+        const w = item.width;
+        const h = Math.max(item.height, 8);
+
+        ctx.fillStyle   = palette?.fill ?? styles.highlightFill;
+        ctx.strokeStyle = palette?.stroke ?? styles.highlightStroke;
+        ctx.lineWidth   = strong ? 1.6 : 1;
+        ctx.fillRect  (vx, vy - h, w, h + 2);
+        ctx.strokeRect(vx, vy - h, w, h + 2);
+      }
+    };
+
+    // First pass: draw all chunk-level diff highlights (subtle but complete)
+    for (const entry of highlightEntries ?? []) {
+      if (!entry?.text?.trim()) continue;
+      if (entry.page && entry.page !== currentPage) continue;
+      drawByText(entry.text, entry.kind, false);
     }
-  }, [styles.highlightFill, styles.highlightStroke]);
+
+    // Second pass: draw selected line highlight stronger on top
+    if (searchText && searchText.length >= 2) {
+      drawByText(searchText, highlightKind ?? null, true);
+    }
+  }, [
+    styles.highlightFill,
+    styles.highlightStroke,
+    highlightKind,
+    highlightEntries,
+    currentPage,
+  ]);
 
   // ── Render current page ────────────────────────────────────────────────────
 
@@ -282,12 +347,14 @@ useEffect(() => {
     if (pdfLoaded && textItemsRef.current.length > 0) {
       drawHighlights(highlightText ?? "");
     }
-  }, [highlightText, drawHighlights, pdfLoaded]);
+  }, [highlightText, highlightEntries, drawHighlights, pdfLoaded]);
 
   const pageLabel = useMemo(() => {
     if (pageStart == null) return null;
     return `Pages ${pageStart + 1}–${pageEnd ?? pageStart + 1}`;
   }, [pageStart, pageEnd]);
+
+  const palette = highlightKind ? HIGHLIGHT_KIND_MAP[highlightKind] : null;
 
   // ── JSX ────────────────────────────────────────────────────────────────────
 
@@ -295,10 +362,10 @@ useEffect(() => {
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
       style={{
-        borderColor: highlightText ? "rgba(250,204,21,0.6)" : styles.border,
+        borderColor: highlightText ? (palette?.border ?? "rgba(250,204,21,0.6)") : styles.border,
         background: "rgba(6,13,26,0.6)",
         boxShadow: highlightText
-          ? "0 0 0 1px rgba(250,204,21,0.25), 0 0 16px rgba(250,204,21,0.08)"
+          ? (palette?.shadow ?? "0 0 0 1px rgba(250,204,21,0.25), 0 0 16px rgba(250,204,21,0.08)")
           : "none",
         transition: "border-color 0.3s, box-shadow 0.3s",
       }}
@@ -337,9 +404,14 @@ useEffect(() => {
       {highlightText && (
         <div
           className="px-3 py-1.5 border-b text-[10px] flex items-center gap-1.5"
-          style={{ borderColor: "rgba(250,204,21,0.25)", background: "rgba(250,204,21,0.05)" }}
+          style={{
+            borderColor: palette?.bannerBorder ?? "rgba(250,204,21,0.25)",
+            background: palette?.bannerBg ?? "rgba(250,204,21,0.05)",
+          }}
         >
-          <span className="text-yellow-400 flex-shrink-0">⚡ Highlighted:</span>
+          <span className={`${palette?.bannerText ?? "text-yellow-400"} flex-shrink-0`}>
+            ⚡ {palette?.badge ? `${palette.badge}:` : "Highlighted:"}
+          </span>
           <span className="text-slate-200 truncate">{highlightText.slice(0, 150)}</span>
         </div>
       )}

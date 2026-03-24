@@ -922,6 +922,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const [saving,    setSaving]      = useState(false);
   const [savedToDB, setSavedToDB]   = useState(false);
   const [saveError, setSaveError]   = useState<string | null>(null);
+  const [savedVersionLabel, setSavedVersionLabel] = useState<string | null>(null);
   const generateUnlocked            = !canEdit || savedToDB;
   const [metajsonModal, setMetajsonModal] = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"metajson.json"});
   const [innodModal,    setInnodModal]    = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"innod_metajson.json"});
@@ -978,9 +979,30 @@ export default function Generate({ brdId, title, format, status, initialData, on
   }
 
   async function handleSaveBrd() {
-    if (!brdId) return; setSaving(true); setSaveError(null);
+    if (!brdId) return; setSaving(true); setSaveError(null); setSavedVersionLabel(null);
     try {
       await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      try {
+        const versionResponse = await api.post<{ versionNum: number; label?: string }>(`/brd/${brdId}/versions`, {
+          scope: scopeData,
+          metadata: metadataData,
+          toc: tocData,
+          citations: citationsData,
+          contentProfile: contentProfileData,
+          brdConfig: brdConfigData,
+        });
+        setSavedVersionLabel(
+          versionResponse.data.label?.trim() ||
+            `v${versionResponse.data.versionNum}.0`,
+        );
+      } catch (versionErr: unknown) {
+        const versionError = versionErr as { response?: { data?: { error?: string } }; message?: string };
+        setSaveError(
+          versionError?.response?.data?.error ??
+            versionError?.message ??
+            "BRD saved, but failed to create a new version snapshot.",
+        );
+      }
       setSavedToDB(true);
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } }; message?: string };
@@ -1170,8 +1192,8 @@ export default function Generate({ brdId, title, format, status, initialData, on
                 ) : (
                   <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-500/10">
                     <svg className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">{saveStatusLabel}</span></p>
-                    <button onClick={()=>setSavedToDB(false)} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
+                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">{saveStatusLabel}</span>{savedVersionLabel ? <> and snapshot <span className="font-bold">{savedVersionLabel}</span> was created</> : null}</p>
+                    <button onClick={()=>{ setSavedToDB(false); setSavedVersionLabel(null); }} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
                   </div>
                 )}
               </div>

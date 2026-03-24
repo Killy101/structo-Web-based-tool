@@ -24,6 +24,17 @@ type OperationsPolicyState = {
   maintenanceMode: boolean;
   strictRateLimitMode: boolean;
   auditDigestEnabled: boolean;
+  maintenanceBannerMessage: string;
+  maintenanceWindowStartUtc: string;
+  maintenanceWindowEndUtc: string;
+  maintenanceLearnMoreUrl: string;
+};
+
+type GovernanceChangeEntry = {
+  field: string;
+  section: "security" | "operations";
+  before: unknown;
+  after: unknown;
 };
 
 const DEFAULT_SECURITY_POLICY: SecurityPolicyState = {
@@ -42,6 +53,11 @@ const DEFAULT_OPERATIONS_POLICY: OperationsPolicyState = {
   maintenanceMode: false,
   strictRateLimitMode: false,
   auditDigestEnabled: true,
+  maintenanceBannerMessage:
+    "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.",
+  maintenanceWindowStartUtc: "",
+  maintenanceWindowEndUtc: "",
+  maintenanceLearnMoreUrl: "",
 };
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -104,6 +120,13 @@ function normalizeSecurityPolicy(input: unknown): SecurityPolicyState {
 
 function normalizeOperationsPolicy(input: unknown): OperationsPolicyState {
   const raw = asObject(input);
+  const bannerMessage = String(
+    raw.maintenanceBannerMessage ?? DEFAULT_OPERATIONS_POLICY.maintenanceBannerMessage,
+  ).trim();
+  const windowStart = String(raw.maintenanceWindowStartUtc ?? "").trim();
+  const windowEnd = String(raw.maintenanceWindowEndUtc ?? "").trim();
+  const learnMore = String(raw.maintenanceLearnMoreUrl ?? "").trim();
+
   return {
     maintenanceMode:
       raw.maintenanceMode === undefined
@@ -117,7 +140,37 @@ function normalizeOperationsPolicy(input: unknown): OperationsPolicyState {
       raw.auditDigestEnabled === undefined
         ? DEFAULT_OPERATIONS_POLICY.auditDigestEnabled
         : Boolean(raw.auditDigestEnabled),
+    maintenanceBannerMessage:
+      bannerMessage || DEFAULT_OPERATIONS_POLICY.maintenanceBannerMessage,
+    maintenanceWindowStartUtc: windowStart,
+    maintenanceWindowEndUtc: windowEnd,
+    maintenanceLearnMoreUrl: learnMore,
   };
+}
+
+function isSameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function collectChanges(
+  section: "security" | "operations",
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): GovernanceChangeEntry[] {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const changes: GovernanceChangeEntry[] = [];
+
+  for (const key of keys) {
+    if (isSameValue(before[key], after[key])) continue;
+    changes.push({
+      field: key,
+      section,
+      before: before[key],
+      after: after[key],
+    });
+  }
+
+  return changes;
 }
 
 async function loadGovernanceSettings() {
@@ -208,6 +261,7 @@ router.patch(
   authorize(["SUPER_ADMIN"]),
   async (req: AuthRequest, res: Response) => {
     try {
+      const current = await loadGovernanceSettings();
       const securityPolicy = normalizeSecurityPolicy(req.body?.securityPolicy);
       const operationsPolicy = normalizeOperationsPolicy(req.body?.operationsPolicy);
 
@@ -224,11 +278,30 @@ router.patch(
         }),
       ]);
 
+      const changes = [
+        ...collectChanges(
+          "security",
+          current.securityPolicy as unknown as Record<string, unknown>,
+          securityPolicy as unknown as Record<string, unknown>,
+        ),
+        ...collectChanges(
+          "operations",
+          current.operationsPolicy as unknown as Record<string, unknown>,
+          operationsPolicy as unknown as Record<string, unknown>,
+        ),
+      ];
+
+      const sections = Array.from(new Set(changes.map((c) => c.section)));
+
       await prisma.userLog.create({
         data: {
           userId:  req.user!.userId,
           action:  "GOVERNANCE_SETTINGS_UPDATED",
-          details: "Updated governance security and operations settings",
+          details: JSON.stringify({
+            message: "Updated governance settings",
+            sections,
+            changes,
+          }),
         },
       });
 

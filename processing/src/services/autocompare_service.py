@@ -37,6 +37,7 @@ import difflib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -502,14 +503,23 @@ async def start_processing(
 
     # ── Step 1: Extract text from both PDFs ──────────────────────────────────
     try:
+        old_batches_total = max(1, math.ceil(max(session.get("old_pages", 0), 1) / max(batch_size, 1)))
+        new_batches_total = max(1, math.ceil(max(session.get("new_pages", 0), 1) / max(batch_size, 1)))
+        extraction_total_batches = max(1, old_batches_total + new_batches_total)
+        extraction_done_batches = 0
+
         old_pages_text: list[str] = []
         for _, batch, _ in _stream_pdf_pages(old_pdf_bytes, batch_size):
             old_pages_text.extend(batch)
+            extraction_done_batches += 1
+            session["progress"] = min(29, int((extraction_done_batches / extraction_total_batches) * 30))
             await asyncio.sleep(0)
 
         new_pages_text: list[str] = []
         for _, batch, _ in _stream_pdf_pages(new_pdf_bytes, batch_size):
             new_pages_text.extend(batch)
+            extraction_done_batches += 1
+            session["progress"] = min(29, int((extraction_done_batches / extraction_total_batches) * 30))
             await asyncio.sleep(0)
     except Exception as exc:
         session["status"] = "error"

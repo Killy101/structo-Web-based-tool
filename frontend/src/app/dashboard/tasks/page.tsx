@@ -7,8 +7,8 @@ import { useBrds } from "@/hooks";
 import { brdApi } from "@/services/api";
 import type { BrdSourceItem } from "@/types";
 
-type BrdProcessStatus = "COMPLETED" | "ON_HOLD";
-type FilterKey = "All" | "COMPLETED" | "ON_HOLD";
+type BrdProcessStatus = "APPROVED" | "ON_HOLD";
+type FilterKey = "All" | "APPROVED" | "ON_HOLD";
 type SortField = "name" | "date";
 type SortDirection = "asc" | "desc";
 interface ProcessBrd extends BrdSourceItem {
@@ -22,7 +22,7 @@ interface QueryModalProps {
 }
 
 const STATUS_BADGE: Record<BrdProcessStatus, string> = {
-  COMPLETED:
+  APPROVED:
     "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
   ON_HOLD:
     "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
@@ -60,7 +60,7 @@ const ChevronDownIcon = () => (
 );
 
 function isProcessStatus(status: string): status is BrdProcessStatus {
-  return status === "COMPLETED" || status === "ON_HOLD";
+  return status === "APPROVED" || status === "ON_HOLD";
 }
 
 function QueryModal({ brd, onClose, onSubmitted }: QueryModalProps) {
@@ -174,7 +174,7 @@ export default function MyTaskPage() {
         acc[brd.status] += 1;
         return acc;
       },
-      { total: 0, COMPLETED: 0, ON_HOLD: 0 },
+      { total: 0, APPROVED: 0, ON_HOLD: 0 },
     );
   }, [processBrds]);
 
@@ -235,7 +235,7 @@ export default function MyTaskPage() {
       <div className="px-6 pt-5 pb-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
         <div>
           <h1 className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">BRD Process</h1>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">View BRD documents with Completed and On Hold status. On Hold documents cannot be opened.</p>
+          <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">View BRD documents with Approved and On Hold status. On Hold documents cannot be opened.</p>
         </div>
       </div>
 
@@ -243,8 +243,8 @@ export default function MyTaskPage() {
       <div className="flex flex-wrap gap-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         {[
           { label: "Total Documents", value: counts.total, color: "text-blue-600 dark:text-blue-400", border: "border-r border-slate-200 dark:border-slate-800" },
-          { label: "Completed",       value: counts.COMPLETED, color: "text-emerald-600 dark:text-emerald-400", border: "border-r border-slate-200 dark:border-slate-800" },
-          { label: "On Hold",         value: counts.ON_HOLD,   color: "text-amber-600 dark:text-amber-400",   border: "" },
+          { label: "Approved", value: counts.APPROVED, color: "text-emerald-600 dark:text-emerald-400", border: "border-r border-slate-200 dark:border-slate-800" },
+          { label: "On Hold", value: counts.ON_HOLD, color: "text-amber-600 dark:text-amber-400", border: "" },
         ].map((s) => (
           <div key={s.label} className={`flex items-center gap-3 px-6 py-4 flex-1 min-w-[120px] ${s.border}`}>
             <div>
@@ -276,7 +276,7 @@ export default function MyTaskPage() {
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer"
           >
             <option value="All">All Status</option>
-            <option value="COMPLETED">Completed</option>
+            <option value="APPROVED">Approved</option>
             <option value="ON_HOLD">On Hold</option>
           </select>
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">
@@ -399,7 +399,7 @@ export default function MyTaskPage() {
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-center">
                       <Badge className={`font-medium ${STATUS_BADGE[brd.status]}`}>
-                        {brd.status === "ON_HOLD" ? "On Hold" : "Completed"}
+                        {brd.status === "ON_HOLD" ? "On Hold" : "Approved"}
                       </Badge>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-center">

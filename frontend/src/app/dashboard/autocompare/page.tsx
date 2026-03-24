@@ -24,7 +24,7 @@
  *  └──────────────┴──────────────┴──────────────┴─────────────┘
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useTheme } from "../../../context/ThemContext";
 
@@ -486,6 +486,9 @@ function ReuploadModal({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function AutoComparePage() {
+  type HighlightKind = "added" | "removed" | "modified";
+  type PdfHighlightEntry = { text: string; kind: HighlightKind; page?: number | null };
+
   // ── Theme ──
   const { dark, toggle } = useTheme();
 
@@ -522,6 +525,8 @@ export default function AutoComparePage() {
   const [newPdfTargetPage,  setNewPdfTargetPage]  = useState<number | null>(null);
   const [oldHighlightText,  setOldHighlightText]  = useState("");
   const [newHighlightText,  setNewHighlightText]  = useState("");
+  const [oldHighlightKind,  setOldHighlightKind]  = useState<HighlightKind | null>(null);
+  const [newHighlightKind,  setNewHighlightKind]  = useState<HighlightKind | null>(null);
   const [xmlHighlightText,  setXmlHighlightText]  = useState("");
 
   // Validate
@@ -558,6 +563,32 @@ export default function AutoComparePage() {
   };
   const selectedChunkRow   = selectedChunkIdx >= 0 ? chunks[selectedChunkIdx] : null;
   const selectedChunkTitle = selectedChunkRow ? `${selectedChunkRow.label} (#${selectedChunkRow.index})` : null;
+  const selectedDiffLine =
+    selected && selectedDiffLineIndex !== null
+      ? (selected.diff_lines[selectedDiffLineIndex] ?? null)
+      : null;
+
+  const oldPdfHighlights = useMemo<PdfHighlightEntry[]>(() => {
+    if (!selected) return [];
+    return selected.diff_lines
+      .flatMap((line) => {
+        const text = (line.old_text ?? "").trim();
+        if (!text) return [];
+        return [{ text, kind: line.type, page: line.old_page ?? null } as PdfHighlightEntry];
+      })
+      .slice(0, 400);
+  }, [selected]);
+
+  const newPdfHighlights = useMemo<PdfHighlightEntry[]>(() => {
+    if (!selected) return [];
+    return selected.diff_lines
+      .flatMap((line) => {
+        const text = (line.new_text ?? "").trim();
+        if (!text) return [];
+        return [{ text, kind: line.type, page: line.new_page ?? null } as PdfHighlightEntry];
+      })
+      .slice(0, 400);
+  }, [selected]);
 
   // ── Feature #9: Session persistence ──────────────────────────────────────
   // On mount, try to restore the last session from localStorage
@@ -640,6 +671,11 @@ export default function AutoComparePage() {
   // ── Upload complete → kick off processing ──────────────────────────────────
 
   const handleUploaded = useCallback(async (response: UploadResponse, oldPdf: File, newPdf: File) => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+
     setSessionId(response.session_id);
     setSourceName(response.source_name);
     setOldPdfFile(oldPdf);
@@ -656,9 +692,12 @@ export default function AutoComparePage() {
       return;
     }
 
+    let transientFailures = 0;
+
     pollRef.current = setInterval(async () => {
       try {
         const status = await pollStatus(response.session_id);
+        transientFailures = 0;
         setProgress(status.progress);
         if ((status as { expires_at?: number }).expires_at) setExpiresAt((status as { expires_at?: number }).expires_at ?? null);
         if (status.status === "done") {
@@ -680,10 +719,19 @@ export default function AutoComparePage() {
           }, 800);
         } else if (status.status === "error") {
           clearInterval(pollRef.current!);
+          pollRef.current = null;
           showToast(status.error ?? "Processing failed", "error");
           setStage("upload");
         }
-      } catch { /* transient */ }
+      } catch {
+        transientFailures += 1;
+        if (transientFailures >= 5) {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          showToast("Connection to processing service was lost. Please try again.", "error");
+          setStage("upload");
+        }
+      }
     }, 1500);
   }, [showToast]);
 
@@ -715,6 +763,8 @@ export default function AutoComparePage() {
       setXmlFocusLine(null);
       setOldHighlightText("");
       setNewHighlightText("");
+      setOldHighlightKind(null);
+      setNewHighlightKind(null);
       setXmlHighlightText("");
       const { startPage } = getChunkPageBounds(resp.chunk);
       setOldPdfTargetPage(startPage);
@@ -806,6 +856,8 @@ export default function AutoComparePage() {
 
     setOldHighlightText(oldText);
     setNewHighlightText(newText);
+    setOldHighlightKind(oldText ? (line.type === "added" ? null : line.type) : null);
+    setNewHighlightKind(newText ? (line.type === "removed" ? null : line.type) : null);
     setXmlHighlightText(newText || oldText);
     if (selected) {
       const fallback = getTargetPageForDiffLine(selected, index);
@@ -818,6 +870,60 @@ export default function AutoComparePage() {
       setXmlFocusRequestId((v) => v + 1);
     }
   }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine]);
+
+  const applySelectedDiffToXml = useCallback(() => {
+    if (!selectedDiffLine) {
+      showToast("Select a diff line first.", "error");
+      return;
+    }
+
+    const oldText = (selectedDiffLine.old_text ?? "").trim();
+    const newText = (selectedDiffLine.new_text ?? "").trim();
+
+    if (!oldText && !newText) {
+      showToast("No structured old/new text available for this line.", "error");
+      return;
+    }
+
+    // Added lines need context-aware placement; avoid unsafe auto-inserts.
+    if (selectedDiffLine.type === "added") {
+      showToast("Added lines need placement context. Use Copy and paste into the correct XML node.", "error");
+      return;
+    }
+
+    const working = xmlDraft;
+    if (!working) {
+      showToast("XML editor is empty.", "error");
+      return;
+    }
+
+    if (selectedDiffLine.type === "removed") {
+      if (!oldText || !working.includes(oldText)) {
+        showToast("Old text not found in XML. Use manual edit for this change.", "error");
+        return;
+      }
+      const updated = working.replace(oldText, "");
+      setXmlDraft(updated);
+      handleAutoSave(updated);
+      showToast("Applied removal to XML draft.", "success");
+      return;
+    }
+
+    // modified
+    if (!oldText || !newText) {
+      showToast("This modified line is missing old/new text payload.", "error");
+      return;
+    }
+    if (!working.includes(oldText)) {
+      showToast("Old text not found in XML. Use manual edit for this change.", "error");
+      return;
+    }
+
+    const updated = working.replace(oldText, newText);
+    setXmlDraft(updated);
+    handleAutoSave(updated);
+    showToast("Applied replacement to XML draft.", "success");
+  }, [selectedDiffLine, xmlDraft, handleAutoSave, showToast]);
 
   // ── Save XML (Feature #1: marks chunk as saved) ───────────────────────────
 
@@ -923,6 +1029,10 @@ export default function AutoComparePage() {
 
   const handleReuploadDone = useCallback(async () => {
     if (!sessionId) return;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     setShowReupload(false);
     setStage("processing");
     setProgress(0);
@@ -936,12 +1046,16 @@ export default function AutoComparePage() {
       setStage("review");
       return;
     }
+    let transientFailures = 0;
+
     pollRef.current = setInterval(async () => {
       try {
         const status = await pollStatus(sessionId);
+        transientFailures = 0;
         setProgress(status.progress);
         if (status.status === "done") {
           clearInterval(pollRef.current!);
+          pollRef.current = null;
           setSummary(status.summary as SessionSummary);
           setTimeout(async () => {
             try {
@@ -958,10 +1072,19 @@ export default function AutoComparePage() {
           }, 800);
         } else if (status.status === "error") {
           clearInterval(pollRef.current!);
+          pollRef.current = null;
           showToast(status.error ?? "Processing failed", "error");
           setStage("review");
         }
-      } catch { /* transient */ }
+      } catch {
+        transientFailures += 1;
+        if (transientFailures >= 5) {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          showToast("Connection to processing service was lost. Please try re-uploading.", "error");
+          setStage("review");
+        }
+      }
     }, 1500);
   }, [sessionId, showToast]);
 
@@ -985,6 +1108,8 @@ export default function AutoComparePage() {
     setNewPdfTargetPage(null);
     setOldHighlightText("");
     setNewHighlightText("");
+    setOldHighlightKind(null);
+    setNewHighlightKind(null);
     setXmlHighlightText("");
     setOldPdfFile(null);
     setNewPdfFile(null);
@@ -1292,6 +1417,8 @@ export default function AutoComparePage() {
                           pageEnd={selected.page_end}
                           targetPage={oldPdfTargetPage ?? undefined}
                           highlightText={oldHighlightText || undefined}
+                          highlightKind={oldHighlightKind ?? undefined}
+                          highlightEntries={oldPdfHighlights}
                         />
                       ) : (
                         <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-blue-500/15 bg-slate-50 dark:bg-[rgba(6,13,26,0.6)] text-slate-500 text-xs">
@@ -1318,6 +1445,8 @@ export default function AutoComparePage() {
                           pageEnd={selected.page_end}
                           targetPage={newPdfTargetPage ?? undefined}
                           highlightText={newHighlightText || undefined}
+                          highlightKind={newHighlightKind ?? undefined}
+                          highlightEntries={newPdfHighlights}
                         />
                       ) : (
                         <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-violet-500/15 bg-slate-50 dark:bg-[rgba(6,13,26,0.6)] text-slate-500 text-xs">
@@ -1347,6 +1476,62 @@ export default function AutoComparePage() {
                         Ctrl+S to save · click Diff to compare with original
                       </span>
                     </div>
+                    {selectedDiffLineIndex !== null && (
+                      <div className="flex-shrink-0 px-2 py-1 text-[10px] rounded-md border border-cyan-500/25 bg-cyan-500/10 text-cyan-200">
+                        Tip: selected diff line is synced to Old/New PDF and XML editor. Use this as your guide to update XML.
+                      </div>
+                    )}
+                    {selectedDiffLine && (
+                      <div className="flex-shrink-0 p-2 rounded-md border border-slate-700/60 bg-slate-900/50 text-[10px] space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="text-slate-400 font-semibold uppercase tracking-wider">Selected Change Guide</p>
+                          <button
+                            type="button"
+                            onClick={applySelectedDiffToXml}
+                            className="ml-auto text-[9px] px-2 py-0.5 rounded border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/20"
+                            title="Apply this selected change to XML draft when old text is found"
+                          >
+                            Apply to XML
+                          </button>
+                        </div>
+                        {selectedDiffLine.old_text ? (
+                          <div className="rounded border border-red-500/30 bg-red-500/10 p-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-red-300 font-semibold">Old Text</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(selectedDiffLine.old_text ?? "");
+                                  showToast("Old text copied", "success");
+                                }}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-red-400/30 text-red-200 hover:bg-red-500/20"
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <p className="mt-1 text-red-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.old_text}</p>
+                          </div>
+                        ) : null}
+                        {selectedDiffLine.new_text ? (
+                          <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-emerald-300 font-semibold">New Text</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(selectedDiffLine.new_text ?? "");
+                                  showToast("New text copied", "success");
+                                }}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/20"
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <p className="mt-1 text-emerald-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.new_text}</p>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <XmlEditor
                         value={xmlDraft}

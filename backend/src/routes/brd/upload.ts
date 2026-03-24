@@ -8,6 +8,7 @@ import path from "path";
 import prisma from "../../lib/prisma";
 import { uploadLimiter, processingLimiter } from "../../middleware/rateLimits";
 import { Prisma } from "@prisma/client"; 
+import { requireBrdCreate, requireBrdEdit } from "../../middleware/brd-access";
 import {
   makeStoragePointer,
   sanitizePathPart,
@@ -147,6 +148,7 @@ function buildTitle(
 
 router.post(
   "/upload",
+  requireBrdCreate,
   uploadLimiter,
   upload.single("file"),
   async (req: Request, res: Response) => {
@@ -380,6 +382,7 @@ router.post(
 // sections and images are replaced.
 router.post(
   "/re-upload/:brdId",
+  requireBrdEdit,
   processingLimiter,
   upload.single("file"),
   async (req: Request, res: Response) => {

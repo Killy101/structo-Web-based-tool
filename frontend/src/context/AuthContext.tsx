@@ -51,12 +51,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // On startup, retry up to 5 times (2 s apart) so the frontend can
+    // survive the backend's ts-node/nodemon cold-start delay without
+    // immediately flashing the "Unable to connect" error screen.
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 2000;
+
     const init = async () => {
-      if (getToken()) await refreshUser();
+      if (!getToken()) {
+        setIsLoading(false);
+        return;
+      }
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          const { user } = await authApi.me();
+          setUser(user);
+          break; // success — exit loop
+        } catch (error) {
+          if (
+            axios.isAxiosError(error) &&
+            error.response &&
+            (error.response.status === 401 || error.response.status === 403)
+          ) {
+            // Invalid / expired token — remove and stop retrying immediately.
+            removeToken();
+            setUser(null);
+            break;
+          }
+
+          // Network / server error (backend still starting up).
+          // Wait and retry unless this was the last attempt.
+          if (attempt < MAX_RETRIES - 1) {
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+          } else {
+            // All retries exhausted — surface the error UI.
+            setUser(null);
+          }
+        }
+      }
+
       setIsLoading(false);
     };
+
     init();
-  }, [refreshUser]);
+  }, []);
 
   const login = async (userId: string, password: string) => {
     const res = await authApi.login(userId, password);

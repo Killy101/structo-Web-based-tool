@@ -13,6 +13,26 @@ import { getToken, settingsApi } from "../../services/api";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
 import type { Role } from "../../types";
 
+const DEFAULT_MAINTENANCE_BANNER =
+  "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.";
+
+function formatMaintenanceBanner(operationsPolicy: {
+  maintenanceBannerMessage?: string;
+  maintenanceWindowStartUtc?: string;
+  maintenanceWindowEndUtc?: string;
+}): string {
+  const custom = String(operationsPolicy.maintenanceBannerMessage ?? "").trim();
+  if (custom) return custom;
+
+  const start = String(operationsPolicy.maintenanceWindowStartUtc ?? "").trim();
+  const end = String(operationsPolicy.maintenanceWindowEndUtc ?? "").trim();
+  if (start && end) {
+    return `Scheduled maintenance window: ${start} to ${end}. Write operations are temporarily unavailable.`;
+  }
+
+  return DEFAULT_MAINTENANCE_BANNER;
+}
+
 const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/users": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/settings": ["SUPER_ADMIN"],
@@ -91,6 +111,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [maintenanceBannerMessage, setMaintenanceBannerMessage] = useState(
+    DEFAULT_MAINTENANCE_BANNER,
+  );
   const [strictRateLimitMode, setStrictRateLimitMode] = useState(false);
   const splashCheckedRef = useRef(false);
   const redirectedRef = useRef(false);
@@ -149,6 +172,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           await settingsApi.getOperationsStatus();
         if (!active) return;
         setMaintenanceMode(Boolean(operationsPolicy.maintenanceMode));
+        setMaintenanceBannerMessage(formatMaintenanceBanner(operationsPolicy));
         setStrictRateLimitMode(Boolean(operationsPolicy.strictRateLimitMode));
         if (typeof timeout === "number" && timeout >= 5) {
           setSessionTimeoutMinutes(timeout);
@@ -156,6 +180,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       } catch {
         if (!active) return;
         setMaintenanceMode(false);
+        setMaintenanceBannerMessage(DEFAULT_MAINTENANCE_BANNER);
         setStrictRateLimitMode(false);
       }
     };
@@ -272,7 +297,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex flex-col overflow-hidden">
         {maintenanceMode && (
           <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
-            Maintenance mode is active — write operations are temporarily restricted.
+            {maintenanceBannerMessage}
           </div>
         )}
         {!maintenanceMode && strictRateLimitMode && (

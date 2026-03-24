@@ -3,6 +3,14 @@ import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
 import { authenticate, AuthRequest } from "../../middleware/authenticate";
 import { authorize } from "../../middleware/authorize";
+import {
+  canReadBrdStatus,
+  getBrdAccessPolicy,
+  getBrdVisibilityStatuses,
+  requireBrdDelete,
+  requireBrdEdit,
+  requireBrdTrashAccess,
+} from "../../middleware/brd-access";
 import { notifyMany } from "../../lib/notify";
 import { downloadJsonObject, extractStoragePath, removeObjects } from "../../lib/supabase-storage";
 import { repairBrdSectionStoragePaths } from "../../lib/brd-storage-repair";
@@ -110,10 +118,18 @@ function resolveGeography(meta: Record<string, unknown> | null): string {
 }
 
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
-router.get("/", async (_req: Request, res: Response) => {
+router.get("/", async (_req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    const visibleStatuses = getBrdVisibilityStatuses(accessPolicy);
+
     const brds = await (prisma as any).brd.findMany({
-      where: { deletedAt: null },
+      where: {
+        deletedAt: null,
+        ...(visibleStatuses && visibleStatuses.length > 0
+          ? { status: { in: visibleStatuses } }
+          : {}),
+      },
       orderBy: { createdAt: "asc" },
       select: {
         id:        true,
@@ -159,7 +175,7 @@ router.get("/", async (_req: Request, res: Response) => {
       const latestVersionNum = b.versions?.[0]?.versionNum;
       const latestVersion =
         (typeof latestVersionLabel === "string" && latestVersionLabel.trim())
-        || (typeof latestVersionNum === "number" ? `v${latestVersionNum}.0` : "—");
+        || (typeof latestVersionNum === "number" ? `v${latestVersionNum}.0` : "v1.0");
 
       return {
         id:          b.brdId,
@@ -180,7 +196,7 @@ router.get("/", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/deleted — list soft-deleted BRDs ─────────────────────────────
-router.get("/deleted", async (_req: Request, res: Response) => {
+router.get("/deleted", requireBrdTrashAccess, async (_req: AuthRequest, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
       where: { deletedAt: { not: null } },
@@ -225,8 +241,13 @@ router.get("/deleted", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/next-id ───────────────────────────────────────────────────────
-router.get("/next-id", async (_req: Request, res: Response) => {
+router.get("/next-id", async (_req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    if (!accessPolicy.canCreate) {
+      return res.status(403).json({ error: "Only Pre-Production team can create BRDs." });
+    }
+
     const allBrdIds = await prisma.brd.findMany({ where: { deletedAt: null }, select: { brdId: true } });
     const maxNum = allBrdIds.reduce((max, { brdId }) => {
       const n = parseInt(brdId.replace("BRD-", ""), 10);
@@ -239,8 +260,13 @@ router.get("/next-id", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/check-duplicate?filename=xxx ─────────────────────────────────
-router.get("/check-duplicate", async (req: Request, res: Response) => {
+router.get("/check-duplicate", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    if (!accessPolicy.canCreate) {
+      return res.status(403).json({ error: "Only Pre-Production team can create BRDs." });
+    }
+
     const raw      = String(req.query.filename ?? "");
     const filename = decodeURIComponent(raw.replace(/\+/g, " ")).trim();
 
@@ -292,8 +318,13 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
 });
 
 // ── GET /brd/check-duplicate-title?title=xxx ──────────────────────────────
-router.get("/check-duplicate-title", async (req: Request, res: Response) => {
+router.get("/check-duplicate-title", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    if (!accessPolicy.canEdit) {
+      return res.status(403).json({ error: "Only Pre-Production team can edit BRDs." });
+    }
+
     const raw   = String(req.query.title ?? "").trim();
     const title = decodeURIComponent(raw.replace(/\+/g, " ")).trim();
 
@@ -343,7 +374,7 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
 // ── POST /brd/admin/repair-section-paths — repair legacy storage pointers ──
 router.post(
   "/admin/repair-section-paths",
-  authenticate,
+  requireBrdEdit,
   authorize(["SUPER_ADMIN", "ADMIN"]),
   async (req: AuthRequest, res: Response) => {
     try {
@@ -382,13 +413,18 @@ router.post(
 );
 
 // ── GET /brd/:brdId — single BRD with all section blobs ───────────────────
-router.get("/:brdId", async (req: Request, res: Response) => {
+router.get("/:brdId", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+
     const brd = await prisma.brd.findUnique({
       where:   { brdId: String(req.params.brdId) },
       include: { sections: true },
     });
     if (!brd || brd.deletedAt !== null) return res.status(404).json({ error: "BRD not found" });
+    if (!canReadBrdStatus(accessPolicy, brd.status)) {
+      return res.status(403).json({ error: "You can only view BRDs with APPROVED or ON_HOLD status." });
+    }
 
     const [scope, metadata, toc, citations, contentProfile, brdConfig] = await Promise.all([
       resolveMaybeStoredJson(brd.sections?.scope          ?? null),
@@ -497,7 +533,7 @@ router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Respons
 });
 
 // ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
-router.delete("/:brdId", authenticate, async (req: Request, res: Response) => {
+router.delete("/:brdId", requireBrdDelete, async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -517,7 +553,7 @@ router.delete("/:brdId", authenticate, async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
-router.post("/:brdId/restore", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
+router.post("/:brdId/restore", requireBrdTrashAccess, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -538,7 +574,7 @@ router.post("/:brdId/restore", authenticate, authorize(["SUPER_ADMIN", "ADMIN"])
 });
 
 // ── DELETE /brd/:brdId/permanent — hard delete (trash only) ───────────────
-router.delete("/:brdId/permanent", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
+router.delete("/:brdId/permanent", requireBrdTrashAccess, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId);
 
@@ -603,10 +639,19 @@ router.delete("/:brdId/permanent", authenticate, authorize(["SUPER_ADMIN", "ADMI
 });
 
 // ── PATCH /brd/:brdId — update status, title, or format ──────────────────
-router.patch("/:brdId", authenticate, async (req: Request, res: Response) => {
+router.patch("/:brdId", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
     const { status, title, format } = req.body;
     const normalizedStatus = status ? normalizeBrdStatus(status) : undefined;
+
+    if (normalizedStatus && !accessPolicy.canChangeStatus) {
+      return res.status(403).json({ error: "Only Pre-Production team can change BRD status." });
+    }
+
+    if ((title !== undefined || format !== undefined) && !accessPolicy.canEdit) {
+      return res.status(403).json({ error: "Only Pre-Production team can edit BRDs." });
+    }
 
     const existing = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -651,7 +696,7 @@ router.patch("/:brdId", authenticate, async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/fix-formats — backfill format for existing records ──────────
-router.post("/fix-formats", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (_req: Request, res: Response) => {
+router.post("/fix-formats", requireBrdEdit, authorize(["SUPER_ADMIN", "ADMIN"]), async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
       where: { deletedAt: null },

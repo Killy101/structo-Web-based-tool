@@ -15,6 +15,12 @@
 
 import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
+import { AuthRequest } from "../../middleware/authenticate";
+import {
+  canReadBrdStatus,
+  getBrdAccessPolicy,
+  requireBrdEdit,
+} from "../../middleware/brd-access";
 import {
   downloadJsonObject,
   extractStoragePath,
@@ -71,9 +77,35 @@ async function resolveSectionValue(raw: unknown): Promise<unknown> {
   return null;
 }
 
+async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
+  const brd = await prisma.brd.findUnique({
+    where: { brdId: String(req.params.brdId) },
+    select: { status: true, deletedAt: true },
+  });
+
+  if (!brd || brd.deletedAt !== null) {
+    res.status(404).json({ error: "BRD not found" });
+    return false;
+  }
+
+  const accessPolicy = getBrdAccessPolicy(res);
+  if (!canReadBrdStatus(accessPolicy, brd.status)) {
+    res
+      .status(403)
+      .json({ error: "You can only view BRDs with APPROVED or ON_HOLD status." });
+    return false;
+  }
+
+  return true;
+}
+
 // ── GET /brd/:brdId/sections — all blobs ──────────────────────────────────
-router.get("/:brdId/sections", async (req: Request, res: Response) => {
+router.get("/:brdId/sections", async (req: AuthRequest, res: Response) => {
   try {
+    if (!(await ensureReadableBrd(req, res))) {
+      return;
+    }
+
     const row = await prisma.brdSections.findUnique({
       where: { brdId: String(req.params.brdId) },
     });
@@ -115,13 +147,17 @@ router.get("/:brdId/sections", async (req: Request, res: Response) => {
 });
 
 // ── GET /brd/:brdId/sections/:name — single blob ──────────────────────────
-router.get("/:brdId/sections/:name", async (req: Request, res: Response) => {
+router.get("/:brdId/sections/:name", async (req: AuthRequest, res: Response) => {
   const name = String(req.params.name);
   if (!isValidSection(name)) {
     return res.status(400).json({ error: `Unknown section: ${name}. Valid: ${VALID_SECTIONS.join(", ")}` });
   }
 
   try {
+    if (!(await ensureReadableBrd(req, res))) {
+      return;
+    }
+
     const row = await prisma.brdSections.findUnique({
       where: { brdId: String(req.params.brdId) },
       select: { [name]: true },
@@ -137,7 +173,7 @@ router.get("/:brdId/sections/:name", async (req: Request, res: Response) => {
 // ── PUT /brd/:brdId/sections/:name — replace single blob ──────────────────
 // Body: { data: <any json> }
 // Upserts the brd_sections row if it doesn't exist yet.
-router.put("/:brdId/sections/:name", async (req: Request, res: Response) => {
+router.put("/:brdId/sections/:name", requireBrdEdit, async (req: Request, res: Response) => {
   const name   = String(req.params.name);
   const brdId  = String(req.params.brdId);
 

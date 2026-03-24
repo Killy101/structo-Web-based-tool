@@ -3,6 +3,12 @@
 
 import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
+import { AuthRequest } from "../../middleware/authenticate";
+import {
+  canReadBrdStatus,
+  getBrdAccessPolicy,
+  requireBrdEdit,
+} from "../../middleware/brd-access";
 import {
   downloadBinaryObject,
   removeObjects,
@@ -12,10 +18,36 @@ import {
 
 const router = Router();
 
+async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
+  const brd = await prisma.brd.findUnique({
+    where: { brdId: String(req.params.brdId) },
+    select: { status: true, deletedAt: true },
+  });
+
+  if (!brd || brd.deletedAt !== null) {
+    res.status(404).json({ error: "BRD not found" });
+    return false;
+  }
+
+  const accessPolicy = getBrdAccessPolicy(res);
+  if (!canReadBrdStatus(accessPolicy, brd.status)) {
+    res
+      .status(403)
+      .json({ error: "You can only view BRDs with APPROVED or ON_HOLD status." });
+    return false;
+  }
+
+  return true;
+}
+
 // ── GET /brd/:brdId/images ─────────────────────────────────────────────────
 // Returns image metadata (no binary data)
-router.get("/:brdId/images", async (req: Request, res: Response) => {
+router.get("/:brdId/images", async (req: AuthRequest, res: Response) => {
   try {
+    if (!(await ensureReadableBrd(req, res))) {
+      return;
+    }
+
     const brdId = String(req.params.brdId);
 
     const images = await prisma.brdCellImage.findMany({
@@ -48,8 +80,12 @@ router.get("/:brdId/images", async (req: Request, res: Response) => {
 
 // ── GET /brd/:brdId/images/:imageId/blob ──────────────────────────────────
 // Serves raw image bytes from Supabase Storage
-router.get("/:brdId/images/:imageId/blob", async (req: Request, res: Response) => {
+router.get("/:brdId/images/:imageId/blob", async (req: AuthRequest, res: Response) => {
   try {
+    if (!(await ensureReadableBrd(req, res))) {
+      return;
+    }
+
     const imageId = Number(req.params.imageId);
     if (isNaN(imageId)) {
       return res.status(400).json({ error: "Invalid imageId" });
@@ -90,7 +126,7 @@ router.get("/:brdId/images/:imageId/blob", async (req: Request, res: Response) =
 // Called by the BRD processing pipeline after extraction.
 // Deletes all existing images for this BRD and inserts fresh records,
 // ensuring section / fieldLabel are always up-to-date.
-router.post("/:brdId/images", async (req: Request, res: Response) => {
+router.post("/:brdId/images", requireBrdEdit, async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId);
     const records: Array<{
@@ -154,7 +190,7 @@ router.post("/:brdId/images", async (req: Request, res: Response) => {
 // ── POST /brd/:brdId/images/upload ───────────────────────────────────────────
 // Non-destructive single-image insert used by the manual "Add Image" UI.
 // Does NOT delete existing images unlike POST /brd/:brdId/images.
-router.post("/:brdId/images/upload", async (req: Request, res: Response) => {
+router.post("/:brdId/images/upload", requireBrdEdit, async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId);
     const { imageData, mimeType, mediaName, section, fieldLabel, cellText } = req.body;
@@ -207,7 +243,7 @@ router.post("/:brdId/images/upload", async (req: Request, res: Response) => {
 // ── DELETE /brd/:brdId/images/:imageId ───────────────────────────────────────
 // Removes a single manually-uploaded image.
 // Verifies the image belongs to the specified BRD before deleting.
-router.delete("/:brdId/images/:imageId", async (req: Request, res: Response) => {
+router.delete("/:brdId/images/:imageId", requireBrdEdit, async (req: Request, res: Response) => {
   try {
     const brdId   = String(req.params.brdId);
     const imageId = Number(req.params.imageId);

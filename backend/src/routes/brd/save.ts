@@ -3,6 +3,7 @@ import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
 import { BrdFormat, BrdStatus, Prisma } from "@prisma/client";
 import { makeStoragePointer, uploadJsonObject } from "../../lib/supabase-storage";
+import { requireBrdCreate } from "../../middleware/brd-access";
 
 const router = Router();
 
@@ -67,7 +68,7 @@ async function persistSection(brdId: string, name: string, value: unknown): Prom
 }
 
 // ── POST /brd/save ─────────────────────────────────────────────────────────
-router.post("/save", async (req: Request, res: Response) => {
+router.post("/save", requireBrdCreate, async (req: Request, res: Response) => {
   try {
     // Guard: ensure body was parsed correctly as JSON.
     // If the frontend sends FormData or forgets Content-Type: application/json,

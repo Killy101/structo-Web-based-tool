@@ -10,6 +10,12 @@
 import { Router, Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
+import { AuthRequest } from "../../middleware/authenticate";
+import {
+  canReadBrdStatus,
+  getBrdAccessPolicy,
+  requireBrdEdit,
+} from "../../middleware/brd-access";
 import {
   downloadJsonObject,
   extractStoragePath,
@@ -19,6 +25,28 @@ import {
 } from "../../lib/supabase-storage";
 
 const router = Router();
+
+async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
+  const brd = await prisma.brd.findUnique({
+    where: { brdId: String(req.params.brdId) },
+    select: { status: true, deletedAt: true },
+  });
+
+  if (!brd || brd.deletedAt !== null) {
+    res.status(404).json({ error: "BRD not found" });
+    return false;
+  }
+
+  const accessPolicy = getBrdAccessPolicy(res);
+  if (!canReadBrdStatus(accessPolicy, brd.status)) {
+    res
+      .status(403)
+      .json({ error: "You can only view BRDs with APPROVED or ON_HOLD status." });
+    return false;
+  }
+
+  return true;
+}
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 async function resolveMaybeStored(raw: unknown): Promise<unknown> {
@@ -32,8 +60,12 @@ async function resolveMaybeStored(raw: unknown): Promise<unknown> {
 }
 
 // ── GET /brd/:brdId/versions ──────────────────────────────────────────────────
-router.get("/:brdId/versions", async (req: Request, res: Response) => {
+router.get("/:brdId/versions", async (req: AuthRequest, res: Response) => {
   try {
+    if (!(await ensureReadableBrd(req, res))) {
+      return;
+    }
+
     const brdId = String(req.params.brdId);
 
     const versions = await prisma.brdVersion.findMany({
@@ -56,8 +88,12 @@ router.get("/:brdId/versions", async (req: Request, res: Response) => {
 });
 
 // ── GET /brd/:brdId/versions/:versionNum ─────────────────────────────────────
-router.get("/:brdId/versions/:versionNum", async (req: Request, res: Response) => {
+router.get("/:brdId/versions/:versionNum", async (req: AuthRequest, res: Response) => {
   try {
+    if (!(await ensureReadableBrd(req, res))) {
+      return;
+    }
+
     const brdId      = String(req.params.brdId);
     const versionNum = parseInt(String(req.params.versionNum), 10);
 
@@ -102,7 +138,7 @@ router.get("/:brdId/versions/:versionNum", async (req: Request, res: Response) =
 });
 
 // ── POST /brd/:brdId/versions ─────────────────────────────────────────────────
-router.post("/:brdId/versions", async (req: Request, res: Response) => {
+router.post("/:brdId/versions", requireBrdEdit, async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId);
     const { scope, metadata, toc, citations, contentProfile, brdConfig, label } = req.body;
@@ -179,7 +215,7 @@ router.post("/:brdId/versions", async (req: Request, res: Response) => {
 });
 
 // ── DELETE /brd/:brdId/versions/:versionNum ───────────────────────────────────
-router.delete("/:brdId/versions/:versionNum", async (req: Request, res: Response) => {
+router.delete("/:brdId/versions/:versionNum", requireBrdEdit, async (req: Request, res: Response) => {
   try {
     const brdId      = String(req.params.brdId);
     const versionNum = parseInt(String(req.params.versionNum), 10);
