@@ -95,15 +95,13 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b: any) => {
-      // Use only inline metadata for the list view — avoid downloading from
-      // Supabase Storage (one request per BRD) which causes timeouts.
-      const rawMeta = b.sections?.metadata ?? null;
-      const meta = extractStoragePath(rawMeta) === null
-        ? (rawMeta as Record<string, unknown> | null)
-        : null;
+    const data = await Promise.all(brds.map(async (b: any) => {
+      const meta = await resolveMaybeStoredJson(b.sections?.metadata ?? null) as Record<string, unknown> | null;
 
-      const geography     = (meta?.geography as string) ?? "—";
+      const geography =
+        (meta?.geography as string)
+        || (meta?.Geography as string)
+        || "—";
 
       const storedFormat  = (meta?._format as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -115,7 +113,11 @@ router.get("/", async (_req: Request, res: Response) => {
 
       const displayName = b.title.charAt(0).toUpperCase() + b.title.slice(1);
 
-      const latestVersion = b.versions?.[0]?.label ?? "—";
+      const latestVersionLabel = b.versions?.[0]?.label;
+      const latestVersionNum = b.versions?.[0]?.versionNum;
+      const latestVersion =
+        (typeof latestVersionLabel === "string" && latestVersionLabel.trim())
+        || (typeof latestVersionNum === "number" ? `v${latestVersionNum}.0` : "—");
 
       return {
         id:          b.brdId,
@@ -126,7 +128,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    });
+    }));
 
     return res.json(data);
   } catch (err) {

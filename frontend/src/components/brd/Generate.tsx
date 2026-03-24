@@ -148,34 +148,35 @@ function deriveTitle(metadata: Record<string, unknown> | undefined, fallback: st
 function buildTemplateMetadataValues(format: Format, metadata?: Record<string, unknown>): Record<string, string> {
   if (!metadata) return {};
   const t = (key: string): string => (typeof metadata[key] === "string" ? String(metadata[key]).trim() : "");
+  const p = (...keys: string[]): string => keys.map(t).find(Boolean) ?? "";
   if (format === "old") {
     return {
       // Legacy "Source Name" label → stored as content_category_name by extractor
-      sourceName:           t("content_category_name") || t("source_name") || t("document_title"),
+      sourceName:           p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
       // Legacy "Authoritative Source" label → stored as authoritative_source (and mirrored to issuing_agency)
-      authoritativeSource:  t("authoritative_source") || t("issuing_agency"),
-      sourceType:           t("source_type"),
-      publicationDate:      t("publication_date"),
-      lastUpdatedDate:      t("last_updated_date"),
-      processingDate:       t("processing_date"),
-      issuingAgency:        t("issuing_agency"),
-      contentUrl:           t("content_uri"),
-      geography:            t("geography"),
-      language:             t("language"),
-      payloadSubtype:       t("payload_subtype"),
-      status:               t("status"),
+      authoritativeSource:  p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+      sourceType:           p("source_type", "sourceType", "Source Type"),
+      publicationDate:      p("publication_date", "publicationDate", "Publication Date"),
+      lastUpdatedDate:      p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+      processingDate:       p("processing_date", "processingDate", "Processing Date"),
+      issuingAgency:        p("issuing_agency", "issuingAgency", "Issuing Agency"),
+      contentUrl:           p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      geography:            p("geography", "Geography"),
+      language:             p("language", "Language"),
+      payloadSubtype:       p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+      status:               p("status", "Status"),
     };
   }
   return {
-    contentCategoryName:     t("content_category_name") || t("document_title"),
-    publicationDate:         t("publication_date"),
-    lastUpdatedDate:         t("last_updated_date"),
-    processingDate:          t("processing_date"),
-    issuingAgency:           t("issuing_agency"),
-    relatedGovernmentAgency: t("related_government_agency"),
-    contentUri:              t("content_uri"),
-    geography:               t("geography"),
-    language:                t("language"),
+    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
+    lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+    processingDate:          p("processing_date", "processingDate", "Processing Date"),
+    issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+    relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
+    contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    geography:               p("geography", "Geography"),
+    language:                p("language", "Language"),
   };
 }
 function asScopeEntryArray(v: unknown): ScopeEntry[] {
