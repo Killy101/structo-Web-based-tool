@@ -45,6 +45,10 @@ export interface OperationsPolicyState {
   maintenanceMode: boolean;
   strictRateLimitMode: boolean;
   auditDigestEnabled: boolean;
+  maintenanceBannerMessage: string;
+  maintenanceWindowStartUtc: string;
+  maintenanceWindowEndUtc: string;
+  maintenanceLearnMoreUrl: string;
 }
 
 export interface GovernanceSettings {

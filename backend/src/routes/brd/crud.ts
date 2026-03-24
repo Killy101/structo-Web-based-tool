@@ -3,6 +3,14 @@ import { Router, Request, Response } from "express";
 import prisma from "../../lib/prisma";
 import { authenticate, AuthRequest } from "../../middleware/authenticate";
 import { authorize } from "../../middleware/authorize";
+import {
+  canReadBrdStatus,
+  getBrdAccessPolicy,
+  getBrdVisibilityStatuses,
+  requireBrdDelete,
+  requireBrdEdit,
+  requireBrdTrashAccess,
+} from "../../middleware/brd-access";
 import { notifyMany } from "../../lib/notify";
 import { downloadJsonObject, extractStoragePath, removeObjects } from "../../lib/supabase-storage";
 import { repairBrdSectionStoragePaths } from "../../lib/brd-storage-repair";
@@ -28,25 +36,31 @@ async function resolveMaybeStoredJson(raw: unknown): Promise<unknown> {
   const storagePath = extractStoragePath(raw);
   if (!storagePath) return raw ?? null;
 
-  // downloadJsonObject returns null (not throws) for missing files, so check
-  // the return value rather than relying on catch to trigger the fallback.
-  const primary = await downloadJsonObject(storagePath);
-  if (primary !== null) return primary;
+  try {
+    // downloadJsonObject returns null (not throws) for missing files, so check
+    // the return value rather than relying on catch to trigger the fallback.
+    const primary = await downloadJsonObject(storagePath);
+    if (primary !== null) return primary;
 
-  // Fallback: try the alternate spelling of the historic sectionns/sections typo
-  const alternatePath = storagePath.includes("/sectionns/")
-    ? storagePath.replace("/sectionns/", "/sections/")
-    : storagePath.includes("/sections/")
-    ? storagePath.replace("/sections/", "/sectionns/")
-    : null;
+    // Fallback: try the alternate spelling of the historic sectionns/sections typo
+    const alternatePath = storagePath.includes("/sectionns/")
+      ? storagePath.replace("/sectionns/", "/sections/")
+      : storagePath.includes("/sections/")
+      ? storagePath.replace("/sections/", "/sectionns/")
+      : null;
 
-  if (alternatePath) {
-    const alternate = await downloadJsonObject(alternatePath);
-    if (alternate !== null) return alternate;
+    if (alternatePath) {
+      const alternate = await downloadJsonObject(alternatePath);
+      if (alternate !== null) return alternate;
+    }
+
+    console.warn(`⚠️ Missing file in storage: ${storagePath}`);
+    return null;
+  } catch (err) {
+    // Degrade gracefully — storage auth/network errors must not 500 the whole endpoint
+    console.error(`⚠️ Storage download error for ${storagePath}:`, err);
+    return null;
   }
-
-  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
-  return null;
 }
 
 // ── Title normalisation helper ─────────────────────────────────────────────
@@ -70,11 +84,52 @@ function isSimilarTitle(a: string, b: string): boolean {
   return matches / smaller.size >= 0.80;
 }
 
+// ── Geography resolution ───────────────────────────────────────────────────
+// Returns the geography string from metadata, with two fallback layers:
+//   1. Empty string → infer from issuing_agency / content_category_name for
+//      well-known US federal agencies and US state administrative codes.
+//   2. Still nothing → "—"
+function resolveGeography(meta: Record<string, unknown> | null): string {
+  if (!meta) return "—";
+
+  const geo = ((meta.geography as string) ?? "").trim();
+  if (geo) return geo;
+
+  // Infer for US documents when geography field is absent / blank
+  const agency  = ((meta.issuing_agency       as string) ?? "").toLowerCase();
+  const catName = ((meta.content_category_name as string) ?? "").toLowerCase();
+  const auth    = ((meta.authoritative_source  as string) ?? "").toLowerCase();
+  const combined = `${agency} ${catName} ${auth}`;
+
+  // US federal document markers
+  if (/\b(code of federal regulations|federal register|cfr|epa|fda|osha|irs|sec|dot|hhs|usda|dol|dod|hud|uscis|ftc|fcc|ferc|cftc|fdic|nlrb|nlr|occ|treasury|federal aviation|federal highway)\b/.test(combined)) {
+    return "United States";
+  }
+
+  // US state administrative codes (e.g. "Alabama Administrative Code")
+  const STATE_RE = /\b(alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|district of columbia)\b/i;
+  const stateMatch = combined.match(STATE_RE);
+  if (stateMatch) {
+    const state = stateMatch[0].replace(/\b\w/g, (c) => c.toUpperCase());
+    return `${state}, United States`;
+  }
+
+  return "—";
+}
+
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
-router.get("/", async (_req: Request, res: Response) => {
+router.get("/", async (_req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    const visibleStatuses = getBrdVisibilityStatuses(accessPolicy);
+
     const brds = await (prisma as any).brd.findMany({
-      where: { deletedAt: null },
+      where: {
+        deletedAt: null,
+        ...(visibleStatuses && visibleStatuses.length > 0
+          ? { status: { in: visibleStatuses } }
+          : {}),
+      },
       orderBy: { createdAt: "asc" },
       select: {
         id:        true,
@@ -95,15 +150,16 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b: any) => {
+    const data = await Promise.all(brds.map(async (b: any) => {
       // Use only inline metadata for the list view — avoid downloading from
       // Supabase Storage (one request per BRD) which causes timeouts.
       const rawMeta = b.sections?.metadata ?? null;
-      const meta = extractStoragePath(rawMeta) === null
-        ? (rawMeta as Record<string, unknown> | null)
-        : null;
+      const meta = await resolveMaybeStoredJson(rawMeta) as Record<string, unknown> | null;
 
-      const geography     = (meta?.geography as string) ?? "—";
+      const geography =
+        (meta?.geography as string)
+        || (meta?.Geography as string)
+        || "—";
 
       const storedFormat  = (meta?._format as string) ?? "";
       const hasLegacyKeys = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source);
@@ -115,7 +171,11 @@ router.get("/", async (_req: Request, res: Response) => {
 
       const displayName = b.title.charAt(0).toUpperCase() + b.title.slice(1);
 
-      const latestVersion = b.versions?.[0]?.label ?? "—";
+      const latestVersionLabel = b.versions?.[0]?.label;
+      const latestVersionNum = b.versions?.[0]?.versionNum;
+      const latestVersion =
+        (typeof latestVersionLabel === "string" && latestVersionLabel.trim())
+        || (typeof latestVersionNum === "number" ? `v${latestVersionNum}.0` : "v1.0");
 
       return {
         id:          b.brdId,
@@ -126,7 +186,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    });
+    }));
 
     return res.json(data);
   } catch (err) {
@@ -136,7 +196,7 @@ router.get("/", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/deleted — list soft-deleted BRDs ─────────────────────────────
-router.get("/deleted", async (_req: Request, res: Response) => {
+router.get("/deleted", requireBrdTrashAccess, async (_req: AuthRequest, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
       where: { deletedAt: { not: null } },
@@ -181,8 +241,13 @@ router.get("/deleted", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/next-id ───────────────────────────────────────────────────────
-router.get("/next-id", async (_req: Request, res: Response) => {
+router.get("/next-id", async (_req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    if (!accessPolicy.canCreate) {
+      return res.status(403).json({ error: "Only Pre-Production team can create BRDs." });
+    }
+
     const allBrdIds = await prisma.brd.findMany({ where: { deletedAt: null }, select: { brdId: true } });
     const maxNum = allBrdIds.reduce((max, { brdId }) => {
       const n = parseInt(brdId.replace("BRD-", ""), 10);
@@ -195,8 +260,13 @@ router.get("/next-id", async (_req: Request, res: Response) => {
 });
 
 // ── GET /brd/check-duplicate?filename=xxx ─────────────────────────────────
-router.get("/check-duplicate", async (req: Request, res: Response) => {
+router.get("/check-duplicate", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    if (!accessPolicy.canCreate) {
+      return res.status(403).json({ error: "Only Pre-Production team can create BRDs." });
+    }
+
     const raw      = String(req.query.filename ?? "");
     const filename = decodeURIComponent(raw.replace(/\+/g, " ")).trim();
 
@@ -248,8 +318,13 @@ router.get("/check-duplicate", async (req: Request, res: Response) => {
 });
 
 // ── GET /brd/check-duplicate-title?title=xxx ──────────────────────────────
-router.get("/check-duplicate-title", async (req: Request, res: Response) => {
+router.get("/check-duplicate-title", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+    if (!accessPolicy.canEdit) {
+      return res.status(403).json({ error: "Only Pre-Production team can edit BRDs." });
+    }
+
     const raw   = String(req.query.title ?? "").trim();
     const title = decodeURIComponent(raw.replace(/\+/g, " ")).trim();
 
@@ -299,7 +374,7 @@ router.get("/check-duplicate-title", async (req: Request, res: Response) => {
 // ── POST /brd/admin/repair-section-paths — repair legacy storage pointers ──
 router.post(
   "/admin/repair-section-paths",
-  authenticate,
+  requireBrdEdit,
   authorize(["SUPER_ADMIN", "ADMIN"]),
   async (req: AuthRequest, res: Response) => {
     try {
@@ -338,13 +413,18 @@ router.post(
 );
 
 // ── GET /brd/:brdId — single BRD with all section blobs ───────────────────
-router.get("/:brdId", async (req: Request, res: Response) => {
+router.get("/:brdId", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
+
     const brd = await prisma.brd.findUnique({
       where:   { brdId: String(req.params.brdId) },
       include: { sections: true },
     });
     if (!brd || brd.deletedAt !== null) return res.status(404).json({ error: "BRD not found" });
+    if (!canReadBrdStatus(accessPolicy, brd.status)) {
+      return res.status(403).json({ error: "You can only view BRDs with APPROVED or ON_HOLD status." });
+    }
 
     const [scope, metadata, toc, citations, contentProfile, brdConfig] = await Promise.all([
       resolveMaybeStoredJson(brd.sections?.scope          ?? null),
@@ -453,7 +533,7 @@ router.post("/:brdId/query", authenticate, async (req: AuthRequest, res: Respons
 });
 
 // ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
-router.delete("/:brdId", authenticate, async (req: Request, res: Response) => {
+router.delete("/:brdId", requireBrdDelete, async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -473,7 +553,7 @@ router.delete("/:brdId", authenticate, async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
-router.post("/:brdId/restore", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
+router.post("/:brdId/restore", requireBrdTrashAccess, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
   try {
     const brd = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -494,7 +574,7 @@ router.post("/:brdId/restore", authenticate, authorize(["SUPER_ADMIN", "ADMIN"])
 });
 
 // ── DELETE /brd/:brdId/permanent — hard delete (trash only) ───────────────
-router.delete("/:brdId/permanent", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
+router.delete("/:brdId/permanent", requireBrdTrashAccess, authorize(["SUPER_ADMIN", "ADMIN"]), async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId);
 
@@ -559,10 +639,19 @@ router.delete("/:brdId/permanent", authenticate, authorize(["SUPER_ADMIN", "ADMI
 });
 
 // ── PATCH /brd/:brdId — update status, title, or format ──────────────────
-router.patch("/:brdId", authenticate, async (req: Request, res: Response) => {
+router.patch("/:brdId", async (req: AuthRequest, res: Response) => {
   try {
+    const accessPolicy = getBrdAccessPolicy(res);
     const { status, title, format } = req.body;
     const normalizedStatus = status ? normalizeBrdStatus(status) : undefined;
+
+    if (normalizedStatus && !accessPolicy.canChangeStatus) {
+      return res.status(403).json({ error: "Only Pre-Production team can change BRD status." });
+    }
+
+    if ((title !== undefined || format !== undefined) && !accessPolicy.canEdit) {
+      return res.status(403).json({ error: "Only Pre-Production team can edit BRDs." });
+    }
 
     const existing = await prisma.brd.findUnique({
       where: { brdId: String(req.params.brdId) },
@@ -607,7 +696,7 @@ router.patch("/:brdId", authenticate, async (req: Request, res: Response) => {
 });
 
 // ── POST /brd/fix-formats — backfill format for existing records ──────────
-router.post("/fix-formats", authenticate, authorize(["SUPER_ADMIN", "ADMIN"]), async (_req: Request, res: Response) => {
+router.post("/fix-formats", requireBrdEdit, authorize(["SUPER_ADMIN", "ADMIN"]), async (_req: Request, res: Response) => {
   try {
     const brds = await prisma.brd.findMany({
       where: { deletedAt: null },

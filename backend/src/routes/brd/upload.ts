@@ -8,6 +8,7 @@ import path from "path";
 import prisma from "../../lib/prisma";
 import { uploadLimiter, processingLimiter } from "../../middleware/rateLimits";
 import { Prisma } from "@prisma/client"; 
+import { requireBrdCreate, requireBrdEdit } from "../../middleware/brd-access";
 import {
   makeStoragePointer,
   sanitizePathPart,
@@ -38,7 +39,8 @@ interface ProcessingResult {
   metadata:         Record<string, unknown>;
   toc:              Record<string, unknown>;
   citations:        Record<string, unknown>;
-  content_profile:  Record<string, unknown>;
+  content_profile?: Record<string, unknown>;
+  contentProfile?:  Record<string, unknown>;
   brd_config?:      Record<string, unknown>;
   brdConfig?:       Record<string, unknown>;
   image_metadata?:  ImageMeta[];
@@ -146,6 +148,7 @@ function buildTitle(
 
 router.post(
   "/upload",
+  requireBrdCreate,
   uploadLimiter,
   upload.single("file"),
   async (req: Request, res: Response) => {
@@ -224,12 +227,14 @@ router.post(
         cleanBrdConfig = rest;
       }
 
+      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile ?? null;
+
       const storageSectionPaths = {
         scope: await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope ?? null),
         metadata: await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata ?? null),
         toc: await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc ?? null),
         citations: await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations ?? null),
-        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extracted.content_profile ?? null),
+        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile),
         brdConfig: await uploadJsonObject(sectionPath(brdId, "brdConfig"), cleanBrdConfig),
       };
 
@@ -272,25 +277,28 @@ router.post(
         });
         console.log(`   ✅ BRD record created/updated: ${brd.brdId}`);
 
-        // ── 4. Store pointers for BRD sections (payload is in Supabase) ────
+        // ── 4. Store sections — metadata inline, others as storage pointers ─
+        // Metadata is stored inline in the DB column so the list endpoint can
+        // read geography/version without downloading from Supabase Storage.
+        // All other sections are stored as pointers (fetched lazily when viewing).
         const brdSections = await tx.brdSections.upsert({
           where: { brdId: brdId },
           create: {
             brdId: brdId,
-            scope: (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
-            metadata: (makeStoragePointer(storageSectionPaths.metadata) as any) || Prisma.JsonNull,
-            toc: (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
-            citations: (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
+            scope:          (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
+            toc:            (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
+            citations:      (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
             contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig: (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
+            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
           },
           update: {
-            scope: (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
-            metadata: (makeStoragePointer(storageSectionPaths.metadata) as any) || Prisma.JsonNull,
-            toc: (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
-            citations: (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
+            scope:          (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
+            toc:            (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
+            citations:      (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
             contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig: (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
+            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
           }
         });
         console.log(`   ✅ BrdSections record created/verified: ${brdSections.brdId}`);
@@ -347,7 +355,7 @@ router.post(
         metadata: extracted.metadata,
         toc: extracted.toc,
         citations: extracted.citations,
-        contentProfile: extracted.content_profile,
+        contentProfile: extractedContentProfile,
         brdConfig: cleanBrdConfig,
         imageMetadata: responseImageMetadata,
       });
@@ -374,6 +382,7 @@ router.post(
 // sections and images are replaced.
 router.post(
   "/re-upload/:brdId",
+  requireBrdEdit,
   processingLimiter,
   upload.single("file"),
   async (req: Request, res: Response) => {
@@ -441,7 +450,7 @@ router.post(
         ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations)) as any)
         : ((existingSections?.citations as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), null)) as any));
 
-      const extractedContentProfile = extracted.content_profile;
+      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile;
       const contentProfilePointer = extractedContentProfile !== undefined && extractedContentProfile !== null
         ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile)) as any)
         : ((existingSections?.contentProfile as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), null)) as any));
@@ -470,13 +479,13 @@ router.post(
       );
 
       await prisma.$transaction(async (tx) => {
-        // Update brdSections (upsert in case row is missing)
+        // Update brdSections — metadata stored inline, others as pointers
         await tx.brdSections.upsert({
           where:  { brdId },
           create: {
             brdId,
             scope:          (scopePointer as any) || Prisma.JsonNull,
-            metadata:       (metadataPointer as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
             toc:            (tocPointer as any) || Prisma.JsonNull,
             citations:      (citationsPointer as any) || Prisma.JsonNull,
             contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
@@ -484,7 +493,7 @@ router.post(
           },
           update: {
             scope:          (scopePointer as any) || Prisma.JsonNull,
-            metadata:       (metadataPointer as any) || Prisma.JsonNull,
+            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
             toc:            (tocPointer as any) || Prisma.JsonNull,
             citations:      (citationsPointer as any) || Prisma.JsonNull,
             contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
@@ -508,7 +517,7 @@ router.post(
         metadata:       extracted.metadata,
         toc:            extracted.toc,
         citations:      extracted.citations,
-        contentProfile: extracted.content_profile,
+        contentProfile: extractedContentProfile,
         brdConfig:      extracted.brd_config || extracted.brdConfig || null,
         imageMetadata:  responseImageMetadata,
       });

@@ -9,9 +9,10 @@ Endpoints
     GET  /autocompare/chunks              List all chunks for a session
     GET  /autocompare/compare/{chunk_id}  Full comparison data for a single chunk
     POST /autocompare/save                Save edited XML for a chunk
-    POST /autocompare/autogenerate        AI-generate XML updates for a chunk
     POST /autocompare/validate            Validate XML for a chunk
     GET  /autocompare/download/{session_id}/{chunk_id}  Download single chunk XML
+    GET  /autocompare/download-all/{session_id}         Download all chunks as ZIP
+    GET  /autocompare/export-report/{session_id}        Export status report as JSON
     POST /autocompare/reupload            Re-upload new XML chunks to existing session
 
 Design notes
@@ -19,77 +20,39 @@ Design notes
 - XML files are already pre-chunked — no XML chunking is performed.
 - No merge endpoint — each chunk is downloaded individually.
 - /upload accepts multiple XML files (the pre-chunked set).
+- No external AI/LLM dependency — runs fully offline on AWS.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from contextlib import asynccontextmanager
+from fastapi import APIRouter, BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
 
 from src.services.autocompare_service import (
     cleanup_old_sessions,
+    export_session_report,
     get_chunk_detail,
     get_chunk_xml_content,
     get_chunks_list,
     get_session,
+    _get_session_lock,
     process_upload,
     reupload_xml_files,
     save_chunk_xml,
     start_processing,
     validate_all_chunks,
     validate_chunk_xml,
-    _generate_xml_suggestion,
-    _generate_diff_lines,
 )
-from src.services.autocompare_langchain import generate_xml_suggestion_langchain
 
 router = APIRouter(prefix="/autocompare", tags=["autocompare"])
 logger = logging.getLogger(__name__)
-
-
-def _langchain_enabled() -> bool:
-    return os.getenv("AUTOCOMPARE_LANGCHAIN_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-
-# ── 0. HEALTH ─────────────────────────────────────────────────────────────────
-
-@router.get("/health/ai")
-async def ai_health_endpoint():
-    """
-    Check availability of AI providers used by the autogenerate endpoint.
-    Returns connectivity status for Ollama and whether OpenAI is configured.
-    """
-    import urllib.request
-
-    ollama_base = os.getenv("AUTOCOMPARE_LANGCHAIN_OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    ollama_ok = False
-    try:
-        with urllib.request.urlopen(f"{ollama_base}/api/tags", timeout=3) as resp:
-            ollama_ok = resp.status == 200
-    except Exception:
-        ollama_ok = False
-
-    openai_configured = bool(os.getenv("OPENAI_API_KEY", "").strip())
-
-    return {
-        "langchain_enabled": _langchain_enabled(),
-        "ollama": {
-            "available": ollama_ok,
-            "base_url": ollama_base,
-            "model": os.getenv("AUTOCOMPARE_LANGCHAIN_OLLAMA_MODEL", "qwen2.5:7b-instruct"),
-        },
-        "openai": {
-            "configured": openai_configured,
-            "model": os.getenv("AUTOCOMPARE_LANGCHAIN_OPENAI_MODEL", "gpt-4o-mini"),
-        },
-    }
 
 
 # ── 1. UPLOAD ─────────────────────────────────────────────────────────────────
@@ -162,31 +125,39 @@ class StartRequest(BaseModel):
 async def start_endpoint(payload: StartRequest, background_tasks: BackgroundTasks):
     """
     Kick off background processing for an uploaded session.
-    No tag_name parameter — XML is already chunked.
+    Uses a per-session lock to prevent duplicate background tasks from
+    concurrent /start calls (race-condition fix).
     """
     session = get_session(payload.session_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Session {payload.session_id} not found")
 
-    if session["status"] == "processing":
-        raise HTTPException(status_code=409, detail="Session is already processing")
+    lock = _get_session_lock(payload.session_id)
+    async with lock:
+        # Re-read status inside the lock to guard against concurrent calls
+        session = get_session(payload.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {payload.session_id} not found")
 
-    if session["status"] == "done":
-        return {
-            "success":    True,
-            "session_id": payload.session_id,
-            "status":     "done",
-            "message":    "Session already processed",
-        }
+        if session["status"] == "processing":
+            raise HTTPException(status_code=409, detail="Session is already processing")
+
+        if session["status"] == "done":
+            return {
+                "success":    True,
+                "session_id": payload.session_id,
+                "status":     "done",
+                "message":    "Session already processed",
+            }
+
+        session["status"] = "processing"
+        session["progress"] = 0
 
     background_tasks.add_task(
         _run_processing,
         payload.session_id,
         payload.batch_size,
     )
-
-    session["status"] = "processing"
-    session["progress"] = 0
 
     return {
         "success":    True,
@@ -313,85 +284,7 @@ async def save_endpoint(payload: SaveRequest):
     }
 
 
-# ── 7. AUTO-GENERATE XML UPDATES ─────────────────────────────────────────────
-
-class AutoGenerateRequest(BaseModel):
-    session_id: str
-    chunk_id:   str
-    diff_index: Optional[int] = None
-    diff_text: Optional[str] = None
-    old_text: Optional[str] = None
-    new_text: Optional[str] = None
-    category: Optional[str] = None
-
-
-@router.post("/autogenerate")
-async def autogenerate_endpoint(payload: AutoGenerateRequest):
-    """AI-assisted XML update generation for a single chunk, based on New PDF content."""
-    session = get_session(payload.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {payload.session_id} not found")
-
-    chunk = get_chunk_detail(payload.session_id, payload.chunk_id)
-    if not chunk:
-        raise HTTPException(status_code=404, detail=f"Chunk {payload.chunk_id} not found")
-
-    # Use the saved (user-edited) XML as the base, falling back to original
-    base_xml = chunk.get("xml_saved") or chunk.get("xml_content", "")
-    generation_method = "deterministic"
-    used_fallback = False
-
-    suggested = ""
-    if _langchain_enabled():
-        try:
-            suggested, meta = generate_xml_suggestion_langchain(
-                xml_chunk=base_xml,
-                old_pdf_text=chunk.get("old_text", ""),
-                new_pdf_text=chunk.get("new_text", ""),
-                focus_old_text=payload.old_text,
-                focus_new_text=payload.new_text,
-                focus_text=payload.diff_text,
-            )
-            provider = str(meta.get("provider") or "langchain")
-            generation_method = f"langchain:{provider}"
-        except Exception as exc:
-            used_fallback = True
-            logger.warning(
-                "LangChain autogenerate failed for session=%s chunk=%s: %s",
-                payload.session_id,
-                payload.chunk_id,
-                exc,
-            )
-
-    if not suggested:
-        suggested = _generate_xml_suggestion(
-            xml_chunk=base_xml,
-            old_pdf_text=chunk.get("old_text", ""),
-            new_pdf_text=chunk.get("new_text", ""),
-            focus_old_text=payload.old_text,
-            focus_new_text=payload.new_text,
-            focus_text=payload.diff_text,
-        )
-
-    has_line_focus = any([
-        payload.diff_index is not None,
-        bool(payload.diff_text),
-        bool(payload.old_text),
-        bool(payload.new_text),
-    ])
-
-    return {
-        "success":       True,
-        "session_id":    payload.session_id,
-        "chunk_id":      payload.chunk_id,
-        "suggested_xml": suggested,
-        "generation_scope": "line" if has_line_focus else "chunk",
-        "generation_method": generation_method,
-        "used_fallback": used_fallback,
-    }
-
-
-# ── 8. VALIDATE XML ──────────────────────────────────────────────────────────
+# ── 7. VALIDATE XML ──────────────────────────────────────────────────────────
 
 class ValidateRequest(BaseModel):
     session_id: str
@@ -559,6 +452,7 @@ async def download_all_endpoint(session_id: str):
     if not chunks:
         raise HTTPException(status_code=404, detail="No chunks available")
 
+    skipped: list[str] = []
     buf = io.BytesIO()
     with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
         for chunk in chunks:
@@ -566,15 +460,71 @@ async def download_all_endpoint(session_id: str):
             try:
                 filename, xml_content = get_chunk_xml_content(session_id, chunk_id)
                 zf.writestr(filename, xml_content.encode("utf-8"))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "download-all: skipping chunk %s for session %s — %s",
+                    chunk_id, session_id, exc,
+                )
+                skipped.append(chunk_id)
     buf.seek(0)
+
+    if skipped:
+        logger.warning(
+            "download-all: session %s ZIP missing %d chunk(s): %s",
+            session_id, len(skipped), skipped,
+        )
 
     safe_name = re.sub(r"[^\w.\-]", "_", session.get("source_name", "chunks"))
     return Response(
         content=buf.read(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}_chunks.zip"'},
+    )
+
+
+# ── 11c. EXPORT STATUS REPORT ─────────────────────────────────────────────────
+
+@router.get("/export-report/{session_id}")
+async def export_report_endpoint(session_id: str, fmt: str = "json"):
+    """
+    Export a status report for all chunks in a session.
+    `fmt` must be "json" (default) or "csv".
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    try:
+        report = export_session_report(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    safe_name = re.sub(r"[^\w.\-]", "_", session.get("source_name", "report"))
+
+    if fmt.lower() == "csv":
+        import csv
+        import io as _io
+
+        output = _io.StringIO()
+        fieldnames = [
+            "index", "label", "filename", "change_type", "has_changes",
+            "similarity_pct", "page_start", "page_end", "xml_size_bytes",
+            "is_updated", "is_modified", "auto_reviewed",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(report["chunks"])
+        return Response(
+            content=output.getvalue().encode("utf-8"),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_report.csv"'},
+        )
+
+    import json as _json
+    return Response(
+        content=_json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_report.json"'},
     )
 
 # ── 12. CLEANUP ───────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 import { useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { authApi, removeToken } from "../services/api";
 
 /**
  * Auto-logout after specified minutes of inactivity.
@@ -12,7 +13,10 @@ export function useAutoLogout(timeoutMinutes: number = 20) {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const logout = useCallback(() => {
-    localStorage.removeItem("token");
+    void authApi.logout().catch(() => {
+      // Best effort only: proceed with local logout even if request fails.
+    });
+    removeToken();
     router.push("/login");
   }, [router]);
 

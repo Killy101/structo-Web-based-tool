@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "reac
 import BrdFlow from "@/components/brd/BrdFlow";
 import Generate from "@/components/brd/Generate";
 import api from "@/app/lib/api";
+import { useAuth } from "../../../context/AuthContext";
 
 type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
 type SortField = "name" | "date" | "id";
@@ -161,7 +162,15 @@ const CompletedIcon = () => <svg className="w-5 h-5" fill="none" stroke="current
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 
 // ── Version History Modal ─────────────────────────────────────────
-function VersionHistoryModal({ brd, onClose }: { brd: Brd; onClose: () => void }) {
+function VersionHistoryModal({
+  brd,
+  onClose,
+  canEditVersions,
+}: {
+  brd: Brd;
+  onClose: () => void;
+  canEditVersions: boolean;
+}) {
   const [versions,        setVersions]        = useState<BrdVersionSummary[]>([]);
   const [loading,         setLoading]         = useState(true);
   const [error,           setError]           = useState<string | null>(null);
@@ -225,6 +234,8 @@ function VersionHistoryModal({ brd, onClose }: { brd: Brd; onClose: () => void }
   }
 
   async function handleEditVersion(v: BrdVersionSummary) {
+    if (!canEditVersions) return;
+
     setVersionLoading(true);
     setLoadingId(v.id);
     try {
@@ -240,6 +251,8 @@ function VersionHistoryModal({ brd, onClose }: { brd: Brd; onClose: () => void }
 
   async function confirmDeleteVersion() {
     if (!confirmDelete) return;
+    if (!canEditVersions) return;
+
     const v = confirmDelete;
     setConfirmDelete(null);
     setDeletingId(v.id);
@@ -451,12 +464,12 @@ function VersionHistoryModal({ brd, onClose }: { brd: Brd; onClose: () => void }
                               }
                               View
                             </button>
-                            <button onClick={() => handleEditVersion(v)} disabled={versionLoading || isDeleting}
+                            <button onClick={() => handleEditVersion(v)} disabled={!canEditVersions || versionLoading || isDeleting}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50 transition-colors whitespace-nowrap">
                               <EditIcon />
                               Edit
                             </button>
-                            <button onClick={() => setConfirmDelete(v)} disabled={versionLoading || isDeleting}
+                            <button onClick={() => canEditVersions && setConfirmDelete(v)} disabled={!canEditVersions || versionLoading || isDeleting}
                               title="Delete this version"
                               className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 disabled:opacity-40 transition-colors">
                               {isDeleting
@@ -484,6 +497,7 @@ function VersionHistoryModal({ brd, onClose }: { brd: Brd; onClose: () => void }
 
 // ── Main Page ─────────────────────────────────────────────────────
 export default function BrdPage() {
+  const { user } = useAuth();
   const [brds,            setBrds]            = useState<Brd[]>([]);
   const [loading,         setLoading]         = useState(true);
   const [search,          setSearch]          = useState("");
@@ -515,6 +529,22 @@ export default function BrdPage() {
   const [statusUpdating,  setStatusUpdating]  = useState(false);
   const [nextStatus,      setNextStatus]      = useState<BrdStatus>("DRAFT");
   const reuploadInputRef = useRef<HTMLInputElement | null>(null);
+
+  const teamSlug = String(user?.team?.slug ?? "").toLowerCase();
+  const isSuperAdmin = user?.role === "SUPER_ADMIN";
+  const isAdmin = user?.role === "ADMIN";
+  const isPreProductionTeam = teamSlug === "pre-production";
+
+  const canCreateBrd = isSuperAdmin || isPreProductionTeam;
+  const canEditBrd = isSuperAdmin || isPreProductionTeam;
+  const canChangeBrdStatus = isSuperAdmin || isPreProductionTeam;
+  const canDeleteBrd = isSuperAdmin || (isPreProductionTeam && isAdmin);
+  const canUseTrash = canDeleteBrd;
+
+  const allowedStatusFilters: Array<BrdStatus | "All"> =
+    isSuperAdmin || isPreProductionTeam
+      ? ["All", "DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"]
+      : ["All", "APPROVED", "ON_HOLD"];
 
   const fetchBrds = useCallback(async () => {
     try {
@@ -554,6 +584,8 @@ export default function BrdPage() {
   };
 
   const openTrash = async () => {
+    if (!canUseTrash) return;
+
     setTrashOpen(true);
     setTrashLoading(true);
     try {
@@ -605,10 +637,13 @@ export default function BrdPage() {
   };
 
   const handleRemove = (brd: Brd) => {
+    if (!canDeleteBrd) return;
     setDeleteTarget(brd);
   };
 
   const confirmBulkDelete = async () => {
+    if (!canDeleteBrd) return;
+
     setDeleteLoading(true);
     try {
       await Promise.all([...selected].map(id => api.delete(`/brd/${id}`)));
@@ -619,6 +654,8 @@ export default function BrdPage() {
   };
 
   const promptReupload = (brdId: string) => {
+    if (!canEditBrd) return;
+
     setReuploadTargetId(brdId);
     reuploadInputRef.current?.click();
   };
@@ -665,12 +702,15 @@ export default function BrdPage() {
   };
 
   const openStatusModal = (brd: Brd) => {
+    if (!canChangeBrdStatus) return;
+
     setStatusTarget(brd);
     setNextStatus(brd.status);
   };
 
   const submitStatusChange = async () => {
     if (!statusTarget) return;
+    if (!canChangeBrdStatus) return;
 
     setStatusUpdating(true);
     setFetchError(null);
@@ -732,7 +772,13 @@ export default function BrdPage() {
     return [1,"...",safePage-1,safePage,safePage+1,"...",totalPages];
   })();
 
-  const startNewBrd = () => { setFlowFinalMode("generate"); setFlowInitialStep(0); setFlowInitialMeta(null); setShowBrdFlow(true); };
+  const startNewBrd = () => {
+    if (!canCreateBrd) return;
+    setFlowFinalMode("generate");
+    setFlowInitialStep(0);
+    setFlowInitialMeta(null);
+    setShowBrdFlow(true);
+  };
 
   if (showBrdFlow) return (
     <div className="h-full w-full">
@@ -781,12 +827,14 @@ export default function BrdPage() {
         </button>
 
         {/* Trash bin */}
-        <button onClick={openTrash} title="View deleted BRDs" className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
-          <TrashBinIcon /> <span className="hidden sm:inline">Trash</span>
-        </button>
+        {canUseTrash && (
+          <button onClick={openTrash} title="View deleted BRDs" className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+            <TrashBinIcon /> <span className="hidden sm:inline">Trash</span>
+          </button>
+        )}
 
         {/* Bulk delete */}
-        {selected.size > 0 && (
+        {canDeleteBrd && selected.size > 0 && (
           <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
             <TrashIcon /> Delete ({selected.size})
           </button>
@@ -805,12 +853,11 @@ export default function BrdPage() {
         <div className="relative">
           <select value={activeFilter} onChange={e => { setActiveFilter(e.target.value as BrdStatus | "All"); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer">
-            <option value="All">All Status</option>
-            <option value="DRAFT">Draft</option>
-            <option value="PAUSED">Paused</option>
-            <option value="COMPLETED">Complete</option>
-            <option value="APPROVED">Approved</option>
-            <option value="ON_HOLD">On Hold</option>
+            {allowedStatusFilters.map((status) => (
+              <option key={status} value={status}>
+                {status === "All" ? "All Status" : STATUS_LABEL[status]}
+              </option>
+            ))}
           </select>
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg></span>
         </div>
@@ -840,7 +887,7 @@ export default function BrdPage() {
               className="pl-8 pr-8 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors" />
             {search && <button onClick={() => setSearch("")} className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg></button>}
           </div>
-          <button onClick={startNewBrd} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
+          <button onClick={startNewBrd} disabled={!canCreateBrd} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">
             <PlusIcon /> New BRD
           </button>
         </div>
@@ -877,7 +924,7 @@ export default function BrdPage() {
         <table className="w-full text-xs border-collapse">
           <thead className="sticky top-0 z-10">
             <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-300 dark:border-[#1e3a5f]">
-              <th className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={allPageSelected} onChange={toggleAll} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" /></th>
+              <th className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={allPageSelected} disabled={!canDeleteBrd} onChange={toggleAll} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" /></th>
               <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">BRD ID</th>
               <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Source / Content Name</th>
               <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Geography</th>
@@ -900,13 +947,13 @@ export default function BrdPage() {
               const name = displayTitle(brd);
               const hasSourceLabel = !!(brd.sourceName?.trim() || brd.contentName?.trim());
               const canView = true;
-              const canEdit = brd.status === "DRAFT" || brd.status === "PAUSED" || brd.status === "COMPLETED" || brd.status === "APPROVED" || brd.status === "ON_HOLD";
-              const canReupload = brd.status === "DRAFT";
+              const canEdit = canEditBrd && (brd.status === "DRAFT" || brd.status === "PAUSED" || brd.status === "COMPLETED" || brd.status === "APPROVED" || brd.status === "ON_HOLD");
+              const canReupload = canEditBrd && brd.status === "DRAFT";
               const isSelected = selected.has(brd.id);
               const continent = detectContinent(brd.geography);
               return (
                 <tr key={brd.id} className={`transition-colors group ${isSelected ? "bg-blue-50/60 dark:bg-blue-900/10" : "hover:bg-slate-50/80 dark:hover:bg-slate-800/30"}`}>
-                  <td className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={isSelected} onChange={() => toggleOne(brd.id)} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" /></td>
+                  <td className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={isSelected} disabled={!canDeleteBrd} onChange={() => toggleOne(brd.id)} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" /></td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     <span className="inline-flex items-center gap-1 font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium hover:underline cursor-pointer"><TagIcon />{brd.id}</span>
                   </td>
@@ -938,7 +985,7 @@ export default function BrdPage() {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded">{brd.version}</span>
                       {brd.format === "old"
-                        ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-400/30">OLD</span>
+                        ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-400/30">Old</span>
                         : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-400/10 dark:text-blue-300 dark:border-blue-400/30">New</span>
                       }
                     </div>
@@ -965,7 +1012,8 @@ export default function BrdPage() {
                       <button
                         onClick={() => openStatusModal(brd)}
                         title="Change Status"
-                        className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 dark:hover:text-indigo-400 transition-colors"
+                        disabled={!canChangeBrdStatus}
+                        className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 dark:hover:text-indigo-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
                         <StatusIcon />
                       </button>
@@ -984,8 +1032,8 @@ export default function BrdPage() {
                           <ReuploadIcon />
                         )}
                       </button>
-                      <button onClick={() => handleRemove(brd)} title="Remove"
-                        className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors">
+                      <button onClick={() => handleRemove(brd)} title="Remove" disabled={!canDeleteBrd}
+                        className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <TrashIcon />
                       </button>
                     </div>
@@ -1267,7 +1315,7 @@ export default function BrdPage() {
 
       {/* ── History Modal ── */}
       {historyBrd && (
-        <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} />
+        <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} canEditVersions={canEditBrd} />
       )}
 
       {/* ── Status Modal ── */}

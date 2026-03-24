@@ -32,6 +32,15 @@ router.get(
         } else {
           return res.json({ logs: [] });
         }
+
+        // Admins must not see their own login/logout — only SUPER_ADMIN
+        // can view their own session events.
+        where.NOT = {
+          AND: [
+            { userId: req.user!.userId },
+            { action: { in: ["LOGIN", "LOGOUT"] } },
+          ],
+        };
       }
 
       // Optional filters

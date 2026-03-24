@@ -1,5 +1,7 @@
 // routes/brd/index.ts
 import { Router } from "express";
+import { authenticate } from "../../middleware/authenticate";
+import { attachBrdAccessPolicy } from "../../middleware/brd-access";
 import upload   from "./upload";
 import save     from "./save";
 import crud     from "./crud";
@@ -9,6 +11,8 @@ import images   from "./images";
 import versions from "./Versions";
 
 const router = Router();
+
+router.use(authenticate, attachBrdAccessPolicy);
 
 // Order matters — specific paths before /:brdId catch-all
 router.use("/", upload);    // POST   /brd/upload

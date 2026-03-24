@@ -34,8 +34,11 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import json
 import logging
+import math
+import os
 import re
 import shutil
 import tempfile
@@ -59,6 +62,10 @@ MAX_DIFF_LINES = 2000
 LARGE_TEXT_THRESHOLD = 500_000
 LARGE_TEXT_SAMPLE = 100_000
 
+# Configurable page-anchor expansion window (pages around top anchor matches).
+# Override via env var AUTOCOMPARE_PAGE_WINDOW (default 3).
+PAGE_WINDOW = int(os.getenv("AUTOCOMPARE_PAGE_WINDOW", "3"))
+
 CHANGE_COLORS = {
     "added": "green",
     "removed": "red",
@@ -79,6 +86,14 @@ STOPWORDS = {
 # ── Session storage ────────────────────────────────────────────────────────────
 
 _sessions: dict[str, dict] = {}
+_session_locks: dict[str, asyncio.Lock] = {}  # per-session lock for /start race prevention
+
+
+def _get_session_lock(session_id: str) -> asyncio.Lock:
+    """Return (creating if absent) the asyncio.Lock for a session."""
+    if session_id not in _session_locks:
+        _session_locks[session_id] = asyncio.Lock()
+    return _session_locks[session_id]
 
 
 def _session_dir(session_id: str) -> Path:
@@ -232,6 +247,15 @@ def _filter_line_chunks_by_xml(
     ]
 
 
+def _distributed_sample(text: str, sample_size: int) -> str:
+    """Return head + middle + tail sample of text to avoid missing middle-of-document changes."""
+    if len(text) <= sample_size:
+        return text
+    third = sample_size // 3
+    mid_start = len(text) // 2 - third // 2
+    return text[:third] + text[mid_start: mid_start + third] + text[-third:]
+
+
 def _classify_change(old_text: str, new_text: str) -> str:
     """Classify change between two text blocks."""
     if not old_text.strip() and new_text.strip():
@@ -242,18 +266,14 @@ def _classify_change(old_text: str, new_text: str) -> str:
     if old_text == new_text:
         return "unchanged"
 
-    # Fast-path for very large text chunks: compare normalized head/tail samples.
+    # Fast-path for very large text: use MD5 hash first (exact), then distributed
+    # head+middle+tail sampling to avoid missing changes in the middle of long docs.
     if max(len(old_text), len(new_text)) > LARGE_TEXT_THRESHOLD:
-        old_sample = (
-            old_text[:LARGE_TEXT_SAMPLE] + old_text[-LARGE_TEXT_SAMPLE:]
-            if len(old_text) > (2 * LARGE_TEXT_SAMPLE)
-            else old_text
-        )
-        new_sample = (
-            new_text[:LARGE_TEXT_SAMPLE] + new_text[-LARGE_TEXT_SAMPLE:]
-            if len(new_text) > (2 * LARGE_TEXT_SAMPLE)
-            else new_text
-        )
+        if (hashlib.md5(old_text.encode("utf-8", errors="replace")).hexdigest() ==
+                hashlib.md5(new_text.encode("utf-8", errors="replace")).hexdigest()):
+            return "unchanged"
+        old_sample = _distributed_sample(old_text, LARGE_TEXT_SAMPLE * 3)
+        new_sample = _distributed_sample(new_text, LARGE_TEXT_SAMPLE * 3)
         if _normalise(old_sample) == _normalise(new_sample):
             return "unchanged"
         return "modified"
@@ -392,141 +412,6 @@ def _generate_diff_lines(
 
     return result
 
-
-# ── AI-assisted XML update generation ─────────────────────────────────────────
-
-def _remove_text_preserve_xml_structure(xml_chunk: str, text_to_remove: str) -> Optional[str]:
-    """
-    Remove text from XML text nodes/tails while preserving tag structure.
-    Returns updated XML or None when no safe removal could be applied.
-    """
-    target = (text_to_remove or "").strip()
-    if not target:
-        return None
-
-    try:
-        parser = etree.XMLParser(recover=True, remove_blank_text=False)
-        root = etree.fromstring(xml_chunk.encode("utf-8"), parser=parser)
-    except Exception:
-        return None
-
-    words = [w for w in re.split(r"\s+", target) if w]
-    fuzzy_pat = None
-    if len(words) >= 3:
-        fuzzy_pat = re.compile(r"\s+".join(re.escape(w) for w in words), flags=re.IGNORECASE)
-
-    def _remove_from_value(value: str) -> tuple[str, bool]:
-        if target in value:
-            return value.replace(target, "", 1), True
-        if fuzzy_pat:
-            next_val, n = fuzzy_pat.subn("", value, count=1)
-            if n > 0:
-                return next_val, True
-        return value, False
-
-    changed = False
-    for el in root.iter():
-        if el.text:
-            new_text, did = _remove_from_value(el.text)
-            if did:
-                el.text = new_text
-                changed = True
-                break
-        if el.tail:
-            new_tail, did = _remove_from_value(el.tail)
-            if did:
-                el.tail = new_tail
-                changed = True
-                break
-
-    if not changed:
-        return None
-
-    return etree.tostring(root, encoding="unicode")
-
-def _generate_xml_suggestion(
-    xml_chunk: str,
-    old_pdf_text: str,
-    new_pdf_text: str,
-    focus_old_text: Optional[str] = None,
-    focus_new_text: Optional[str] = None,
-    focus_text: Optional[str] = None,
-) -> str:
-    """
-    Generate a suggested XML update based on changes between OLD and NEW PDF text.
-
-    1. Build sentence-level diff (old → new).
-    2. Replace matching sentences in the XML chunk.
-    3. Handle paragraph-level changes as fallback.
-    """
-    updated_xml = xml_chunk
-
-    # Targeted line-level replacement when the UI provides a selected diff line.
-    # This keeps right-click Generate scoped to the chosen change whenever possible.
-    f_old = (focus_old_text or "").strip()
-    f_new = (focus_new_text or "").strip()
-    f_any = (focus_text or "").strip()
-    if f_old or f_new or f_any:
-        if f_old and f_new and f_old in updated_xml:
-            return updated_xml.replace(f_old, f_new, 1)
-        if f_old and not f_new:
-            removed = _remove_text_preserve_xml_structure(updated_xml, f_old)
-            if removed is not None:
-                return removed
-            if f_old in updated_xml:
-                return updated_xml.replace(f_old, "", 1)
-        if f_old and f_old in updated_xml:
-            return updated_xml.replace(f_old, f_new or "", 1)
-        if f_new and f_new not in updated_xml:
-            close_match = re.search(r"(</[^>]+>\s*)$", updated_xml)
-            if close_match:
-                insert_pos = close_match.start()
-                return updated_xml[:insert_pos] + f"\n{f_new}\n" + updated_xml[insert_pos:]
-            return updated_xml + f"\n{f_new}\n"
-        if f_any and f_any in updated_xml:
-            return updated_xml
-
-    if not new_pdf_text.strip():
-        return xml_chunk
-
-    # Sentence-level diff
-    old_sentences = re.split(r"(?<=[.!?])\s+", old_pdf_text.strip())
-    new_sentences = re.split(r"(?<=[.!?])\s+", new_pdf_text.strip())
-
-    matcher = difflib.SequenceMatcher(None, old_sentences, new_sentences)
-
-    for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
-        if opcode == "replace" and (i2 - i1) == (j2 - j1):
-            for old_sent, new_sent in zip(old_sentences[i1:i2], new_sentences[j1:j2]):
-                if len(old_sent) > 10 and old_sent in updated_xml:
-                    updated_xml = updated_xml.replace(old_sent, new_sent, 1)
-        elif opcode == "insert":
-            for new_sent in new_sentences[j1:j2]:
-                if len(new_sent) > 10:
-                    close_match = re.search(r"(</[^>]+>\s*)$", updated_xml)
-                    if close_match:
-                        insert_pos = close_match.start()
-                        updated_xml = (
-                            updated_xml[:insert_pos]
-                            + f"\n{new_sent}\n"
-                            + updated_xml[insert_pos:]
-                        )
-
-    # Paragraph-level fallback
-    if updated_xml == xml_chunk and old_pdf_text.strip() != new_pdf_text.strip():
-        old_paras = [p.strip() for p in old_pdf_text.split("\n\n") if p.strip()]
-        new_paras = [p.strip() for p in new_pdf_text.split("\n\n") if p.strip()]
-        para_matcher = difflib.SequenceMatcher(None, old_paras, new_paras)
-
-        for opcode, i1, i2, j1, j2 in para_matcher.get_opcodes():
-            if opcode == "replace":
-                for old_p, new_p in zip(old_paras[i1:i2], new_paras[j1:j2]):
-                    if len(old_p) > 15 and old_p in updated_xml:
-                        updated_xml = updated_xml.replace(old_p, new_p, 1)
-
-    return updated_xml
-
-
 # ── Core processing pipeline ───────────────────────────────────────────────────
 
 def process_upload(
@@ -618,14 +503,23 @@ async def start_processing(
 
     # ── Step 1: Extract text from both PDFs ──────────────────────────────────
     try:
+        old_batches_total = max(1, math.ceil(max(session.get("old_pages", 0), 1) / max(batch_size, 1)))
+        new_batches_total = max(1, math.ceil(max(session.get("new_pages", 0), 1) / max(batch_size, 1)))
+        extraction_total_batches = max(1, old_batches_total + new_batches_total)
+        extraction_done_batches = 0
+
         old_pages_text: list[str] = []
         for _, batch, _ in _stream_pdf_pages(old_pdf_bytes, batch_size):
             old_pages_text.extend(batch)
+            extraction_done_batches += 1
+            session["progress"] = min(29, int((extraction_done_batches / extraction_total_batches) * 30))
             await asyncio.sleep(0)
 
         new_pages_text: list[str] = []
         for _, batch, _ in _stream_pdf_pages(new_pdf_bytes, batch_size):
             new_pages_text.extend(batch)
+            extraction_done_batches += 1
+            session["progress"] = min(29, int((extraction_done_batches / extraction_total_batches) * 30))
             await asyncio.sleep(0)
     except Exception as exc:
         session["status"] = "error"
@@ -676,14 +570,14 @@ async def start_processing(
             if _is_line_relevant_to_xml(ln, ref_terms, ref_bigrams):
                 old_page_scores[pg] = old_page_scores.get(pg, 0) + 1
 
-        # Pick the top-scoring pages (up to 10) as the anchor window
+        # Pick the top-scoring pages (up to 10) as the anchor window.
+        # Window size is configurable via AUTOCOMPARE_PAGE_WINDOW env var.
         if old_page_scores:
             top_old_pages = sorted(old_page_scores, key=lambda p: -old_page_scores[p])[:10]
             anchor_min = min(top_old_pages)
             anchor_max = max(top_old_pages)
-            # Expand by ±2 pages for context
-            page_start_idx = max(0, anchor_min - 3)
-            page_end_idx = anchor_max + 2
+            page_start_idx = max(0, anchor_min - PAGE_WINDOW)
+            page_end_idx = anchor_max + PAGE_WINDOW
         else:
             page_start_idx = p_start
             page_end_idx = min(p_end, p_start + 10)
@@ -732,6 +626,9 @@ async def start_processing(
             "xml_size": cf["xml_size"],
             "page_start": page_start_idx,
             "page_end": page_end_idx,
+            # Unchanged chunks are pre-flagged so the frontend can mark them
+            # "reviewed" automatically without requiring a user click.
+            "auto_reviewed": not has_changes,
         }
 
         diff_path = base / "COMPARE" / f"diff_{cf['index']:05d}.json"
@@ -776,8 +673,110 @@ async def start_processing(
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
+def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
+    """
+    Rebuild a session dict from on-disk artefacts after a server restart.
+    Returns the session (also stored in _sessions) or None if irreparable.
+    """
+    session_dir = _session_dir(session_id)
+    if not session_dir.exists():
+        return None
+
+    original_dir = session_dir / "ORIGINAL"
+    xml_dir      = session_dir / "XML"
+    compare_dir  = session_dir / "COMPARE"
+    summary_path = session_dir / "summary.json"
+
+    if not original_dir.exists():
+        return None
+
+    # Load summary (present only when processing completed)
+    summary: Optional[dict] = None
+    status = "uploaded"
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            status  = "done"
+        except Exception:
+            pass
+
+    # Page counts from stored PDFs
+    old_pages = new_pages = 0
+    for which, attr in (("old.pdf", "old_pages"), ("new.pdf", "new_pages")):
+        pdf_path = original_dir / which
+        if pdf_path.exists():
+            try:
+                val = _count_pdf_pages(pdf_path.read_bytes())
+                if attr == "old_pages":
+                    old_pages = val
+                else:
+                    new_pages = val
+            except Exception:
+                pass
+
+    # XML file list from disk
+    xml_file_list: list[dict] = []
+    if xml_dir.exists():
+        for i, xp in enumerate(sorted(xml_dir.glob("*.xml")), start=1):
+            xml_file_list.append({
+                "index": i,
+                "filename": xp.name,
+                "original_filename": xp.name,
+                "xml_size": xp.stat().st_size,
+            })
+
+    # Chunks from diff JSON files
+    chunks: list[dict] = []
+    if compare_dir.exists() and status == "done":
+        for diff_path in sorted(compare_dir.glob("diff_*.json")):
+            try:
+                chunk_data = json.loads(diff_path.read_text(encoding="utf-8"))
+                chunk_data.setdefault("old_text", "")
+                chunk_data.setdefault("new_text", "")
+                chunk_data.setdefault("diff_lines", [])
+                chunk_data.setdefault("auto_reviewed", not chunk_data.get("has_changes", True))
+                chunks.append(chunk_data)
+            except Exception:
+                pass
+
+    created_at = session_dir.stat().st_ctime
+    source_name = (summary or {}).get("source_name", session_id[:8])
+
+    session: dict = {
+        "session_id":    session_id,
+        "source_name":   source_name,
+        "status":        status,
+        "progress":      100 if status == "done" else 0,
+        "error":         None,
+        "old_pages":     (summary or {}).get("old_pages", old_pages),
+        "new_pages":     (summary or {}).get("new_pages", new_pages),
+        "xml_file_count": len(xml_file_list),
+        "chunks":        chunks,
+        "xml_file_list": xml_file_list,
+        "summary":       summary,
+        "storage": {
+            "base":     str(session_dir),
+            "original": str(original_dir),
+            "xml":      str(xml_dir),
+            "compare":  str(compare_dir),
+        },
+        "created_at": created_at,
+        "expires_at": created_at + SESSION_TTL,
+    }
+    _sessions[session_id] = session
+    logger.info(
+        "Reconstructed session %s from disk — status=%s chunks=%d",
+        session_id, status, len(chunks),
+    )
+    return session
+
+
 def get_session(session_id: str) -> Optional[dict]:
-    return _sessions.get(session_id)
+    """Return session from memory; reconstruct from disk on cache miss."""
+    session = _sessions.get(session_id)
+    if session is not None:
+        return session
+    return _reconstruct_session_from_disk(session_id)
 
 
 def get_chunks_list(session_id: str) -> list[dict]:
@@ -797,6 +796,7 @@ def get_chunks_list(session_id: str) -> list[dict]:
             "xml_size": c.get("xml_size", 0),
             "page_start": c.get("page_start", 0),
             "page_end": c.get("page_end", 0),
+            "auto_reviewed": c.get("auto_reviewed", not c["has_changes"]),
         }
         for c in session.get("chunks", [])
     ]
@@ -882,8 +882,8 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
                     top_pages = sorted(old_page_scores, key=lambda p: -old_page_scores[p])[:10]
                     anchor_min = min(top_pages)
                     anchor_max = max(top_pages)
-                    p_lo = max(0, anchor_min - 3)
-                    p_hi = anchor_max + 2
+                    p_lo = max(0, anchor_min - PAGE_WINDOW)
+                    p_hi = anchor_max + PAGE_WINDOW
                 else:
                     p_lo = max(0, p_start - 1)
                     p_hi = min(p_end + 2, p_start + 15)
@@ -1196,9 +1196,78 @@ def cleanup_old_sessions(ttl: int = SESSION_TTL) -> int:
     removed = 0
     for sid in to_del:
         session = _sessions.pop(sid, None)
+        _session_locks.pop(sid, None)
         if session:
             base_path = session.get("storage", {}).get("base")
             if base_path:
                 shutil.rmtree(base_path, ignore_errors=True)
             removed += 1
-    return removed  
+
+    # Also purge orphaned disk sessions (session_dir exists but not in memory)
+    if BASE_STORAGE.exists():
+        for session_dir in BASE_STORAGE.iterdir():
+            if not session_dir.is_dir():
+                continue
+            sid = session_dir.name
+            if sid in _sessions:
+                continue
+            try:
+                ctime = session_dir.stat().st_ctime
+                if now - ctime > ttl:
+                    shutil.rmtree(session_dir, ignore_errors=True)
+                    removed += 1
+            except Exception:
+                pass
+
+    return removed
+
+
+def export_session_report(session_id: str) -> dict:
+    """
+    Build a JSON-serialisable status report for all chunks in a session.
+    Returns a dict with session metadata and a per-chunk rows list.
+    Suitable for download as JSON or conversion to CSV on the client.
+    """
+    session = get_session(session_id)
+    if not session:
+        raise KeyError(f"Session {session_id} not found")
+
+    rows: list[dict] = []
+    for chunk in session.get("chunks", []):
+        xml_saved   = chunk.get("xml_saved")
+        xml_content = chunk.get("xml_content", "")
+        if not xml_content:
+            # Load lazily for report
+            base = Path(session["storage"]["base"])
+            xml_path = base / "XML" / chunk["filename"]
+            if xml_path.exists():
+                try:
+                    xml_content = xml_path.read_text(encoding="utf-8")
+                except Exception:
+                    xml_content = ""
+
+        is_updated  = xml_saved is not None
+        is_modified = is_updated and xml_saved != xml_content
+
+        rows.append({
+            "index":          chunk.get("index"),
+            "label":          chunk.get("label", ""),
+            "filename":       chunk.get("filename", ""),
+            "change_type":    chunk.get("change_type", "unchanged"),
+            "has_changes":    chunk.get("has_changes", False),
+            "similarity_pct": round(chunk.get("similarity", 1.0) * 100, 1),
+            "page_start":     chunk.get("page_start", 0) + 1,
+            "page_end":       chunk.get("page_end", 0),
+            "xml_size_bytes": chunk.get("xml_size", 0),
+            "is_updated":     is_updated,
+            "is_modified":    is_modified,
+            "auto_reviewed":  chunk.get("auto_reviewed", False),
+        })
+
+    return {
+        "session_id":  session_id,
+        "source_name": session.get("source_name", ""),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "summary":     session.get("summary", {}),
+        "chunks":      rows,
+    }

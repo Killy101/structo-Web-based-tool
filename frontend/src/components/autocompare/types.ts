@@ -36,6 +36,8 @@ export interface ChunkRow {
   page_start: number;
   page_end: number;
   reviewStatus?: ReviewStatus;
+  /** True when the backend pre-flagged this chunk as not needing review (unchanged). */
+  auto_reviewed?: boolean;
 }
 
 // ── Diff line typing ───────────────────────────────────────────────────────────
@@ -139,14 +141,6 @@ export interface SaveResponse {
   message: string;
   valid: boolean;
   errors: string[];
-}
-
-export interface AutoGenerateResponse {
-  success: boolean;
-  session_id: string;
-  chunk_id: string;
-  suggested_xml: string;
-  generation_scope?: "chunk" | "line";
 }
 
 export type ValidateStatus = "no_changes" | "updated" | "saved_unchanged" | "needs_review" | "pending";

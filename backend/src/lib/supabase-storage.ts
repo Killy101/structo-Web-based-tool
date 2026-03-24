@@ -138,7 +138,32 @@ export function makeStoragePointer(storagePath: string): StoragePointer {
 }
 
 export function extractStoragePath(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const maybePath = (value as { storagePath?: unknown }).storagePath;
-  return typeof maybePath === "string" && maybePath.trim() ? maybePath : null;
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    // Legacy rows may store the storage path directly as a JSON string.
+    if (trimmed.startsWith("brd/") || trimmed.startsWith("sections/")) {
+      return trimmed;
+    }
+    return null;
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+
+  const obj = value as Record<string, unknown>;
+
+  const directPath = obj.storagePath ?? obj.storage_path;
+  if (typeof directPath === "string" && directPath.trim()) return directPath.trim();
+
+  // Some historic pointer payloads used provider/bucket/path naming.
+  const provider = obj.storageProvider ?? obj.storage_provider ?? obj.provider;
+  const bucket = obj.storageBucket ?? obj.storage_bucket ?? obj.bucket;
+  const legacyPath = obj.path;
+  if ((provider || bucket) && typeof legacyPath === "string" && legacyPath.trim()) {
+    return legacyPath.trim();
+  }
+
+  return null;
 }

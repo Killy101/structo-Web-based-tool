@@ -9,6 +9,10 @@ const STRICT_MAX_REQUESTS_PER_WINDOW = 60;
 type OperationsFlags = {
   maintenanceMode: boolean;
   strictRateLimitMode: boolean;
+  maintenanceBannerMessage: string;
+  maintenanceWindowStartUtc: string;
+  maintenanceWindowEndUtc: string;
+  maintenanceLearnMoreUrl: string;
 };
 
 type StrictCounterState = {
@@ -26,9 +30,17 @@ function asObject(value: unknown): Record<string, unknown> {
 
 function normalizeOperationsFlags(input: unknown): OperationsFlags {
   const raw = asObject(input);
+  const maintenanceBannerMessage = String(
+    raw.maintenanceBannerMessage ??
+      "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.",
+  ).trim();
   return {
     maintenanceMode: Boolean(raw.maintenanceMode),
     strictRateLimitMode: Boolean(raw.strictRateLimitMode),
+    maintenanceBannerMessage,
+    maintenanceWindowStartUtc: String(raw.maintenanceWindowStartUtc ?? "").trim(),
+    maintenanceWindowEndUtc: String(raw.maintenanceWindowEndUtc ?? "").trim(),
+    maintenanceLearnMoreUrl: String(raw.maintenanceLearnMoreUrl ?? "").trim(),
   };
 }
 
@@ -52,10 +64,25 @@ async function getOperationsFlags(): Promise<OperationsFlags> {
     // DB unreachable — keep serving from cache if available, otherwise use safe defaults.
     // Use a longer TTL on error so we don't hammer a struggling DB every request.
     if (cachedFlags) return cachedFlags;
-    const safe: OperationsFlags = { maintenanceMode: false, strictRateLimitMode: false };
+    const safe: OperationsFlags = {
+      maintenanceMode: false,
+      strictRateLimitMode: false,
+      maintenanceBannerMessage:
+        "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.",
+      maintenanceWindowStartUtc: "",
+      maintenanceWindowEndUtc: "",
+      maintenanceLearnMoreUrl: "",
+    };
     cachedFlags = { ...safe, fetchedAt: now - GOVERNANCE_CACHE_TTL_MS + GOVERNANCE_ERROR_CACHE_TTL_MS };
     return safe;
   }
+}
+
+function buildMaintenanceMessage(operations: OperationsFlags): string {
+  return (
+    operations.maintenanceBannerMessage ||
+    "System is currently in maintenance mode. Please try again later."
+  );
 }
 
 function isMutationMethod(method: string): boolean {
@@ -115,8 +142,9 @@ export async function governanceControlsMiddleware(
       isMutationMethod(req.method) &&
       !isMaintenanceExemptPath(path)
     ) {
+      res.setHeader("X-Maintenance-Mode", "1");
       return res.status(503).json({
-        error: "System is currently in maintenance mode. Please try again later.",
+        error: buildMaintenanceMessage(operations),
       });
     }
 
