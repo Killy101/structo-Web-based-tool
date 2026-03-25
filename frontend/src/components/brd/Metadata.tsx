@@ -131,7 +131,11 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     }
     // Map display values back to snake_case keys for upstream
     const out: Record<string, string> = format === "old" ? {
-      content_category_name: values.sourceName ?? "",
+      // FIX: send as source_name so _normalise_metadata recognises the old
+      // format correctly. Sending content_category_name was triggering
+      // auto_new_schema=True in Python and silently switching to the new
+      // format branch, discarding sourceType / payloadSubtype / status etc.
+      source_name:           values.sourceName ?? "",
       authoritative_source:  values.authoritativeSource ?? "",
       source_type:           values.sourceType ?? "",
       publication_date:      values.publicationDate ?? "",
@@ -211,9 +215,18 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     setSaved(false);
   }
 
-  function handleSave() {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  async function handleSave() {
+    if (!brdId) return;
+    try {
+      // Persist the current field values to the backend immediately.
+      // Previously this function only toggled a cosmetic "Saved!" state
+      // without making any API call — so clicking Save was a no-op.
+      await api.put(`/brd/${brdId}/sections/metadata`, { data: values });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      console.error("[Metadata] Save failed:", err);
+    }
   }
 
   return (
@@ -373,9 +386,12 @@ function buildMetadataValues(
 
   if (format === "old") {
     return {
-      // "Source Name" in legacy doc → stored as content_category_name by extractor
-      sourceName:           t("content_category_name") || t("source_name") || t("document_title"),
-      // "Authoritative Source" → stored directly as authoritative_source
+      // FIX: read source_name first — this is what onDataChange now sends back
+      // after a round-trip through the backend. content_category_name and
+      // document_title are kept as fallbacks for freshly-extracted BRDs whose
+      // metadata blob still uses those keys.
+      sourceName:           t("source_name") || t("content_category_name") || t("document_title"),
+      // authoritativeSource is stored under its own key on save
       authoritativeSource:  t("authoritative_source") || t("issuing_agency"),
       sourceType:           t("source_type"),
       publicationDate:      t("publication_date"),

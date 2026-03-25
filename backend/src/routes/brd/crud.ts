@@ -73,7 +73,7 @@ function isSimilarTitle(a: string, b: string): boolean {
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    const brds = await (prisma as any).brd.findMany({
+    const brds = await prisma.brd.findMany({
       where: { deletedAt: null },
       orderBy: { createdAt: "asc" },
       select: {
@@ -95,13 +95,9 @@ router.get("/", async (_req: Request, res: Response) => {
       },
     });
 
-    const data = brds.map((b: any) => {
-      // Use only inline metadata for the list view — avoid downloading from
-      // Supabase Storage (one request per BRD) which causes timeouts.
-      const rawMeta = b.sections?.metadata ?? null;
-      const meta = extractStoragePath(rawMeta) === null
-        ? (rawMeta as Record<string, unknown> | null)
-        : null;
+const data = await Promise.all(brds.map(async (b: any) => {
+  const rawMeta = b.sections?.metadata ?? null;
+  const meta = (await resolveMaybeStoredJson(rawMeta)) as Record<string, unknown> | null;
 
       const geography     = (meta?.geography as string) ?? "—";
 
@@ -126,7 +122,7 @@ router.get("/", async (_req: Request, res: Response) => {
         lastUpdated: b.updatedAt.toISOString().split("T")[0],
         geography,
       };
-    });
+  }));
 
     return res.json(data);
   } catch (err) {
