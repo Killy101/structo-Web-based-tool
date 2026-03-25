@@ -5,21 +5,29 @@
  * Features
  * ────────
  * - PDF rendered per-page on a <canvas> element via pdfjs-dist
- * - Overlay canvas draws yellow highlight boxes over matching text when
- *   highlightText prop is set
+ * - Overlay canvas draws highlight boxes over matching text
  * - Page navigation controls
  * - targetPage prop navigates to a specific 1-based page number
+ *
+ * Fix summary (v2)
+ * ────────────────
+ * - drawHighlights is now a STABLE callback (never changes reference) that
+ *   always delegates to the latest implementation via drawHighlightsImplRef.
+ *   This means highlight changes no longer trigger a full PDF page re-render.
+ * - Page render effect only depends on [pdfLoaded, currentPage].
+ * - A separate highlight effect depends on all highlight props and calls
+ *   drawHighlights whenever any highlight prop changes.
+ * - highlightTextRef keeps the latest text for use inside async render callbacks.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 interface PdfViewerProps {
   /** PDF File object to display */
   file: File | null;
   /**
    * Fallback URL to load the PDF from when `file` is null.
-   * Used when a session is restored from localStorage (File objects are
-   * not serialisable) — the browser fetches the PDF from the backend.
+   * Used when a session is restored from localStorage.
    */
   src?: string;
   /** Label shown in the header, e.g. "Old PDF" or "New PDF" */
@@ -35,7 +43,7 @@ interface PdfViewerProps {
   highlightText?: string;
   /** Optional semantic type so highlight color matches diff panel categories */
   highlightKind?: "added" | "removed" | "modified";
-  /** Optional list of diff-derived highlights for this chunk (ILovePDF-style view). */
+  /** Optional list of diff-derived highlights for this chunk. */
   highlightEntries?: Array<{
     text: string;
     kind: "added" | "removed" | "modified";
@@ -44,63 +52,63 @@ interface PdfViewerProps {
 }
 
 type StoredTextItem = {
-  str: string;
+  str:       string;
   transform: number[];
-  width: number;
-  height: number;
+  width:     number;
+  height:    number;
 };
 
 // ── Color maps ─────────────────────────────────────────────────────────────────
 
 const COLOR_MAP = {
   blue: {
-    border: "rgba(59,130,246,0.3)",
-    bg: "rgba(59,130,246,0.05)",
-    text: "text-blue-400",
-    badge: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    highlightFill: "rgba(59,130,246,0.35)",
+    border:          "rgba(59,130,246,0.3)",
+    bg:              "rgba(59,130,246,0.05)",
+    text:            "text-blue-400",
+    badge:           "bg-blue-500/20 text-blue-300 border-blue-500/30",
+    highlightFill:   "rgba(59,130,246,0.35)",
     highlightStroke: "rgba(147,197,253,0.95)",
   },
   violet: {
-    border: "rgba(139,92,246,0.3)",
-    bg: "rgba(139,92,246,0.05)",
-    text: "text-violet-400",
-    badge: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-    highlightFill: "rgba(139,92,246,0.35)",
+    border:          "rgba(139,92,246,0.3)",
+    bg:              "rgba(139,92,246,0.05)",
+    text:            "text-violet-400",
+    badge:           "bg-violet-500/20 text-violet-300 border-violet-500/30",
+    highlightFill:   "rgba(139,92,246,0.35)",
     highlightStroke: "rgba(196,181,253,0.95)",
   },
 };
 
 const HIGHLIGHT_KIND_MAP = {
   added: {
-    fill: "rgba(34,197,94,0.35)",
-    stroke: "rgba(134,239,172,0.95)",
-    border: "rgba(34,197,94,0.6)",
-    shadow: "0 0 0 1px rgba(34,197,94,0.25), 0 0 16px rgba(34,197,94,0.10)",
-    bannerBg: "rgba(34,197,94,0.05)",
+    fill:         "rgba(34,197,94,0.35)",
+    stroke:       "rgba(134,239,172,0.95)",
+    border:       "rgba(34,197,94,0.6)",
+    shadow:       "0 0 0 1px rgba(34,197,94,0.25), 0 0 16px rgba(34,197,94,0.10)",
+    bannerBg:     "rgba(34,197,94,0.05)",
     bannerBorder: "rgba(34,197,94,0.25)",
-    bannerText: "text-emerald-300",
-    badge: "Addition",
+    bannerText:   "text-emerald-300",
+    badge:        "Addition",
   },
   removed: {
-    fill: "rgba(239,68,68,0.35)",
-    stroke: "rgba(252,165,165,0.95)",
-    border: "rgba(239,68,68,0.6)",
-    shadow: "0 0 0 1px rgba(239,68,68,0.25), 0 0 16px rgba(239,68,68,0.10)",
-    bannerBg: "rgba(239,68,68,0.05)",
+    fill:         "rgba(239,68,68,0.35)",
+    stroke:       "rgba(252,165,165,0.95)",
+    border:       "rgba(239,68,68,0.6)",
+    shadow:       "0 0 0 1px rgba(239,68,68,0.25), 0 0 16px rgba(239,68,68,0.10)",
+    bannerBg:     "rgba(239,68,68,0.05)",
     bannerBorder: "rgba(239,68,68,0.25)",
-    bannerText: "text-red-300",
-    badge: "Removal",
+    bannerText:   "text-red-300",
+    badge:        "Removal",
   },
   modified: {
-    fill: "rgba(245,158,11,0.35)",
-    stroke: "rgba(252,211,77,0.95)",
-    border: "rgba(245,158,11,0.6)",
-    shadow: "0 0 0 1px rgba(245,158,11,0.25), 0 0 16px rgba(245,158,11,0.10)",
-    bannerBg: "rgba(245,158,11,0.05)",
+    fill:         "rgba(245,158,11,0.35)",
+    stroke:       "rgba(252,211,77,0.95)",
+    border:       "rgba(245,158,11,0.6)",
+    shadow:       "0 0 0 1px rgba(245,158,11,0.25), 0 0 16px rgba(245,158,11,0.08)",
+    bannerBg:     "rgba(245,158,11,0.05)",
     bannerBorder: "rgba(245,158,11,0.25)",
-    bannerText: "text-amber-300",
-    badge: "Modification",
+    bannerText:   "text-amber-300",
+    badge:        "Modification",
   },
 } as const;
 
@@ -122,21 +130,28 @@ export default function PdfViewer({
   highlightEntries,
 }: PdfViewerProps) {
   const styles = COLOR_MAP[color];
-  const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const overlayRef   = useRef<HTMLCanvasElement>(null);
+
+  const containerRef  = useRef<HTMLDivElement>(null);
+  const canvasRef     = useRef<HTMLCanvasElement>(null);
+  const overlayRef    = useRef<HTMLCanvasElement>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfDocRef    = useRef<any>(null);
+  const pdfDocRef     = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const viewportRef  = useRef<any>(null);
+  const viewportRef   = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const renderTaskRef = useRef<any>(null);
-  const textItemsRef = useRef<StoredTextItem[]>([]);
+  const textItemsRef  = useRef<StoredTextItem[]>([]);
 
-  // Keep latest highlightText in a ref so async effects don't go stale
-  const highlightTextRef = useRef(highlightText ?? "");
-  highlightTextRef.current = highlightText ?? "";
+  // Always-current refs for highlight props — used inside async callbacks
+  const highlightTextRef     = useRef(highlightText ?? "");
+  const highlightKindRef     = useRef(highlightKind);
+  const highlightEntriesRef  = useRef(highlightEntries);
+  const currentPageRef       = useRef(1);
+
+  highlightTextRef.current    = highlightText ?? "";
+  highlightKindRef.current    = highlightKind;
+  highlightEntriesRef.current = highlightEntries;
 
   const [pdfLoaded,   setPdfLoaded]   = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
@@ -144,101 +159,37 @@ export default function PdfViewer({
   const [loading,     setLoading]     = useState(false);
   const [loadError,   setLoadError]   = useState<string | null>(null);
 
-  // ── Load PDF from File ─────────────────────────────────────────────────────
-
-useEffect(() => {
-  if (renderTaskRef.current) {
-    try {
-      renderTaskRef.current.cancel();
-    } catch {
-      // Ignore cancellation errors during teardown.
-    }
-    renderTaskRef.current = null;
-  }
-
-  // Destroy previous document
-  if (pdfDocRef.current) {
-    pdfDocRef.current.destroy();
-    pdfDocRef.current = null;
-  }
-
-  setPdfLoaded(false);
-  textItemsRef.current = [];
-  viewportRef.current = null;
-
-  // Nothing to load when neither a File nor a URL is provided
-  if (!file && !src) {
-    setTotalPages(0);
-    setCurrentPage(1);
-    setLoadError(null);
-    return;
-  }
-
-  let cancelled = false;
-  setLoading(true);
-  setLoadError(null);
-
-  (async () => {
-    try {
-      const pdfjs = await import("pdfjs-dist");
-      const { getDocument, GlobalWorkerOptions } = pdfjs;
-
-      if (!pdfjsWorkerConfigured) {
-        GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-        pdfjsWorkerConfigured = true;
-      }
-
-      // Load from File object when available (fresh upload), otherwise
-      // load from URL (session restored from localStorage).
-      const pdf = file
-        ? await getDocument({ data: await file.arrayBuffer() }).promise
-        : await getDocument({ url: src! }).promise;
-
-      if (cancelled) {
-        pdf.destroy();
-        return;
-      }
-
-      pdfDocRef.current = pdf;
-      setTotalPages(pdf.numPages);
-      setCurrentPage(1);
-      setPdfLoaded(true);
-    } catch (e) {
-      if (!cancelled)
-        setLoadError(e instanceof Error ? e.message : "Failed to load PDF");
-    } finally {
-      if (!cancelled) setLoading(false);
-    }
-  })();
-
-  return () => {
-    cancelled = true;
-  };
-}, [file, src]);
-  // ── Navigate to targetPage ─────────────────────────────────────────────────
-
+  // Keep currentPageRef in sync with state
   useEffect(() => {
-    if (targetPage && targetPage >= 1 && totalPages > 0) {
-      setCurrentPage(Math.min(targetPage, totalPages));
-    }
-  }, [targetPage, totalPages]);
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
 
-  // ── Draw highlight overlay ─────────────────────────────────────────────────
+  // ── drawHighlights implementation ─────────────────────────────────────────
+  //
+  // We store the LATEST implementation in a ref so the stable `drawHighlights`
+  // callback always delegates to fresh prop values without being recreated.
+  // This prevents the page render effect from re-running just because a
+  // highlight prop changed.
 
-  const drawHighlights = useCallback((searchText: string) => {
+  const drawHighlightsImplRef = useRef<(searchText: string) => void>(() => {});
+
+  // Rebuild the implementation on every render so it always closes over
+  // the latest highlightKind, highlightEntries, currentPage, and styles.
+  const drawHighlightsImpl = (searchText: string): void => {
     const overlay  = overlayRef.current;
     const canvas   = canvasRef.current;
     const viewport = viewportRef.current;
     if (!overlay || !canvas || !viewport) return;
 
-    // Resizing the overlay canvas also clears it
+    // Resizing the overlay also clears it
     overlay.width  = canvas.width;
     overlay.height = canvas.height;
 
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
 
-    const norm  = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
     const drawByText = (
       text: string,
       kind: "added" | "removed" | "modified" | null,
@@ -251,7 +202,9 @@ useEffect(() => {
 
       const palette = kind ? HIGHLIGHT_KIND_MAP[kind] : null;
 
+      let drawn = 0;
       for (const item of textItemsRef.current) {
+        if (drawn >= 20) break; // max 20 highlights per pass for performance
         if (!item.str.trim() || item.width <= 0) continue;
         const itemNorm = norm(item.str);
         const isMatch =
@@ -268,34 +221,107 @@ useEffect(() => {
         const w = item.width;
         const h = Math.max(item.height, 8);
 
-        ctx.fillStyle   = palette?.fill ?? styles.highlightFill;
+        ctx.fillStyle   = palette?.fill   ?? styles.highlightFill;
         ctx.strokeStyle = palette?.stroke ?? styles.highlightStroke;
         ctx.lineWidth   = strong ? 1.6 : 1;
         ctx.fillRect  (vx, vy - h, w, h + 2);
         ctx.strokeRect(vx, vy - h, w, h + 2);
+        drawn++;
       }
     };
 
-    // First pass: draw all chunk-level diff highlights (subtle but complete)
-    for (const entry of highlightEntries ?? []) {
+    // Pass 1: all chunk-level diff highlights (subtle)
+    for (const entry of highlightEntriesRef.current ?? []) {
       if (!entry?.text?.trim()) continue;
-      if (entry.page && entry.page !== currentPage) continue;
+      if (entry.page && entry.page !== currentPageRef.current) continue;
       drawByText(entry.text, entry.kind, false);
     }
 
-    // Second pass: draw selected line highlight stronger on top
+    // Pass 2: selected line highlight (strong, drawn on top)
     if (searchText && searchText.length >= 2) {
-      drawByText(searchText, highlightKind ?? null, true);
+      drawByText(searchText, highlightKindRef.current ?? null, true);
     }
-  }, [
-    styles.highlightFill,
-    styles.highlightStroke,
-    highlightKind,
-    highlightEntries,
-    currentPage,
-  ]);
+  };
+
+  // Always keep the ref pointing to the latest implementation
+  drawHighlightsImplRef.current = drawHighlightsImpl;
+
+  // Stable callback — never changes reference so it can be safely used in
+  // the render effect without adding highlight props to its dependency array.
+  const drawHighlights = useCallback((searchText: string) => {
+    drawHighlightsImplRef.current(searchText);
+  }, []); // intentionally empty — delegates via ref
+
+  // ── Load PDF ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (renderTaskRef.current) {
+      try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
+      renderTaskRef.current = null;
+    }
+    if (pdfDocRef.current) {
+      pdfDocRef.current.destroy();
+      pdfDocRef.current = null;
+    }
+
+    setPdfLoaded(false);
+    textItemsRef.current = [];
+    viewportRef.current  = null;
+
+    if (!file && !src) {
+      setTotalPages(0);
+      setCurrentPage(1);
+      setLoadError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+
+    (async () => {
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        const { getDocument, GlobalWorkerOptions } = pdfjs;
+
+        if (!pdfjsWorkerConfigured) {
+          GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+          pdfjsWorkerConfigured = true;
+        }
+
+        const pdf = file
+          ? await getDocument({ data: await file.arrayBuffer() }).promise
+          : await getDocument({ url: src! }).promise;
+
+        if (cancelled) { pdf.destroy(); return; }
+
+        pdfDocRef.current = pdf;
+        setTotalPages(pdf.numPages);
+        setCurrentPage(1);
+        setPdfLoaded(true);
+      } catch (e) {
+        if (!cancelled)
+          setLoadError(e instanceof Error ? e.message : "Failed to load PDF");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [file, src]);
+
+  // ── Navigate to targetPage ─────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (targetPage && targetPage >= 1 && totalPages > 0) {
+      setCurrentPage(Math.min(targetPage, totalPages));
+    }
+  }, [targetPage, totalPages]);
 
   // ── Render current page ────────────────────────────────────────────────────
+  // NOTE: drawHighlights is intentionally NOT in the dependency array.
+  // It is a stable callback that never changes. Highlight redraws are handled
+  // by the separate highlight effect below.
 
   useEffect(() => {
     if (!pdfLoaded || !pdfDocRef.current) return;
@@ -304,14 +330,11 @@ useEffect(() => {
 
     (async () => {
       try {
-        // Cancel any in-flight render on this viewer before starting another.
         if (renderTaskRef.current) {
           try {
             renderTaskRef.current.cancel();
             await renderTaskRef.current.promise;
-          } catch {
-            // Expected when cancelling previous task.
-          } finally {
+          } catch { /* expected on cancel */ } finally {
             renderTaskRef.current = null;
           }
         }
@@ -338,16 +361,14 @@ useEffect(() => {
         try {
           await renderTask.promise;
         } finally {
-          if (renderTaskRef.current === renderTask) {
-            renderTaskRef.current = null;
-          }
+          if (renderTaskRef.current === renderTask) renderTaskRef.current = null;
         }
 
         if (cancelled) { page.cleanup(); return; }
 
         viewportRef.current = viewport;
 
-        // Extract text items for highlighting
+        // Extract text items for highlight matching
         const tc = await page.getTextContent();
         if (!cancelled) {
           textItemsRef.current = tc.items
@@ -364,11 +385,10 @@ useEffect(() => {
 
         page.cleanup();
 
-        // Draw highlights using the latest highlight text
+        // Draw highlights immediately after rendering using the latest impl
         if (!cancelled) drawHighlights(highlightTextRef.current);
       } catch (e) {
         const err = e as { name?: string };
-        // pdf.js throws this when a render task is intentionally cancelled.
         if (!cancelled && err?.name !== "RenderingCancelledException") {
           console.error("[PdfViewer] render error:", e);
         }
@@ -378,27 +398,27 @@ useEffect(() => {
     return () => {
       cancelled = true;
       if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch {
-          // Ignore cancellation errors during cleanup.
-        }
+        try { renderTaskRef.current.cancel(); } catch { /* ignore */ }
       }
     };
-  }, [pdfLoaded, currentPage, drawHighlights]);
+  }, [pdfLoaded, currentPage, drawHighlights]); // drawHighlights is stable — no extra renders
 
-  // ── Re-draw highlights when highlightText changes ─────────────────────────
+  // ── Redraw highlights when any highlight prop changes ──────────────────────
+  // Fires independently of the page render effect so we don't re-render the
+  // PDF page just because the user selected a different diff line.
 
   useEffect(() => {
     if (pdfLoaded && textItemsRef.current.length > 0) {
       drawHighlights(highlightText ?? "");
     }
-  }, [highlightText, highlightEntries, drawHighlights, pdfLoaded]);
+  }, [highlightText, highlightKind, highlightEntries, currentPage, pdfLoaded, drawHighlights]);
 
-  const pageLabel = useMemo(() => {
-    if (pageStart == null) return null;
-    return `Pages ${pageStart + 1}–${pageEnd ?? pageStart + 1}`;
-  }, [pageStart, pageEnd]);
+  // ── Derived display values ─────────────────────────────────────────────────
+
+  const pageLabel =
+    pageStart != null
+      ? `Pages ${pageStart + 1}–${pageEnd ?? pageStart + 1}`
+      : null;
 
   const palette = highlightKind ? HIGHLIGHT_KIND_MAP[highlightKind] : null;
 
@@ -408,7 +428,9 @@ useEffect(() => {
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
       style={{
-        borderColor: highlightText ? (palette?.border ?? "rgba(250,204,21,0.6)") : styles.border,
+        borderColor: highlightText
+          ? (palette?.border ?? "rgba(250,204,21,0.6)")
+          : styles.border,
         background: "rgba(6,13,26,0.6)",
         boxShadow: highlightText
           ? (palette?.shadow ?? "0 0 0 1px rgba(250,204,21,0.25), 0 0 16px rgba(250,204,21,0.08)")
@@ -452,7 +474,7 @@ useEffect(() => {
           className="px-3 py-1.5 border-b text-[10px] flex items-center gap-1.5"
           style={{
             borderColor: palette?.bannerBorder ?? "rgba(250,204,21,0.25)",
-            background: palette?.bannerBg ?? "rgba(250,204,21,0.05)",
+            background:  palette?.bannerBg     ?? "rgba(250,204,21,0.05)",
           }}
         >
           <span className={`${palette?.bannerText ?? "text-yellow-400"} flex-shrink-0`}>
@@ -482,7 +504,6 @@ useEffect(() => {
             {loadError}
           </div>
         ) : (
-          /* Canvas + overlay */
           <div className="relative inline-block min-w-full">
             <canvas ref={canvasRef} className="block max-w-full" />
             <canvas

@@ -62,6 +62,28 @@ MAX_DIFF_LINES = 2000
 LARGE_TEXT_THRESHOLD = 500_000
 LARGE_TEXT_SAMPLE = 100_000
 
+# ── Noise-line patterns (false positive filtering) ────────────────────────────
+
+_NOISE_KEYWORDS_RE   = re.compile(r'\b(font|footnote)\b', re.IGNORECASE)
+_PAGE_NUMBER_ONLY_RE = re.compile(r'^\s*\d+\s*$')
+_NUMBERING_ONLY_RE   = re.compile(
+    r'^\s*(\d+\.|[a-z]\)|\([a-z0-9]+\)|[ivxlcdm]+\.)\s*$', re.IGNORECASE
+)
+
+
+def _is_noise_line(text: str) -> bool:
+    """Return True for lines that are likely false-positive diff noise."""
+    s = text.strip()
+    if len(s) < 3:
+        return True
+    if _PAGE_NUMBER_ONLY_RE.match(s):
+        return True
+    if _NUMBERING_ONLY_RE.match(s):
+        return True
+    if _NOISE_KEYWORDS_RE.search(s):
+        return True
+    return False
+
 # Configurable page-anchor expansion window (pages around top anchor matches).
 # Override via env var AUTOCOMPARE_PAGE_WINDOW (default 3).
 PAGE_WINDOW = int(os.getenv("AUTOCOMPARE_PAGE_WINDOW", "3"))
@@ -368,13 +390,31 @@ def _generate_diff_lines(
             continue
         elif opcode == "delete":
             for offset, line in enumerate(old_lines[i1:i2]):
+                stripped = line.rstrip("\n")
+                if _is_noise_line(stripped):
+                    continue
                 old_page = old_pages[i1 + offset] if old_pages else None
-                if _append("removed", line, old_page=old_page, new_page=None, old_text=line.rstrip("\n"), new_text=""):
+                if _append(
+                    "removed", line,
+                    old_page=old_page, new_page=None,
+                    old_text=stripped, new_text="",
+                    old_spans=[{"text": stripped, "changed": True}],
+                    new_spans=[],
+                ):
                     return result
         elif opcode == "insert":
             for offset, line in enumerate(new_lines[j1:j2]):
+                stripped = line.rstrip("\n")
+                if _is_noise_line(stripped):
+                    continue
                 new_page = new_pages[j1 + offset] if new_pages else None
-                if _append("added", line, old_page=None, new_page=new_page, old_text="", new_text=line.rstrip("\n")):
+                if _append(
+                    "added", line,
+                    old_page=None, new_page=new_page,
+                    old_text="", new_text=stripped,
+                    old_spans=[],
+                    new_spans=[{"text": stripped, "changed": True}],
+                ):
                     return result
         elif opcode == "replace":
             old_block = [ln.rstrip("\n") for ln in old_lines[i1:i2]]
@@ -388,7 +428,17 @@ def _generate_diff_lines(
                 new_page = new_pages[j1 + k] if new_pages and (j1 + k) < len(new_pages) else None
 
                 if old_ln and new_ln:
+                    # Skip if normalised text is identical (whitespace-only diff)
+                    if _normalise(old_ln) == _normalise(new_ln):
+                        continue
+                    # Skip if both sides are noise
+                    if _is_noise_line(old_ln) and _is_noise_line(new_ln):
+                        continue
                     old_spans, new_spans = _char_diff_spans(old_ln, new_ln)
+                    # Skip if no span is actually marked changed (false positive)
+                    if not any(s["changed"] for s in old_spans) and \
+                       not any(s["changed"] for s in new_spans):
+                        continue
                     if _append(
                         "modified",
                         f"{old_ln} -> {new_ln}",
@@ -401,11 +451,25 @@ def _generate_diff_lines(
                     ):
                         return result
                 elif old_ln:
-                    if _append("removed", old_ln, old_page=old_page, new_page=None, old_text=old_ln, new_text=""):
-                        return result
+                    if not _is_noise_line(old_ln):
+                        if _append(
+                            "removed", old_ln,
+                            old_page=old_page, new_page=None,
+                            old_text=old_ln, new_text="",
+                            old_spans=[{"text": old_ln, "changed": True}],
+                            new_spans=[],
+                        ):
+                            return result
                 elif new_ln:
-                    if _append("added", new_ln, old_page=None, new_page=new_page, old_text="", new_text=new_ln):
-                        return result
+                    if not _is_noise_line(new_ln):
+                        if _append(
+                            "added", new_ln,
+                            old_page=None, new_page=new_page,
+                            old_text="", new_text=new_ln,
+                            old_spans=[],
+                            new_spans=[{"text": new_ln, "changed": True}],
+                        ):
+                            return result
 
                 if len(result) >= MAX_DIFF_LINES:
                     return result
