@@ -68,24 +68,24 @@ const HIGHLIGHT_KIND_MAP = {
     shadow: "0 0 0 1px rgba(34,197,94,0.25), 0 0 16px rgba(34,197,94,0.10)",
     bannerBg: "rgba(34,197,94,0.05)",
     bannerBorder: "rgba(34,197,94,0.25)",
-    bannerText: "text-emerald-300",
-    badge: "Addition",
+    bannerText:   "text-emerald-300",
+    badge:        "Addition",
   },
   removed: {
     border: "rgba(239,68,68,0.6)",
     shadow: "0 0 0 1px rgba(239,68,68,0.25), 0 0 16px rgba(239,68,68,0.10)",
     bannerBg: "rgba(239,68,68,0.05)",
     bannerBorder: "rgba(239,68,68,0.25)",
-    bannerText: "text-red-300",
-    badge: "Removal",
+    bannerText:   "text-red-300",
+    badge:        "Removal",
   },
   modified: {
     border: "rgba(245,158,11,0.6)",
     shadow: "0 0 0 1px rgba(245,158,11,0.25), 0 0 16px rgba(245,158,11,0.10)",
     bannerBg: "rgba(245,158,11,0.05)",
     bannerBorder: "rgba(245,158,11,0.25)",
-    bannerText: "text-amber-300",
-    badge: "Modification",
+    bannerText:   "text-amber-300",
+    badge:        "Modification",
   },
 } as const;
 
@@ -107,7 +107,6 @@ export default function PdfViewer({
   highlightModifiedTexts,
 }: PdfViewerProps) {
   const styles = COLOR_MAP[color];
-
   const [currentPage, setCurrentPage] = useState(1);
   const [imgLoading, setImgLoading]   = useState(false);
   const [imgError,   setImgError]     = useState(false);
@@ -187,7 +186,9 @@ export default function PdfViewer({
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
       style={{
-        borderColor: highlightText ? (palette?.border ?? "rgba(250,204,21,0.6)") : styles.border,
+        borderColor: highlightText
+          ? (palette?.border ?? "rgba(250,204,21,0.6)")
+          : styles.border,
         background: "rgba(6,13,26,0.6)",
         boxShadow: highlightText
           ? (palette?.shadow ?? "0 0 0 1px rgba(250,204,21,0.25), 0 0 16px rgba(250,204,21,0.08)")

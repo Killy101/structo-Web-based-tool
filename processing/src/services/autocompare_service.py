@@ -452,6 +452,9 @@ def _generate_diff_lines(
 
         elif opcode == "delete":
             for offset, line in enumerate(old_lines[i1:i2]):
+                stripped = line.rstrip("\n")
+                if _is_noise_line(stripped):
+                    continue
                 old_page = old_pages[i1 + offset] if old_pages else None
                 stripped = line.rstrip("\n")
                 if not stripped.strip():
@@ -463,6 +466,9 @@ def _generate_diff_lines(
 
         elif opcode == "insert":
             for offset, line in enumerate(new_lines[j1:j2]):
+                stripped = line.rstrip("\n")
+                if _is_noise_line(stripped):
+                    continue
                 new_page = new_pages[j1 + offset] if new_pages else None
                 stripped = line.rstrip("\n")
                 if not stripped.strip():

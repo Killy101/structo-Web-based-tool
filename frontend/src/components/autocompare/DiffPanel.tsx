@@ -11,8 +11,8 @@
  *                  NEW: full sentence, added/changed words in BLUE
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { DiffCategory, DiffGroup, DiffLine, DiffSubType } from "./types";
+import React, { useMemo, useState } from "react";
+import type { DiffLine, DiffSpan } from "./types";
 
 // ── Category config ────────────────────────────────────────────────────────────
 
@@ -191,6 +191,7 @@ function ModificationRows({ oldText, newText }: { oldText: string; newText: stri
     }
   }
 
+function PageBadge({ page, kind }: { page: number; kind: "old" | "new" }) {
   return (
     <span className="flex flex-col gap-1.5">
       <span className="flex flex-wrap gap-0 leading-relaxed items-baseline">
@@ -467,7 +468,9 @@ function buildGroupsClient(lines: DiffLine[]): DiffGroup[] {
 
 interface DiffPanelProps {
   diffLines:          DiffLine[];
-  diffGroups?:        DiffGroup[];
+  /** Ignored — kept for backwards compatibility with callers that pass diffGroups */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  diffGroups?:        any;
   chunkLabel?:        string;
   changeType?:        string;
   similarity?:        number;
@@ -477,7 +480,6 @@ interface DiffPanelProps {
 
 export default function DiffPanel({
   diffLines,
-  diffGroups,
   chunkLabel,
   changeType,
   similarity,
@@ -505,12 +507,15 @@ export default function DiffPanel({
     return raw.filter((g) => g.category !== "emphasis");
   }, [diffLines, diffGroups]);
 
-  const hasChanges = groups.length > 0;
-  const simPct     = similarity != null ? Math.round(similarity * 100) : null;
-  const simColor   = simPct == null ? "#64748b" : simPct >= 90 ? "#22c55e" : simPct >= 60 ? "#f59e0b" : "#ef4444";
+  const simPct   = similarity != null ? Math.round(similarity * 100) : null;
+  const simColor = simPct == null
+    ? "#64748b"
+    : simPct >= 90 ? "#22c55e"
+    : simPct >= 60 ? "#f59e0b"
+    : "#ef4444";
 
   const changeBadge: Record<string, string> = {
-    added:     "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+    added:     "bg-blue-500/20 text-blue-300 border-blue-500/30",
     removed:   "bg-red-500/20 text-red-300 border-red-500/30",
     modified:  "bg-amber-500/20 text-amber-300 border-amber-500/30",
     unchanged: "bg-slate-600/20 text-slate-400 border-slate-600/30",
@@ -525,20 +530,32 @@ export default function DiffPanel({
         style={{ borderColor: "rgba(26,143,209,0.15)", background: "rgba(13,17,23,0.97)" }}>
         <div className="flex items-center justify-between gap-2 mb-1.5">
           <div className="flex items-center gap-2 min-w-0">
-            <svg className="w-4 h-4 text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            <svg
+              className="w-4 h-4 text-amber-400 flex-shrink-0"
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+              />
             </svg>
             <span className="text-xs font-bold text-white">Changes</span>
             {chunkLabel && <span className="text-[10px] text-slate-500 truncate max-w-[100px]">{chunkLabel}</span>}
             {changeType && (
-              <span className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold flex-shrink-0 ${changeBadge[changeType] ?? changeBadge.unchanged}`}>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold flex-shrink-0 ${
+                  changeBadge[changeType] ?? changeBadge.unchanged
+                }`}
+              >
                 {changeType}
               </span>
             )}
           </div>
           {simPct != null && (
-            <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: simColor }}>
+            <span
+              className="text-[10px] font-semibold flex-shrink-0"
+              style={{ color: simColor }}
+            >
               {simPct}% match
             </span>
           )}

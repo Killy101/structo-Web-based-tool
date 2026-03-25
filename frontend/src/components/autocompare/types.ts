@@ -67,6 +67,12 @@ export type DiffCategory = "addition" | "removal" | "modification" | "mismatch" 
  */
 export type DiffSubType = "edit" | "textual" | "innodreplace" | "emphasis";
 
+/** A single changed span within a diff line */
+export interface DiffSpan {
+  text: string;
+  changed: boolean;
+}
+
 /** A single diff line enriched with category and sub_type */
 export interface DiffLine {
   /** Legacy field kept for backwards compat with existing DiffPanel usage */
@@ -80,6 +86,10 @@ export interface DiffLine {
   old_text?: string;
   /** For modification lines: new-side text (after " -> ") */
   new_text?: string;
+  /** Char/word-level spans for the old side (changed=true → highlight red) */
+  old_spans?: DiffSpan[];
+  /** Char/word-level spans for the new side (changed=true → highlight blue) */
+  new_spans?: DiffSpan[];
   line: number;
   old_page?: number | null;
   new_page?: number | null;
