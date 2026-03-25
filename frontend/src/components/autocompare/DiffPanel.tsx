@@ -16,7 +16,7 @@
  */
 
 import React, { useMemo, useState } from "react";
-import type { DiffLine, DiffSpan } from "./types";
+import type { DiffLine, DiffSpan, DiffCategory } from "./types";
 
 // ── False-positive filter ───────────────────────────────────────────────────────
 
