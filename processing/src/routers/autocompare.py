@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from src.services.autocompare_service import (
+    _build_diff_groups,
     cleanup_old_sessions,
     export_session_report,
     get_chunk_detail,
@@ -237,6 +238,11 @@ async def compare_chunk_endpoint(chunk_id: str, session_id: str):
     chunk = get_chunk_detail(session_id, chunk_id)
     if not chunk:
         raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
+
+    # Ensure diff_groups is always present for frontend backward compatibility.
+    # The flat-timeline DiffPanel ignores groups, but older consumers may use them.
+    if chunk.get("diff_lines") and not chunk.get("diff_groups"):
+        chunk["diff_groups"] = _build_diff_groups(chunk["diff_lines"])
 
     return {
         "success":     True,
