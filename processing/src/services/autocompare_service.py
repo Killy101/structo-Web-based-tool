@@ -5,22 +5,33 @@ Pipeline
 ────────
 1. Accept OLD PDF, NEW PDF, and one or more XML files (chunked or whole).
 2. Extract text from both PDFs page-by-page using PyMuPDF.
-3. For each uploaded XML file: locate its matching pages in both PDFs via
-   page-anchor scoring, then diff old vs new text for those pages.
-4. Per XML file: generate diff lines, produce AI XML update suggestions.
+3. For each uploaded XML file: locate its matching pages in BOTH PDFs via
+   page-anchor scoring (XML used as structural reference only).
+4. Diff OLD PDF text vs NEW PDF text for those pages — only show real
+   content changes, filtering out cosmetic line-wrap differences.
 5. Save/download individual XML files.
 
-Users may upload:
-  - A single whole XML representing the entire document, or
-  - Multiple XMLs (one per section/chapter/chunk).
-Either way each uploaded file is treated as one independent unit.
+Diff axis
+─────────
+   Left  side = OLD PDF text  (what the document used to say)
+   Right side = NEW PDF text  (what the document now says)
+
+   The XML is the converted form of the OLD PDF. It is used ONLY to:
+     • locate which page window to examine in both PDFs (page-anchor scoring)
+     • provide structural section labels in the UI
 
 Change types
 ────────────
-    added      — text present in NEW but not OLD (green)
-    removed    — text present in OLD but not NEW (red)
-    modified   — text present in both but changed (yellow)
-    unchanged  — no change detected
+    added      — text in NEW PDF but not OLD   (green)
+    removed    — text in OLD PDF but not NEW   (red)
+    modified   — same section, content changed (yellow)
+    unchanged  — no meaningful difference
+
+Noise filtering
+───────────────
+   Pure line-wrap differences (same words, different line breaks due to
+   PDF reflow between versions) are collapsed and excluded. Only
+   semantically different content is shown in the diff panel.
 
 Storage layout
 ──────────────
@@ -62,8 +73,6 @@ MAX_DIFF_LINES = 2000
 LARGE_TEXT_THRESHOLD = 500_000
 LARGE_TEXT_SAMPLE = 100_000
 
-# Configurable page-anchor expansion window (pages around top anchor matches).
-# Override via env var AUTOCOMPARE_PAGE_WINDOW (default 3).
 PAGE_WINDOW = int(os.getenv("AUTOCOMPARE_PAGE_WINDOW", "3"))
 
 CHANGE_COLORS = {
@@ -86,11 +95,10 @@ STOPWORDS = {
 # ── Session storage ────────────────────────────────────────────────────────────
 
 _sessions: dict[str, dict] = {}
-_session_locks: dict[str, asyncio.Lock] = {}  # per-session lock for /start race prevention
+_session_locks: dict[str, asyncio.Lock] = {}
 
 
 def _get_session_lock(session_id: str) -> asyncio.Lock:
-    """Return (creating if absent) the asyncio.Lock for a session."""
     if session_id not in _session_locks:
         _session_locks[session_id] = asyncio.Lock()
     return _session_locks[session_id]
@@ -121,20 +129,16 @@ def _stream_pdf_pages(pdf_bytes: bytes, batch_size: int = BATCH_SIZE):
     total = len(doc)
     batch: list[str] = []
     batch_idx = 0
-
     for page_num in range(total):
         page = doc[page_num]
         text = str(page.get_text("text"))
         batch.append(text)
-
         if len(batch) >= batch_size:
             yield batch_idx, batch, total
             batch = []
             batch_idx += 1
-
     if batch:
         yield batch_idx, batch, total
-
     doc.close()
 
 
@@ -145,115 +149,99 @@ def _count_pdf_pages(pdf_bytes: bytes) -> int:
     return n
 
 
-# ── Text diff utilities ────────────────────────────────────────────────────────
+# ── Text normalisation & noise filtering ──────────────────────────────────────
 
 def _normalise(text: str) -> str:
     """Collapse whitespace for comparison."""
     return " ".join(text.split()).lower()
 
 
+def _blocks_are_cosmetic(old_lines: list[str], new_lines: list[str]) -> bool:
+    """
+    Return True when two blocks differ ONLY in line-wrap positions, not content.
+
+    PDF documents frequently reflow text across line breaks between versions
+    (e.g. wider margins, font changes, layout tweaks). This produces thousands
+    of spurious "replace" opcodes where the actual words are identical.
+    Joining the lines and normalising whitespace reveals these as no-ops.
+    """
+    old_joined = _normalise(" ".join(old_lines))
+    new_joined = _normalise(" ".join(new_lines))
+    return old_joined == new_joined
+
+
 def _compute_similarity(old: str, new: str) -> float:
     """Return 0.0–1.0 similarity ratio."""
     if not old and not new:
         return 1.0
-
-    # Avoid very expensive full-document matching on huge chunks.
     if max(len(old), len(new)) > LARGE_TEXT_THRESHOLD:
-        old_sample = (old[:LARGE_TEXT_SAMPLE] + old[-LARGE_TEXT_SAMPLE:]) if len(old) > (2 * LARGE_TEXT_SAMPLE) else old
-        new_sample = (new[:LARGE_TEXT_SAMPLE] + new[-LARGE_TEXT_SAMPLE:]) if len(new) > (2 * LARGE_TEXT_SAMPLE) else new
-        return difflib.SequenceMatcher(None, _normalise(old_sample), _normalise(new_sample)).ratio()
-
+        def _sample(t: str) -> str:
+            s = LARGE_TEXT_SAMPLE
+            mid = len(t) // 2
+            return (t[:s] + t[mid - s // 2:mid + s // 2] + t[-s:]) if len(t) > s * 2 else t
+        return difflib.SequenceMatcher(None, _normalise(_sample(old)), _normalise(_sample(new))).ratio()
     return difflib.SequenceMatcher(None, _normalise(old), _normalise(new)).ratio()
 
 
+# ── XML reference profiling (page-anchor only) ────────────────────────────────
+
 def _extract_xml_reference_profile(xml_text: str) -> tuple[set[str], set[str]]:
-    """Build token and bigram sets from XML text content for chunk-local matching."""
+    """
+    Build token and bigram sets from XML text content for page-anchor scoring.
+    The XML is the converted form of the old PDF — its vocabulary tells us
+    which pages of both PDFs belong to this chunk.
+    """
     if not xml_text:
         return set(), set()
-
-    # Strip tags and collapse whitespace so matching is based on textual content.
     plain = re.sub(r"<[^>]+>", " ", xml_text)
     words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'\-/]{2,}", plain.lower())
     words = [w for w in words if w not in STOPWORDS and not w.isdigit() and len(w) >= 4]
-
-    capped_words = words[:3000]
-    terms = set(capped_words)
-    bigrams = {
-        f"{capped_words[i]} {capped_words[i + 1]}"
-        for i in range(len(capped_words) - 1)
-    }
+    capped = words[:3000]
+    terms = set(capped)
+    bigrams = {f"{capped[i]} {capped[i+1]}" for i in range(len(capped) - 1)}
     return terms, bigrams
 
 
 def _is_line_relevant_to_xml(line_text: str, ref_terms: set[str], ref_bigrams: set[str]) -> bool:
-    """Return True when a PDF line appears relevant to the chunk's XML content."""
-    # If profile is empty let the page-bound fallback in the caller handle it.
-    # We never hard-block here; we just signal "no terms to match against".
+    """Return True when a PDF line appears relevant to the chunk's XML vocabulary."""
     if not ref_terms and not ref_bigrams:
-        return True  # empty profile → caller falls back to page window
-
+        return True
     norm = _normalise(line_text)
     if not norm:
         return False
-
     line_words = [
         w for w in re.findall(r"[a-z0-9][a-z0-9'\-/]{2,}", norm)
         if w not in STOPWORDS and not w.isdigit() and len(w) >= 4
     ]
     if not line_words:
         return False
-
     overlap = sum(1 for w in line_words if w in ref_terms)
-    line_bigrams = {
-        f"{line_words[i]} {line_words[i + 1]}"
-        for i in range(len(line_words) - 1)
-    }
+    line_bigrams = {f"{line_words[i]} {line_words[i+1]}" for i in range(len(line_words) - 1)}
     bigram_hits = sum(1 for bg in line_bigrams if bg in ref_bigrams)
     overlap_ratio = overlap / max(len(set(line_words)), 1)
-
-    # Strong signal: explicit phrase overlap from the chunk XML.
     if bigram_hits >= 1 and overlap >= 1:
         return True
-
-    # If chunk profile has phrase data, require stronger lexical overlap.
     if ref_bigrams:
         if len(ref_terms) < 120:
             return overlap >= 4 and overlap_ratio >= 0.50
         if len(ref_terms) < 300:
             return overlap >= 4 and overlap_ratio >= 0.42
         return overlap >= 3 and overlap_ratio >= 0.45
-
-    # Stricter thresholds for shorter/narrower XML chunks.
     if len(ref_terms) < 120:
         return overlap >= 4 and overlap_ratio >= 0.50
     if len(ref_terms) < 300:
         return overlap >= 4 and overlap_ratio >= 0.42
-
     if overlap >= 5:
         return True
     return overlap >= 3 and overlap_ratio >= 0.45
 
 
-def _filter_line_chunks_by_xml(
-    line_chunks: list[tuple[str, int]],
-    ref_terms: set[str],
-    ref_bigrams: set[str],
-) -> list[tuple[str, int]]:
-    """Filter per-line PDF chunks down to lines relevant to the XML reference terms."""
-    return [
-        (ln, pg)
-        for ln, pg in line_chunks
-        if _is_line_relevant_to_xml(ln, ref_terms, ref_bigrams)
-    ]
-
-
 def _distributed_sample(text: str, sample_size: int) -> str:
-    """Return head + middle + tail sample of text to avoid missing middle-of-document changes."""
     if len(text) <= sample_size:
         return text
     third = sample_size // 3
-    mid_start = len(text) // 2 - third // 2
-    return text[:third] + text[mid_start: mid_start + third] + text[-third:]
+    mid = len(text) // 2 - third // 2
+    return text[:third] + text[mid:mid + third] + text[-third:]
 
 
 def _classify_change(old_text: str, new_text: str) -> str:
@@ -262,49 +250,42 @@ def _classify_change(old_text: str, new_text: str) -> str:
         return "added"
     if old_text.strip() and not new_text.strip():
         return "removed"
-
     if old_text == new_text:
         return "unchanged"
-
-    # Fast-path for very large text: use MD5 hash first (exact), then distributed
-    # head+middle+tail sampling to avoid missing changes in the middle of long docs.
     if max(len(old_text), len(new_text)) > LARGE_TEXT_THRESHOLD:
         if (hashlib.md5(old_text.encode("utf-8", errors="replace")).hexdigest() ==
                 hashlib.md5(new_text.encode("utf-8", errors="replace")).hexdigest()):
             return "unchanged"
-        old_sample = _distributed_sample(old_text, LARGE_TEXT_SAMPLE * 3)
-        new_sample = _distributed_sample(new_text, LARGE_TEXT_SAMPLE * 3)
-        if _normalise(old_sample) == _normalise(new_sample):
+        old_s = _distributed_sample(old_text, LARGE_TEXT_SAMPLE * 3)
+        new_s = _distributed_sample(new_text, LARGE_TEXT_SAMPLE * 3)
+        if _normalise(old_s) == _normalise(new_s):
             return "unchanged"
         return "modified"
-
     if _normalise(old_text) == _normalise(new_text):
         return "unchanged"
     return "modified"
 
 
 def _char_diff_spans(old_line: str, new_line: str) -> tuple[list[dict], list[dict]]:
-    """
-    Return (old_spans, new_spans) where each span is {"text": str, "changed": bool}.
-    Used for inline char-level highlighting in the Diff Panel.
-    """
-    import difflib
+    """Return (old_spans, new_spans) for inline char-level highlighting."""
     sm = difflib.SequenceMatcher(None, old_line, new_line, autojunk=False)
     old_spans: list[dict] = []
     new_spans: list[dict] = []
-    for opcode, i1, i2, j1, j2 in sm.get_opcodes():
-        if opcode == "equal":
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
             old_spans.append({"text": old_line[i1:i2], "changed": False})
             new_spans.append({"text": new_line[j1:j2], "changed": False})
-        elif opcode == "replace":
+        elif op == "replace":
             old_spans.append({"text": old_line[i1:i2], "changed": True})
             new_spans.append({"text": new_line[j1:j2], "changed": True})
-        elif opcode == "delete":
+        elif op == "delete":
             old_spans.append({"text": old_line[i1:i2], "changed": True})
-        elif opcode == "insert":
+        elif op == "insert":
             new_spans.append({"text": new_line[j1:j2], "changed": True})
     return old_spans, new_spans
 
+
+# ── Core diff generator ────────────────────────────────────────────────────────
 
 def _generate_diff_lines(
     old_text: str,
@@ -313,9 +294,18 @@ def _generate_diff_lines(
     new_line_pages: Optional[list[int]] = None,
 ) -> list[dict]:
     """
-    Line-level diff for the Diff Panel.
-    Returns list of { "type": "added"|"removed"|"modified", "text": str, "line": int }.
-    Unchanged lines are intentionally omitted.
+    Line-level diff between OLD PDF text (left) and NEW PDF text (right).
+
+    Noise filtering — cosmetic line-wrap differences are skipped:
+      When a replace opcode's old and new blocks contain the same words
+      just reflowed across different line breaks, it is silently skipped.
+      This eliminates thousands of false positives from PDF reflow between
+      document versions and shows only real content changes.
+
+    Result entries:
+      added    → line in new PDF not in old  → new content
+      removed  → line in old PDF not in new  → deleted content
+      modified → both sides present, content differs → edited content
     """
     old_lines = old_text.splitlines(keepends=True)
     new_lines = new_text.splitlines(keepends=True)
@@ -330,8 +320,8 @@ def _generate_diff_lines(
         text: str,
         old_page: Optional[int] = None,
         new_page: Optional[int] = None,
-        old_text: Optional[str] = None,
-        new_text: Optional[str] = None,
+        old_text_val: Optional[str] = None,
+        new_text_val: Optional[str] = None,
         old_spans: Optional[list] = None,
         new_spans: Optional[list] = None,
     ) -> bool:
@@ -342,8 +332,8 @@ def _generate_diff_lines(
             "line": line_num,
             "old_page": old_page,
             "new_page": new_page,
-            "old_text": old_text,
-            "new_text": new_text,
+            "old_text": old_text_val,
+            "new_text": new_text_val,
         }
         if old_spans is not None:
             entry["old_spans"] = old_spans
@@ -362,30 +352,54 @@ def _generate_diff_lines(
             return True
         return False
 
-    matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         if opcode == "equal":
             continue
+
         elif opcode == "delete":
             for offset, line in enumerate(old_lines[i1:i2]):
                 old_page = old_pages[i1 + offset] if old_pages else None
-                if _append("removed", line, old_page=old_page, new_page=None, old_text=line.rstrip("\n"), new_text=""):
+                stripped = line.rstrip("\n")
+                if not stripped.strip():
+                    continue
+                if _append("removed", stripped,
+                           old_page=old_page, new_page=None,
+                           old_text_val=stripped, new_text_val=""):
                     return result
+
         elif opcode == "insert":
             for offset, line in enumerate(new_lines[j1:j2]):
                 new_page = new_pages[j1 + offset] if new_pages else None
-                if _append("added", line, old_page=None, new_page=new_page, old_text="", new_text=line.rstrip("\n")):
+                stripped = line.rstrip("\n")
+                if not stripped.strip():
+                    continue
+                if _append("added", stripped,
+                           old_page=None, new_page=new_page,
+                           old_text_val="", new_text_val=stripped):
                     return result
+
         elif opcode == "replace":
             old_block = [ln.rstrip("\n") for ln in old_lines[i1:i2]]
             new_block = [ln.rstrip("\n") for ln in new_lines[j1:j2]]
-            pair_count = max(len(old_block), len(new_block))
 
+            # ── Cosmetic noise filter ─────────────────────────────────────
+            # Skip blocks that differ only in how lines are wrapped.
+            # Joining both sides and normalising whitespace reveals whether
+            # the actual words are the same — if so, nothing changed.
+            if _blocks_are_cosmetic(old_block, new_block):
+                continue
+
+            # Real content change — emit each line pair
+            pair_count = max(len(old_block), len(new_block))
             for k in range(pair_count):
                 old_ln = old_block[k] if k < len(old_block) else ""
                 new_ln = new_block[k] if k < len(new_block) else ""
                 old_page = old_pages[i1 + k] if old_pages and (i1 + k) < len(old_pages) else None
                 new_page = new_pages[j1 + k] if new_pages and (j1 + k) < len(new_pages) else None
+
+                if not old_ln.strip() and not new_ln.strip():
+                    continue
 
                 if old_ln and new_ln:
                     old_spans, new_spans = _char_diff_spans(old_ln, new_ln)
@@ -394,23 +408,28 @@ def _generate_diff_lines(
                         f"{old_ln} -> {new_ln}",
                         old_page=old_page,
                         new_page=new_page,
-                        old_text=old_ln,
-                        new_text=new_ln,
+                        old_text_val=old_ln,
+                        new_text_val=new_ln,
                         old_spans=old_spans,
                         new_spans=new_spans,
                     ):
                         return result
-                elif old_ln:
-                    if _append("removed", old_ln, old_page=old_page, new_page=None, old_text=old_ln, new_text=""):
+                elif old_ln.strip():
+                    if _append("removed", old_ln,
+                               old_page=old_page, new_page=None,
+                               old_text_val=old_ln, new_text_val=""):
                         return result
-                elif new_ln:
-                    if _append("added", new_ln, old_page=None, new_page=new_page, old_text="", new_text=new_ln):
+                elif new_ln.strip():
+                    if _append("added", new_ln,
+                               old_page=None, new_page=new_page,
+                               old_text_val="", new_text_val=new_ln):
                         return result
 
                 if len(result) >= MAX_DIFF_LINES:
                     return result
 
     return result
+
 
 # ── Core processing pipeline ───────────────────────────────────────────────────
 
@@ -420,28 +439,21 @@ def process_upload(
     xml_files: list[tuple[str, bytes]],
     source_name: str,
 ) -> dict:
-    """
-    Initialise a session. Saves files to disk.
-    xml_files is a list of (filename, content_bytes) for each uploaded XML file.
-    """
+    """Initialise a session. Saves files to disk."""
     session_id = str(uuid.uuid4())
     dirs = _ensure_dirs(session_id)
 
-    # Persist uploaded PDFs
     (dirs["original"] / "old.pdf").write_bytes(old_pdf_bytes)
     (dirs["original"] / "new.pdf").write_bytes(new_pdf_bytes)
 
     old_pages = _count_pdf_pages(old_pdf_bytes)
     new_pages = _count_pdf_pages(new_pdf_bytes)
 
-    # Persist each uploaded XML file. Keep only metadata in memory;
-    # XML content is loaded lazily when a file is opened for review.
     xml_file_list: list[dict] = []
     for i, (filename, xml_bytes) in enumerate(xml_files, start=1):
         safe_filename = re.sub(r"[^\w.\-]", "_", filename)
         out_path = dirs["xml"] / safe_filename
         out_path.write_bytes(xml_bytes)
-
         xml_file_list.append({
             "index": i,
             "filename": safe_filename,
@@ -480,9 +492,12 @@ async def start_processing(
     batch_size: int = BATCH_SIZE,
 ) -> None:
     """
-    Background coroutine: extract text from both PDFs, compare against
-    each uploaded XML file, build diff data.
-    Each uploaded XML (chunked or whole) is treated as one independent unit.
+    Background coroutine: extract text from both PDFs, use XML only for
+    page-anchor scoring, then diff OLD PDF text vs NEW PDF text per chunk.
+
+    The XML is the converted form of the old PDF. It is used ONLY to locate
+    which pages of both PDFs correspond to this XML chunk. The actual diff
+    is always old_pdf_text ←→ new_pdf_text, filtered to remove line-wrap noise.
     """
     session = _sessions.get(session_id)
     if not session:
@@ -505,21 +520,21 @@ async def start_processing(
     try:
         old_batches_total = max(1, math.ceil(max(session.get("old_pages", 0), 1) / max(batch_size, 1)))
         new_batches_total = max(1, math.ceil(max(session.get("new_pages", 0), 1) / max(batch_size, 1)))
-        extraction_total_batches = max(1, old_batches_total + new_batches_total)
-        extraction_done_batches = 0
+        total_batches = max(1, old_batches_total + new_batches_total)
+        done_batches = 0
 
         old_pages_text: list[str] = []
         for _, batch, _ in _stream_pdf_pages(old_pdf_bytes, batch_size):
             old_pages_text.extend(batch)
-            extraction_done_batches += 1
-            session["progress"] = min(29, int((extraction_done_batches / extraction_total_batches) * 30))
+            done_batches += 1
+            session["progress"] = min(29, int((done_batches / total_batches) * 30))
             await asyncio.sleep(0)
 
         new_pages_text: list[str] = []
         for _, batch, _ in _stream_pdf_pages(new_pdf_bytes, batch_size):
             new_pages_text.extend(batch)
-            extraction_done_batches += 1
-            session["progress"] = min(29, int((extraction_done_batches / extraction_total_batches) * 30))
+            done_batches += 1
+            session["progress"] = min(29, int((done_batches / total_batches) * 30))
             await asyncio.sleep(0)
     except Exception as exc:
         session["status"] = "error"
@@ -528,8 +543,7 @@ async def start_processing(
 
     session["progress"] = 30
 
-    # Build full-document line pools once so each XML chunk can be matched
-    # against relevant lines across the entire PDFs (not fixed page slices).
+    # Build full-document line pools for both PDFs
     all_old_line_chunks: list[tuple[str, int]] = []
     for p, page_text in enumerate(old_pages_text):
         page_no = p + 1
@@ -540,19 +554,13 @@ async def start_processing(
         page_no = p + 1
         all_new_line_chunks.extend((ln, page_no) for ln in page_text.splitlines(keepends=True))
 
-    # ── Step 2: Process each XML file against the PDF diff ───────────────────
-    # Page-anchor scoring locates which pages of each PDF correspond to each
-    # XML file, regardless of whether the XML covers one section or the whole doc.
+    # ── Step 2: Process each XML file ────────────────────────────────────────
     xml_file_list = session["xml_file_list"]
     total_chunks = len(xml_file_list)
-
     enriched_chunks: list[dict] = []
     changed_count = 0
 
     for i, cf in enumerate(xml_file_list):
-        p_start = 0   # page-anchor replaces fixed window; kept for fallback only
-        p_end = len(old_pages_text)
-
         xml_path = base / "XML" / cf["filename"]
         xml_content = ""
         if xml_path.exists():
@@ -561,17 +569,16 @@ async def start_processing(
             except UnicodeDecodeError:
                 xml_content = xml_path.read_bytes().decode("utf-8", errors="replace")
 
+        # Build vocabulary profile from XML (which mirrors old PDF content)
+        # to locate the correct page window in both PDFs
         ref_terms, ref_bigrams = _extract_xml_reference_profile(xml_content)
 
-        # ── Page-anchor step: find which PDF pages best match the XML content ──
-        # This prevents generic terms from pulling in lines from the whole document.
+        # Page-anchor on OLD PDF (XML ≈ old PDF)
         old_page_scores: dict[int, float] = {}
         for ln, pg in all_old_line_chunks:
             if _is_line_relevant_to_xml(ln, ref_terms, ref_bigrams):
                 old_page_scores[pg] = old_page_scores.get(pg, 0) + 1
 
-        # Pick the top-scoring pages (up to 10) as the anchor window.
-        # Window size is configurable via AUTOCOMPARE_PAGE_WINDOW env var.
         if old_page_scores:
             top_old_pages = sorted(old_page_scores, key=lambda p: -old_page_scores[p])[:10]
             anchor_min = min(top_old_pages)
@@ -579,10 +586,10 @@ async def start_processing(
             page_start_idx = max(0, anchor_min - PAGE_WINDOW)
             page_end_idx = anchor_max + PAGE_WINDOW
         else:
-            page_start_idx = p_start
-            page_end_idx = min(p_end, p_start + 10)
+            page_start_idx = 0
+            page_end_idx = min(len(old_pages_text), 10)
 
-        # Restrict both PDFs to the anchored window
+        # Extract the page-windowed text from BOTH PDFs
         old_relevant = [
             (ln, pg) for ln, pg in all_old_line_chunks
             if page_start_idx < pg <= page_end_idx
@@ -595,15 +602,12 @@ async def start_processing(
         old_text = "".join(line for line, _ in old_relevant)
         new_text = "".join(line for line, _ in new_relevant)
 
+        # Classify using normalised comparison (ignores line-wrap noise)
         change_type = _classify_change(old_text, new_text)
         has_changes = change_type != "unchanged"
         similarity = _compute_similarity(old_text, new_text) if old_text or new_text else 1.0
         if has_changes:
             changed_count += 1
-
-        # Defer expensive operations (diff generation, XML parsing, AI suggestion)
-        # until chunk detail/validate/autogenerate is requested.
-        diff_lines: list[dict] = []
 
         label = cf["original_filename"]
         if label.lower().endswith(".xml"):
@@ -619,33 +623,24 @@ async def start_processing(
             "has_changes": has_changes,
             "change_type": change_type,
             "similarity": round(similarity, 3),
-            "diff_lines": diff_lines,
+            "diff_lines": [],
             "xml_content": "",
             "xml_suggested": "",
             "xml_saved": None,
             "xml_size": cf["xml_size"],
             "page_start": page_start_idx,
             "page_end": page_end_idx,
-            # Unchanged chunks are pre-flagged so the frontend can mark them
-            # "reviewed" automatically without requiring a user click.
             "auto_reviewed": not has_changes,
         }
 
         diff_path = base / "COMPARE" / f"diff_{cf['index']:05d}.json"
-        diff_summary = {
-            k: v
-            for k, v in chunk_data.items()
-            if k not in ("old_text", "new_text", "diff_lines")
-        }
-        diff_path.write_text(
-            json.dumps(diff_summary, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        diff_summary = {k: v for k, v in chunk_data.items() if k not in ("old_text", "new_text", "diff_lines")}
+        diff_path.write_text(json.dumps(diff_summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
         enriched_chunks.append(chunk_data)
         session["progress"] = 30 + int(65 * (i + 1) / total_chunks)
         await asyncio.sleep(0)
 
-    # ── Step 3: Write summary ─────────────────────────────────────────────────
     summary = {
         "total": total_chunks,
         "changed": changed_count,
@@ -654,9 +649,7 @@ async def start_processing(
         "new_pages": session["new_pages"],
         "source_name": session["source_name"],
     }
-    (base / "summary.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8"
-    )
+    (base / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     session["chunks"] = enriched_chunks
     session["summary"] = summary
@@ -665,32 +658,23 @@ async def start_processing(
 
     logger.info(
         "AutoCompare session %s done: %d chunks, %d changed",
-        session_id,
-        total_chunks,
-        changed_count,
+        session_id, total_chunks, changed_count,
     )
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
-    """
-    Rebuild a session dict from on-disk artefacts after a server restart.
-    Returns the session (also stored in _sessions) or None if irreparable.
-    """
     session_dir = _session_dir(session_id)
     if not session_dir.exists():
         return None
-
     original_dir = session_dir / "ORIGINAL"
     xml_dir      = session_dir / "XML"
     compare_dir  = session_dir / "COMPARE"
     summary_path = session_dir / "summary.json"
-
     if not original_dir.exists():
         return None
 
-    # Load summary (present only when processing completed)
     summary: Optional[dict] = None
     status = "uploaded"
     if summary_path.exists():
@@ -700,7 +684,6 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
         except Exception:
             pass
 
-    # Page counts from stored PDFs
     old_pages = new_pages = 0
     for which, attr in (("old.pdf", "old_pages"), ("new.pdf", "new_pages")):
         pdf_path = original_dir / which
@@ -714,7 +697,6 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
             except Exception:
                 pass
 
-    # XML file list from disk
     xml_file_list: list[dict] = []
     if xml_dir.exists():
         for i, xp in enumerate(sorted(xml_dir.glob("*.xml")), start=1):
@@ -725,7 +707,6 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
                 "xml_size": xp.stat().st_size,
             })
 
-    # Chunks from diff JSON files
     chunks: list[dict] = []
     if compare_dir.exists() and status == "done":
         for diff_path in sorted(compare_dir.glob("diff_*.json")):
@@ -741,19 +722,18 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
 
     created_at = session_dir.stat().st_ctime
     source_name = (summary or {}).get("source_name", session_id[:8])
-
     session: dict = {
-        "session_id":    session_id,
-        "source_name":   source_name,
-        "status":        status,
-        "progress":      100 if status == "done" else 0,
-        "error":         None,
-        "old_pages":     (summary or {}).get("old_pages", old_pages),
-        "new_pages":     (summary or {}).get("new_pages", new_pages),
+        "session_id":     session_id,
+        "source_name":    source_name,
+        "status":         status,
+        "progress":       100 if status == "done" else 0,
+        "error":          None,
+        "old_pages":      (summary or {}).get("old_pages", old_pages),
+        "new_pages":      (summary or {}).get("new_pages", new_pages),
         "xml_file_count": len(xml_file_list),
-        "chunks":        chunks,
-        "xml_file_list": xml_file_list,
-        "summary":       summary,
+        "chunks":         chunks,
+        "xml_file_list":  xml_file_list,
+        "summary":        summary,
         "storage": {
             "base":     str(session_dir),
             "original": str(original_dir),
@@ -764,15 +744,11 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
         "expires_at": created_at + SESSION_TTL,
     }
     _sessions[session_id] = session
-    logger.info(
-        "Reconstructed session %s from disk — status=%s chunks=%d",
-        session_id, status, len(chunks),
-    )
+    logger.info("Reconstructed session %s from disk — status=%s chunks=%d", session_id, status, len(chunks))
     return session
 
 
 def get_session(session_id: str) -> Optional[dict]:
-    """Return session from memory; reconstruct from disk on cache miss."""
     session = _sessions.get(session_id)
     if session is not None:
         return session
@@ -780,7 +756,6 @@ def get_session(session_id: str) -> Optional[dict]:
 
 
 def get_chunks_list(session_id: str) -> list[dict]:
-    """Return lightweight XML file rows."""
     session = _sessions.get(session_id)
     if not session:
         return []
@@ -803,13 +778,19 @@ def get_chunks_list(session_id: str) -> list[dict]:
 
 
 def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
-    """Return full XML file data including diff_lines."""
+    """
+    Return full chunk data including diff_lines.
+
+    old_text = OLD PDF text for the page window
+    new_text = NEW PDF text for the same page window
+    diff_lines = real content changes only (line-wrap noise removed)
+    XML is available in xml_content for display in the editor.
+    """
     session = _sessions.get(session_id)
     if not session:
         return None
 
     chunks = session.get("chunks", [])
-
     try:
         idx = int(chunk_id)
         chunk = next((c for c in chunks if c["index"] == idx), None)
@@ -821,7 +802,7 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
 
     base = Path(session["storage"]["base"])
 
-    # Load XML content lazily from disk when a file is opened for review.
+    # Load XML content lazily (for editor display — not used in diff)
     if not chunk.get("xml_content"):
         xml_path = base / "XML" / chunk["filename"]
         if xml_path.exists():
@@ -848,7 +829,7 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
         except Exception:
             pass
 
-    # Build page-scoped text and diff on demand using page-anchor scoring.
+    # Build page-scoped text and diff on demand
     if chunk.get("page_start") is not None and not chunk.get("old_text"):
         p_start = chunk["page_start"]
         p_end = chunk["page_end"]
@@ -858,21 +839,23 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
             try:
                 old_doc = fitz.open(str(old_pdf))
                 new_doc = fitz.open(str(new_pdf))
+
                 old_line_chunks: list[tuple[str, int]] = []
                 for p in range(len(old_doc)):
                     page_no = p + 1
-                    page_text = str(old_doc[p].get_text("text"))
-                    old_line_chunks.extend((ln, page_no) for ln in page_text.splitlines(keepends=True))
+                    for ln in str(old_doc[p].get_text("text")).splitlines(keepends=True):
+                        old_line_chunks.append((ln, page_no))
 
                 new_line_chunks: list[tuple[str, int]] = []
                 for p in range(len(new_doc)):
                     page_no = p + 1
-                    page_text = str(new_doc[p].get_text("text"))
-                    new_line_chunks.extend((ln, page_no) for ln in page_text.splitlines(keepends=True))
+                    for ln in str(new_doc[p].get_text("text")).splitlines(keepends=True):
+                        new_line_chunks.append((ln, page_no))
 
-                ref_terms, ref_bigrams = _extract_xml_reference_profile(chunk.get("xml_content", ""))
+                xml_content = chunk.get("xml_content", "")
+                ref_terms, ref_bigrams = _extract_xml_reference_profile(xml_content)
 
-                # Page-anchor: score all pages by XML term overlap, take the top window
+                # Page-anchor on OLD PDF
                 old_page_scores: dict[int, float] = {}
                 for ln, pg in old_line_chunks:
                     if _is_line_relevant_to_xml(ln, ref_terms, ref_bigrams):
@@ -901,38 +884,35 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
 
                 old_doc.close()
                 new_doc.close()
+
                 chunk["old_text"] = old_text
                 chunk["new_text"] = new_text
                 chunk["change_type"] = _classify_change(old_text, new_text)
 
-                # Persist resolved texts so re-opening doesn't re-read PDFs
                 try:
-                    cache_path = base / "COMPARE" / f"text_{chunk['index']:05d}.json"
                     import json as _json
-                    cache_path.write_text(
-                        _json.dumps(
-                            {"old_text": old_text, "new_text": new_text,
-                             "page_start": chunk["page_start"], "page_end": chunk["page_end"]},
-                            ensure_ascii=False,
-                        ),
+                    cp = base / "COMPARE" / f"text_{chunk['index']:05d}.json"
+                    cp.write_text(
+                        _json.dumps({
+                            "old_text": old_text, "new_text": new_text,
+                            "page_start": chunk["page_start"], "page_end": chunk["page_end"],
+                        }, ensure_ascii=False),
                         encoding="utf-8",
                     )
                 except Exception:
                     pass
+
                 chunk["has_changes"] = chunk["change_type"] != "unchanged"
                 chunk["similarity"] = round(
-                    _compute_similarity(old_text, new_text) if old_text or new_text else 1.0,
-                    3,
+                    _compute_similarity(old_text, new_text) if old_text or new_text else 1.0, 3
                 )
                 chunk["diff_lines"] = (
                     _generate_diff_lines(
-                        old_text,
-                        new_text,
+                        old_text, new_text,
                         old_line_pages=[pg for _, pg in old_relevant],
                         new_line_pages=[pg for _, pg in new_relevant],
                     )
-                    if chunk.get("has_changes")
-                    else []
+                    if chunk.get("has_changes") else []
                 )
             except Exception:
                 pass
@@ -983,12 +963,7 @@ def save_chunk_xml(session_id: str, chunk_id: str, xml_content: str) -> dict:
 
 
 def validate_chunk_xml(session_id: str, chunk_id: str) -> dict:
-    """
-    Validate a chunk's XML and report status:
-    - Whether the XML has been updated by the user
-    - Whether changes were detected and applied
-    - Whether further modifications are required
-    """
+    """Validate a chunk's XML and report status."""
     session = _sessions.get(session_id)
     if not session:
         raise KeyError(f"Session {session_id} not found")
@@ -1015,7 +990,6 @@ def validate_chunk_xml(session_id: str, chunk_id: str) -> dict:
     xml_content = chunk.get("xml_saved") or chunk.get("xml_content", "")
     original_xml = chunk.get("xml_content", "")
 
-    # XML syntax validation
     try:
         etree.fromstring(xml_content.encode("utf-8"))
         xml_valid = True
@@ -1033,18 +1007,13 @@ def validate_chunk_xml(session_id: str, chunk_id: str) -> dict:
     if has_pdf_changes and not is_updated:
         needs_further_changes = True
         change_details.append("PDF changes detected but XML has not been updated yet.")
-
     if has_pdf_changes and is_updated and xml_content == original_xml:
         needs_further_changes = True
-        change_details.append(
-            "Changes detected but XML content is still the same as the original."
-        )
-
+        change_details.append("Changes detected but XML content is still the same as the original.")
     if not xml_valid:
         needs_further_changes = True
         change_details.append("XML has syntax errors that need to be fixed.")
 
-    # Determine overall status
     if not has_pdf_changes:
         status = "no_changes"
         message = "No changes detected between Old and New PDFs for this chunk."
@@ -1075,24 +1044,14 @@ def validate_chunk_xml(session_id: str, chunk_id: str) -> dict:
 
 
 def validate_all_chunks(session_id: str) -> dict:
-    """
-    Validate all chunks in a session and return aggregated status summary.
-    """
     session = _sessions.get(session_id)
     if not session:
         raise KeyError(f"Session {session_id} not found")
 
     chunks = session.get("chunks", [])
-
     results: list[dict] = []
-    counts = {
-        "updated": 0,
-        "no_changes": 0,
-        "saved_unchanged": 0,
-        "needs_review": 0,
-        "pending": 0,
-        "invalid_xml": 0,
-    }
+    counts = {"updated": 0, "no_changes": 0, "saved_unchanged": 0,
+              "needs_review": 0, "pending": 0, "invalid_xml": 0}
 
     for chunk in chunks:
         chunk_id = str(chunk.get("index"))
@@ -1102,7 +1061,6 @@ def validate_all_chunks(session_id: str) -> dict:
             counts[status] += 1
         if not result.get("xml_valid", False):
             counts["invalid_xml"] += 1
-
         results.append({
             "chunk_id": chunk_id,
             "index": chunk.get("index"),
@@ -1111,11 +1069,7 @@ def validate_all_chunks(session_id: str) -> dict:
             **result,
         })
 
-    needs_action = [
-        r for r in results
-        if (r.get("needs_further_changes") or (not r.get("xml_valid", True)))
-    ]
-
+    needs_action = [r for r in results if r.get("needs_further_changes") or not r.get("xml_valid", True)]
     return {
         "session_id": session_id,
         "total": len(results),
@@ -1125,21 +1079,13 @@ def validate_all_chunks(session_id: str) -> dict:
     }
 
 
-def reupload_xml_files(
-    session_id: str,
-    xml_files: list[tuple[str, bytes]],
-) -> dict:
-    """
-    Replace the XML chunks in an existing session with newly uploaded files.
-    Resets processing state so it can be re-run against the same PDFs.
-    """
+def reupload_xml_files(session_id: str, xml_files: list[tuple[str, bytes]]) -> dict:
     session = _sessions.get(session_id)
     if not session:
         raise KeyError(f"Session {session_id} not found")
 
     base = Path(session["storage"]["base"])
     xml_dir = base / "XML"
-
     for f in xml_dir.iterdir():
         f.unlink()
 
@@ -1148,7 +1094,6 @@ def reupload_xml_files(
         safe_filename = re.sub(r"[^\w.\-]", "_", filename)
         out_path = xml_dir / safe_filename
         out_path.write_bytes(xml_bytes)
-
         new_xml_files.append({
             "index": i,
             "filename": safe_filename,
@@ -1162,37 +1107,29 @@ def reupload_xml_files(
     session["summary"] = None
     session["status"] = "uploaded"
     session["progress"] = 0
-
     return session
 
 
 def get_chunk_xml_content(session_id: str, chunk_id: str) -> tuple[str, str]:
-    """Return (filename, xml_content) for download."""
     session = _sessions.get(session_id)
     if not session:
         raise KeyError(f"Session {session_id} not found")
-
     chunks = session.get("chunks", [])
     try:
         idx = int(chunk_id)
         chunk = next((c for c in chunks if c["index"] == idx), None)
     except ValueError:
         chunk = next((c for c in chunks if c["filename"] == chunk_id), None)
-
     if not chunk:
         raise KeyError(f"Chunk {chunk_id} not found")
-
     xml_content = chunk.get("xml_saved") or chunk.get("xml_content", "")
     filename = chunk.get("original_filename", chunk["filename"])
     return filename, xml_content
 
 
 def cleanup_old_sessions(ttl: int = SESSION_TTL) -> int:
-    """Remove expired sessions from memory and disk."""
     now = time.time()
-    to_del = [
-        sid for sid, s in _sessions.items() if now - s.get("created_at", 0) > ttl
-    ]
+    to_del = [sid for sid, s in _sessions.items() if now - s.get("created_at", 0) > ttl]
     removed = 0
     for sid in to_del:
         session = _sessions.pop(sid, None)
@@ -1203,7 +1140,6 @@ def cleanup_old_sessions(ttl: int = SESSION_TTL) -> int:
                 shutil.rmtree(base_path, ignore_errors=True)
             removed += 1
 
-    # Also purge orphaned disk sessions (session_dir exists but not in memory)
     if BASE_STORAGE.exists():
         for session_dir in BASE_STORAGE.iterdir():
             if not session_dir.is_dir():
@@ -1218,16 +1154,10 @@ def cleanup_old_sessions(ttl: int = SESSION_TTL) -> int:
                     removed += 1
             except Exception:
                 pass
-
     return removed
 
 
 def export_session_report(session_id: str) -> dict:
-    """
-    Build a JSON-serialisable status report for all chunks in a session.
-    Returns a dict with session metadata and a per-chunk rows list.
-    Suitable for download as JSON or conversion to CSV on the client.
-    """
     session = get_session(session_id)
     if not session:
         raise KeyError(f"Session {session_id} not found")
@@ -1237,7 +1167,6 @@ def export_session_report(session_id: str) -> dict:
         xml_saved   = chunk.get("xml_saved")
         xml_content = chunk.get("xml_content", "")
         if not xml_content:
-            # Load lazily for report
             base = Path(session["storage"]["base"])
             xml_path = base / "XML" / chunk["filename"]
             if xml_path.exists():
@@ -1245,10 +1174,8 @@ def export_session_report(session_id: str) -> dict:
                     xml_content = xml_path.read_text(encoding="utf-8")
                 except Exception:
                     xml_content = ""
-
         is_updated  = xml_saved is not None
         is_modified = is_updated and xml_saved != xml_content
-
         rows.append({
             "index":          chunk.get("index"),
             "label":          chunk.get("label", ""),
@@ -1265,9 +1192,9 @@ def export_session_report(session_id: str) -> dict:
         })
 
     return {
-        "session_id":  session_id,
-        "source_name": session.get("source_name", ""),
+        "session_id":   session_id,
+        "source_name":  session.get("source_name", ""),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "summary":     session.get("summary", {}),
-        "chunks":      rows,
+        "summary":      session.get("summary", {}),
+        "chunks":       rows,
     }

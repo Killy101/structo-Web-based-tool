@@ -518,9 +518,11 @@ export default function AutoComparePage() {
   const [isValidating,    setIsValidating]    = useState(false);
   const [xmlFocusLine,    setXmlFocusLine]    = useState<number | null>(null);
   const [xmlFocusRequestId, setXmlFocusRequestId] = useState(0);
+  const [xmlTargetLine,   setXmlTargetLine]   = useState<number | null>(null);
 
   // Diff → viewer navigation
   const [selectedDiffLineIndex, setSelectedDiffLineIndex] = useState<number | null>(null);
+  const [selectedDiffLine, setSelectedDiffLine] = useState<DiffLine | null>(null);
   const [oldPdfTargetPage,  setOldPdfTargetPage]  = useState<number | null>(null);
   const [newPdfTargetPage,  setNewPdfTargetPage]  = useState<number | null>(null);
   const [oldHighlightText,  setOldHighlightText]  = useState("");
@@ -563,32 +565,44 @@ export default function AutoComparePage() {
   };
   const selectedChunkRow   = selectedChunkIdx >= 0 ? chunks[selectedChunkIdx] : null;
   const selectedChunkTitle = selectedChunkRow ? `${selectedChunkRow.label} (#${selectedChunkRow.index})` : null;
-  const selectedDiffLine =
-    selected && selectedDiffLineIndex !== null
-      ? (selected.diff_lines[selectedDiffLineIndex] ?? null)
-      : null;
+
+  const findDiffLinePosition = useCallback((chunk: ChunkDetail, line: DiffLine): number => {
+    const pos = chunk.diff_lines.findIndex((l) =>
+      l.line === line.line &&
+      (l.category ?? l.type) === (line.category ?? line.type) &&
+      (l.sub_type ?? "") === (line.sub_type ?? "") &&
+      (l.text ?? "") === (line.text ?? "")
+    );
+    if (pos >= 0) return pos;
+    const fallback = Math.max(0, (line.line ?? 1) - 1);
+    return Math.min(fallback, Math.max(0, chunk.diff_lines.length - 1));
+  }, []);
 
   const oldPdfHighlights = useMemo<PdfHighlightEntry[]>(() => {
-    if (!selected) return [];
-    return selected.diff_lines
-      .flatMap((line) => {
-        const text = (line.old_text ?? "").trim();
-        if (!text) return [];
-        return [{ text, kind: line.type, page: line.old_page ?? null } as PdfHighlightEntry];
-      })
-      .slice(0, 400);
-  }, [selected]);
+    if (!selectedDiffLine) return [];
+    const text = (selectedDiffLine.old_text ?? "").trim();
+    if (!text) return [];
+    return [
+      {
+        text,
+        kind: selectedDiffLine.type,
+        page: selectedDiffLine.old_page ?? null,
+      },
+    ];
+  }, [selectedDiffLine]);
 
   const newPdfHighlights = useMemo<PdfHighlightEntry[]>(() => {
-    if (!selected) return [];
-    return selected.diff_lines
-      .flatMap((line) => {
-        const text = (line.new_text ?? "").trim();
-        if (!text) return [];
-        return [{ text, kind: line.type, page: line.new_page ?? null } as PdfHighlightEntry];
-      })
-      .slice(0, 400);
-  }, [selected]);
+    if (!selectedDiffLine) return [];
+    const text = (selectedDiffLine.new_text ?? "").trim();
+    if (!text) return [];
+    return [
+      {
+        text,
+        kind: selectedDiffLine.type,
+        page: selectedDiffLine.new_page ?? null,
+      },
+    ];
+  }, [selectedDiffLine]);
 
   // ── Feature #9: Session persistence ──────────────────────────────────────
   // On mount, try to restore the last session from localStorage
@@ -760,7 +774,9 @@ export default function AutoComparePage() {
       setXmlDraft(resp.chunk.xml_saved ?? resp.chunk.xml_content);
       setXmlOriginal(resp.chunk.xml_content);  // always the unedited original for diff view
       setSelectedDiffLineIndex(null);
+      setSelectedDiffLine(null);
       setXmlFocusLine(null);
+      setXmlTargetLine(null);
       setOldHighlightText("");
       setNewHighlightText("");
       setOldHighlightKind(null);
@@ -833,7 +849,8 @@ export default function AutoComparePage() {
 
   const handleDiffLineSelect = useCallback((line: DiffLine, index: number) => {
     const rawText = line.text.trim();
-    setSelectedDiffLineIndex(index);
+    setSelectedDiffLineIndex(line.line ?? index);
+    setSelectedDiffLine(line);
     let oldText = (line.old_text ?? "").trim();
     let newText = (line.new_text ?? "").trim();
 
@@ -858,18 +875,26 @@ export default function AutoComparePage() {
     setNewHighlightText(newText);
     setOldHighlightKind(oldText ? (line.type === "added" ? null : line.type) : null);
     setNewHighlightKind(newText ? (line.type === "removed" ? null : line.type) : null);
-    setXmlHighlightText(newText || oldText);
+    // For XML mapping, prefer old text for modified/removed lines because that
+    // is what currently exists in the XML and where edits should be applied.
+    const xmlNeedle = line.type === "added" ? (newText || rawText) : (oldText || newText || rawText);
+    setXmlHighlightText(xmlNeedle);
     if (selected) {
-      const fallback = getTargetPageForDiffLine(selected, index);
+      const diffPos = findDiffLinePosition(selected, line);
+      const fallback = getTargetPageForDiffLine(selected, diffPos);
       setOldPdfTargetPage(line.old_page ?? fallback);
       setNewPdfTargetPage(line.new_page ?? fallback);
     }
-    const tLine = findXmlLineForDiffText(xmlDraft, newText || oldText);
+    const tLine =
+      findXmlLineForDiffText(xmlDraft, oldText) ??
+      findXmlLineForDiffText(xmlDraft, newText) ??
+      findXmlLineForDiffText(xmlDraft, rawText);
+    setXmlTargetLine(tLine);
     if (tLine != null) {
       setXmlFocusLine(tLine);
       setXmlFocusRequestId((v) => v + 1);
     }
-  }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine]);
+  }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine, findDiffLinePosition]);
 
   // ── Save XML (Feature #1: marks chunk as saved) ───────────────────────────
 
@@ -925,12 +950,56 @@ export default function AutoComparePage() {
       return;
     }
 
+    const replaceNearTargetLine = (
+      content: string,
+      fromText: string,
+      toText: string,
+      removeOnly = false,
+    ): { next: string; replaced: boolean } => {
+      const lines = content.split("\n");
+      const targetIdx = xmlTargetLine ? xmlTargetLine - 1 : -1;
+
+      const applyOnLine = (idx: number): boolean => {
+        if (idx < 0 || idx >= lines.length) return false;
+        if (!lines[idx].includes(fromText)) return false;
+        lines[idx] = removeOnly
+          ? lines[idx].replace(fromText, "")
+          : lines[idx].replace(fromText, toText);
+        return true;
+      };
+
+      if (applyOnLine(targetIdx)) {
+        return { next: lines.join("\n"), replaced: true };
+      }
+
+      const nearby = [targetIdx - 1, targetIdx + 1, targetIdx - 2, targetIdx + 2];
+      for (const idx of nearby) {
+        if (applyOnLine(idx)) {
+          return { next: lines.join("\n"), replaced: true };
+        }
+      }
+
+      if (content.includes(fromText)) {
+        return {
+          next: removeOnly ? content.replace(fromText, "") : content.replace(fromText, toText),
+          replaced: true,
+        };
+      }
+
+      return { next: content, replaced: false };
+    };
+
     if (selectedDiffLine.type === "removed") {
-      if (!oldText || !working.includes(oldText)) {
+      if (!oldText) {
         showToast("Old text not found in XML. Use manual edit for this change.", "error");
         return;
       }
-      const updated = working.replace(oldText, "");
+      const result = replaceNearTargetLine(working, oldText, "", true);
+      if (!result.replaced) {
+        showToast("Old text not found near target XML location. Use manual edit for this change.", "error");
+        return;
+      }
+      const updated = result.next;
       setXmlDraft(updated);
       handleAutoSave(updated);
       showToast("Applied removal to XML draft.", "success");
@@ -942,16 +1011,17 @@ export default function AutoComparePage() {
       showToast("This modified line is missing old/new text payload.", "error");
       return;
     }
-    if (!working.includes(oldText)) {
-      showToast("Old text not found in XML. Use manual edit for this change.", "error");
+    const result = replaceNearTargetLine(working, oldText, newText, false);
+    if (!result.replaced) {
+      showToast("Old text not found near target XML location. Use manual edit for this change.", "error");
       return;
     }
 
-    const updated = working.replace(oldText, newText);
+    const updated = result.next;
     setXmlDraft(updated);
     handleAutoSave(updated);
     showToast("Applied replacement to XML draft.", "success");
-  }, [selectedDiffLine, xmlDraft, handleAutoSave, showToast]);
+  }, [selectedDiffLine, xmlDraft, handleAutoSave, showToast, xmlTargetLine]);
 
   // ── Validate chunk XML ─────────────────────────────────────────────────────
 
@@ -1102,8 +1172,10 @@ export default function AutoComparePage() {
     setXmlDraft("");
     setXmlOriginal("");
     setXmlFocusLine(null);
+    setXmlTargetLine(null);
     setXmlFocusRequestId(0);
     setSelectedDiffLineIndex(null);
+    setSelectedDiffLine(null);
     setOldPdfTargetPage(null);
     setNewPdfTargetPage(null);
     setOldHighlightText("");
@@ -1530,6 +1602,30 @@ export default function AutoComparePage() {
                             <p className="mt-1 text-emerald-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.new_text}</p>
                           </div>
                         ) : null}
+                        <div className="rounded border border-cyan-500/25 bg-cyan-500/10 p-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-cyan-200 font-semibold">Target XML Location</span>
+                            {xmlTargetLine ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setXmlFocusLine(xmlTargetLine);
+                                  setXmlFocusRequestId((v) => v + 1);
+                                }}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/20"
+                              >
+                                Jump
+                              </button>
+                            ) : null}
+                          </div>
+                          {xmlTargetLine ? (
+                            <p className="mt-1 text-cyan-100 font-mono">Line {xmlTargetLine}</p>
+                          ) : (
+                            <p className="mt-1 text-cyan-100/80 font-mono">
+                              No exact line match found. Use Old/New text and update the nearest matching XML node manually.
+                            </p>
+                          )}
+                        </div>
                       </div>
                     )}
                     <div className="flex-1 min-h-0 overflow-hidden">
