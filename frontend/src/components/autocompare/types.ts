@@ -47,15 +47,20 @@ export interface ChunkRow {
 // ── Diff line typing ───────────────────────────────────────────────────────────
 
 /**
- * The five Modify sub-sections shown in the DiffPanel.
+ * The four diff categories shown in the DiffPanel.
+ * Values are intentionally identical to the `type` field so the same string
+ * works for both the diff line type and the PDF highlight API.
  *
- *   addition     — text present in NEW but not OLD            (green)
- *   removal      — text present in OLD but not NEW            (red)
- *   modification — text present in both, content changed      (amber)
- *   mismatch     — structural / line-count mismatch           (orange)
- *   emphasis     — line contains emphasis/formatting XML tags  (fuchsia)
+ *   added    — text present in NEW but not OLD            (green)
+ *   removed  — text present in OLD but not NEW            (red)
+ *   modified — text present in both, content changed      (amber)
+ *   mismatch — structural / line-count mismatch           (orange)
+ *
+ * @deprecated "addition", "removal", "modification", "emphasis" are legacy
+ *   values that may still appear in cached sessions. The frontend normalises
+ *   them via `toCategory()` in DiffPanel.
  */
-export type DiffCategory = "addition" | "removal" | "modification" | "mismatch" | "emphasis";
+export type DiffCategory = "added" | "removed" | "modified" | "mismatch" | "addition" | "removal" | "modification" | "emphasis";
 
 /**
  * XML operation sub-type tag shown as a badge on every diff line.

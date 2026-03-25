@@ -69,7 +69,26 @@ BATCH_SIZE = 50
 MAX_PAGES_INLINE = 500
 SESSION_TTL = 3600
 BASE_STORAGE = Path(tempfile.gettempdir()) / "autocompare"
-MAX_DIFF_LINES = 500
+
+# ── Performance knobs (all env-overridable) ────────────────────────────────────
+# Hard limit on diff lines stored/returned — prevents giant JSON payloads.
+MAX_DIFF_LINES: int = int(os.getenv("AUTOCOMPARE_MAX_DIFF_LINES", "200"))
+
+# Hard cap on text fed into SequenceMatcher — the single biggest CPU bottleneck.
+# 50 000 chars ≈ 6-7 dense legal pages; enough for all real changes.
+MAX_DIFF_INPUT: int = int(os.getenv("AUTOCOMPARE_MAX_DIFF_INPUT", "50000"))
+
+# Number of diff_lines returned per paginated page.
+DIFF_PAGE_SIZE: int = int(os.getenv("AUTOCOMPARE_DIFF_PAGE_SIZE", "30"))
+
+# Jaccard similarity above which we skip the expensive line-level diff entirely.
+SIMILARITY_SKIP_THRESHOLD: float = float(
+    os.getenv("AUTOCOMPARE_SIMILARITY_SKIP", "0.95")
+)
+
+# Char-level span diff cap — strings longer than this fall back to whole-string.
+MAX_CHAR_DIFF: int = int(os.getenv("AUTOCOMPARE_MAX_CHAR_DIFF", "2000"))
+
 LARGE_TEXT_THRESHOLD = 500_000
 LARGE_TEXT_SAMPLE = 100_000
 
@@ -168,6 +187,26 @@ def _blocks_are_cosmetic(old_lines: list[str], new_lines: list[str]) -> bool:
     old_joined = _normalise(" ".join(old_lines))
     new_joined = _normalise(" ".join(new_lines))
     return old_joined == new_joined
+
+
+def _is_noise_line(line: str) -> bool:
+    """
+    Return True for lines that are very likely cosmetic/page furniture.
+
+    These lines generate noisy add/remove diffs during PDF reflow but carry
+    little semantic value for contract/content comparison.
+    """
+    if not line:
+        return True
+    s = line.strip()
+    if not s:
+        return True
+    # Ignore standalone page markers and mostly punctuation separators.
+    if re.fullmatch(r"(?:page\s+)?\d+(?:\s*/\s*\d+)?", s, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"[-_=~.\s]{3,}", s):
+        return True
+    return False
 
 
 def _compute_similarity(old: str, new: str) -> float:
@@ -332,57 +371,29 @@ def _classify_change(old_text: str, new_text: str) -> str:
     return "modified"
 
 
-def _blocks_are_cosmetic(
-    old_block: list[str],
-    new_block: list[str],
-) -> bool:
+def _char_diff_spans(
+    old_line: str,
+    new_line: str,
+    *,
+    enabled: bool = False,           # OPT-5: disabled by default — major perf win
+) -> tuple[list[dict], list[dict]]:
     """
-    Return True when two diff blocks differ only in line-wrapping (same words,
-    different line breaks).  Used to skip spurious "modified" entries that arise
-    when a reflowed paragraph is compared at the line level.
+    Return (old_spans, new_spans) for inline char-level highlighting.
+
+    Disabled by default (enabled=False) because SequenceMatcher on long legal
+    sentences is O(n²) and is the single biggest source of UI freezes.
+    When disabled, the whole strings are returned as single changed spans.
+    Hard-capped at MAX_CHAR_DIFF chars even when enabled.
     """
-    old_words = " ".join(old_block).split()
-    new_words = " ".join(new_block).split()
-    return old_words == new_words
+    if not enabled or len(old_line) > MAX_CHAR_DIFF or len(new_line) > MAX_CHAR_DIFF:
+        # Fast path: mark whole strings as changed — still shows OLD/NEW content.
+        return (
+            [{"text": old_line, "changed": True}],
+            [{"text": new_line, "changed": True}],
+        )
 
-
-def _build_diff_groups(diff_lines: list[dict]) -> list[dict]:
-    """
-    Group diff_lines by category into the DiffGroup structure expected by the
-    DiffPanel frontend component.  Provided for backward-compatibility — the
-    current flat-timeline DiffPanel ignores groups, but older API consumers or
-    other tooling may still rely on this field being present in the chunk payload.
-    """
-    order = ["addition", "removal", "modification", "mismatch", "emphasis"]
-    labels = {
-        "addition":     "Additions",
-        "removal":      "Removals",
-        "modification": "Modifications",
-        "mismatch":     "Mismatch",
-        "emphasis":     "Emphasis",
-    }
-    _type_to_cat = {
-        "added":    "addition",
-        "removed":  "removal",
-        "modified": "modification",
-    }
-    buckets: dict[str, list[dict]] = {k: [] for k in order}
-    for line in diff_lines:
-        cat = line.get("category") or _type_to_cat.get(line.get("type", ""), "modification")
-        if cat not in buckets:
-            cat = "modification"
-        buckets[cat].append(line)
-
-    return [
-        {"category": cat, "label": labels[cat], "lines": buckets[cat]}
-        for cat in order
-        if buckets[cat]
-    ]
-
-
-def _char_diff_spans(old_line: str, new_line: str) -> tuple[list[dict], list[dict]]:
-    """Return (old_spans, new_spans) for inline char-level highlighting."""
-    sm = difflib.SequenceMatcher(None, old_line, new_line, autojunk=False)
+    # Enabled, within cap — run the proper char-level diff.
+    sm = difflib.SequenceMatcher(None, old_line, new_line, autojunk=True)
     old_spans: list[dict] = []
     new_spans: list[dict] = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
@@ -406,20 +417,16 @@ def _generate_diff_lines(
     new_text: str,
     old_line_pages: Optional[list[int]] = None,
     new_line_pages: Optional[list[int]] = None,
+    *,
+    include_spans: bool = False,          # OPT-5: spans off by default
+    max_lines: int = MAX_DIFF_LINES,      # OPT-1: caller can tighten further
 ) -> list[dict]:
     """
     Line-level diff between OLD PDF text (left) and NEW PDF text (right).
 
-    Noise filtering — cosmetic line-wrap differences are skipped:
-      When a replace opcode's old and new blocks contain the same words
-      just reflowed across different line breaks, it is silently skipped.
-      This eliminates thousands of false positives from PDF reflow between
-      document versions and shows only real content changes.
-
-    Result entries:
-      added    → line in new PDF not in old  → new content
-      removed  → line in old PDF not in new  → deleted content
-      modified → both sides present, content differs → edited content
+    include_spans  — when True, compute char-level old_spans/new_spans on
+                     modified lines (expensive; disabled by default).
+    max_lines      — hard ceiling on returned diff_lines count.
     """
     old_lines = old_text.splitlines(keepends=True)
     new_lines = new_text.splitlines(keepends=True)
@@ -435,10 +442,8 @@ def _generate_diff_lines(
     )
 
     def _derive_category(kind: str) -> str:
-        """Map legacy type to DiffCategory."""
-        if kind == "added":    return "addition"
-        if kind == "removed":  return "removal"
-        return "modification"
+        """Return the same value as `kind` — category IS the type."""
+        return kind  # "added" | "removed" | "modified"
 
     def _derive_sub_type(old_t: str, new_t: str, combined: str) -> str:
         """Derive XML operation sub-type."""
@@ -472,18 +477,20 @@ def _generate_diff_lines(
             "old_text": old_text_val,
             "new_text": new_text_val,
         }
-        if old_spans is not None:
-            entry["old_spans"] = old_spans
-        if new_spans is not None:
-            entry["new_spans"] = new_spans
+        # OPT-1/5: only attach spans when explicitly requested
+        if include_spans:
+            if old_spans is not None:
+                entry["old_spans"] = old_spans
+            if new_spans is not None:
+                entry["new_spans"] = new_spans
         result.append(entry)
         line_num += 1
-        if len(result) >= MAX_DIFF_LINES:
+        if len(result) >= max_lines:
             result.append({
                 "type":     "modified",
-                "category": "modification",
+                "category": "modified",
                 "sub_type": "textual",
-                "text":     "... diff truncated for performance ...",
+                "text":     f"... diff truncated at {max_lines} lines for performance ...",
                 "line":     line_num,
                 "old_page": None,
                 "new_page": None,
@@ -573,7 +580,7 @@ def _generate_diff_lines(
                 if not new_sents:
                     new_sents = [new_joined]
 
-                sent_matcher = difflib.SequenceMatcher(None, old_sents, new_sents, autojunk=False)
+                sent_matcher = difflib.SequenceMatcher(None, old_sents, new_sents, autojunk=True)
                 for s_op, si1, si2, sj1, sj2 in sent_matcher.get_opcodes():
                     if s_op == "equal":
                         continue
@@ -611,7 +618,9 @@ def _generate_diff_lines(
                                    old_text_val="", new_text_val=s_new):
                             return result
                     else:  # replace
-                        old_spans, new_spans = _char_diff_spans(s_old, s_new)
+                        old_spans, new_spans = _char_diff_spans(
+                            s_old, s_new, enabled=include_spans
+                        )
                         if _append(
                             "modified",
                             f"{s_old} -> {s_new}",
@@ -633,12 +642,12 @@ def _generate_diff_lines(
 
 # ── Build grouped diff structure ──────────────────────────────────────────────
 
-_CATEGORY_ORDER = ["addition", "removal", "modification", "mismatch"]
+_CATEGORY_ORDER = ["added", "removed", "modified", "mismatch"]
 _CATEGORY_LABELS = {
-    "addition":     "Additions",
-    "removal":      "Removals",
-    "modification": "Modifications",
-    "mismatch":     "Mismatch",
+    "added":    "Additions",
+    "removed":  "Removals",
+    "modified": "Modifications",
+    "mismatch": "Mismatch",
 }
 
 
@@ -649,11 +658,15 @@ def _build_diff_groups(diff_lines: list[dict]) -> list[dict]:
     """
     buckets: dict[str, list[dict]] = {c: [] for c in _CATEGORY_ORDER}
     for line in diff_lines:
-        cat = line.get("category", "modification")
+        cat = line.get("category", "modified")
         if cat == "emphasis":
             continue
+        # Normalize legacy category names
+        if cat == "addition":     cat = "added"
+        elif cat == "removal":    cat = "removed"
+        elif cat == "modification": cat = "modified"
         if cat not in buckets:
-            cat = "modification"
+            cat = "modified"
         buckets[cat].append(line)
 
     return [
@@ -902,6 +915,10 @@ async def start_processing(
             similarity = len(old_ws & new_ws) / denom   # Jaccard similarity
         else:
             similarity = 1.0
+        # F: skip expensive diff when content is nearly identical (>= 95% similar)
+        if has_changes and similarity >= 0.95:
+            has_changes = False
+            change_type = "unchanged"
         if has_changes:
             changed_count += 1
 
@@ -930,24 +947,37 @@ async def start_processing(
         }
 
         # ── Generate diff lines ───────────────────────────────────────────────
-        diff_lines: list[dict] = []   # always initialised — used below in validation block
+        diff_lines: list[dict] = []
         diff_groups: list[dict] = []
 
+        # Yield to the event loop BEFORE the CPU-heavy diff (OPT-6)
+        await asyncio.sleep(0)
+
         if has_changes:
-            # Cap text size to prevent O(n²) SequenceMatcher blowup on huge pages
-            _MAX_DIFF_INPUT = 80_000   # chars — enough for ~10 dense pages
-            diff_lines  = _generate_diff_lines(
-                old_text[:_MAX_DIFF_INPUT], new_text[:_MAX_DIFF_INPUT],
-                old_line_pages=[pg for _, pg in old_relevant_pairs],
-                new_line_pages=[pg for _, pg in new_relevant_pairs],
+            # OPT-4: hard cap input to prevent O(n²) SequenceMatcher blowup
+            _old_diff = old_text[:MAX_DIFF_INPUT]
+            _new_diff = new_text[:MAX_DIFF_INPUT]
+            _old_lp   = [pg for _, pg in old_relevant_pairs]
+            _new_lp   = [pg for _, pg in new_relevant_pairs]
+
+            # OPT-6: run diff in thread pool — CPU-bound, never blocks event loop
+            diff_lines = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: _generate_diff_lines(
+                    _old_diff, _new_diff,
+                    _old_lp, _new_lp,
+                    include_spans=False,        # OPT-5: spans off at processing time
+                    max_lines=MAX_DIFF_LINES,   # OPT-1: strict ceiling
+                ),
             )
             diff_groups = _build_diff_groups(diff_lines)
 
         chunk_data["diff_lines"]  = diff_lines
         chunk_data["diff_groups"] = diff_groups
-        if has_changes:
-            chunk_data["old_text"] = old_text
-            chunk_data["new_text"] = new_text
+        # Always expose extracted text so the UI can render side-by-side text
+        # even for "unchanged" chunks.
+        chunk_data["old_text"] = old_text
+        chunk_data["new_text"] = new_text
 
         # ── Inline XML validation ─────────────────────────────────────────────
         xml_valid        = True
@@ -990,16 +1020,31 @@ async def start_processing(
             "diff_count":         len(diff_lines) if has_changes else 0,
         }
 
-        # Yield to the event loop before the expensive disk write so HTTP
-        # polling requests (status, etc.) can be served during processing.
+        # OPT-8: build the full on-disk record (contains all large fields)
+        disk_record = dict(chunk_data)
+        disk_record["diff_lines"]  = diff_lines
+        disk_record["diff_groups"] = diff_groups
+        disk_record["old_text"]    = old_text
+        disk_record["new_text"]    = new_text
+        disk_record["xml_content"] = xml_content   # full XML stored only on disk
+
+        # Yield to the event loop before disk write (OPT-6)
         await asyncio.sleep(0)
 
-        # Write to disk in a thread so we don't block the event loop.
+        # Write full record to disk in a thread (OPT-6)
         diff_path = base / "COMPARE" / f"diff_{cf['index']:05d}.json"
-        _json_bytes = json.dumps(chunk_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        _json_bytes = json.dumps(disk_record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         await asyncio.get_event_loop().run_in_executor(
             None, diff_path.write_bytes, _json_bytes
         )
+
+        # OPT-8: clear large blobs from in-memory chunk — only keep lightweight metadata.
+        # All heavy fields are loaded on demand from disk by get_chunk_detail().
+        chunk_data["old_text"]    = ""
+        chunk_data["new_text"]    = ""
+        chunk_data["diff_lines"]  = []
+        chunk_data["diff_groups"] = []
+        # xml_content was never put in chunk_data — nothing to clear.
 
         enriched_chunks.append(chunk_data)
         # Progress: 30-85% for comparing, 85-95% for building index / validating
@@ -1089,20 +1134,30 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
                 "xml_size": xp.stat().st_size,
             })
 
+    # OPT-8: load only lightweight metadata from each diff file — NOT the heavy
+    # old_text/new_text/diff_lines/xml_content blobs. Those are loaded on demand
+    # by get_chunk_detail(). This prevents the server from consuming GBs of RAM
+    # just from reconstructing a session with many large chunks.
+    _METADATA_KEYS = {
+        "index", "label", "filename", "original_filename",
+        "has_changes", "change_type", "similarity", "xml_size",
+        "page_start", "page_end", "auto_reviewed",
+        "xml_valid", "xml_errors", "validation_status", "validation_message",
+        "xml_saved",
+    }
     chunks: list[dict] = []
     if compare_dir.exists() and status == "done":
         for diff_path in sorted(compare_dir.glob("diff_*.json")):
             try:
-                chunk_data = json.loads(diff_path.read_text(encoding="utf-8"))
-                chunk_data.setdefault("old_text", "")
-                chunk_data.setdefault("new_text", "")
-                chunk_data.setdefault("diff_lines", [])
-                chunk_data.setdefault("diff_groups", [])
-                chunk_data.setdefault("auto_reviewed", not chunk_data.get("has_changes", True))
-                # Back-fill diff_groups for old cache files that pre-date this field
-                if chunk_data["diff_lines"] and not chunk_data["diff_groups"]:
-                    chunk_data["diff_groups"] = _build_diff_groups(chunk_data["diff_lines"])
-                chunks.append(chunk_data)
+                full = json.loads(diff_path.read_text(encoding="utf-8"))
+                # Extract only the lightweight keys
+                chunk_meta = {k: full[k] for k in _METADATA_KEYS if k in full}
+                chunk_meta.setdefault("old_text", "")
+                chunk_meta.setdefault("new_text", "")
+                chunk_meta.setdefault("diff_lines", [])
+                chunk_meta.setdefault("diff_groups", [])
+                chunk_meta.setdefault("auto_reviewed", not chunk_meta.get("has_changes", True))
+                chunks.append(chunk_meta)
             except Exception:
                 pass
 
@@ -1164,18 +1219,24 @@ def get_chunks_list(session_id: str) -> list[dict]:
     ]
 
 
-def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
+def get_chunk_detail(
+    session_id: str,
+    chunk_id: str,
+    *,
+    include_text: bool = False,      # OPT-3: lazy-load old_text/new_text
+    include_spans: bool = False,     # OPT-1/5: spans off by default
+    diff_page: int = 1,              # OPT-2: paginated diff_lines (1-based)
+    diff_limit: int = DIFF_PAGE_SIZE,
+) -> Optional[dict]:
     """
-    Return full chunk data including diff_lines and diff_groups.
+    Return chunk data for the detail view.
 
-    Data is pre-computed during start_processing and cached to disk.
-    This function simply loads it — no PDF re-scanning needed.
-
-    old_text   = OLD PDF text for the page window
-    new_text   = NEW PDF text for the same page window
-    diff_lines = per-line changes, each enriched with category + sub_type
-    diff_groups = diff_lines grouped by category for the DiffPanel component
-    xml_content = original XML for display in the editor
+    include_text   — when False (default) old_text/new_text are omitted from
+                     the response, saving significant payload size.
+    include_spans  — when False (default) old_spans/new_spans are stripped
+                     from every diff_line before returning.
+    diff_page      — 1-based page number for paginated diff_lines.
+    diff_limit     — number of diff_lines per page (default DIFF_PAGE_SIZE).
     """
     session = _sessions.get(session_id)
     if not session:
@@ -1193,34 +1254,104 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
 
     base = Path(session["storage"]["base"])
 
-    # ── Load from disk cache (written by start_processing) ─────────────────
-    if not chunk.get("diff_lines") and not chunk.get("old_text"):
+    # ── OPT-8: load from disk cache using explicit field checks ──────────────
+    # Use explicit == "" / missing-key checks — NOT truthiness — because diff_lines
+    # starts as [] (falsy) and old_text starts as "" (falsy).
+    needs_disk_load = (
+        chunk.get("old_text", "") == "" or
+        not chunk.get("diff_lines")
+    )
+    if needs_disk_load:
         diff_path = base / "COMPARE" / f"diff_{chunk['index']:05d}.json"
         if diff_path.exists():
             try:
                 cached = json.loads(diff_path.read_text(encoding="utf-8"))
-                # Merge all cached fields into chunk (non-destructively)
-                for key, val in cached.items():
-                    if not chunk.get(key):
-                        chunk[key] = val
-            except Exception:
-                pass
+                # Load heavy fields from disk — never rely on cleared in-memory copy
+                chunk["old_text"]    = cached.get("old_text", "")
+                chunk["new_text"]    = cached.get("new_text", "")
+                chunk["diff_lines"]  = cached.get("diff_lines", [])
+                chunk["diff_groups"] = cached.get("diff_groups", [])
+                for key in ("xml_valid", "xml_errors", "validation_status", "validation_message"):
+                    if key not in chunk:
+                        chunk[key] = cached.get(key)
+            except Exception as exc:
+                logger.warning("get_chunk_detail: disk load failed for chunk %s: %s", chunk["index"], exc)
 
-    # ── Ensure diff_groups is present (back-fill for old cache files) ───────
+    # ── Back-fill diff_groups (old cache files may not have it) ──────────────
     if chunk.get("diff_lines") and not chunk.get("diff_groups"):
         chunk["diff_groups"] = _build_diff_groups(chunk["diff_lines"])
 
-    # ── Load XML content (lazily — not stored in main chunk dict) ───────────
-    if not chunk.get("xml_content"):
-        xml_path = base / "XML" / chunk["filename"]
-        if xml_path.exists():
-            try:
-                chunk["xml_content"] = xml_path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                chunk["xml_content"] = xml_path.read_bytes().decode("utf-8", errors="replace")
+    # ── OPT-3: load XML fresh from disk — never cache in session RAM ─────────
+    xml_content_on_disk = ""
+    xml_path = base / "XML" / chunk["filename"]
+    if xml_path.exists():
+        try:
+            xml_content_on_disk = xml_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            xml_content_on_disk = xml_path.read_bytes().decode("utf-8", errors="replace")
 
-    chunk["xml_suggested"] = chunk.get("xml_saved") or chunk.get("xml_content", "")
-    return chunk
+    xml_for_response = chunk.get("xml_saved") or xml_content_on_disk
+
+    # ── OPT-2: paginate diff_lines ────────────────────────────────────────────
+    all_diff_lines: list[dict] = chunk.get("diff_lines", [])
+    total_diff_lines = len(all_diff_lines)
+    page_offset = max(0, (diff_page - 1)) * diff_limit
+    paged_lines = all_diff_lines[page_offset: page_offset + diff_limit]
+
+    # ── OPT-1/5: strip spans unless requested ────────────────────────────────
+    if not include_spans and paged_lines:
+        stripped: list[dict] = []
+        for dl in paged_lines:
+            entry = {k: v for k, v in dl.items() if k not in ("old_spans", "new_spans")}
+            stripped.append(entry)
+        paged_lines = stripped
+
+    # ── Build response — never mutate the in-memory chunk ────────────────────
+    response: dict = {
+        # Metadata (always returned)
+        "index":              chunk.get("index"),
+        "label":              chunk.get("label", ""),
+        "filename":           chunk.get("filename", ""),
+        "original_filename":  chunk.get("original_filename", chunk.get("filename", "")),
+        "has_changes":        chunk.get("has_changes", False),
+        "change_type":        chunk.get("change_type", "unchanged"),
+        "similarity":         chunk.get("similarity", 1.0),
+        "xml_size":           chunk.get("xml_size", 0),
+        "page_start":         chunk.get("page_start", 0),
+        "page_end":           chunk.get("page_end", 0),
+        "auto_reviewed":      chunk.get("auto_reviewed", False),
+        "xml_valid":          chunk.get("xml_valid", True),
+        "xml_errors":         chunk.get("xml_errors", []),
+        "validation_status":  chunk.get("validation_status"),
+        "validation_message": chunk.get("validation_message"),
+        # XML (always returned — editor needs it)
+        "xml_content":        xml_content_on_disk,
+        "xml_suggested":      xml_for_response,
+        "xml_saved":          chunk.get("xml_saved"),
+        # OPT-2: paginated diff
+        "diff_lines":         paged_lines,
+        "diff_groups":        chunk.get("diff_groups", []),
+        "diff_total":         total_diff_lines,
+        "diff_page":          diff_page,
+        "diff_limit":         diff_limit,
+        "diff_has_more":      (page_offset + diff_limit) < total_diff_lines,
+    }
+
+    # OPT-3: only include heavy text fields when explicitly requested
+    if include_text:
+        response["old_text"] = chunk.get("old_text", "")
+        response["new_text"] = chunk.get("new_text", "")
+    else:
+        response["old_text"] = ""
+        response["new_text"] = ""
+
+    # OPT-8: clear large blobs from in-memory chunk after building response
+    chunk.pop("old_text", None)
+    chunk.pop("new_text", None)
+    chunk.pop("diff_lines", None)
+    chunk.pop("diff_groups", None)
+
+    return response
 
 
 def save_chunk_xml(session_id: str, chunk_id: str, xml_content: str) -> dict:
@@ -1425,7 +1556,18 @@ def get_chunk_xml_content(session_id: str, chunk_id: str) -> tuple[str, str]:
         chunk = next((c for c in chunks if c["filename"] == chunk_id), None)
     if not chunk:
         raise KeyError(f"Chunk {chunk_id} not found")
-    xml_content = chunk.get("xml_saved") or chunk.get("xml_content", "")
+
+    # Prefer saved version; fall back to disk file
+    xml_content = chunk.get("xml_saved", "")
+    if not xml_content:
+        base = Path(session["storage"]["base"])
+        xml_path = base / "XML" / chunk["filename"]
+        if xml_path.exists():
+            try:
+                xml_content = xml_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                xml_content = xml_path.read_bytes().decode("utf-8", errors="replace")
+
     filename = chunk.get("original_filename", chunk["filename"])
     return filename, xml_content
 

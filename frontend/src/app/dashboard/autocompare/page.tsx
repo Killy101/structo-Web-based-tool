@@ -32,7 +32,6 @@ import type {
   ChunkDetail,
   ChunkRow,
   ChunkValidationResult,
-  ChunkValidationStatus,
   DiffLine,
   ReviewStatus,
   SessionSummary,
@@ -135,8 +134,6 @@ function ProcessingOverlay({
     phaseIndex > stepIdx || (phaseIndex === stepIdx && pct >= PROCESSING_STEPS[stepIdx].threshold) || pct >= PROCESSING_STEPS[stepIdx].threshold;
 
   const isStepActive = (stepIdx: number) => phaseIndex === stepIdx;
-
-  const activeStep = PROCESSING_STEPS[Math.max(0, phaseIndex)] ?? PROCESSING_STEPS[0];
 
   // Live per-chunk validation summary
   const validations = Object.values(chunkValidations ?? {}) as ChunkValidationResult[];
@@ -319,10 +316,18 @@ function ProcessingOverlay({
 // ── Toast ─────────────────────────────────────────────────────────────────────
 
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
+  // Stabilise onClose with a ref so the setTimeout doesn't restart if the
+  // parent re-renders (e.g. from the polling interval) before the 4s elapses.
+  const onCloseRef = React.useRef(onClose);
+
   useEffect(() => {
-    const t = setTimeout(onClose, 4000);
-    return () => clearTimeout(t);
+    onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    const t = setTimeout(() => onCloseRef.current(), 4000);
+    return () => clearTimeout(t);
+  }, []); // empty dep array — intentional, we use the ref above
 
   return (
     <div
@@ -419,30 +424,6 @@ function NoChangesModal({
   );
 }
 
-// ── Changes-Found Banner (inline, shown when chunk has changes) ──────────────
-
-function ChangesFoundBanner({
-  diffCount,
-  chunkLabel,
-}: {
-  diffCount: number;
-  chunkLabel: string;
-}) {
-  return (
-    <div
-      className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl border text-xs font-medium"
-      style={{ background: "rgba(245,158,11,0.06)", borderColor: "rgba(245,158,11,0.25)" }}
-    >
-      <div className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center flex-shrink-0">
-        <span className="text-[8px] font-bold text-amber-400">!</span>
-      </div>
-      <span className="text-amber-200">
-        <span className="font-bold">{diffCount} change{diffCount !== 1 ? "s" : ""}</span> detected in <span className="text-amber-300">{chunkLabel}</span> — review the diff panel and update the XML.
-      </span>
-    </div>
-  );
-}
-
 // ── Validate Modal ────────────────────────────────────────────────────────────
 
 function ValidateModal({ data, onClose }: { data: ValidateResponse; onClose: () => void }) {
@@ -525,7 +506,9 @@ function ValidateAllModal({
 
   const filteredResults = (result?.results ?? []).filter((r) => {
     if (filter === "all")         return true;
-    if (filter === "needs_review") return r.needs_further_changes;
+    // Match either the status field OR the needs_further_changes flag so the
+    // filter is consistent with the summary counter which uses status === "needs_review".
+    if (filter === "needs_review") return r.status === "needs_review" || r.needs_further_changes;
     if (filter === "invalid_xml") return !r.xml_valid;
     if (filter === "updated")     return r.status === "updated";
     if (filter === "no_changes")  return r.status === "no_changes";
@@ -747,7 +730,7 @@ export default function AutoComparePage() {
   type HighlightKind = "added" | "removed" | "modified";
 
   // ── Theme ──
-  const { dark, toggle } = useTheme();
+  const { dark } = useTheme();
 
   // ── Global state ──
   const [stage,      setStage]      = useState<Stage>("upload");
@@ -789,6 +772,7 @@ export default function AutoComparePage() {
   const [oldHighlightKind,  setOldHighlightKind]  = useState<HighlightKind | null>(null);
   const [newHighlightKind,  setNewHighlightKind]  = useState<HighlightKind | null>(null);
   const [xmlHighlightText,  setXmlHighlightText]  = useState("");
+  const [textScrollRatio, setTextScrollRatio] = useState(0);
 
   // No-changes modal
   const [showNoChangesModal, setShowNoChangesModal] = useState(false);
@@ -809,6 +793,23 @@ export default function AutoComparePage() {
 
   // Toast
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  // Only one side writes at a time; we track which side initiated.
+  const scrollInitiatorRef = useRef<"old" | "new" | null>(null);
+
+  const handleOldScrollRatioChange = useCallback((ratio: number) => {
+    if (scrollInitiatorRef.current === "new") return; // new side is driving, ignore
+    scrollInitiatorRef.current = "old";
+    setTextScrollRatio(ratio);
+    // Release lock after a short debounce so the other side can write again
+    setTimeout(() => { scrollInitiatorRef.current = null; }, 120);
+  }, []);
+
+  const handleNewScrollRatioChange = useCallback((ratio: number) => {
+    if (scrollInitiatorRef.current === "old") return; // old side is driving, ignore
+    scrollInitiatorRef.current = "new";
+    setTextScrollRatio(ratio);
+    setTimeout(() => { scrollInitiatorRef.current = null; }, 120);
+  }, []);
 
   const showToast = useCallback((msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
@@ -818,13 +819,6 @@ export default function AutoComparePage() {
 
   const selectedChunkIdx   = selected ? chunks.findIndex((c) => c.index === selected.index) : -1;
 
-  // Similarity → heatmap color (0 = red, 1 = green)
-  const similarityColor = (sim: number): string => {
-    if (sim >= 0.95) return "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
-    if (sim >= 0.80) return "bg-amber-500/15 text-amber-300 border-amber-500/25";
-    if (sim >= 0.60) return "bg-orange-500/15 text-orange-300 border-orange-500/25";
-    return "bg-red-500/15 text-red-300 border-red-500/25";
-  };
   const selectedChunkRow   = selectedChunkIdx >= 0 ? chunks[selectedChunkIdx] : null;
   const selectedChunkTitle = selectedChunkRow ? `${selectedChunkRow.label} (#${selectedChunkRow.index})` : null;
 
@@ -833,27 +827,29 @@ export default function AutoComparePage() {
     const removed: string[] = [];
     const modified: string[] = [];
     const seen = new Set<string>();
+    // E: cap at 4 terms per kind to keep URLs short and rendering fast
+    const MAX_PER_KIND = 4;
 
     for (const line of selected.diff_lines ?? []) {
-      // Use category first (DiffCategory), fall back to legacy type
+      // Normalize both new-style (added/removed/modified) and legacy (addition/removal/modification)
       const kind: "added" | "removed" | "modified" =
-        line.category === "addition"     ? "added"    :
-        line.category === "removal"      ? "removed"  :
-        line.category === "modification" ? "modified" :
-        line.category === "mismatch"     ? "modified" :
-        line.type     === "added"        ? "added"    :
-        line.type     === "removed"      ? "removed"  :
+        line.category === "added"    || line.category === "addition"     ? "added"   :
+        line.category === "removed"  || line.category === "removal"      ? "removed" :
+        line.category === "modified" || line.category === "modification" ? "modified" :
+        line.category === "mismatch"  ? "modified" :
+        line.type === "added"         ? "added"    :
+        line.type === "removed"       ? "removed"  :
         "modified";
 
-      // Old side: use old_text; fall back to line.text for removal-only lines
+      // B: Use old_text for OLD side; fall back to line.text only for removal-only lines
       const oldText = (line.old_text ?? (kind === "removed" ? line.text : "")).trim();
       if (!oldText) continue;
       const key = `${kind}|${oldText.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (kind === "removed") removed.push(oldText);
-      if (kind === "modified") modified.push(oldText);
+      if (kind === "removed" && removed.length < MAX_PER_KIND) removed.push(oldText);
+      if (kind === "modified" && modified.length < MAX_PER_KIND) modified.push(oldText);
     }
 
     return { added: [] as string[], removed, modified };
@@ -864,27 +860,29 @@ export default function AutoComparePage() {
     const added: string[] = [];
     const modified: string[] = [];
     const seen = new Set<string>();
+    // E: cap at 4 terms per kind
+    const MAX_PER_KIND = 4;
 
     for (const line of selected.diff_lines ?? []) {
-      // Use category first (DiffCategory), fall back to legacy type
+      // Normalize both new-style and legacy category values
       const kind: "added" | "removed" | "modified" =
-        line.category === "addition"     ? "added"    :
-        line.category === "removal"      ? "removed"  :
-        line.category === "modification" ? "modified" :
-        line.category === "mismatch"     ? "modified" :
-        line.type     === "added"        ? "added"    :
-        line.type     === "removed"      ? "removed"  :
+        line.category === "added"    || line.category === "addition"     ? "added"   :
+        line.category === "removed"  || line.category === "removal"      ? "removed" :
+        line.category === "modified" || line.category === "modification" ? "modified" :
+        line.category === "mismatch"  ? "modified" :
+        line.type === "added"         ? "added"    :
+        line.type === "removed"       ? "removed"  :
         "modified";
 
-      // New side: use new_text; fall back to line.text for addition-only lines
+      // B: Use new_text for NEW side; fall back to line.text only for addition-only lines
       const newText = (line.new_text ?? (kind === "added" ? line.text : "")).trim();
       if (!newText) continue;
       const key = `${kind}|${newText.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (kind === "added") added.push(newText);
-      if (kind === "modified") modified.push(newText);
+      if (kind === "added" && added.length < MAX_PER_KIND) added.push(newText);
+      if (kind === "modified" && modified.length < MAX_PER_KIND) modified.push(newText);
     }
 
     return { added, removed: [] as string[], modified };
@@ -900,6 +898,18 @@ export default function AutoComparePage() {
     if (pos >= 0) return pos;
     const fallback = Math.max(0, (line.line ?? 1) - 1);
     return Math.min(fallback, Math.max(0, chunk.diff_lines.length - 1));
+  }, []);
+
+  // ── Pause polling when tab is hidden (saves server load & main thread) ───
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (!pollRef.current) return;
+      // We don't cancel the interval; the async callback itself will short-circuit
+      // while hidden. This is handled naturally because the browser throttles
+      // setInterval in hidden tabs, but we explicitly no-op slow polls below.
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
   // ── Feature #9: Session persistence ──────────────────────────────────────
@@ -1049,7 +1059,7 @@ export default function AutoComparePage() {
           setStage("upload");
         }
       }
-    }, 1500);
+    }, 2500); // 2500ms gives the main thread room to breathe between processing polls
   }, [showToast]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -1159,39 +1169,40 @@ export default function AutoComparePage() {
   // ── Diff line selection ────────────────────────────────────────────────────
 
   const handleDiffLineSelect = useCallback((line: DiffLine, index: number) => {
-    const rawText = line.text.trim();
+    // rawText is the fallback string when old_text/new_text are absent
+    const rawText = (line.text ?? "").trim();
     setSelectedDiffLineIndex(line.line ?? index);
     setSelectedDiffLine(line);
 
-    // Normalize category → a simple "added" | "removed" | "modified" kind
-    // line.category uses DiffCategory values: "addition"|"removal"|"modification"|"mismatch"|"emphasis"
-    // line.type uses legacy values: "added"|"removed"|"modified"
+    // A: Normalize both new-style (added/removed/modified) and legacy (addition/removal/modification)
     const normalizedKind: "added" | "removed" | "modified" =
-      line.category === "addition"     ? "added"    :
-      line.category === "removal"      ? "removed"  :
-      line.category === "modification" ? "modified" :
-      line.category === "mismatch"     ? "modified" :
-      line.type     === "added"        ? "added"    :
-      line.type     === "removed"      ? "removed"  :
+      line.category === "added"    || line.category === "addition"     ? "added"   :
+      line.category === "removed"  || line.category === "removal"      ? "removed" :
+      line.category === "modified" || line.category === "modification" ? "modified" :
+      line.category === "mismatch"  ? "modified" :
+      line.type === "added"         ? "added"    :
+      line.type === "removed"       ? "removed"  :
       "modified";
 
+    // B: Always use old_text/new_text — never use line.text for highlighting
     let oldText = (line.old_text ?? "").trim();
     let newText = (line.new_text ?? "").trim();
 
-    // Backward compatibility for payloads that only include "text" with old -> new format.
-    if (!oldText && !newText) {
-      oldText = rawText;
-      newText = rawText;
+    // Legacy fallback: if old/new text are absent, try to parse "old -> new" from line.text
+    if (!oldText && !newText && rawText) {
       if (normalizedKind === "modified") {
         const at = rawText.indexOf(" -> ");
         if (at > -1) {
           oldText = rawText.slice(0, at).trim();
           newText = rawText.slice(at + 4).trim();
+        } else {
+          oldText = rawText;
+          newText = rawText;
         }
       } else if (normalizedKind === "removed") {
-        newText = "";
-      } else if (normalizedKind === "added") {
-        oldText = "";
+        oldText = rawText;
+      } else {
+        newText = rawText;
       }
     }
 
@@ -1229,10 +1240,12 @@ export default function AutoComparePage() {
     setIsSaving(true);
     try {
       await saveChunkXml(sessionId, selected.index, xmlContent);
-      // Feature #1: mark chunk as saved
+      // Feature #1: mark chunk as saved.
+      // Do NOT set has_changes: false — the chunk genuinely has changes from the PDF diff;
+      // we just addressed them. Clearing it would flip the ChunkList badge to "Unchanged".
       setChunks((prev) =>
         prev.map((c) =>
-          c.index === selected.index ? { ...c, has_changes: false, reviewStatus: "saved" } : c,
+          c.index === selected.index ? { ...c, reviewStatus: "saved" } : c,
         ),
       );
       showToast("XML saved successfully");
@@ -1265,11 +1278,14 @@ export default function AutoComparePage() {
     }
 
     // Added lines need context-aware placement; avoid unsafe auto-inserts.
-    // Use category (DiffCategory) first, fall back to legacy type field
+    // Use category (DiffCategory) first, fall back to legacy type field.
+    // NOTE: both new-style ("added"/"removed") and legacy ("addition"/"removal") must be handled.
     const isAdded =
+      selectedDiffLine.category === "added" ||
       selectedDiffLine.category === "addition" ||
       (!selectedDiffLine.category && selectedDiffLine.type === "added");
     const isRemoved =
+      selectedDiffLine.category === "removed" ||
       selectedDiffLine.category === "removal" ||
       (!selectedDiffLine.category && selectedDiffLine.type === "removed");
 
@@ -1408,8 +1424,9 @@ export default function AutoComparePage() {
     if (!sessionId) return;
     showToast("Preparing ZIP download…");
     try {
-      // Prefer the server-side ZIP endpoint for reliability
-      const base = process.env.NEXT_PUBLIC_API_URL ?? "";
+      // Prefer the server-side ZIP endpoint for reliability.
+      // Must use NEXT_PUBLIC_PROCESSING_URL to match every other api call in api.ts.
+      const base = process.env.NEXT_PUBLIC_PROCESSING_URL ?? "http://localhost:8000";
       const url = `${base}/autocompare/download-all/${sessionId}`;
       const link = document.createElement("a");
       link.href = url;
@@ -1457,9 +1474,15 @@ export default function AutoComparePage() {
         const status = await pollStatus(sessionId);
         transientFailures = 0;
         setProgress(status.progress);
+        setProcessingPhase(status.phase ?? null);
+        if (status.chunk_validations) setChunkValidations(status.chunk_validations);
+        if (status.chunks_done != null) setChunksDone(status.chunks_done);
+        if (status.chunks_total != null) setChunksTotal(status.chunks_total);
+        if (status.expires_at) setExpiresAt(status.expires_at ?? null);
         if (status.status === "done") {
           clearInterval(pollRef.current!);
           pollRef.current = null;
+          setProcessingPhase("done");
           setSummary(status.summary as SessionSummary);
           setTimeout(async () => {
             try {
@@ -1489,7 +1512,7 @@ export default function AutoComparePage() {
           setStage("review");
         }
       }
-    }, 1500);
+    }, 2500);
   }, [sessionId, showToast]);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
@@ -1783,28 +1806,61 @@ export default function AutoComparePage() {
 
       {/* ── Processing stage ──────────────────────────────────────────────────── */}
       {stage === "processing" && (
-        <ProcessingOverlay progress={progress} sourceName={sourceName} phase={processingPhase} summary={summary} />
+        <ProcessingOverlay
+          progress={progress}
+          sourceName={sourceName}
+          phase={processingPhase}
+          summary={summary}
+          chunkValidations={chunkValidations}
+          chunksDone={chunksDone}
+          chunksTotal={chunksTotal}
+        />
       )}
 
       {/* ── Review stage ──────────────────────────────────────────────────────── */}
       {stage === "review" && (
         <div className="flex-1 flex overflow-hidden">
 
-          {/* Left sidebar: Chunk List */}
+          {/* Left sidebar: Chunk List + Diff Panel */}
           <div
-            className="flex-shrink-0 overflow-hidden border-r"
-            style={{ width: "220px", borderColor: "rgba(26,143,209,0.12)" }}
+            className="flex-shrink-0 overflow-hidden border-r flex flex-col"
+            style={{ width: "360px", borderColor: "rgba(26,143,209,0.12)" }}
           >
-            <ChunkList
-              chunks={chunks}
-              selectedIndex={selected?.index ?? null}
-              onSelect={handleSelectChunk}
-              validateResults={
-                validateAllResult
-                  ? Object.fromEntries(validateAllResult.results.map((r) => [r.index, r]))
-                  : undefined
-              }
-            />
+            <div className="h-[45%] min-h-[220px] overflow-hidden border-b" style={{ borderColor: "rgba(26,143,209,0.12)" }}>
+              <ChunkList
+                chunks={chunks}
+                selectedIndex={selected?.index ?? null}
+                onSelect={handleSelectChunk}
+                validateResults={
+                  validateAllResult
+                    ? Object.fromEntries(validateAllResult.results.map((r) => [r.index, r]))
+                    : undefined
+                }
+              />
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {selected ? (
+                loadingChunk ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-500">
+                    Loading diff...
+                  </div>
+                ) : (
+                  <DiffPanel
+                    diffLines={selected.diff_lines}
+                    chunkLabel={selected.label}
+                    changeType={selected.change_type}
+                    similarity={selected.similarity}
+                    selectedLineIndex={selectedDiffLineIndex}
+                    onSelectLine={handleDiffLineSelect}
+                  />
+                )
+              ) : (
+                <div className="h-full flex items-center justify-center text-xs text-slate-500 px-3 text-center">
+                  Select a chunk to view differences
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Main panels area */}
@@ -1816,19 +1872,7 @@ export default function AutoComparePage() {
                 <span className="text-sm">Loading chunk…</span>
               </div>
             ) : (
-              <div className="flex-1 flex overflow-hidden gap-1 p-1">
-                {/* Panel: Diff View */}
-                <div className="flex-shrink-0 overflow-hidden" style={{ width: "280px" }}>
-                  <DiffPanel
-                    diffLines={selected.diff_lines}
-                    chunkLabel={selected.label}
-                    changeType={selected.change_type}
-                    similarity={selected.similarity}
-                    selectedLineIndex={selectedDiffLineIndex}
-                    onSelectLine={handleDiffLineSelect}
-                  />
-                </div>
-
+              <div className="flex-1 flex overflow-hidden p-1">
                 <div className="flex-1 min-w-0 flex flex-col gap-1 overflow-hidden">
                   <div className="flex-[1.05] min-h-0 flex gap-1 overflow-hidden">
                     {/* Panel: Old PDF */}
@@ -1839,6 +1883,11 @@ export default function AutoComparePage() {
                         totalPages={oldTotalPages}
                         label="Old PDF"
                         color="blue"
+                        mode="text"
+                        textContent={selected.old_text}
+                        syncScrollRatio={textScrollRatio}
+                        onTextScrollRatioChange={handleOldScrollRatioChange}
+                        showLineNumbers
                         pageStart={selected.page_start}
                         pageEnd={selected.page_end}
                         targetPage={oldPdfTargetPage ?? undefined}
@@ -1858,6 +1907,11 @@ export default function AutoComparePage() {
                         totalPages={newTotalPages}
                         label="New PDF"
                         color="violet"
+                        mode="text"
+                        textContent={selected.new_text}
+                        syncScrollRatio={textScrollRatio}
+                        onTextScrollRatioChange={handleNewScrollRatioChange}
+                        showLineNumbers
                         pageStart={selected.page_start}
                         pageEnd={selected.page_end}
                         targetPage={newPdfTargetPage ?? undefined}
@@ -1875,7 +1929,7 @@ export default function AutoComparePage() {
                     {/* Info bar */}
                     <div className="flex-shrink-0 flex items-center gap-1.5 px-1">
                       {selected && (
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${similarityColor(selected.similarity ?? 1)}`}>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded border font-medium bg-white/10 text-slate-200 border-white/20">
                           {Math.round((selected.similarity ?? 1) * 100)}% similar
                         </span>
                       )}
@@ -1885,7 +1939,7 @@ export default function AutoComparePage() {
                       </span>
                     </div>
                     {selectedDiffLineIndex !== null && (
-                      <div className="flex-shrink-0 px-2 py-1 text-[10px] rounded-md border border-cyan-500/25 bg-cyan-500/10 text-cyan-200">
+                      <div className="flex-shrink-0 px-2 py-1 text-[10px] rounded-md border border-white/20 bg-white/10 text-slate-200">
                         Tip: selected diff line is synced to Old/New PDF and XML editor. Use this as your guide to update XML.
                       </div>
                     )}
@@ -1896,51 +1950,51 @@ export default function AutoComparePage() {
                           <button
                             type="button"
                             onClick={applySelectedDiffToXml}
-                            className="ml-auto text-[9px] px-2 py-0.5 rounded border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/20"
+                            className="ml-auto text-[9px] px-2 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
                             title="Apply this selected change to XML draft when old text is found"
                           >
                             Apply to XML
                           </button>
                         </div>
                         {selectedDiffLine.old_text ? (
-                          <div className="rounded border border-red-500/30 bg-red-500/10 p-1.5">
+                          <div className="rounded border border-white/20 bg-white/5 p-1.5">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-red-300 font-semibold">Old Text</span>
+                              <span className="text-slate-200 font-semibold">Old Text</span>
                               <button
                                 type="button"
                                 onClick={() => {
                                   void navigator.clipboard.writeText(selectedDiffLine.old_text ?? "");
                                   showToast("Old text copied", "success");
                                 }}
-                                className="text-[9px] px-1.5 py-0.5 rounded border border-red-400/30 text-red-200 hover:bg-red-500/20"
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
                               >
                                 Copy
                               </button>
                             </div>
-                            <p className="mt-1 text-red-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.old_text}</p>
+                            <p className="mt-1 text-slate-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.old_text}</p>
                           </div>
                         ) : null}
                         {selectedDiffLine.new_text ? (
-                          <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-1.5">
+                          <div className="rounded border border-white/20 bg-white/5 p-1.5">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-emerald-300 font-semibold">New Text</span>
+                              <span className="text-slate-200 font-semibold">New Text</span>
                               <button
                                 type="button"
                                 onClick={() => {
                                   void navigator.clipboard.writeText(selectedDiffLine.new_text ?? "");
                                   showToast("New text copied", "success");
                                 }}
-                                className="text-[9px] px-1.5 py-0.5 rounded border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/20"
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
                               >
                                 Copy
                               </button>
                             </div>
-                            <p className="mt-1 text-emerald-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.new_text}</p>
+                            <p className="mt-1 text-slate-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.new_text}</p>
                           </div>
                         ) : null}
-                        <div className="rounded border border-cyan-500/25 bg-cyan-500/10 p-1.5">
+                        <div className="rounded border border-white/20 bg-white/5 p-1.5">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-cyan-200 font-semibold">Target XML Location</span>
+                            <span className="text-slate-200 font-semibold">Target XML Location</span>
                             {xmlTargetLine ? (
                               <button
                                 type="button"
@@ -1948,16 +2002,16 @@ export default function AutoComparePage() {
                                   setXmlFocusLine(xmlTargetLine);
                                   setXmlFocusRequestId((v) => v + 1);
                                 }}
-                                className="text-[9px] px-1.5 py-0.5 rounded border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/20"
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
                               >
                                 Jump
                               </button>
                             ) : null}
                           </div>
                           {xmlTargetLine ? (
-                            <p className="mt-1 text-cyan-100 font-mono">Line {xmlTargetLine}</p>
+                            <p className="mt-1 text-slate-100 font-mono">Line {xmlTargetLine}</p>
                           ) : (
-                            <p className="mt-1 text-cyan-100/80 font-mono">
+                            <p className="mt-1 text-slate-300 font-mono">
                               No exact line match found. Use Old/New text and update the nearest matching XML node manually.
                             </p>
                           )}

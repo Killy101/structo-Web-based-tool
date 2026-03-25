@@ -28,8 +28,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 
 from contextlib import asynccontextmanager
+import fitz  # PyMuPDF
 from fastapi import APIRouter, BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -50,6 +52,7 @@ from src.services.autocompare_service import (
     start_processing,
     validate_all_chunks,
     validate_chunk_xml,
+    DIFF_PAGE_SIZE,
 )
 
 router = APIRouter(prefix="/autocompare", tags=["autocompare"])
@@ -234,20 +237,34 @@ async def chunks_endpoint(session_id: str):
 # ── 5. COMPARE SINGLE CHUNK ───────────────────────────────────────────────────
 
 @router.get("/compare/{chunk_id}")
-async def compare_chunk_endpoint(chunk_id: str, session_id: str):
-    """Return full comparison data for a single chunk."""
+async def compare_chunk_endpoint(
+    chunk_id: str,
+    session_id: str,
+    include_text: bool = Query(default=False, description="Include old_text/new_text (large — opt-in)"),
+    include_spans: bool = Query(default=False, description="Include char-level diff spans (expensive — opt-in)"),
+    diff_page: int = Query(default=1, ge=1, description="Diff-lines page number (1-based)"),
+    diff_limit: int = Query(default=30, ge=1, le=200, description="Diff-lines per page"),
+):
+    """
+    Return comparison data for a single chunk.
+
+    By default returns only metadata + first page of diff_lines (no text blobs,
+    no char spans). Use include_text=true and include_spans=true to opt-in to
+    the heavier fields. Use diff_page/diff_limit to paginate through diff lines.
+    """
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    chunk = get_chunk_detail(session_id, chunk_id)
+    chunk = get_chunk_detail(
+        session_id, chunk_id,
+        include_text=include_text,
+        include_spans=include_spans,
+        diff_page=diff_page,
+        diff_limit=diff_limit,
+    )
     if not chunk:
         raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
-
-    # Ensure diff_groups is always present (guarantees frontend DiffPanel gets it)
-    if chunk.get("diff_lines") and not chunk.get("diff_groups"):
-        from src.services.autocompare_service import _build_diff_groups
-        chunk["diff_groups"] = _build_diff_groups(chunk["diff_lines"])
 
     return {
         "success":     True,
@@ -255,6 +272,58 @@ async def compare_chunk_endpoint(chunk_id: str, session_id: str):
         "chunk_id":    chunk_id,
         "source_name": session["source_name"],
         "chunk":       chunk,
+    }
+
+
+# ── 5b. PAGINATED DIFF LINES ──────────────────────────────────────────────────
+
+@router.get("/diff/{chunk_id}")
+async def diff_lines_endpoint(
+    chunk_id: str,
+    session_id: str,
+    page: int = Query(default=1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(default=30, ge=1, le=200, description="Lines per page"),
+    include_spans: bool = Query(default=False, description="Include char-level diff spans"),
+):
+    """
+    Return a paginated slice of diff_lines for a chunk.
+
+    Lighter than /compare/{chunk_id} — returns ONLY diff metadata, no text blobs,
+    no XML content. Use for infinite-scroll / load-more in the DiffPanel.
+
+    Response shape:
+        {
+          "chunk_id": "1",
+          "diff_lines": [...],   // slice of length ≤ limit
+          "total": 87,           // total diff lines in chunk
+          "page": 1,
+          "limit": 30,
+          "has_more": true
+        }
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    chunk = get_chunk_detail(
+        session_id, chunk_id,
+        include_text=False,
+        include_spans=include_spans,
+        diff_page=page,
+        diff_limit=limit,
+    )
+    if not chunk:
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
+
+    return {
+        "success":   True,
+        "session_id": session_id,
+        "chunk_id":  chunk_id,
+        "diff_lines": chunk["diff_lines"],
+        "total":     chunk["diff_total"],
+        "page":      chunk["diff_page"],
+        "limit":     chunk["diff_limit"],
+        "has_more":  chunk["diff_has_more"],
     }
 
 
@@ -386,6 +455,21 @@ async def serve_pdf_endpoint(session_id: str, which: str):
 
 # ── 10c. RENDER PDF PAGE AS IMAGE ────────────────────────────────────────────
 
+# D: Global PDF document cache — avoids reopening on every request.
+_PDF_CACHE: dict[str, "fitz.Document"] = {}
+_PDF_CACHE_LOCK = threading.Lock()
+
+
+def _get_cached_doc(pdf_path) -> "fitz.Document":
+    """Return a cached fitz.Document, opening it only once per path."""
+    import fitz as _fitz
+    key = str(pdf_path)
+    with _PDF_CACHE_LOCK:
+        if key not in _PDF_CACHE:
+            _PDF_CACHE[key] = _fitz.open(key)
+        return _PDF_CACHE[key]
+
+
 # RGBA color tuples for highlight kinds (r, g, b, fill_opacity)
 _HIGHLIGHT_COLORS = {
     "added":    (0.133, 0.773, 0.369),   # green
@@ -414,32 +498,36 @@ def _search_page_for_text(page, raw_text: str) -> list:
     Try multiple search strategies to locate text on a PDF page.
     Returns a list of fitz.Rect objects (may be empty).
     """
+    import fitz as _fitz
+    _FLAGS = getattr(_fitz, "TEXT_IGNORECASE", 0)
+    _HIT_MAX = 16
+
     text = _normalise_for_search(raw_text)
     if len(text) < 2:
         return []
 
     # Strategy 1: full normalised text (up to 200 chars to avoid wrap issues)
-    rects = page.search_for(text[:200], quads=False)
+    rects = page.search_for(text[:200], quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
     if rects:
         return rects
 
     # Strategy 2: first 80 chars (avoids line-break splits in PDF layout)
     if len(text) > 80:
-        rects = page.search_for(text[:80], quads=False)
+        rects = page.search_for(text[:80], quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
         if rects:
             return rects
 
     # Strategy 3: first significant phrase (up to first punctuation or 50 chars)
     phrase_match = re.match(r"^(.{20,60}?[.,;:!?])", text)
     if phrase_match:
-        rects = page.search_for(phrase_match.group(1), quads=False)
+        rects = page.search_for(phrase_match.group(1), quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
         if rects:
             return rects
 
     # Strategy 4: first 40 chars of words only (strips punctuation artifacts)
     words_only = " ".join(re.findall(r"[A-Za-z0-9]+", text))[:40]
     if len(words_only) >= 10:
-        rects = page.search_for(words_only, quads=False)
+        rects = page.search_for(words_only, quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
         if rects:
             return rects
 
@@ -460,51 +548,73 @@ def _render_pdf_page(
     Render a single PDF page to PNG bytes using PyMuPDF.
     Uses multi-strategy text search for reliable highlight positioning.
     """
-    import fitz  # PyMuPDF — already a dependency
+    import fitz as _fitz
 
-    doc = fitz.open(str(pdf_path))
+    # E: Limit highlight terms to 5 per kind; truncate each to 300 chars.
+    MAX_HIGHLIGHT_TERMS = 5
+    MAX_TERM_LEN = 300
+
+    entries: list[tuple[str, str]] = []
+    for t in (hl_added or [])[:MAX_HIGHLIGHT_TERMS]:
+        entries.append((t[:MAX_TERM_LEN], "added"))
+    for t in (hl_removed or [])[:MAX_HIGHLIGHT_TERMS]:
+        entries.append((t[:MAX_TERM_LEN], "removed"))
+    for t in (hl_modified or [])[:MAX_HIGHLIGHT_TERMS]:
+        entries.append((t[:MAX_TERM_LEN], "modified"))
+    if hl_text and hl_text.strip():
+        entries.append((hl_text[:MAX_TERM_LEN], hl_kind))
+
+    has_hl = bool(entries)
+
+    # D: Use cached document when no highlights are needed (safe — no mutations).
+    # When highlights are needed, open a fresh copy so mutations don't persist
+    # in the cache and bleed into other requests for the same page.
+    if has_hl:
+        doc = _fitz.open(str(pdf_path))
+        own_doc = True
+    else:
+        doc = _get_cached_doc(pdf_path)
+        own_doc = False
+
     try:
         total = len(doc)
         page_idx = max(0, min(page_num - 1, total - 1))
         page = doc[page_idx]
 
-        entries: list[tuple[str, str]] = []
-        if hl_added:
-            entries.extend((t, "added") for t in hl_added)
-        if hl_removed:
-            entries.extend((t, "removed") for t in hl_removed)
-        if hl_modified:
-            entries.extend((t, "modified") for t in hl_modified)
-        if hl_text and hl_text.strip():
-            entries.append((hl_text, hl_kind))
+        if has_hl:
+            seen: set[str] = set()
+            used_terms = 0
+            for raw_text, kind in entries:
+                if used_terms >= MAX_HIGHLIGHT_TERMS:
+                    break
+                norm_key = " ".join((raw_text or "").lower().split())
+                if len(norm_key) < 2 or norm_key in seen:
+                    continue
+                seen.add(norm_key)
+                used_terms += 1
 
-        seen: set[str] = set()
-        for raw_text, kind in entries:
-            norm_key = " ".join((raw_text or "").lower().split())
-            if len(norm_key) < 2 or norm_key in seen:
-                continue
-            seen.add(norm_key)
+                color = _HIGHLIGHT_COLORS.get(kind, _DEFAULT_HIGHLIGHT_COLOR)
+                rects = _search_page_for_text(page, raw_text)
 
-            color = _HIGHLIGHT_COLORS.get(kind, _DEFAULT_HIGHLIGHT_COLOR)
-            rects = _search_page_for_text(page, raw_text)
+                if rects:
+                    shape = page.new_shape()
+                    for rect in rects:
+                        shape.draw_rect(rect)
+                    shape.finish(
+                        color=color,
+                        fill=color,
+                        fill_opacity=0.40,
+                        width=1.0,
+                    )
+                    shape.commit()
 
-            if rects:
-                shape = page.new_shape()
-                for rect in rects:
-                    shape.draw_rect(rect)
-                shape.finish(
-                    color=color,
-                    fill=color,
-                    fill_opacity=0.40,
-                    width=1.0,
-                )
-                shape.commit()
-
-        mat = fitz.Matrix(scale, scale)
+        mat = _fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat)
-        return pix.tobytes("png")
+        # I: Output JPEG for faster transfer (85% quality is visually lossless for page renders).
+        return pix.tobytes("jpeg", jpg_quality=85)
     finally:
-        doc.close()
+        if own_doc:
+            doc.close()
 
 
 @router.get("/pdf-page/{session_id}/{which}/{page_num}")
@@ -570,14 +680,13 @@ async def pdf_page_endpoint(
         logger.error("pdf-page render error session=%s which=%s page=%d: %s", session_id, which, page_num, exc)
         raise HTTPException(status_code=500, detail=f"Page render failed: {exc}")
 
-    # Disable caching when highlight params are present so the browser always
-    # fetches the freshly-rendered highlighted version.
+    # I: Highlighted pages are cached for 60 s (query string already varies).
     has_highlights = bool(hl_text or hl_added or hl_removed or hl_modified)
-    cache_header = "no-store" if has_highlights else "private, max-age=300"
+    cache_header = "private, max-age=60" if has_highlights else "private, max-age=300"
 
     return Response(
         content=img_bytes,
-        media_type="image/png",
+        media_type="image/jpeg",
         headers={"Cache-Control": cache_header},
     )
 
