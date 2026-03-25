@@ -332,6 +332,40 @@ def _classify_change(old_text: str, new_text: str) -> str:
     return "modified"
 
 
+def _build_diff_groups(diff_lines: list[dict]) -> list[dict]:
+    """
+    Group diff_lines by category into the DiffGroup structure expected by the
+    DiffPanel frontend component.  Provided for backward-compatibility — the
+    current flat-timeline DiffPanel ignores groups, but older API consumers or
+    other tooling may still rely on this field being present in the chunk payload.
+    """
+    order = ["addition", "removal", "modification", "mismatch", "emphasis"]
+    labels = {
+        "addition":     "Additions",
+        "removal":      "Removals",
+        "modification": "Modifications",
+        "mismatch":     "Mismatch",
+        "emphasis":     "Emphasis",
+    }
+    _type_to_cat = {
+        "added":    "addition",
+        "removed":  "removal",
+        "modified": "modification",
+    }
+    buckets: dict[str, list[dict]] = {k: [] for k in order}
+    for line in diff_lines:
+        cat = line.get("category") or _type_to_cat.get(line.get("type", ""), "modification")
+        if cat not in buckets:
+            cat = "modification"
+        buckets[cat].append(line)
+
+    return [
+        {"category": cat, "label": labels[cat], "lines": buckets[cat]}
+        for cat in order
+        if buckets[cat]
+    ]
+
+
 def _char_diff_spans(old_line: str, new_line: str) -> tuple[list[dict], list[dict]]:
     """Return (old_spans, new_spans) for inline char-level highlighting."""
     sm = difflib.SequenceMatcher(None, old_line, new_line, autojunk=False)

@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from src.services.autocompare_service import (
+    _build_diff_groups,
     cleanup_old_sessions,
     export_session_report,
     get_chunk_detail,
