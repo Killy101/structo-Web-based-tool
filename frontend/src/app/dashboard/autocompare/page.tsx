@@ -24,7 +24,7 @@
  *  └──────────────┴──────────────┴──────────────┴─────────────┘
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useTheme } from "../../../context/ThemContext";
 
@@ -44,7 +44,6 @@ import {
   exportStatusReport,
   fetchChunkDetail,
   fetchChunks,
-  getPdfUrl,
   pollStatus,
   reuploadXmlFiles,
   saveChunkXml,
@@ -487,7 +486,6 @@ function ReuploadModal({
 
 export default function AutoComparePage() {
   type HighlightKind = "added" | "removed" | "modified";
-  type PdfHighlightEntry = { text: string; kind: HighlightKind; page?: number | null };
 
   // ── Theme ──
   const { dark, toggle } = useTheme();
@@ -496,10 +494,8 @@ export default function AutoComparePage() {
   const [stage,      setStage]      = useState<Stage>("upload");
   const [sessionId,  setSessionId]  = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
-  const [oldPdfFile, setOldPdfFile] = useState<File | null>(null);
-  const [newPdfFile, setNewPdfFile] = useState<File | null>(null);
-  const [oldPdfUrl, setOldPdfUrl] = useState<string | null>(null);
-  const [newPdfUrl, setNewPdfUrl] = useState<string | null>(null);
+  const [oldTotalPages, setOldTotalPages] = useState(0);
+  const [newTotalPages, setNewTotalPages] = useState(0);
 
   // Processing
   const [progress,   setProgress]   = useState(0);
@@ -623,9 +619,9 @@ export default function AutoComparePage() {
             reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
           })));
           setSummary(chunksResp.summary);
-          // Restore PDF URLs for viewer fallback (File objects are not persisted).
-          setOldPdfUrl(getPdfUrl(saved, "old"));
-          setNewPdfUrl(getPdfUrl(saved, "new"));
+          // Restore page counts from summary so PdfViewer can navigate.
+          setOldTotalPages(chunksResp.summary?.old_pages ?? 0);
+          setNewTotalPages(chunksResp.summary?.new_pages ?? 0);
           setStage("review");
           showToast(`Session restored: ${chunksResp.source_name}`);
         } else {
@@ -684,7 +680,7 @@ export default function AutoComparePage() {
 
   // ── Upload complete → kick off processing ──────────────────────────────────
 
-  const handleUploaded = useCallback(async (response: UploadResponse, oldPdf: File, newPdf: File) => {
+  const handleUploaded = useCallback(async (response: UploadResponse) => {
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -692,10 +688,8 @@ export default function AutoComparePage() {
 
     setSessionId(response.session_id);
     setSourceName(response.source_name);
-    setOldPdfFile(oldPdf);
-    setNewPdfFile(newPdf);
-    setOldPdfUrl(null);
-    setNewPdfUrl(null);
+    setOldTotalPages(response.old_pages);
+    setNewTotalPages(response.new_pages);
     setStage("processing");
 
     try {
@@ -1183,10 +1177,8 @@ export default function AutoComparePage() {
     setOldHighlightKind(null);
     setNewHighlightKind(null);
     setXmlHighlightText("");
-    setOldPdfFile(null);
-    setNewPdfFile(null);
-    setOldPdfUrl(null);
-    setNewPdfUrl(null);
+    setOldTotalPages(0);
+    setNewTotalPages(0);
     setExpiresAt(null);
     setSessionWarning(false);
     setValidateResult(null);
@@ -1479,58 +1471,34 @@ export default function AutoComparePage() {
                   <div className="flex-[1.05] min-h-0 flex gap-1 overflow-hidden">
                     {/* Panel: Old PDF */}
                     <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-                      {oldPdfFile || oldPdfUrl ? (
-                        <PdfViewer
-                          file={oldPdfFile}
-                          src={oldPdfUrl ?? undefined}
-                          label="Old PDF"
-                          color="blue"
-                          pageStart={selected.page_start}
-                          pageEnd={selected.page_end}
-                          targetPage={oldPdfTargetPage ?? undefined}
-                          highlightText={oldHighlightText || undefined}
-                          highlightKind={oldHighlightKind ?? undefined}
-                          highlightEntries={oldPdfHighlights}
-                        />
-                      ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-blue-500/15 bg-slate-50 dark:bg-[rgba(6,13,26,0.6)] text-slate-500 text-xs">
-                          <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
-                          <span className="text-[11px] text-slate-400 font-medium">Old PDF</span>
-                          <span className="text-[10px] text-slate-600 px-4 text-center">
-                            Upload a session to view. PDF loads automatically on upload.
-                          </span>
-                        </div>
-                      )}
+                      <PdfViewer
+                        sessionId={sessionId}
+                        which="old"
+                        totalPages={oldTotalPages}
+                        label="Old PDF"
+                        color="blue"
+                        pageStart={selected.page_start}
+                        pageEnd={selected.page_end}
+                        targetPage={oldPdfTargetPage ?? undefined}
+                        highlightText={oldHighlightText || undefined}
+                        highlightKind={oldHighlightKind ?? undefined}
+                      />
                     </div>
 
                     {/* Panel: New PDF */}
                     <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-                      {newPdfFile || newPdfUrl ? (
-                        <PdfViewer
-                          file={newPdfFile}
-                          src={newPdfUrl ?? undefined}
-                          label="New PDF"
-                          color="violet"
-                          pageStart={selected.page_start}
-                          pageEnd={selected.page_end}
-                          targetPage={newPdfTargetPage ?? undefined}
-                          highlightText={newHighlightText || undefined}
-                          highlightKind={newHighlightKind ?? undefined}
-                          highlightEntries={newPdfHighlights}
-                        />
-                      ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-violet-500/15 bg-slate-50 dark:bg-[rgba(6,13,26,0.6)] text-slate-500 text-xs">
-                          <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
-                          <span className="text-[11px] text-slate-400 font-medium">New PDF</span>
-                          <span className="text-[10px] text-slate-600 px-4 text-center">
-                            Upload a session to view. PDF loads automatically on upload.
-                          </span>
-                        </div>
-                      )}
+                      <PdfViewer
+                        sessionId={sessionId}
+                        which="new"
+                        totalPages={newTotalPages}
+                        label="New PDF"
+                        color="violet"
+                        pageStart={selected.page_start}
+                        pageEnd={selected.page_end}
+                        targetPage={newPdfTargetPage ?? undefined}
+                        highlightText={newHighlightText || undefined}
+                        highlightKind={newHighlightKind ?? undefined}
+                      />
                     </div>
                   </div>
 

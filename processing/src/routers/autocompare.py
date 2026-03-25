@@ -372,6 +372,123 @@ async def serve_pdf_endpoint(session_id: str, which: str):
         },
     )
 
+
+# ── 10c. RENDER PDF PAGE AS IMAGE ────────────────────────────────────────────
+
+# RGBA color tuples for highlight kinds (r, g, b, fill_opacity)
+_HIGHLIGHT_COLORS = {
+    "added":    (0.133, 0.773, 0.369),   # green
+    "removed":  (0.937, 0.267, 0.267),   # red
+    "modified": (0.961, 0.620, 0.043),   # amber
+}
+_DEFAULT_HIGHLIGHT_COLOR = (0.984, 0.800, 0.082)  # yellow fallback
+
+
+def _render_pdf_page(
+    pdf_path,
+    page_num: int,
+    scale: float = 1.5,
+    hl_text: str = "",
+    hl_kind: str = "",
+) -> bytes:
+    """
+    Render a single PDF page to PNG bytes using PyMuPDF.
+    Optionally draws a highlight rectangle around occurrences of `hl_text`.
+
+    Args:
+        pdf_path: pathlib.Path to the PDF file.
+        page_num: 1-based page number.
+        scale:    Render scale (DPI multiplier; 1.5 ≈ 108 DPI on 72 DPI base).
+        hl_text:  Text to search and highlight. Empty = no highlight.
+        hl_kind:  "added" | "removed" | "modified" — controls highlight color.
+    """
+    import fitz  # PyMuPDF — already a dependency
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        total = len(doc)
+        page_idx = max(0, min(page_num - 1, total - 1))
+        page = doc[page_idx]
+
+        if hl_text and hl_text.strip():
+            color = _HIGHLIGHT_COLORS.get(hl_kind, _DEFAULT_HIGHLIGHT_COLOR)
+            rects = page.search_for(hl_text[:300])
+            if rects:
+                shape = page.new_shape()
+                for rect in rects:
+                    shape.draw_rect(rect)
+                shape.finish(
+                    color=color,
+                    fill=color,
+                    fill_opacity=0.35,
+                    width=0.8,
+                )
+                shape.commit()
+
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
+@router.get("/pdf-page/{session_id}/{which}/{page_num}")
+async def pdf_page_endpoint(
+    session_id: str,
+    which: str,
+    page_num: int,
+    scale: float = 1.5,
+    hl_text: str = "",
+    hl_kind: str = "",
+):
+    """
+    Render a single PDF page as a PNG image using PyMuPDF.
+
+    Path params:
+        session_id — session identifier
+        which      — "old" or "new"
+        page_num   — 1-based page number
+
+    Query params:
+        scale   — render scale factor (default 1.5 ≈ 108 DPI); clamped to [0.5, 3.0]
+        hl_text — text to highlight (URL-encoded); omit for no highlight
+        hl_kind — highlight color hint: "added" | "removed" | "modified"
+
+    Returns a PNG image suitable for display in an <img> element.
+    The response is cached for 5 minutes on the client to reduce redundant renders.
+    Highlight params bypass the cache (different query string = different URL).
+    """
+    from pathlib import Path as _Path
+
+    if which not in ("old", "new"):
+        raise HTTPException(status_code=400, detail="which must be 'old' or 'new'")
+
+    if page_num < 1:
+        raise HTTPException(status_code=400, detail="page_num must be >= 1")
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    pdf_path = _Path(session["storage"]["original"]) / f"{which}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail=f"{which}.pdf not found for this session")
+
+    # Clamp scale to a safe range
+    scale = max(0.5, min(float(scale), 3.0))
+
+    try:
+        img_bytes = _render_pdf_page(pdf_path, page_num, scale, hl_text.strip(), hl_kind.strip())
+    except Exception as exc:
+        logger.error("pdf-page render error session=%s which=%s page=%d: %s", session_id, which, page_num, exc)
+        raise HTTPException(status_code=500, detail=f"Page render failed: {exc}")
+
+    return Response(
+        content=img_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
 # ── 9. DOWNLOAD SINGLE CHUNK XML ─────────────────────────────────────────────
 
 @router.get("/download/{session_id}/{chunk_id}")
