@@ -332,6 +332,20 @@ def _classify_change(old_text: str, new_text: str) -> str:
     return "modified"
 
 
+def _blocks_are_cosmetic(
+    old_block: list[str],
+    new_block: list[str],
+) -> bool:
+    """
+    Return True when two diff blocks differ only in line-wrapping (same words,
+    different line breaks).  Used to skip spurious "modified" entries that arise
+    when a reflowed paragraph is compared at the line level.
+    """
+    old_words = " ".join(old_block).split()
+    new_words = " ".join(new_block).split()
+    return old_words == new_words
+
+
 def _build_diff_groups(diff_lines: list[dict]) -> list[dict]:
     """
     Group diff_lines by category into the DiffGroup structure expected by the
