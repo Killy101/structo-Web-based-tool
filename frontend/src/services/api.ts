@@ -242,6 +242,10 @@ export const notificationsApi = {
     api
       .get<{ notifications: Notification[]; unreadCount: number }>("/notifications")
       .then((r) => r.data),
+  getArchived: () =>
+    api
+      .get<{ notifications: Notification[] }>("/notifications/archived")
+      .then((r) => r.data),
   markRead: (id: number) =>
     api
       .patch<{ notification: Notification }>(`/notifications/${id}/read`)
@@ -249,6 +253,10 @@ export const notificationsApi = {
   markAllRead: () =>
     api
       .patch<{ message: string }>("/notifications/read-all")
+      .then((r) => r.data),
+  archive: (id: number) =>
+    api
+      .patch<{ message: string }>(`/notifications/${id}/archive`)
       .then((r) => r.data),
   delete: (id: number) =>
     api.delete<{ message: string }>(`/notifications/${id}`).then((r) => r.data),

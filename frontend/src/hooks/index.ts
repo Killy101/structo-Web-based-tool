@@ -579,6 +579,29 @@ export function useNotifications() {
     if (notif && !notif.isRead) setUnreadCount((c) => Math.max(0, c - 1));
   };
 
+  const archive = async (id: number) => {
+    // Virtual notifications (negative id) are removed client-side only
+    if (id < 0) {
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      return;
+    }
+    await notificationsApi.archive(id);
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    // Also decrement unread if it was unread
+    const notif = notifications.find((n) => n.id === id);
+    if (notif && !notif.isRead) setUnreadCount((c) => Math.max(0, c - 1));
+  };
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refetch();
+      }
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [refetch]);
+
   return {
     notifications,
     unreadCount,
@@ -587,6 +610,7 @@ export function useNotifications() {
     refetch,
     markRead,
     markAllRead,
+    archive,
     remove,
   };
 }
