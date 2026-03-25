@@ -222,7 +222,7 @@ router.post(
         },
       });
 
-      const emailSent = await sendPasswordEmail({
+      const emailResult = await sendPasswordEmail({
         to: normalizedEmail,
         userId: newUser.userId,
         fullName: `${firstName.trim()} ${lastName.trim()}`,
@@ -233,7 +233,8 @@ router.post(
       res.status(201).json({
         message: "User created successfully",
         generatedPassword,
-        emailSent,
+        emailSent: emailResult.success,
+        emailError: emailResult.error || undefined,
         id: newUser.id,
         userIdStr: newUser.userId,
       });

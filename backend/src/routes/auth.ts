@@ -558,21 +558,23 @@ router.post(
       });
 
       const targetAny = target as any;
-      const emailSent = targetAny.email
-        ? await sendPasswordEmail({
-            to: String(targetAny.email),
-            userId: target.userId,
-            fullName: [targetAny.firstName, targetAny.lastName].filter(Boolean).join(" "),
-            password: newPassword,
-            action: "reset",
-          })
-        : false;
+      let emailResult: { success: boolean; error?: string } = { success: false, error: "No email address on file" };
+      if (targetAny.email) {
+        emailResult = await sendPasswordEmail({
+          to: String(targetAny.email),
+          userId: target.userId,
+          fullName: [targetAny.firstName, targetAny.lastName].filter(Boolean).join(" "),
+          password: newPassword,
+          action: "reset",
+        });
+      }
 
       res.json({
         message: "Password reset successfully",
         newPassword,
         targetUserId: target.userId,
-        emailSent,
+        emailSent: emailResult.success,
+        emailError: emailResult.error || undefined,
       });
     } catch (error) {
       console.error("Reset user password error:", error);

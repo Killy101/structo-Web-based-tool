@@ -258,6 +258,7 @@ export interface CreateUserResponse {
   message: string;
   generatedPassword: string;
   emailSent?: boolean;
+  emailError?: string;
   id: number;
   userIdStr: string;
 }
