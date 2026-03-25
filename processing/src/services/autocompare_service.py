@@ -69,7 +69,7 @@ BATCH_SIZE = 50
 MAX_PAGES_INLINE = 500
 SESSION_TTL = 3600
 BASE_STORAGE = Path(tempfile.gettempdir()) / "autocompare"
-MAX_DIFF_LINES = 2000
+MAX_DIFF_LINES = 500
 LARGE_TEXT_THRESHOLD = 500_000
 LARGE_TEXT_SAMPLE = 100_000
 
@@ -202,38 +202,104 @@ def _extract_xml_reference_profile(xml_text: str) -> tuple[set[str], set[str]]:
     return terms, bigrams
 
 
-def _is_line_relevant_to_xml(line_text: str, ref_terms: set[str], ref_bigrams: set[str]) -> bool:
-    """Return True when a PDF line appears relevant to the chunk's XML vocabulary."""
+def _score_page_against_vocab(
+    page_text: str, ref_terms: set[str], ref_bigrams: set[str]
+) -> float:
+    """
+    Score a full PDF page against the XML vocabulary.
+    Returns a float — higher = more relevant.  Used for page-anchor only.
+    """
     if not ref_terms and not ref_bigrams:
-        return True
-    norm = _normalise(line_text)
-    if not norm:
-        return False
-    line_words = [
+        return 0.0
+    norm = _normalise(page_text)
+    words = [
         w for w in re.findall(r"[a-z0-9][a-z0-9'\-/]{2,}", norm)
         if w not in STOPWORDS and not w.isdigit() and len(w) >= 4
     ]
-    if not line_words:
-        return False
-    overlap = sum(1 for w in line_words if w in ref_terms)
-    line_bigrams = {f"{line_words[i]} {line_words[i+1]}" for i in range(len(line_words) - 1)}
-    bigram_hits = sum(1 for bg in line_bigrams if bg in ref_bigrams)
-    overlap_ratio = overlap / max(len(set(line_words)), 1)
-    if bigram_hits >= 1 and overlap >= 1:
-        return True
+    if not words:
+        return 0.0
+    term_hits = sum(1 for w in words if w in ref_terms)
     if ref_bigrams:
-        if len(ref_terms) < 120:
-            return overlap >= 4 and overlap_ratio >= 0.50
-        if len(ref_terms) < 300:
-            return overlap >= 4 and overlap_ratio >= 0.42
-        return overlap >= 3 and overlap_ratio >= 0.45
-    if len(ref_terms) < 120:
-        return overlap >= 4 and overlap_ratio >= 0.50
-    if len(ref_terms) < 300:
-        return overlap >= 4 and overlap_ratio >= 0.42
-    if overlap >= 5:
-        return True
-    return overlap >= 3 and overlap_ratio >= 0.45
+        word_pairs = {f"{words[i]} {words[i+1]}" for i in range(len(words) - 1)}
+        bigram_hits = sum(1 for bg in word_pairs if bg in ref_bigrams)
+        return term_hits + bigram_hits * 3.0   # bigrams weighted higher
+    return float(term_hits)
+
+
+def _find_best_page_window(
+    pages_text: list[str],
+    ref_terms: set[str],
+    ref_bigrams: set[str],
+    window: int = PAGE_WINDOW,
+) -> tuple[int, int]:
+    """
+    Score every page and return (page_start_0based_exclusive, page_end_inclusive)
+    for the highest-scoring cluster of pages.
+    Returns (0, min(10, total)) when no pages score above zero.
+    """
+    scores = [
+        _score_page_against_vocab(pt, ref_terms, ref_bigrams)
+        for pt in pages_text
+    ]
+    total = len(scores)
+    if not any(s > 0 for s in scores):
+        return 0, min(10, total)
+
+    # Find the page with the highest score, then grow a window around it
+    peak = max(range(total), key=lambda i: scores[i])
+    lo = max(0, peak - window)
+    hi = min(total - 1, peak + window)
+
+    # Expand window while neighbouring pages still score significantly
+    threshold = scores[peak] * 0.15
+    while lo > 0 and scores[lo - 1] >= threshold:
+        lo -= 1
+    while hi < total - 1 and scores[hi + 1] >= threshold:
+        hi += 1
+
+    # page numbers are 1-based in our line-chunk tuples
+    return lo, hi + 1   # (exclusive-start, inclusive-end) in 1-based page space
+
+
+def _anchor_new_pdf(
+    old_text: str,
+    new_pages_text: list[str],
+    old_anchor: tuple[int, int],
+    window: int = PAGE_WINDOW + 2,
+) -> tuple[int, int]:
+    """
+    Find the best matching page window in the NEW PDF for a given old text block.
+    Scores each new-PDF page by similarity to the old text, then returns a window
+    around the best-scoring page.
+
+    Falls back to the old anchor range (±2 pages) when no new page scores well.
+    """
+    if not old_text.strip() or not new_pages_text:
+        lo, hi = old_anchor
+        return max(0, lo - 2), min(len(new_pages_text), hi + 2)
+
+    old_norm = _normalise(old_text)
+    old_words = set(old_norm.split())
+
+    best_idx, best_score = -1, 0.0
+    for i, pt in enumerate(new_pages_text):
+        if not pt.strip():
+            continue
+        new_norm = _normalise(pt)
+        new_words = set(new_norm.split())
+        overlap = len(old_words & new_words) / max(len(old_words), 1)
+        if overlap > best_score:
+            best_score = overlap
+            best_idx = i
+
+    FALLBACK_THRESHOLD = 0.10
+    if best_score < FALLBACK_THRESHOLD or best_idx < 0:
+        lo, hi = old_anchor
+        return max(0, lo - 2), min(len(new_pages_text), hi + 2)
+
+    lo = max(0, best_idx - window)
+    hi = min(len(new_pages_text) - 1, best_idx + window)
+    return lo, hi + 1   # (exclusive-start, inclusive-end) in 1-based page space
 
 
 def _distributed_sample(text: str, sample_size: int) -> str:
@@ -315,6 +381,24 @@ def _generate_diff_lines(
     old_pages = old_line_pages if old_line_pages and len(old_line_pages) == len(old_lines) else []
     new_pages = new_line_pages if new_line_pages and len(new_line_pages) == len(new_lines) else []
 
+    _INNOD_RE = re.compile(
+        r"</?(?:innod:|Change|Revision|Para|Clause|Section|Article|Schedule|Annex|Table|Row|Cell)\b",
+        re.IGNORECASE,
+    )
+
+    def _derive_category(kind: str) -> str:
+        """Map legacy type to DiffCategory."""
+        if kind == "added":    return "addition"
+        if kind == "removed":  return "removal"
+        return "modification"
+
+    def _derive_sub_type(old_t: str, new_t: str, combined: str) -> str:
+        """Derive XML operation sub-type."""
+        if _INNOD_RE.search(combined):
+            return "innodreplace"
+        delta = abs(len(old_t) - len(new_t))
+        return "edit" if delta <= 60 else "textual"
+
     def _append(
         kind: str,
         text: str,
@@ -326,10 +410,15 @@ def _generate_diff_lines(
         new_spans: Optional[list] = None,
     ) -> bool:
         nonlocal line_num
+        old_t   = (old_text_val or "").strip()
+        new_t   = (new_text_val or "").strip()
+        combined = old_t + new_t + text
         entry: dict = {
-            "type": kind,
-            "text": text.rstrip("\n"),
-            "line": line_num,
+            "type":     kind,
+            "category": _derive_category(kind),
+            "sub_type": _derive_sub_type(old_t, new_t, combined),
+            "text":     text.rstrip("\n"),
+            "line":     line_num,
             "old_page": old_page,
             "new_page": new_page,
             "old_text": old_text_val,
@@ -343,11 +432,15 @@ def _generate_diff_lines(
         line_num += 1
         if len(result) >= MAX_DIFF_LINES:
             result.append({
-                "type": "modified",
-                "text": "... diff truncated for performance ...",
-                "line": line_num,
+                "type":     "modified",
+                "category": "modification",
+                "sub_type": "textual",
+                "text":     "... diff truncated for performance ...",
+                "line":     line_num,
                 "old_page": None,
                 "new_page": None,
+                "old_text": None,
+                "new_text": None,
             })
             return True
         return False
@@ -384,51 +477,136 @@ def _generate_diff_lines(
             new_block = [ln.rstrip("\n") for ln in new_lines[j1:j2]]
 
             # ── Cosmetic noise filter ─────────────────────────────────────
-            # Skip blocks that differ only in how lines are wrapped.
-            # Joining both sides and normalising whitespace reveals whether
-            # the actual words are the same — if so, nothing changed.
+            # Skip blocks that differ only in line-wrap (same words, different breaks).
             if _blocks_are_cosmetic(old_block, new_block):
                 continue
 
-            # Real content change — emit each line pair
-            pair_count = max(len(old_block), len(new_block))
-            for k in range(pair_count):
-                old_ln = old_block[k] if k < len(old_block) else ""
-                new_ln = new_block[k] if k < len(new_block) else ""
-                old_page = old_pages[i1 + k] if old_pages and (i1 + k) < len(old_pages) else None
-                new_page = new_pages[j1 + k] if new_pages and (j1 + k) < len(new_pages) else None
+            # ── Sentence-level diff within the block ──────────────────────
+            # Instead of pairing lines positionally (which creates spurious
+            # "modified" entries when block sizes differ), join each side into
+            # a single string and re-diff at sentence/phrase level.
+            old_joined = " ".join(ln for ln in old_block if ln.strip())
+            new_joined = " ".join(ln for ln in new_block if ln.strip())
 
-                if not old_ln.strip() and not new_ln.strip():
-                    continue
+            if not old_joined and not new_joined:
+                continue
 
-                if old_ln and new_ln:
-                    old_spans, new_spans = _char_diff_spans(old_ln, new_ln)
-                    if _append(
-                        "modified",
-                        f"{old_ln} -> {new_ln}",
-                        old_page=old_page,
-                        new_page=new_page,
-                        old_text_val=old_ln,
-                        new_text_val=new_ln,
-                        old_spans=old_spans,
-                        new_spans=new_spans,
-                    ):
-                        return result
-                elif old_ln.strip():
-                    if _append("removed", old_ln,
-                               old_page=old_page, new_page=None,
-                               old_text_val=old_ln, new_text_val=""):
-                        return result
-                elif new_ln.strip():
-                    if _append("added", new_ln,
-                               old_page=None, new_page=new_page,
-                               old_text_val="", new_text_val=new_ln):
-                        return result
+            old_page_blk = old_pages[i1] if old_pages and i1 < len(old_pages) else None
+            new_page_blk = new_pages[j1] if new_pages and j1 < len(new_pages) else None
 
-                if len(result) >= MAX_DIFF_LINES:
+            if not old_joined:
+                if _append("added", new_joined,
+                           old_page=None, new_page=new_page_blk,
+                           old_text_val="", new_text_val=new_joined):
                     return result
+            elif not new_joined:
+                if _append("removed", old_joined,
+                           old_page=old_page_blk, new_page=None,
+                           old_text_val=old_joined, new_text_val=""):
+                    return result
+            else:
+                # Split each joined block into sentences/clauses for finer diff
+                def _split_sentences(text: str) -> list[str]:
+                    # Split on sentence-ending punctuation, semicolons, or \n
+                    parts = re.split(r"(?<=[.;!?])\s+|\n", text)
+                    return [p.strip() for p in parts if p.strip()]
+
+                old_sents = _split_sentences(old_joined)
+                new_sents = _split_sentences(new_joined)
+
+                if not old_sents:
+                    old_sents = [old_joined]
+                if not new_sents:
+                    new_sents = [new_joined]
+
+                sent_matcher = difflib.SequenceMatcher(None, old_sents, new_sents, autojunk=False)
+                for s_op, si1, si2, sj1, sj2 in sent_matcher.get_opcodes():
+                    if s_op == "equal":
+                        continue
+
+                    s_old_block = old_sents[si1:si2]
+                    s_new_block = new_sents[sj1:sj2]
+
+                    # Skip cosmetic sentence-level differences too
+                    if _blocks_are_cosmetic(s_old_block, s_new_block):
+                        continue
+
+                    s_old = " ".join(s_old_block)
+                    s_new = " ".join(s_new_block)
+
+                    # Page approximation: interpolate within the block range
+                    s_old_page = old_page_blk
+                    s_new_page = new_page_blk
+                    if old_pages and i2 > i1:
+                        frac = si1 / max(len(old_sents), 1)
+                        idx  = i1 + int(frac * (i2 - i1))
+                        s_old_page = old_pages[min(idx, len(old_pages) - 1)]
+                    if new_pages and j2 > j1:
+                        frac = sj1 / max(len(new_sents), 1)
+                        idx  = j1 + int(frac * (j2 - j1))
+                        s_new_page = new_pages[min(idx, len(new_pages) - 1)]
+
+                    if s_op == "delete":
+                        if _append("removed", s_old,
+                                   old_page=s_old_page, new_page=None,
+                                   old_text_val=s_old, new_text_val=""):
+                            return result
+                    elif s_op == "insert":
+                        if _append("added", s_new,
+                                   old_page=None, new_page=s_new_page,
+                                   old_text_val="", new_text_val=s_new):
+                            return result
+                    else:  # replace
+                        old_spans, new_spans = _char_diff_spans(s_old, s_new)
+                        if _append(
+                            "modified",
+                            f"{s_old} -> {s_new}",
+                            old_page=s_old_page,
+                            new_page=s_new_page,
+                            old_text_val=s_old,
+                            new_text_val=s_new,
+                            old_spans=old_spans,
+                            new_spans=new_spans,
+                        ):
+                            return result
+
+                    if len(result) >= MAX_DIFF_LINES:
+                        return result
 
     return result
+
+
+
+# ── Build grouped diff structure ──────────────────────────────────────────────
+
+_CATEGORY_ORDER = ["addition", "removal", "modification", "mismatch"]
+_CATEGORY_LABELS = {
+    "addition":     "Additions",
+    "removal":      "Removals",
+    "modification": "Modifications",
+    "mismatch":     "Mismatch",
+}
+
+
+def _build_diff_groups(diff_lines: list[dict]) -> list[dict]:
+    """
+    Group diff_lines by category into the DiffGroup structure expected by
+    the DiffPanel frontend component.
+    """
+    buckets: dict[str, list[dict]] = {c: [] for c in _CATEGORY_ORDER}
+    for line in diff_lines:
+        cat = line.get("category", "modification")
+        if cat == "emphasis":
+            continue
+        if cat not in buckets:
+            cat = "modification"
+        buckets[cat].append(line)
+
+    return [
+        {"category": cat, "label": _CATEGORY_LABELS[cat], "lines": buckets[cat]}
+        for cat in _CATEGORY_ORDER
+        if buckets[cat]
+    ]
 
 
 # ── Core processing pipeline ───────────────────────────────────────────────────
@@ -466,6 +644,7 @@ def process_upload(
         "session_id": session_id,
         "source_name": source_name.strip(),
         "status": "uploaded",
+        "phase": "upload_files",
         "progress": 0,
         "error": None,
         "old_pages": old_pages,
@@ -504,6 +683,7 @@ async def start_processing(
         return
 
     session["status"] = "processing"
+    session["phase"] = "extracting_pdf"
     session["progress"] = 0
 
     base = Path(session["storage"]["base"])
@@ -516,49 +696,56 @@ async def start_processing(
         session["error"] = f"Could not read uploaded files: {exc}"
         return
 
-    # ── Step 1: Extract text from both PDFs ──────────────────────────────────
+    # ── Step 1: Extract text from both PDFs (run in thread — CPU-bound) ────────
+    def _extract_all_pages(pdf_bytes: bytes) -> list[str]:
+        pages: list[str] = []
+        for _, batch, _ in _stream_pdf_pages(pdf_bytes, batch_size):
+            pages.extend(batch)
+        return pages
+
     try:
-        old_batches_total = max(1, math.ceil(max(session.get("old_pages", 0), 1) / max(batch_size, 1)))
-        new_batches_total = max(1, math.ceil(max(session.get("new_pages", 0), 1) / max(batch_size, 1)))
-        total_batches = max(1, old_batches_total + new_batches_total)
-        done_batches = 0
-
-        old_pages_text: list[str] = []
-        for _, batch, _ in _stream_pdf_pages(old_pdf_bytes, batch_size):
-            old_pages_text.extend(batch)
-            done_batches += 1
-            session["progress"] = min(29, int((done_batches / total_batches) * 30))
-            await asyncio.sleep(0)
-
-        new_pages_text: list[str] = []
-        for _, batch, _ in _stream_pdf_pages(new_pdf_bytes, batch_size):
-            new_pages_text.extend(batch)
-            done_batches += 1
-            session["progress"] = min(29, int((done_batches / total_batches) * 30))
-            await asyncio.sleep(0)
+        loop = asyncio.get_event_loop()
+        session["progress"] = 5
+        old_pages_text, new_pages_text = await asyncio.gather(
+            loop.run_in_executor(None, _extract_all_pages, old_pdf_bytes),
+            loop.run_in_executor(None, _extract_all_pages, new_pdf_bytes),
+        )
+        session["progress"] = 28
+        await asyncio.sleep(0)
     except Exception as exc:
         session["status"] = "error"
         session["error"] = f"PDF extraction failed: {exc}"
         return
 
+    session["phase"] = "parsing_xml"
     session["progress"] = 30
 
-    # Build full-document line pools for both PDFs
-    all_old_line_chunks: list[tuple[str, int]] = []
-    for p, page_text in enumerate(old_pages_text):
-        page_no = p + 1
-        all_old_line_chunks.extend((ln, page_no) for ln in page_text.splitlines(keepends=True))
+    # ── Pre-compute page word-sets once (reused across all chunks) ──────────
+    # Normalising + tokenising every page for every chunk is O(pages × chunks).
+    # Computing once and caching as frozensets gives O(pages + chunks × window).
+    def _page_wordset(text: str) -> frozenset[str]:
+        return frozenset(_normalise(text).split())
 
-    all_new_line_chunks: list[tuple[str, int]] = []
-    for p, page_text in enumerate(new_pages_text):
-        page_no = p + 1
-        all_new_line_chunks.extend((ln, page_no) for ln in page_text.splitlines(keepends=True))
+    old_page_wordsets: list[frozenset[str]] = [_page_wordset(pt) for pt in old_pages_text]
+    new_page_wordsets: list[frozenset[str]] = [_page_wordset(pt) for pt in new_pages_text]
+
+    # Pre-tokenise pages for vocab scoring (strip stopwords once)
+    def _page_tokens(text: str) -> list[str]:
+        norm = _normalise(text)
+        return [
+            w for w in re.findall(r"[a-z0-9][a-z0-9'\-/]{2,}", norm)
+            if w not in STOPWORDS and not w.isdigit() and len(w) >= 4
+        ]
+
+    old_page_tokens: list[list[str]] = [_page_tokens(pt) for pt in old_pages_text]
 
     # ── Step 2: Process each XML file ────────────────────────────────────────
     xml_file_list = session["xml_file_list"]
     total_chunks = len(xml_file_list)
     enriched_chunks: list[dict] = []
     changed_count = 0
+
+    session["phase"] = "comparing_chunks"
 
     for i, cf in enumerate(xml_file_list):
         xml_path = base / "XML" / cf["filename"]
@@ -569,43 +756,98 @@ async def start_processing(
             except UnicodeDecodeError:
                 xml_content = xml_path.read_bytes().decode("utf-8", errors="replace")
 
-        # Build vocabulary profile from XML (which mirrors old PDF content)
-        # to locate the correct page window in both PDFs
+        # ── Page-anchor (fast): uses pre-tokenised pages ────────────────────────
         ref_terms, ref_bigrams = _extract_xml_reference_profile(xml_content)
 
-        # Page-anchor on OLD PDF (XML ≈ old PDF)
-        old_page_scores: dict[int, float] = {}
-        for ln, pg in all_old_line_chunks:
-            if _is_line_relevant_to_xml(ln, ref_terms, ref_bigrams):
-                old_page_scores[pg] = old_page_scores.get(pg, 0) + 1
+        # Score only old-PDF pages using pre-computed token lists
+        old_scores: list[float] = []
+        for tokens in old_page_tokens:
+            if not tokens:
+                old_scores.append(0.0)
+                continue
+            hits = sum(1 for w in tokens if w in ref_terms)
+            if ref_bigrams:
+                pairs = {f"{tokens[j]} {tokens[j+1]}" for j in range(len(tokens) - 1)}
+                hits += sum(1 for bg in pairs if bg in ref_bigrams) * 3.0
+            old_scores.append(float(hits))
 
-        if old_page_scores:
-            top_old_pages = sorted(old_page_scores, key=lambda p: -old_page_scores[p])[:10]
-            anchor_min = min(top_old_pages)
-            anchor_max = max(top_old_pages)
-            page_start_idx = max(0, anchor_min - PAGE_WINDOW)
-            page_end_idx = anchor_max + PAGE_WINDOW
+        if any(s > 0 for s in old_scores):
+            peak = max(range(len(old_scores)), key=lambda j: old_scores[j])
+            threshold = old_scores[peak] * 0.15
+            old_lo = peak
+            old_hi = peak
+            while old_lo > 0 and old_scores[old_lo - 1] >= threshold:
+                old_lo -= 1
+            while old_hi < len(old_scores) - 1 and old_scores[old_hi + 1] >= threshold:
+                old_hi += 1
+            old_lo = max(0, old_lo - PAGE_WINDOW)
+            old_hi = min(len(old_pages_text) - 1, old_hi + PAGE_WINDOW)
         else:
-            page_start_idx = 0
-            page_end_idx = min(len(old_pages_text), 10)
+            old_lo, old_hi = 0, min(9, len(old_pages_text) - 1)
 
-        # Extract the page-windowed text from BOTH PDFs
-        old_relevant = [
-            (ln, pg) for ln, pg in all_old_line_chunks
-            if page_start_idx < pg <= page_end_idx
-        ]
-        new_relevant = [
-            (ln, pg) for ln, pg in all_new_line_chunks
-            if page_start_idx < pg <= page_end_idx
-        ]
+        # Extract full page text for the old window
+        old_text = "".join(old_pages_text[p] for p in range(old_lo, old_hi + 1))
 
-        old_text = "".join(line for line, _ in old_relevant)
-        new_text = "".join(line for line, _ in new_relevant)
+        # Anchor new PDF: use pre-computed wordsets, search only near old_lo..old_hi
+        old_words = old_page_wordsets[old_lo] if old_lo < len(old_page_wordsets) else frozenset()
+        for p in range(old_lo, old_hi + 1):
+            if p < len(old_page_wordsets):
+                old_words = old_words | old_page_wordsets[p]
+
+        # Search new PDF in a generous band around the old anchor
+        search_lo = max(0, old_lo - PAGE_WINDOW - 2)
+        search_hi = min(len(new_pages_text) - 1, old_hi + PAGE_WINDOW + 2)
+        best_new_idx, best_new_score = old_lo, 0.0   # fallback = same index
+        for p in range(search_lo, search_hi + 1):
+            if p >= len(new_page_wordsets):
+                break
+            nw = new_page_wordsets[p]
+            if not nw:
+                continue
+            score = len(old_words & nw) / max(len(old_words), 1)
+            if score > best_new_score:
+                best_new_score = score
+                best_new_idx = p
+
+        if best_new_score < 0.05:
+            # Very low overlap — fall back to same page range ± 2
+            new_lo = max(0, old_lo - 2)
+            new_hi = min(len(new_pages_text) - 1, old_hi + 2)
+        else:
+            new_lo = max(0, best_new_idx - PAGE_WINDOW)
+            new_hi = min(len(new_pages_text) - 1, best_new_idx + PAGE_WINDOW)
+
+        new_text = "".join(new_pages_text[p] for p in range(new_lo, new_hi + 1))
+
+        # Store page bounds for the UI
+        page_start_idx = old_lo
+        page_end_idx   = old_hi + 1   # 1-based exclusive upper bound
+
+        # line-page mappings for diff
+        old_relevant_pairs: list[tuple[str, int]] = []
+        for p in range(old_lo, old_hi + 1):
+            pg_no = p + 1
+            for ln in old_pages_text[p].splitlines(keepends=True):
+                old_relevant_pairs.append((ln, pg_no))
+
+        new_relevant_pairs: list[tuple[str, int]] = []
+        for p in range(new_lo, new_hi + 1):
+            pg_no = p + 1
+            for ln in new_pages_text[p].splitlines(keepends=True):
+                new_relevant_pairs.append((ln, pg_no))
 
         # Classify using normalised comparison (ignores line-wrap noise)
         change_type = _classify_change(old_text, new_text)
         has_changes = change_type != "unchanged"
-        similarity = _compute_similarity(old_text, new_text) if old_text or new_text else 1.0
+
+        # Fast similarity via wordset intersection (avoids O(n²) SequenceMatcher)
+        if old_text or new_text:
+            old_ws = frozenset(_normalise(old_text).split())
+            new_ws = frozenset(_normalise(new_text).split())
+            denom  = max(len(old_ws | new_ws), 1)
+            similarity = len(old_ws & new_ws) / denom   # Jaccard similarity
+        else:
+            similarity = 1.0
         if has_changes:
             changed_count += 1
 
@@ -633,27 +875,113 @@ async def start_processing(
             "auto_reviewed": not has_changes,
         }
 
-        diff_path = base / "COMPARE" / f"diff_{cf['index']:05d}.json"
-        diff_summary = {k: v for k, v in chunk_data.items() if k not in ("old_text", "new_text", "diff_lines")}
-        diff_path.write_text(json.dumps(diff_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        # ── Generate diff lines ───────────────────────────────────────────────
+        diff_lines: list[dict] = []   # always initialised — used below in validation block
+        diff_groups: list[dict] = []
 
-        enriched_chunks.append(chunk_data)
-        session["progress"] = 30 + int(65 * (i + 1) / total_chunks)
+        if has_changes:
+            # Cap text size to prevent O(n²) SequenceMatcher blowup on huge pages
+            _MAX_DIFF_INPUT = 80_000   # chars — enough for ~10 dense pages
+            diff_lines  = _generate_diff_lines(
+                old_text[:_MAX_DIFF_INPUT], new_text[:_MAX_DIFF_INPUT],
+                old_line_pages=[pg for _, pg in old_relevant_pairs],
+                new_line_pages=[pg for _, pg in new_relevant_pairs],
+            )
+            diff_groups = _build_diff_groups(diff_lines)
+
+        chunk_data["diff_lines"]  = diff_lines
+        chunk_data["diff_groups"] = diff_groups
+        if has_changes:
+            chunk_data["old_text"] = old_text
+            chunk_data["new_text"] = new_text
+
+        # ── Inline XML validation ─────────────────────────────────────────────
+        xml_valid        = True
+        xml_errors: list[str] = []
+        if xml_content.strip():
+            try:
+                etree.fromstring(xml_content.encode("utf-8"))
+            except etree.XMLSyntaxError as exc:
+                xml_valid  = False
+                xml_errors = [str(exc)]
+
+        # Determine the validation status for this chunk at processing time
+        if not xml_valid:
+            validation_status = "invalid_xml"
+            validation_message = f"XML has syntax errors: {xml_errors[0]}" if xml_errors else "Invalid XML"
+        elif not has_changes:
+            validation_status = "no_changes"
+            validation_message = "No changes detected between Old and New PDFs for this chunk."
+        else:
+            validation_status = "needs_update"
+            validation_message = f"{len(diff_lines)} change(s) detected — XML needs to be updated."
+
+        chunk_data["xml_valid"]          = xml_valid
+        chunk_data["xml_errors"]         = xml_errors
+        chunk_data["validation_status"]  = validation_status
+        chunk_data["validation_message"] = validation_message
+
+        # Expose per-chunk validation result in session for live status polling
+        session.setdefault("chunk_validations", {})[str(cf["index"])] = {
+            "index":              cf["index"],
+            "label":              label,
+            "filename":           cf["filename"],
+            "has_changes":        has_changes,
+            "change_type":        change_type,
+            "similarity":         round(similarity, 3),
+            "xml_valid":          xml_valid,
+            "xml_errors":         xml_errors,
+            "validation_status":  validation_status,
+            "validation_message": validation_message,
+            "diff_count":         len(diff_lines) if has_changes else 0,
+        }
+
+        # Yield to the event loop before the expensive disk write so HTTP
+        # polling requests (status, etc.) can be served during processing.
         await asyncio.sleep(0)
 
+        # Write to disk in a thread so we don't block the event loop.
+        diff_path = base / "COMPARE" / f"diff_{cf['index']:05d}.json"
+        _json_bytes = json.dumps(chunk_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        await asyncio.get_event_loop().run_in_executor(
+            None, diff_path.write_bytes, _json_bytes
+        )
+
+        enriched_chunks.append(chunk_data)
+        # Progress: 30-85% for comparing, 85-95% for building index / validating
+        session["progress"] = 30 + int(55 * (i + 1) / total_chunks)
+        await asyncio.sleep(0)
+
+    # ── Phase 3: Validation summary ───────────────────────────────────────────
+    session["phase"]    = "validating_xml"
+    session["progress"] = 86
+
+    invalid_count    = sum(1 for c in enriched_chunks if not c.get("xml_valid", True))
+    needs_update_count = sum(1 for c in enriched_chunks if c.get("validation_status") == "needs_update")
+    no_changes_count   = sum(1 for c in enriched_chunks if c.get("validation_status") == "no_changes")
+
+    await asyncio.sleep(0)
+
+    session["phase"]    = "building_index"
+    session["progress"] = 96
+
     summary = {
-        "total": total_chunks,
-        "changed": changed_count,
-        "unchanged": total_chunks - changed_count,
-        "old_pages": session["old_pages"],
-        "new_pages": session["new_pages"],
-        "source_name": session["source_name"],
+        "total":            total_chunks,
+        "changed":          changed_count,
+        "unchanged":        total_chunks - changed_count,
+        "needs_update":     needs_update_count,
+        "no_changes":       no_changes_count,
+        "invalid_xml":      invalid_count,
+        "old_pages":        session["old_pages"],
+        "new_pages":        session["new_pages"],
+        "source_name":      session["source_name"],
     }
     (base / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    session["chunks"] = enriched_chunks
-    session["summary"] = summary
-    session["status"] = "done"
+    session["chunks"]   = enriched_chunks
+    session["summary"]  = summary
+    session["status"]   = "done"
+    session["phase"]    = "done"
     session["progress"] = 100
 
     logger.info(
@@ -715,7 +1043,11 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
                 chunk_data.setdefault("old_text", "")
                 chunk_data.setdefault("new_text", "")
                 chunk_data.setdefault("diff_lines", [])
+                chunk_data.setdefault("diff_groups", [])
                 chunk_data.setdefault("auto_reviewed", not chunk_data.get("has_changes", True))
+                # Back-fill diff_groups for old cache files that pre-date this field
+                if chunk_data["diff_lines"] and not chunk_data["diff_groups"]:
+                    chunk_data["diff_groups"] = _build_diff_groups(chunk_data["diff_lines"])
                 chunks.append(chunk_data)
             except Exception:
                 pass
@@ -726,6 +1058,7 @@ def _reconstruct_session_from_disk(session_id: str) -> Optional[dict]:
         "session_id":     session_id,
         "source_name":    source_name,
         "status":         status,
+        "phase":          "done" if status == "done" else "upload_files",
         "progress":       100 if status == "done" else 0,
         "error":          None,
         "old_pages":      (summary or {}).get("old_pages", old_pages),
@@ -779,12 +1112,16 @@ def get_chunks_list(session_id: str) -> list[dict]:
 
 def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
     """
-    Return full chunk data including diff_lines.
+    Return full chunk data including diff_lines and diff_groups.
 
-    old_text = OLD PDF text for the page window
-    new_text = NEW PDF text for the same page window
-    diff_lines = real content changes only (line-wrap noise removed)
-    XML is available in xml_content for display in the editor.
+    Data is pre-computed during start_processing and cached to disk.
+    This function simply loads it — no PDF re-scanning needed.
+
+    old_text   = OLD PDF text for the page window
+    new_text   = NEW PDF text for the same page window
+    diff_lines = per-line changes, each enriched with category + sub_type
+    diff_groups = diff_lines grouped by category for the DiffPanel component
+    xml_content = original XML for display in the editor
     """
     session = _sessions.get(session_id)
     if not session:
@@ -802,7 +1139,24 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
 
     base = Path(session["storage"]["base"])
 
-    # Load XML content lazily (for editor display — not used in diff)
+    # ── Load from disk cache (written by start_processing) ─────────────────
+    if not chunk.get("diff_lines") and not chunk.get("old_text"):
+        diff_path = base / "COMPARE" / f"diff_{chunk['index']:05d}.json"
+        if diff_path.exists():
+            try:
+                cached = json.loads(diff_path.read_text(encoding="utf-8"))
+                # Merge all cached fields into chunk (non-destructively)
+                for key, val in cached.items():
+                    if not chunk.get(key):
+                        chunk[key] = val
+            except Exception:
+                pass
+
+    # ── Ensure diff_groups is present (back-fill for old cache files) ───────
+    if chunk.get("diff_lines") and not chunk.get("diff_groups"):
+        chunk["diff_groups"] = _build_diff_groups(chunk["diff_lines"])
+
+    # ── Load XML content (lazily — not stored in main chunk dict) ───────────
     if not chunk.get("xml_content"):
         xml_path = base / "XML" / chunk["filename"]
         if xml_path.exists():
@@ -810,113 +1164,8 @@ def get_chunk_detail(session_id: str, chunk_id: str) -> Optional[dict]:
                 chunk["xml_content"] = xml_path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 chunk["xml_content"] = xml_path.read_bytes().decode("utf-8", errors="replace")
-        chunk["xml_suggested"] = chunk.get("xml_saved") or chunk.get("xml_content", "")
 
-    # Load from cache if texts were already resolved
-    cache_path = base / "COMPARE" / f"text_{chunk['index']:05d}.json"
-    if cache_path.exists() and not chunk.get("old_text") and not chunk.get("new_text"):
-        try:
-            import json as _json
-            cached = _json.loads(cache_path.read_text(encoding="utf-8"))
-            chunk["old_text"] = cached.get("old_text", "")
-            chunk["new_text"] = cached.get("new_text", "")
-            chunk["page_start"] = cached.get("page_start", chunk.get("page_start", 0))
-            chunk["page_end"] = cached.get("page_end", chunk.get("page_end", 0))
-            if chunk.get("has_changes") and not chunk.get("diff_lines"):
-                chunk["diff_lines"] = _generate_diff_lines(
-                    chunk["old_text"], chunk["new_text"]
-                )
-        except Exception:
-            pass
-
-    # Build page-scoped text and diff on demand
-    if chunk.get("page_start") is not None and not chunk.get("old_text"):
-        p_start = chunk["page_start"]
-        p_end = chunk["page_end"]
-        old_pdf = base / "ORIGINAL" / "old.pdf"
-        new_pdf = base / "ORIGINAL" / "new.pdf"
-        if old_pdf.exists() and new_pdf.exists():
-            try:
-                old_doc = fitz.open(str(old_pdf))
-                new_doc = fitz.open(str(new_pdf))
-
-                old_line_chunks: list[tuple[str, int]] = []
-                for p in range(len(old_doc)):
-                    page_no = p + 1
-                    for ln in str(old_doc[p].get_text("text")).splitlines(keepends=True):
-                        old_line_chunks.append((ln, page_no))
-
-                new_line_chunks: list[tuple[str, int]] = []
-                for p in range(len(new_doc)):
-                    page_no = p + 1
-                    for ln in str(new_doc[p].get_text("text")).splitlines(keepends=True):
-                        new_line_chunks.append((ln, page_no))
-
-                xml_content = chunk.get("xml_content", "")
-                ref_terms, ref_bigrams = _extract_xml_reference_profile(xml_content)
-
-                # Page-anchor on OLD PDF
-                old_page_scores: dict[int, float] = {}
-                for ln, pg in old_line_chunks:
-                    if _is_line_relevant_to_xml(ln, ref_terms, ref_bigrams):
-                        old_page_scores[pg] = old_page_scores.get(pg, 0) + 1
-
-                if old_page_scores:
-                    top_pages = sorted(old_page_scores, key=lambda p: -old_page_scores[p])[:10]
-                    anchor_min = min(top_pages)
-                    anchor_max = max(top_pages)
-                    p_lo = max(0, anchor_min - PAGE_WINDOW)
-                    p_hi = anchor_max + PAGE_WINDOW
-                else:
-                    p_lo = max(0, p_start - 1)
-                    p_hi = min(p_end + 2, p_start + 15)
-
-                old_relevant = [(ln, pg) for ln, pg in old_line_chunks if p_lo < pg <= p_hi]
-                new_relevant = [(ln, pg) for ln, pg in new_line_chunks if p_lo < pg <= p_hi]
-
-                old_text = "".join(line for line, _ in old_relevant)
-                new_text = "".join(line for line, _ in new_relevant)
-
-                relevant_pages = [pg for _, pg in old_relevant] + [pg for _, pg in new_relevant]
-                if relevant_pages:
-                    chunk["page_start"] = max(0, min(relevant_pages) - 1)
-                    chunk["page_end"] = max(relevant_pages)
-
-                old_doc.close()
-                new_doc.close()
-
-                chunk["old_text"] = old_text
-                chunk["new_text"] = new_text
-                chunk["change_type"] = _classify_change(old_text, new_text)
-
-                try:
-                    import json as _json
-                    cp = base / "COMPARE" / f"text_{chunk['index']:05d}.json"
-                    cp.write_text(
-                        _json.dumps({
-                            "old_text": old_text, "new_text": new_text,
-                            "page_start": chunk["page_start"], "page_end": chunk["page_end"],
-                        }, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
-
-                chunk["has_changes"] = chunk["change_type"] != "unchanged"
-                chunk["similarity"] = round(
-                    _compute_similarity(old_text, new_text) if old_text or new_text else 1.0, 3
-                )
-                chunk["diff_lines"] = (
-                    _generate_diff_lines(
-                        old_text, new_text,
-                        old_line_pages=[pg for _, pg in old_relevant],
-                        new_line_pages=[pg for _, pg in new_relevant],
-                    )
-                    if chunk.get("has_changes") else []
-                )
-            except Exception:
-                pass
-
+    chunk["xml_suggested"] = chunk.get("xml_saved") or chunk.get("xml_content", "")
     return chunk
 
 

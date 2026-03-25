@@ -49,8 +49,11 @@ export function useUsers() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async () => {
-    setIsLoading(true);
+  const refetch = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) {
+      setIsLoading(true);
+    }
     setError(null);
     try {
       const { users } = await usersApi.getAll();
@@ -58,12 +61,24 @@ export function useUsers() {
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refetch({ silent: true });
+      }
+    }, 30000);
+
+    return () => window.clearInterval(id);
   }, [refetch]);
 
   const createUser = async (data: CreateUserPayload) => {

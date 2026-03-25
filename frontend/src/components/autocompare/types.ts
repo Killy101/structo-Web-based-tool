@@ -11,6 +11,10 @@ export interface SessionSummary {
   old_pages: number;
   new_pages: number;
   source_name: string;
+  /** Fields added by the validation phase — present when backend >= v2 */
+  needs_update?: number;
+  no_changes?: number;
+  invalid_xml?: number;
 }
 
 export type ChangeType = "added" | "removed" | "modified" | "unchanged";
@@ -92,6 +96,8 @@ export interface DiffGroup {
 }
 
 /** Full chunk detail (returned by /compare/{chunk_id}) */
+export type ChunkValidationStatus = "no_changes" | "needs_update" | "invalid_xml";
+
 export interface ChunkDetail extends ChunkRow {
   old_text: string;
   new_text: string;
@@ -101,9 +107,44 @@ export interface ChunkDetail extends ChunkRow {
   xml_content: string;
   xml_suggested: string;
   xml_saved: string | null;
+  /** Validation fields populated during processing */
+  xml_valid?: boolean;
+  xml_errors?: string[];
+  validation_status?: ChunkValidationStatus;
+  validation_message?: string;
 }
 
 // ── API response shapes ───────────────────────────────────────────────────────
+
+/** Per-chunk result exposed by the status poll during processing */
+export interface ChunkValidationResult {
+  index: number;
+  label: string;
+  filename: string;
+  has_changes: boolean;
+  change_type: string;
+  similarity: number;
+  xml_valid: boolean;
+  xml_errors: string[];
+  validation_status: ChunkValidationStatus;
+  validation_message: string;
+  diff_count: number;
+}
+
+/** Full shape returned by GET /autocompare/status/{session_id} */
+export interface PollStatusResponse {
+  success: boolean;
+  session_id: string;
+  status: string;
+  phase?: string | null;
+  progress: number;
+  summary: SessionSummary | null;
+  error: string | null;
+  expires_at?: number;
+  chunk_validations?: Record<string, ChunkValidationResult>;
+  chunks_done?: number;
+  chunks_total?: number;
+}
 
 export interface UploadResponse {
   success: boolean;

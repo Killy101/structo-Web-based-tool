@@ -39,6 +39,10 @@ interface PdfViewerProps {
   highlightText?: string;
   /** Optional semantic type so highlight color matches diff panel categories */
   highlightKind?: "added" | "removed" | "modified";
+  /** Optional multi-snippet highlights rendered by the backend on every page request. */
+  highlightAddedTexts?: string[];
+  highlightRemovedTexts?: string[];
+  highlightModifiedTexts?: string[];
 }
 
 // ── Color maps ─────────────────────────────────────────────────────────────────
@@ -98,6 +102,9 @@ export default function PdfViewer({
   targetPage,
   highlightText,
   highlightKind,
+  highlightAddedTexts,
+  highlightRemovedTexts,
+  highlightModifiedTexts,
 }: PdfViewerProps) {
   const styles = COLOR_MAP[color];
 
@@ -109,14 +116,21 @@ export default function PdfViewer({
 
   useEffect(() => {
     if (targetPage && targetPage >= 1 && totalPages > 0) {
-      setCurrentPage(Math.min(targetPage, totalPages));
+      const nextPage = Math.min(targetPage, totalPages);
+      const raf = requestAnimationFrame(() => {
+        setCurrentPage(nextPage);
+      });
+      return () => cancelAnimationFrame(raf);
     }
   }, [targetPage, totalPages]);
 
   // Reset to page 1 when the session changes
   useEffect(() => {
-    setCurrentPage(1);
-    setImgError(false);
+    const raf = requestAnimationFrame(() => {
+      setCurrentPage(1);
+      setImgError(false);
+    });
+    return () => cancelAnimationFrame(raf);
   }, [sessionId, which]);
 
   // ── Build image URL ────────────────────────────────────────────────────────
@@ -124,12 +138,41 @@ export default function PdfViewer({
   const pageUrl = useMemo(() => {
     if (!sessionId || totalPages <= 0) return null;
     let url = `${BASE}/autocompare/pdf-page/${encodeURIComponent(sessionId)}/${which}/${currentPage}?scale=1.5`;
+
+    const pushTerms = (key: string, values?: string[]) => {
+      if (!values || values.length === 0) return;
+      const seen = new Set<string>();
+      for (const raw of values) {
+        const cleaned = (raw ?? "").trim();
+        if (cleaned.length < 2) continue;
+        const signature = cleaned.toLowerCase();
+        if (seen.has(signature)) continue;
+        seen.add(signature);
+        url += `&${key}=${encodeURIComponent(cleaned.slice(0, 300))}`;
+        if (seen.size >= 24) break;
+      }
+    };
+
+    pushTerms("hl_added", highlightAddedTexts);
+    pushTerms("hl_removed", highlightRemovedTexts);
+    pushTerms("hl_modified", highlightModifiedTexts);
+
     if (highlightText && highlightText.trim().length >= 2) {
       url += `&hl_text=${encodeURIComponent(highlightText.slice(0, 300))}`;
       if (highlightKind) url += `&hl_kind=${encodeURIComponent(highlightKind)}`;
     }
     return url;
-  }, [sessionId, which, currentPage, highlightText, highlightKind, totalPages]);
+  }, [
+    sessionId,
+    which,
+    currentPage,
+    highlightText,
+    highlightKind,
+    highlightAddedTexts,
+    highlightRemovedTexts,
+    highlightModifiedTexts,
+    totalPages,
+  ]);
 
   const pageLabel = useMemo(() => {
     if (pageStart == null) return null;

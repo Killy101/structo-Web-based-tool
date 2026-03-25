@@ -185,6 +185,7 @@ export interface AuthResponse {
   user: Pick<User, "id" | "userId" | "firstName" | "lastName" | "role"> & {
     teamId: number | null;
     teamName: string | null;
+    mustChangePassword?: boolean;
   };
 }
 

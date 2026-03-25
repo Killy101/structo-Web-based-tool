@@ -777,11 +777,6 @@ function SortableTable({
   onAssignTeam,
   onToggleStatus,
   actorRole,
-  selectedUserIds,
-  allPageSelected,
-  somePageSelected,
-  onToggleSelect,
-  onToggleSelectAllPage,
 }: {
   data: User[];
   isLoading: boolean;
@@ -796,32 +791,12 @@ function SortableTable({
   onAssignTeam: (u: User) => void;
   onToggleStatus: (u: User) => void;
   actorRole: Role;
-  selectedUserIds: Set<number>;
-  allPageSelected: boolean;
-  somePageSelected: boolean;
-  onToggleSelect: (userId: number) => void;
-  onToggleSelectAllPage: () => void;
 }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
-            <th className="px-4 py-3 text-left w-10">
-              <input
-                type="checkbox"
-                checked={allPageSelected}
-                ref={(el) => {
-                  if (el) {
-                    el.indeterminate = somePageSelected && !allPageSelected;
-                  }
-                }}
-                onChange={onToggleSelectAllPage}
-                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
-                aria-label="Select all users on this page"
-              />
-            </th>
-
             {SORT_COLS.map(({ label, key }) => {
               const active = sortKey === key;
               return (
@@ -857,7 +832,7 @@ function SortableTable({
           {isLoading ? (
             <tr>
               <td
-                colSpan={7}
+                colSpan={6}
                 className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
               >
                 <div className="flex items-center justify-center gap-2">
@@ -887,7 +862,7 @@ function SortableTable({
           ) : data.length === 0 ? (
             <tr>
               <td
-                colSpan={7}
+                colSpan={6}
                 className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
               >
                 <div className="text-2xl mb-2">Users</div>
@@ -905,16 +880,6 @@ function SortableTable({
                   key={u.id}
                   className={`group transition-colors hover:bg-blue-50/60 dark:hover:bg-slate-800/50 ${idx % 2 === 0 ? "bg-white dark:bg-transparent" : "bg-slate-50/60 dark:bg-slate-800/20"}`}
                 >
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedUserIds.has(u.id)}
-                      onChange={() => onToggleSelect(u.id)}
-                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
-                      aria-label={`Select ${getDisplayName(u)}`}
-                    />
-                  </td>
-
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <EnhancedAvatar user={u} />
@@ -3138,7 +3103,9 @@ export default function UsersPage() {
       <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
         {/* Left: Refresh + Export */}
         <button
-          onClick={refetch}
+          onClick={() => {
+            void refetch();
+          }}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
         >
           <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
@@ -3354,11 +3321,6 @@ export default function UsersPage() {
             onAssignTeam={handleOpenAssignTeam}
             onToggleStatus={handleToggle}
             actorRole={actorRole}
-            selectedUserIds={selectedUserIds}
-            allPageSelected={allPageSelected}
-            somePageSelected={somePageSelected}
-            onToggleSelect={toggleSelect}
-            onToggleSelectAllPage={toggleSelectAllPage}
           />
         </Card>
       )}

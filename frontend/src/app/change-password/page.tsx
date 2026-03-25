@@ -10,6 +10,13 @@ interface FormErrors {
   general?: string;
 }
 
+interface PasswordPolicy {
+  minPasswordLength: number;
+  requireUppercase: boolean;
+  requireNumber: boolean;
+  minSpecialChars: number;
+}
+
 export default function ChangePasswordPage() {
   const router = useRouter();
   const [formData, setFormData] = useState({
@@ -20,13 +27,48 @@ export default function ChangePasswordPage() {
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [showForcedChangeNotice, setShowForcedChangeNotice] = useState(false);
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [policy, setPolicy] = useState<PasswordPolicy>({
+    minPasswordLength: 15,
+    requireUppercase: true,
+    requireNumber: true,
+    minSpecialChars: 1,
+  });
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const showNotice = sessionStorage.getItem("forcePasswordChangeNotice") === "1";
+    if (!showNotice) return;
+    sessionStorage.removeItem("forcePasswordChangeNotice");
+    setShowForcedChangeNotice(true);
+  }, []);
+
+  useEffect(() => {
+    const fetchPolicy = async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/password-policy`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setPolicy({
+          minPasswordLength: Math.max(15, Number(data?.minPasswordLength) || 15),
+          requireUppercase: Boolean(data?.requireUppercase ?? true),
+          requireNumber: Boolean(data?.requireNumber ?? true),
+          minSpecialChars: Math.max(1, Number(data?.minSpecialChars) || 1),
+        });
+      } catch {
+        // Keep secure fallback defaults if policy endpoint is unavailable.
+      }
+    };
+
+    void fetchPolicy();
   }, []);
 
   function validate(): boolean {
@@ -38,14 +80,17 @@ export default function ChangePasswordPage() {
 
     if (!formData.newPassword) {
       e.newPassword = "New password is required";
-    } else if (formData.newPassword.length < 8) {
-      e.newPassword = "Must be at least 8 characters";
-    } else if (!/[A-Z]/.test(formData.newPassword)) {
+    } else if (formData.newPassword.length < policy.minPasswordLength) {
+      e.newPassword = `Must be at least ${policy.minPasswordLength} characters`;
+    } else if (policy.requireUppercase && !/[A-Z]/.test(formData.newPassword)) {
       e.newPassword = "Must include at least one uppercase letter";
-    } else if (!/[a-z]/.test(formData.newPassword)) {
-      e.newPassword = "Must include at least one lowercase letter";
-    } else if (!/[0-9]/.test(formData.newPassword)) {
+    } else if (policy.requireNumber && !/[0-9]/.test(formData.newPassword)) {
       e.newPassword = "Must include at least one number";
+    } else if (
+      (formData.newPassword.match(/[^a-zA-Z0-9]/g) ?? []).length <
+      policy.minSpecialChars
+    ) {
+      e.newPassword = `Must include at least ${policy.minSpecialChars} special character${policy.minSpecialChars === 1 ? "" : "s"}`;
     } else if (formData.newPassword === formData.currentPassword) {
       e.newPassword = "New password must be different from current password";
     }
@@ -236,6 +281,27 @@ export default function ChangePasswordPage() {
                   You must change your password before continuing.
                 </p>
 
+                {showForcedChangeNotice && (
+                  <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2">
+                    <svg
+                      className="w-4 h-4 text-amber-600 mt-0.5 shrink-0"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 9v3m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"
+                      />
+                    </svg>
+                    <p className="text-sm text-amber-700">
+                      First-time sign in detected. Please set a new password to continue.
+                    </p>
+                  </div>
+                )}
+
                 {/* General Error */}
                 {errors.general && (
                   <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
@@ -422,20 +488,24 @@ export default function ChangePasswordPage() {
                     <div className="mt-2 space-y-1">
                       {[
                         {
-                          met: formData.newPassword.length >= 8,
-                          text: "At least 8 characters",
+                          met:
+                            formData.newPassword.length >=
+                            policy.minPasswordLength,
+                          text: `At least ${policy.minPasswordLength} characters`,
                         },
                         {
                           met: /[A-Z]/.test(formData.newPassword),
                           text: "One uppercase letter",
                         },
                         {
-                          met: /[a-z]/.test(formData.newPassword),
-                          text: "One lowercase letter",
-                        },
-                        {
                           met: /[0-9]/.test(formData.newPassword),
                           text: "One number",
+                        },
+                        {
+                          met:
+                            (formData.newPassword.match(/[^a-zA-Z0-9]/g) ?? [])
+                              .length >= policy.minSpecialChars,
+                          text: `At least ${policy.minSpecialChars} special character${policy.minSpecialChars === 1 ? "" : "s"}`,
                         },
                       ].map((req, i) => (
                         <div key={i} className="flex items-center gap-1.5">

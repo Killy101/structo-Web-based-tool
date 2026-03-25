@@ -9,6 +9,7 @@
 import type {
   ChunksResponse,
   CompareChunkResponse,
+  PollStatusResponse,
   ReuploadResponse,
   SaveResponse,
   ValidateAllResponse,
@@ -104,14 +105,7 @@ export async function startProcessing(
 
 // ── Status poll ───────────────────────────────────────────────────────────────
 
-export async function pollStatus(sessionId: string): Promise<{
-  success: boolean;
-  session_id: string;
-  status: string;
-  progress: number;
-  summary: unknown;
-  error: string | null;
-}> {
+export async function pollStatus(sessionId: string): Promise<PollStatusResponse> {
   const res = await fetch(`${BASE}/autocompare/status/${encodeURIComponent(sessionId)}`);
   return handleResponse(res);
 }

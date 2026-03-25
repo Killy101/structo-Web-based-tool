@@ -30,7 +30,7 @@ import logging
 import re
 
 from contextlib import asynccontextmanager
-from fastapi import APIRouter, BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
@@ -151,6 +151,7 @@ async def start_endpoint(payload: StartRequest, background_tasks: BackgroundTask
             }
 
         session["status"] = "processing"
+        session["phase"] = "extracting_pdf"
         session["progress"] = 0
 
     background_tasks.add_task(
@@ -188,13 +189,17 @@ async def status_endpoint(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     return {
-        "success":    True,
-        "session_id": session_id,
-        "status":     session["status"],
-        "progress":   session["progress"],
-        "summary":    session.get("summary"),
-        "error":      session.get("error"),
-        "expires_at": session.get("expires_at"),
+        "success":           True,
+        "session_id":        session_id,
+        "status":            session["status"],
+        "phase":             session.get("phase"),
+        "progress":          session["progress"],
+        "summary":           session.get("summary"),
+        "error":             session.get("error"),
+        "expires_at":        session.get("expires_at"),
+        "chunk_validations": session.get("chunk_validations", {}),
+        "chunks_done":       len(session.get("chunk_validations", {})),
+        "chunks_total":      session.get("xml_file_count", 0),
     }
 
 
@@ -237,6 +242,11 @@ async def compare_chunk_endpoint(chunk_id: str, session_id: str):
     chunk = get_chunk_detail(session_id, chunk_id)
     if not chunk:
         raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
+
+    # Ensure diff_groups is always present (guarantees frontend DiffPanel gets it)
+    if chunk.get("diff_lines") and not chunk.get("diff_groups"):
+        from src.services.autocompare_service import _build_diff_groups
+        chunk["diff_groups"] = _build_diff_groups(chunk["diff_lines"])
 
     return {
         "success":     True,
@@ -384,23 +394,70 @@ _HIGHLIGHT_COLORS = {
 _DEFAULT_HIGHLIGHT_COLOR = (0.984, 0.800, 0.082)  # yellow fallback
 
 
+def _normalise_for_search(text: str) -> str:
+    """Normalise text for PDF search — collapse whitespace, fix common PDF artifacts."""
+    import unicodedata
+    # Normalise unicode (handles ligatures, accented chars, etc.)
+    text = unicodedata.normalize("NFKC", text)
+    # Replace non-breaking and special spaces
+    text = re.sub(r"[\u00a0\u2002\u2003\u2009\u200b]", " ", text)
+    # Normalise dashes (en-dash, em-dash, soft-hyphen → regular hyphen)
+    text = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u00ad]", "-", text)
+    # Collapse multiple spaces
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
+def _search_page_for_text(page, raw_text: str) -> list:
+    """
+    Try multiple search strategies to locate text on a PDF page.
+    Returns a list of fitz.Rect objects (may be empty).
+    """
+    text = _normalise_for_search(raw_text)
+    if len(text) < 2:
+        return []
+
+    # Strategy 1: full normalised text (up to 200 chars to avoid wrap issues)
+    rects = page.search_for(text[:200], quads=False)
+    if rects:
+        return rects
+
+    # Strategy 2: first 80 chars (avoids line-break splits in PDF layout)
+    if len(text) > 80:
+        rects = page.search_for(text[:80], quads=False)
+        if rects:
+            return rects
+
+    # Strategy 3: first significant phrase (up to first punctuation or 50 chars)
+    phrase_match = re.match(r"^(.{20,60}?[.,;:!?])", text)
+    if phrase_match:
+        rects = page.search_for(phrase_match.group(1), quads=False)
+        if rects:
+            return rects
+
+    # Strategy 4: first 40 chars of words only (strips punctuation artifacts)
+    words_only = " ".join(re.findall(r"[A-Za-z0-9]+", text))[:40]
+    if len(words_only) >= 10:
+        rects = page.search_for(words_only, quads=False)
+        if rects:
+            return rects
+
+    return []
+
+
 def _render_pdf_page(
     pdf_path,
     page_num: int,
     scale: float = 1.5,
     hl_text: str = "",
     hl_kind: str = "",
+    hl_added: Optional[list[str]] = None,
+    hl_removed: Optional[list[str]] = None,
+    hl_modified: Optional[list[str]] = None,
 ) -> bytes:
     """
     Render a single PDF page to PNG bytes using PyMuPDF.
-    Optionally draws a highlight rectangle around occurrences of `hl_text`.
-
-    Args:
-        pdf_path: pathlib.Path to the PDF file.
-        page_num: 1-based page number.
-        scale:    Render scale (DPI multiplier; 1.5 ≈ 108 DPI on 72 DPI base).
-        hl_text:  Text to search and highlight. Empty = no highlight.
-        hl_kind:  "added" | "removed" | "modified" — controls highlight color.
+    Uses multi-strategy text search for reliable highlight positioning.
     """
     import fitz  # PyMuPDF — already a dependency
 
@@ -410,9 +467,26 @@ def _render_pdf_page(
         page_idx = max(0, min(page_num - 1, total - 1))
         page = doc[page_idx]
 
+        entries: list[tuple[str, str]] = []
+        if hl_added:
+            entries.extend((t, "added") for t in hl_added)
+        if hl_removed:
+            entries.extend((t, "removed") for t in hl_removed)
+        if hl_modified:
+            entries.extend((t, "modified") for t in hl_modified)
         if hl_text and hl_text.strip():
-            color = _HIGHLIGHT_COLORS.get(hl_kind, _DEFAULT_HIGHLIGHT_COLOR)
-            rects = page.search_for(hl_text[:300])
+            entries.append((hl_text, hl_kind))
+
+        seen: set[str] = set()
+        for raw_text, kind in entries:
+            norm_key = " ".join((raw_text or "").lower().split())
+            if len(norm_key) < 2 or norm_key in seen:
+                continue
+            seen.add(norm_key)
+
+            color = _HIGHLIGHT_COLORS.get(kind, _DEFAULT_HIGHLIGHT_COLOR)
+            rects = _search_page_for_text(page, raw_text)
+
             if rects:
                 shape = page.new_shape()
                 for rect in rects:
@@ -420,8 +494,8 @@ def _render_pdf_page(
                 shape.finish(
                     color=color,
                     fill=color,
-                    fill_opacity=0.35,
-                    width=0.8,
+                    fill_opacity=0.40,
+                    width=1.0,
                 )
                 shape.commit()
 
@@ -440,6 +514,9 @@ async def pdf_page_endpoint(
     scale: float = 1.5,
     hl_text: str = "",
     hl_kind: str = "",
+    hl_added: Optional[list[str]] = Query(default=None),
+    hl_removed: Optional[list[str]] = Query(default=None),
+    hl_modified: Optional[list[str]] = Query(default=None),
 ):
     """
     Render a single PDF page as a PNG image using PyMuPDF.
@@ -478,15 +555,29 @@ async def pdf_page_endpoint(
     scale = max(0.5, min(float(scale), 3.0))
 
     try:
-        img_bytes = _render_pdf_page(pdf_path, page_num, scale, hl_text.strip(), hl_kind.strip())
+        img_bytes = _render_pdf_page(
+            pdf_path,
+            page_num,
+            scale,
+            hl_text.strip(),
+            hl_kind.strip(),
+            hl_added=hl_added,
+            hl_removed=hl_removed,
+            hl_modified=hl_modified,
+        )
     except Exception as exc:
         logger.error("pdf-page render error session=%s which=%s page=%d: %s", session_id, which, page_num, exc)
         raise HTTPException(status_code=500, detail=f"Page render failed: {exc}")
 
+    # Disable caching when highlight params are present so the browser always
+    # fetches the freshly-rendered highlighted version.
+    has_highlights = bool(hl_text or hl_added or hl_removed or hl_modified)
+    cache_header = "no-store" if has_highlights else "private, max-age=300"
+
     return Response(
         content=img_bytes,
         media_type="image/png",
-        headers={"Cache-Control": "private, max-age=300"},
+        headers={"Cache-Control": cache_header},
     )
 
 # ── 9. DOWNLOAD SINGLE CHUNK XML ─────────────────────────────────────────────
@@ -650,4 +741,4 @@ async def export_report_endpoint(session_id: str, fmt: str = "json"):
 async def cleanup_endpoint(ttl: int = 3600):
     """Remove sessions older than `ttl` seconds from memory and disk."""
     removed = cleanup_old_sessions(ttl=ttl)
-    return {"success": True, "removed": removed}    
+    return {"success": True, "removed": removed}
