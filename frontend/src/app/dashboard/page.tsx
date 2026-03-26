@@ -102,6 +102,57 @@ const CSS = `
 .db ::-webkit-scrollbar { width:3px; height:3px; }
 .db ::-webkit-scrollbar-track { background:transparent; }
 .db ::-webkit-scrollbar-thumb { background:var(--c-b); border-radius:3px; }
+
+/* ── Pipeline bubble bounce animations ── */
+@keyframes db-bob0 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-8px)} }
+@keyframes db-bob1 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-11px)} }
+@keyframes db-bob2 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-6px)} }
+@keyframes db-bob3 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-9px)} }
+.db .bubble-0 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .1s both, db-bob0 3.2s ease-in-out 0.7s infinite; }
+.db .bubble-1 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .2s both, db-bob1 2.8s ease-in-out 1.0s infinite; }
+.db .bubble-2 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .3s both, db-bob2 3.6s ease-in-out 0.4s infinite; }
+.db .bubble-3 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .4s both, db-bob3 3.0s ease-in-out 1.3s infinite; }
+
+/* ── Responsive layout ── */
+.db .db-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) 270px;
+}
+@media (max-width: 1100px) {
+  .db .db-grid {
+    grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+  }
+  .db .db-col3 {
+    grid-column: 1 / -1;
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
+    gap: 16px;
+  }
+}
+@media (max-width: 700px) {
+  .db .db-grid {
+    grid-template-columns: 1fr;
+  }
+  .db .db-col3 {
+    grid-column: 1 !important;
+    display: flex !important;
+    flex-direction: column;
+  }
+  .db .db-header {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 8px;
+  }
+  .db .db-kpi {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}
+@media (max-width: 420px) {
+  .db .db-kpi {
+    grid-template-columns: 1fr !important;
+  }
+}
 `;
 
 /* ─── Status colours ──────────────────────────────────────────────────────── */
@@ -497,11 +548,11 @@ export default function DashboardPage() {
   const C = "card";
 
   return (
-    <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "20px 32px 36px" }}>
+    <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 36px" }}>
       <style>{CSS}</style>
 
       {/* ── Page heading ── */}
-      <div className="u mb-5" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+      <div className="db-header u mb-5" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
         <div>
           <h1 className="text-[22px] font-extrabold tracking-tight" style={{ color: "var(--c-txt)" }}>Dashboard</h1>
           <p className="text-[12px] mt-0.5" style={{ color: "var(--c-sub)" }}>
@@ -514,13 +565,13 @@ export default function DashboardPage() {
       {/* ══ 3-COLUMN GRID ══
            col-1: flex-1   col-2: flex-1   col-3: 240px fixed
            All inside the shell's p-6 box — no extra padding added.        */}
-      <div className="grid gap-5" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 270px" }}>
+      <div className="db-grid gap-5">
 
         {/* ╔══════════ COL 1 ══════════╗ */}
         <div className="flex flex-col gap-4 min-w-0">
 
           {/* KPI 2×2 */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="db-kpi grid grid-cols-2 gap-3">
             {[
               { label:"BRD Sources", val:totalBrds,  sub:"total registered" },
               { label:"Documents",   val:totalDocs,   sub:uploads7d > 0 ? `${uploads7d} uploaded this week` : "no uploads this week" },
@@ -705,7 +756,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Pipeline — Bubble chart */}
-          <div className={`${C} u d4 p-5`}>
+          <div className={`${C} u d4 p-5 flex flex-col flex-1`}>
             <div className="flex items-start justify-between mb-1">
               <div>
                 <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Pipeline</p>
@@ -720,74 +771,74 @@ export default function DashboardPage() {
                 { label: "Compare Tool",      short: "Compare", count: pending,  color: "#16a34a" },
               ];
               const maxVal = Math.max(...features.map(f => f.count), 1);
-              const W = 340, H = 150;
-              // Position bubbles in a loose organic scatter
+              const W = 340, H = 200;
               const positions = [
-                { cx: 72,  cy: 72  },
-                { cx: 185, cy: 55  },
-                { cx: 270, cy: 90  },
-                { cx: 155, cy: 118 },
+                { cx: 72,  cy: 95  },
+                { cx: 195, cy: 70  },
+                { cx: 278, cy: 115 },
+                { cx: 155, cy: 155 },
               ];
               return (
-                <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block", overflow: "visible" }}>
-                  <defs>
-                    {features.map((f, i) => (
-                      <radialGradient key={i} id={`bg${i}`} cx="35%" cy="35%" r="65%">
-                        <stop offset="0%" stopColor={f.color} stopOpacity="0.55" />
-                        <stop offset="100%" stopColor={f.color} stopOpacity="0.18" />
-                      </radialGradient>
+                <div className="flex-1 flex flex-col">
+                  <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block", overflow: "visible", flex: 1 }}>
+                    <defs>
+                      {features.map((f, i) => (
+                        <radialGradient key={i} id={`bg${i}`} cx="35%" cy="35%" r="65%">
+                          <stop offset="0%" stopColor={f.color} stopOpacity="0.55" />
+                          <stop offset="100%" stopColor={f.color} stopOpacity="0.18" />
+                        </radialGradient>
+                      ))}
+                    </defs>
+                    {features.map((f, i) => {
+                      const minR = 28, maxR = 62;
+                      const r = minR + ((f.count / maxVal) * (maxR - minR));
+                      const p = positions[i];
+                      return (
+                        <g key={f.label} className={`bubble-${i}`}>
+                          {/* Outer glow pulse ring */}
+                          <circle cx={p.cx} cy={p.cy} r={r + 10}
+                            fill="none" stroke={f.color} strokeWidth="1"
+                            opacity="0.1" />
+                          {/* Mid glow ring */}
+                          <circle cx={p.cx} cy={p.cy} r={r + 5}
+                            fill="none" stroke={f.color} strokeWidth="1"
+                            opacity="0.18" />
+                          {/* Main bubble */}
+                          <circle cx={p.cx} cy={p.cy} r={r}
+                            fill={`url(#bg${i})`}
+                            stroke={f.color} strokeWidth="1.5" strokeOpacity="0.6" />
+                          {/* Count */}
+                          <text x={p.cx} y={p.cy - 4} textAnchor="middle"
+                            fontSize={r > 44 ? 20 : 15} fontWeight="700"
+                            fill={f.color} fontFamily="'JetBrains Mono',monospace"
+                            style={{ filter: "brightness(1.4)" }}>
+                            {f.count}
+                          </text>
+                          {/* Short label */}
+                          <text x={p.cx} y={p.cy + (r > 44 ? 16 : 13)} textAnchor="middle"
+                            fontSize={r > 44 ? 10 : 9} fontWeight="600"
+                            fill={f.color} fontFamily="'Plus Jakarta Sans',sans-serif"
+                            opacity="0.9">
+                            {f.short}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                  {/* Legend row */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
+                    {[
+                      { label: "BRD",               color: "#1a6bff" },
+                      { label: "Metajson Creation",  color: "#00c2ff" },
+                      { label: "Content Profile",    color: "#7c3aed" },
+                      { label: "Compare Tool",       color: "#16a34a" },
+                    ].map(f => (
+                      <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
+                        {f.label}
+                      </span>
                     ))}
-                  </defs>
-                  {features.map((f, i) => {
-                    const minR = 28, maxR = 58;
-                    const r = minR + ((f.count / maxVal) * (maxR - minR));
-                    const p = positions[i];
-                    return (
-                      <g key={f.label} style={{ animation: `db-up .5s cubic-bezier(.16,1,.3,1) ${.1 + i * .1}s both` }}>
-                        {/* Glow ring */}
-                        <circle cx={p.cx} cy={p.cy} r={r + 6}
-                          fill="none" stroke={f.color} strokeWidth="1"
-                          opacity="0.15" />
-                        {/* Main bubble */}
-                        <circle cx={p.cx} cy={p.cy} r={r}
-                          fill={`url(#bg${i})`}
-                          stroke={f.color} strokeWidth="1.5" strokeOpacity="0.5" />
-                        {/* Count */}
-                        <text x={p.cx} y={p.cy - 4} textAnchor="middle"
-                          fontSize={r > 40 ? 18 : 14} fontWeight="700"
-                          fill={f.color} fontFamily="'JetBrains Mono',monospace"
-                          style={{ filter: "brightness(1.3)" }}>
-                          {f.count}
-                        </text>
-                        {/* Short label */}
-                        <text x={p.cx} y={p.cy + (r > 40 ? 14 : 11)} textAnchor="middle"
-                          fontSize={r > 40 ? 9 : 8} fontWeight="600"
-                          fill={f.color} fontFamily="'Plus Jakarta Sans',sans-serif"
-                          opacity="0.85">
-                          {f.short}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </svg>
-              );
-            })()}
-            {/* Legend row */}
-            {(() => {
-              const features = [
-                { label: "BRD",               color: "#1a6bff" },
-                { label: "Metajson Creation",  color: "#00c2ff" },
-                { label: "Content Profile",    color: "#7c3aed" },
-                { label: "Compare Tool",       color: "#16a34a" },
-              ];
-              return (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
-                  {features.map(f => (
-                    <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
-                      <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
-                      {f.label}
-                    </span>
-                  ))}
+                  </div>
                 </div>
               );
             })()}
@@ -796,7 +847,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ╔══════════ COL 3 — sidebar ══════════╗ */}
-        <div className="flex flex-col gap-4 min-w-0" style={{ width: 270 }}>
+        <div className="db-col3 flex flex-col gap-4 min-w-0">
 
           {/* Tasks breakdown — real data */}
           <div className={`${C} u d1 p-4`}>
