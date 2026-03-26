@@ -126,7 +126,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthReque
 
 router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const { name } = req.body
     if (!name?.trim()) return res.status(400).json({ error: 'Team name is required' })
 
@@ -157,7 +157,7 @@ router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthR
 
 router.delete('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
 
     const { rows: teamRows } = await pool.query(
       `SELECT t.*, (SELECT COUNT(*) FROM users WHERE team_id = t.id)::int as member_count FROM teams t WHERE t.id = $1`,
@@ -211,7 +211,7 @@ router.get('/policies', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async
 
 router.patch('/:id/policies/:role', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const teamId   = parseInt(req.params.id, 10)
+    const teamId   = parseInt(req.params.id as string, 10)
     const role     = String(req.params.role || '').toUpperCase() as PolicyRole
     const { features } = req.body
 

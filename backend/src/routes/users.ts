@@ -177,7 +177,7 @@ router.patch('/:id/profile', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), 
 
 router.patch('/:id/team', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const { teamId } = req.body
     const actorRole = req.user!.role
 
@@ -205,7 +205,7 @@ router.patch('/:id/team', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), asy
 
 router.patch('/:id/role', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const { role } = req.body
     const actorRole = req.user!.role
 
@@ -232,7 +232,7 @@ router.patch('/:id/role', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), asy
 
 router.patch('/:id/deactivate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const actorRole = req.user!.role
 
     const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
@@ -254,7 +254,7 @@ router.patch('/:id/deactivate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']
 
 router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const actorRole = req.user!.role
 
     const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
@@ -275,7 +275,7 @@ router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']),
 
 router.patch('/:id/user-role', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const { userRoleId } = req.body
 
     const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])

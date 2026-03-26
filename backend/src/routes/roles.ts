@@ -112,7 +112,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthReque
 
 router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
     const { name, features } = req.body
 
     const { rows: roleRows } = await pool.query(`SELECT * FROM user_roles WHERE id = $1`, [targetId])
@@ -150,7 +150,7 @@ router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthR
 
 router.delete('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const targetId = parseInt(req.params.id)
+    const targetId = parseInt(req.params.id as string)
 
     const { rows: roleRows } = await pool.query(
       `SELECT ur.*, (SELECT COUNT(*) FROM users WHERE user_role_id = ur.id)::int as user_count FROM user_roles ur WHERE ur.id = $1`,
