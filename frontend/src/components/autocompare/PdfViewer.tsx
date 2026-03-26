@@ -1,27 +1,31 @@
 "use client";
 /**
- * PdfViewer — Canvas-based PDF viewer using pdfjs-dist.
+ * PdfViewer — Image-based PDF viewer backed by the Python processing service.
+ *
+ * All PDF loading and rendering is handled server-side by PyMuPDF via the
+ * GET /autocompare/pdf-page/{session_id}/{which}/{page_num} endpoint.
+ * The frontend simply displays the returned PNG image — no pdfjs-dist required.
  *
  * Features
  * ────────
- * - PDF rendered per-page on a <canvas> element via pdfjs-dist
- * - Overlay canvas draws yellow highlight boxes over matching text when
- *   highlightText prop is set
- * - Page navigation controls
- * - targetPage prop navigates to a specific 1-based page number
+ * - Per-page PNG served by the Python backend (PyMuPDF)
+ * - Page navigation controls (Prev / Next)
+ * - targetPage prop scrolls to a specific 1-based page number
+ * - highlightText / highlightKind forwarded to backend for server-side rendering
+ * - Highlight banner shows what text is currently highlighted
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL || "http://localhost:8000";
 
 interface PdfViewerProps {
-  /** PDF File object to display */
-  file: File | null;
-  /**
-   * Fallback URL to load the PDF from when `file` is null.
-   * Used when a session is restored from localStorage (File objects are
-   * not serialisable) — the browser fetches the PDF from the backend.
-   */
-  src?: string;
+  /** Session ID used to load the PDF from the backend. */
+  sessionId: string | null;
+  /** Which PDF to show: "old" or "new". */
+  which: "old" | "new";
+  /** Total page count for this PDF (supplied by the upload/session response). */
+  totalPages: number;
   /** Label shown in the header, e.g. "Old PDF" or "New PDF" */
   label: string;
   /** Color accent: "blue" | "violet" */
@@ -31,87 +35,76 @@ interface PdfViewerProps {
   pageEnd?: number;
   /** 1-based target page to navigate when user selects a diff item */
   targetPage?: number;
-  /** Text snippet to highlight within the rendered page */
+  /** Text snippet to highlight within the rendered page (forwarded to backend) */
   highlightText?: string;
   /** Optional semantic type so highlight color matches diff panel categories */
   highlightKind?: "added" | "removed" | "modified";
-  /** Optional list of diff-derived highlights for this chunk (ILovePDF-style view). */
-  highlightEntries?: Array<{
-    text: string;
-    kind: "added" | "removed" | "modified";
-    page?: number | null;
-  }>;
+  /** Optional multi-snippet highlights rendered by the backend on every page request. */
+  highlightAddedTexts?: string[];
+  highlightRemovedTexts?: string[];
+  highlightModifiedTexts?: string[];
+  /** Render mode: image (server-rendered PDF page) or text (pre-extracted chunk text). */
+  mode?: "image" | "text";
+  /** Pre-extracted text shown when mode="text". */
+  textContent?: string;
+  /** Optional synchronized scroll ratio shared across Old/New text panes (0..1). */
+  syncScrollRatio?: number;
+  /** Called whenever the local text pane scroll ratio changes. */
+  onTextScrollRatioChange?: (ratio: number) => void;
+  /** Show line numbers in text mode. */
+  showLineNumbers?: boolean;
 }
-
-type StoredTextItem = {
-  str: string;
-  transform: number[];
-  width: number;
-  height: number;
-};
 
 // ── Color maps ─────────────────────────────────────────────────────────────────
 
 const COLOR_MAP = {
   blue: {
-    border: "rgba(59,130,246,0.3)",
-    bg: "rgba(59,130,246,0.05)",
-    text: "text-blue-400",
-    badge: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    highlightFill: "rgba(59,130,246,0.35)",
-    highlightStroke: "rgba(147,197,253,0.95)",
+    border: "rgba(255,255,255,0.16)",
+    bg: "rgba(255,255,255,0.03)",
+    text: "text-slate-300",
+    badge: "bg-white/10 text-slate-200 border-white/20",
   },
   violet: {
-    border: "rgba(139,92,246,0.3)",
-    bg: "rgba(139,92,246,0.05)",
-    text: "text-violet-400",
-    badge: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-    highlightFill: "rgba(139,92,246,0.35)",
-    highlightStroke: "rgba(196,181,253,0.95)",
+    border: "rgba(255,255,255,0.16)",
+    bg: "rgba(255,255,255,0.03)",
+    text: "text-slate-300",
+    badge: "bg-white/10 text-slate-200 border-white/20",
   },
 };
 
 const HIGHLIGHT_KIND_MAP = {
   added: {
-    fill: "rgba(34,197,94,0.35)",
-    stroke: "rgba(134,239,172,0.95)",
     border: "rgba(34,197,94,0.6)",
     shadow: "0 0 0 1px rgba(34,197,94,0.25), 0 0 16px rgba(34,197,94,0.10)",
     bannerBg: "rgba(34,197,94,0.05)",
     bannerBorder: "rgba(34,197,94,0.25)",
-    bannerText: "text-emerald-300",
-    badge: "Addition",
+    bannerText:   "text-emerald-300",
+    badge:        "Addition",
   },
   removed: {
-    fill: "rgba(239,68,68,0.35)",
-    stroke: "rgba(252,165,165,0.95)",
-    border: "rgba(239,68,68,0.6)",
-    shadow: "0 0 0 1px rgba(239,68,68,0.25), 0 0 16px rgba(239,68,68,0.10)",
-    bannerBg: "rgba(239,68,68,0.05)",
-    bannerBorder: "rgba(239,68,68,0.25)",
-    bannerText: "text-red-300",
-    badge: "Removal",
+    border: "rgba(244,114,182,0.6)",
+    shadow: "0 0 0 1px rgba(244,114,182,0.25), 0 0 16px rgba(244,114,182,0.10)",
+    bannerBg: "rgba(244,114,182,0.08)",
+    bannerBorder: "rgba(244,114,182,0.30)",
+    bannerText:   "text-pink-200",
+    badge:        "Removal",
   },
   modified: {
-    fill: "rgba(245,158,11,0.35)",
-    stroke: "rgba(252,211,77,0.95)",
-    border: "rgba(245,158,11,0.6)",
-    shadow: "0 0 0 1px rgba(245,158,11,0.25), 0 0 16px rgba(245,158,11,0.10)",
-    bannerBg: "rgba(245,158,11,0.05)",
-    bannerBorder: "rgba(245,158,11,0.25)",
-    bannerText: "text-amber-300",
-    badge: "Modification",
+    border: "rgba(217,70,239,0.6)",
+    shadow: "0 0 0 1px rgba(217,70,239,0.25), 0 0 16px rgba(217,70,239,0.10)",
+    bannerBg: "rgba(217,70,239,0.08)",
+    bannerBorder: "rgba(217,70,239,0.30)",
+    bannerText:   "text-fuchsia-300",
+    badge:        "Modification",
   },
 } as const;
-
-// Singleton flag — worker URL is set once for the entire app lifetime
-let pdfjsWorkerConfigured = false;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function PdfViewer({
-  file,
-  src,
+  sessionId,
+  which,
+  totalPages,
   label,
   color = "blue",
   pageStart,
@@ -119,288 +112,299 @@ export default function PdfViewer({
   targetPage,
   highlightText,
   highlightKind,
-  highlightEntries,
+  highlightAddedTexts,
+  highlightRemovedTexts,
+  highlightModifiedTexts,
+  mode = "image",
+  textContent,
+  syncScrollRatio,
+  onTextScrollRatioChange,
+  showLineNumbers = false,
 }: PdfViewerProps) {
   const styles = COLOR_MAP[color];
-  const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const overlayRef   = useRef<HTMLCanvasElement>(null);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfDocRef    = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const viewportRef  = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const renderTaskRef = useRef<any>(null);
-  const textItemsRef = useRef<StoredTextItem[]>([]);
-
-  // Keep latest highlightText in a ref so async effects don't go stale
-  const highlightTextRef = useRef(highlightText ?? "");
-  highlightTextRef.current = highlightText ?? "";
-
-  const [pdfLoaded,   setPdfLoaded]   = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages,  setTotalPages]  = useState(0);
-  const [loading,     setLoading]     = useState(false);
-  const [loadError,   setLoadError]   = useState<string | null>(null);
+  const [imgLoading, setImgLoading]   = useState(false);
+  const [imgError,   setImgError]     = useState(false);
+  const [expandedTextKey, setExpandedTextKey] = useState<string | null>(null);
+  const textContainerRef = useRef<HTMLDivElement | null>(null);
+  const isApplyingSyncedScrollRef = useRef(false);
+  const isTextMode = mode === "text";
 
-  // ── Load PDF from File ─────────────────────────────────────────────────────
-
-useEffect(() => {
-  if (renderTaskRef.current) {
-    try {
-      renderTaskRef.current.cancel();
-    } catch {
-      // Ignore cancellation errors during teardown.
-    }
-    renderTaskRef.current = null;
-  }
-
-  // Destroy previous document
-  if (pdfDocRef.current) {
-    pdfDocRef.current.destroy();
-    pdfDocRef.current = null;
-  }
-
-  setPdfLoaded(false);
-  textItemsRef.current = [];
-  viewportRef.current = null;
-
-  // Nothing to load when neither a File nor a URL is provided
-  if (!file && !src) {
-    setTotalPages(0);
-    setCurrentPage(1);
-    setLoadError(null);
-    return;
-  }
-
-  let cancelled = false;
-  setLoading(true);
-  setLoadError(null);
-
-  (async () => {
-    try {
-      const pdfjs = await import("pdfjs-dist");
-      const { getDocument, GlobalWorkerOptions } = pdfjs;
-
-      if (!pdfjsWorkerConfigured) {
-        GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-        pdfjsWorkerConfigured = true;
-      }
-
-      // Load from File object when available (fresh upload), otherwise
-      // load from URL (session restored from localStorage).
-      const pdf = file
-        ? await getDocument({ data: await file.arrayBuffer() }).promise
-        : await getDocument({ url: src! }).promise;
-
-      if (cancelled) {
-        pdf.destroy();
-        return;
-      }
-
-      pdfDocRef.current = pdf;
-      setTotalPages(pdf.numPages);
-      setCurrentPage(1);
-      setPdfLoaded(true);
-    } catch (e) {
-      if (!cancelled)
-        setLoadError(e instanceof Error ? e.message : "Failed to load PDF");
-    } finally {
-      if (!cancelled) setLoading(false);
-    }
-  })();
-
-  return () => {
-    cancelled = true;
-  };
-}, [file, src]);
   // ── Navigate to targetPage ─────────────────────────────────────────────────
 
   useEffect(() => {
     if (targetPage && targetPage >= 1 && totalPages > 0) {
-      setCurrentPage(Math.min(targetPage, totalPages));
+      const nextPage = Math.min(targetPage, totalPages);
+      const raf = requestAnimationFrame(() => {
+        setCurrentPage(nextPage);
+      });
+      return () => cancelAnimationFrame(raf);
     }
   }, [targetPage, totalPages]);
 
-  // ── Draw highlight overlay ─────────────────────────────────────────────────
+  // Reset to page 1 when the session changes
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      setCurrentPage(1);
+      setImgError(false);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [sessionId, which]);
 
-  const drawHighlights = useCallback((searchText: string) => {
-    const overlay  = overlayRef.current;
-    const canvas   = canvasRef.current;
-    const viewport = viewportRef.current;
-    if (!overlay || !canvas || !viewport) return;
+  // ── Build image URL ────────────────────────────────────────────────────────
 
-    // Resizing the overlay canvas also clears it
-    overlay.width  = canvas.width;
-    overlay.height = canvas.height;
+  const pageUrl = useMemo(() => {
+    if (isTextMode) return null;
+    if (!sessionId || totalPages <= 0) return null;
+    let url = `${BASE}/autocompare/pdf-page/${encodeURIComponent(sessionId)}/${which}/${currentPage}?scale=1.5`;
 
-    const ctx = overlay.getContext("2d");
-    if (!ctx) return;
+    // E: Keep query string small — 3 terms per kind, 128 chars max each.
+    const MAX_TERMS_PER_KIND = 3;
+    const MAX_TERM_LEN = 128;
+    const MAX_TOTAL_CHARS = 600;
+    let totalChars = 0;
 
-    const norm  = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-    const drawByText = (
-      text: string,
-      kind: "added" | "removed" | "modified" | null,
-      strong = false,
-    ) => {
-      if (!text || text.length < 2) return;
-      const query = norm(text);
-      const words = (query.match(/[a-z0-9][a-z0-9'\-/]{2,}/g) ?? []).slice(0, 12);
-      if (words.length === 0 && query.length < 3) return;
-
-      const palette = kind ? HIGHLIGHT_KIND_MAP[kind] : null;
-
-      for (const item of textItemsRef.current) {
-        if (!item.str.trim() || item.width <= 0) continue;
-        const itemNorm = norm(item.str);
-        const isMatch =
-          words.some((w) => itemNorm.includes(w)) ||
-          (query.length > 8 && itemNorm.includes(query.slice(0, 20)));
-
-        if (!isMatch) continue;
-
-        const [vx, vy] = viewport.convertToViewportPoint(
-          item.transform[4],
-          item.transform[5],
-        ) as [number, number];
-
-        const w = item.width;
-        const h = Math.max(item.height, 8);
-
-        ctx.fillStyle   = palette?.fill ?? styles.highlightFill;
-        ctx.strokeStyle = palette?.stroke ?? styles.highlightStroke;
-        ctx.lineWidth   = strong ? 1.6 : 1;
-        ctx.fillRect  (vx, vy - h, w, h + 2);
-        ctx.strokeRect(vx, vy - h, w, h + 2);
+    const pushTerms = (key: string, values?: string[]) => {
+      if (!values || values.length === 0) return;
+      const seen = new Set<string>();
+      for (const raw of values) {
+        const cleaned = (raw ?? "").trim();
+        if (cleaned.length < 2) continue;
+        const signature = cleaned.toLowerCase();
+        if (seen.has(signature)) continue;
+        if (seen.size >= MAX_TERMS_PER_KIND) break;
+        const clipped = cleaned.slice(0, MAX_TERM_LEN);
+        if (totalChars + clipped.length > MAX_TOTAL_CHARS) break;
+        seen.add(signature);
+        totalChars += clipped.length;
+        url += `&${key}=${encodeURIComponent(clipped)}`;
       }
     };
 
-    // First pass: draw all chunk-level diff highlights (subtle but complete)
-    for (const entry of highlightEntries ?? []) {
-      if (!entry?.text?.trim()) continue;
-      if (entry.page && entry.page !== currentPage) continue;
-      drawByText(entry.text, entry.kind, false);
-    }
+    pushTerms("hl_added", highlightAddedTexts);
+    pushTerms("hl_removed", highlightRemovedTexts);
+    pushTerms("hl_modified", highlightModifiedTexts);
 
-    // Second pass: draw selected line highlight stronger on top
-    if (searchText && searchText.length >= 2) {
-      drawByText(searchText, highlightKind ?? null, true);
+    if (highlightText && highlightText.trim().length >= 2 && totalChars < MAX_TOTAL_CHARS) {
+      const clipped = highlightText.slice(0, MAX_TERM_LEN);
+      url += `&hl_text=${encodeURIComponent(clipped)}`;
+      if (highlightKind) url += `&hl_kind=${encodeURIComponent(highlightKind)}`;
     }
+    const t = [
+      currentPage,
+      highlightKind || "",
+      (highlightText || "").slice(0, 48),
+      highlightAddedTexts?.length || 0,
+      highlightRemovedTexts?.length || 0,
+      highlightModifiedTexts?.length || 0,
+    ].join(":");
+    url += `&t=${encodeURIComponent(t)}`;
+    return url;
   }, [
-    styles.highlightFill,
-    styles.highlightStroke,
-    highlightKind,
-    highlightEntries,
+    isTextMode,
+    sessionId,
+    which,
     currentPage,
+    highlightText,
+    highlightKind,
+    highlightAddedTexts,
+    highlightRemovedTexts,
+    highlightModifiedTexts,
+    totalPages,
   ]);
 
-  // ── Render current page ────────────────────────────────────────────────────
-
+  // I: Debounce the pageUrl by 150ms so rapid page flips don’t fire at every keystroke.
+  const [debouncedPageUrl, setDebouncedPageUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (!pdfLoaded || !pdfDocRef.current) return;
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        // Cancel any in-flight render on this viewer before starting another.
-        if (renderTaskRef.current) {
-          try {
-            renderTaskRef.current.cancel();
-            await renderTaskRef.current.promise;
-          } catch {
-            // Expected when cancelling previous task.
-          } finally {
-            renderTaskRef.current = null;
-          }
-        }
-
-        const pdf  = pdfDocRef.current;
-        const page = await pdf.getPage(currentPage);
-        if (cancelled) { page.cleanup(); return; }
-
-        const containerW = containerRef.current?.clientWidth || 800;
-        const base       = page.getViewport({ scale: 1 });
-        const scale      = Math.min((containerW - 8) / base.width, 2.5);
-        const viewport   = page.getViewport({ scale });
-
-        const canvas = canvasRef.current!;
-        canvas.width  = viewport.width;
-        canvas.height = viewport.height;
-
-        const ctx = canvas.getContext("2d")!;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        const renderTask = page.render({ canvasContext: ctx, viewport });
-        renderTaskRef.current = renderTask;
-
-        try {
-          await renderTask.promise;
-        } finally {
-          if (renderTaskRef.current === renderTask) {
-            renderTaskRef.current = null;
-          }
-        }
-
-        if (cancelled) { page.cleanup(); return; }
-
-        viewportRef.current = viewport;
-
-        // Extract text items for highlighting
-        const tc = await page.getTextContent();
-        if (!cancelled) {
-          textItemsRef.current = tc.items
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .filter((it: any) => "str" in it && it.str.trim() && it.width > 0)
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((it: any) => ({
-              str:       it.str       as string,
-              transform: it.transform as number[],
-              width:     it.width     as number,
-              height:    it.height    as number,
-            }));
-        }
-
-        page.cleanup();
-
-        // Draw highlights using the latest highlight text
-        if (!cancelled) drawHighlights(highlightTextRef.current);
-      } catch (e) {
-        const err = e as { name?: string };
-        // pdf.js throws this when a render task is intentionally cancelled.
-        if (!cancelled && err?.name !== "RenderingCancelledException") {
-          console.error("[PdfViewer] render error:", e);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (renderTaskRef.current) {
-        try {
-          renderTaskRef.current.cancel();
-        } catch {
-          // Ignore cancellation errors during cleanup.
-        }
-      }
-    };
-  }, [pdfLoaded, currentPage, drawHighlights]);
-
-  // ── Re-draw highlights when highlightText changes ─────────────────────────
-
-  useEffect(() => {
-    if (pdfLoaded && textItemsRef.current.length > 0) {
-      drawHighlights(highlightText ?? "");
-    }
-  }, [highlightText, highlightEntries, drawHighlights, pdfLoaded]);
+    const id = setTimeout(() => setDebouncedPageUrl(pageUrl), 150);
+    return () => clearTimeout(id);
+  }, [pageUrl]);
 
   const pageLabel = useMemo(() => {
     if (pageStart == null) return null;
     return `Pages ${pageStart + 1}–${pageEnd ?? pageStart + 1}`;
   }, [pageStart, pageEnd]);
 
-  const palette = highlightKind ? HIGHLIGHT_KIND_MAP[highlightKind] : null;
+  const palette = highlightText && highlightKind ? HIGHLIGHT_KIND_MAP[highlightKind] : null;
+  const MAX_TEXT_MODE_CHARS = 40_000;
+  const textValue = textContent?.trim() || "";
+  const textKey = `${which}:${textValue.length}:${textValue.slice(0, 64)}`;
+  const showFullText = expandedTextKey === textKey;
+  const textIsTruncated = textValue.length > MAX_TEXT_MODE_CHARS;
+  const TEXT_INITIAL_VISIBLE_LINES = 60;
+  const TEXT_LOAD_MORE_LINES = 80;
+  const textPreview = textIsTruncated && !showFullText
+    ? `${textValue.slice(0, MAX_TEXT_MODE_CHARS)}\n\n... truncated for performance ...`
+    : textValue;
+
+  type HighlightKindType = "added" | "removed" | "modified";
+  type HighlightSpec = { term: string; kind: HighlightKindType };
+
+  const highlightSpecs = useMemo<HighlightSpec[]>(() => {
+    const specs: HighlightSpec[] = [];
+    const seen = new Set<string>();
+    const MAX_PER_KIND = 3;
+    const MAX_TERM_LEN = 128;
+
+    const pushKind = (kind: HighlightKindType, values?: string[]) => {
+      if (!values?.length) return;
+      let count = 0;
+      for (const raw of values) {
+        if (count >= MAX_PER_KIND) break;
+        const t = (raw || "").trim();
+        if (t.length < 2) continue;
+        const clipped = t.slice(0, MAX_TERM_LEN);
+        const key = `${kind}|${clipped.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        specs.push({ term: clipped, kind });
+        count += 1;
+      }
+    };
+
+    pushKind("added", highlightAddedTexts);
+    pushKind("removed", highlightRemovedTexts);
+    pushKind("modified", highlightModifiedTexts);
+
+    if (highlightText && highlightKind) {
+      const clipped = highlightText.slice(0, MAX_TERM_LEN).trim();
+      const hk = highlightKind as HighlightKindType;
+      const key = `${hk}|${clipped.toLowerCase()}`;
+      if (clipped.length >= 2 && !seen.has(key)) {
+        specs.push({ term: clipped, kind: hk });
+      }
+    }
+
+    return specs;
+  }, [
+    highlightAddedTexts,
+    highlightRemovedTexts,
+    highlightModifiedTexts,
+    highlightText,
+    highlightKind,
+  ]);
+
+  const renderHighlightedLine = (line: string, lineKey: string) => {
+    if (!line) return <span>&nbsp;</span>;
+    if (highlightSpecs.length === 0) return <span>{line}</span>;
+
+    // Hard caps to avoid pathological highlight scans freezing the UI.
+    const MAX_LINE_LEN = 800;
+    const MAX_MATCHES_PER_LINE = 12;
+    const clippedLine = line.length > MAX_LINE_LEN ? `${line.slice(0, MAX_LINE_LEN)}...` : line;
+
+    const lower = clippedLine.toLowerCase();
+    const rawMatches: Array<{ start: number; end: number; kind: HighlightKindType }> = [];
+
+    for (const spec of highlightSpecs) {
+      if (rawMatches.length >= MAX_MATCHES_PER_LINE) break;
+      const needle = spec.term.toLowerCase();
+      if (!needle) continue;
+      let from = 0;
+      while (from < lower.length) {
+        if (rawMatches.length >= MAX_MATCHES_PER_LINE) break;
+        const idx = lower.indexOf(needle, from);
+        if (idx < 0) break;
+        rawMatches.push({ start: idx, end: idx + needle.length, kind: spec.kind });
+        from = idx + Math.max(needle.length, 1);
+      }
+    }
+
+    if (rawMatches.length === 0) return <span>{clippedLine}</span>;
+
+    rawMatches.sort((a, b) => (a.start - b.start) || ((b.end - b.start) - (a.end - a.start)));
+
+    const chosen: Array<{ start: number; end: number; kind: HighlightKindType }> = [];
+    let cursor = -1;
+    for (const m of rawMatches) {
+      if (m.start < cursor) continue;
+      chosen.push(m);
+      cursor = m.end;
+    }
+
+    const nodes: React.ReactNode[] = [];
+    let pos = 0;
+    for (let i = 0; i < chosen.length; i++) {
+      const m = chosen[i];
+      if (m.start > pos) {
+        nodes.push(<span key={`${lineKey}-plain-${i}`}>{clippedLine.slice(pos, m.start)}</span>);
+      }
+      const seg = clippedLine.slice(m.start, m.end);
+      const style = m.kind === "added"
+        ? {
+            background: "rgba(34,197,94,0.28)",
+            color: "#86efac",
+            borderBottom: "2px solid #22c55e",
+            borderRadius: "2px",
+            padding: "0 2px",
+          }
+        : m.kind === "removed"
+          ? {
+              background: "rgba(239,68,68,0.22)",
+              color: "#fca5a5",
+              textDecoration: "line-through" as const,
+              textDecorationColor: "#ef4444",
+              borderBottom: "2px solid #ef4444",
+              borderRadius: "2px",
+              padding: "0 2px",
+            }
+          : {
+              background: "rgba(251,191,36,0.22)",
+              color: "#fde68a",
+              borderBottom: "2px solid #f59e0b",
+              borderRadius: "2px",
+              padding: "0 2px",
+            };
+      nodes.push(
+        <mark key={`${lineKey}-hl-${i}`} style={{ ...style, fontStyle: "normal" }}>
+          {seg}
+        </mark>,
+      );
+      pos = m.end;
+    }
+    if (pos < clippedLine.length) {
+      nodes.push(<span key={`${lineKey}-tail`}>{clippedLine.slice(pos)}</span>);
+    }
+    return <>{nodes}</>;
+  };
+
+  const textLines = useMemo(() => textPreview.split("\n"), [textPreview]);
+  const [textRenderState, setTextRenderState] = useState({
+    key: textKey,
+    count: TEXT_INITIAL_VISIBLE_LINES,
+  });
+  const visibleTextLines = textRenderState.key === textKey
+    ? textRenderState.count
+    : TEXT_INITIAL_VISIBLE_LINES;
+  const shownTextLines = useMemo(
+    () => textLines.slice(0, visibleTextLines),
+    [textLines, visibleTextLines],
+  );
+
+  useEffect(() => {
+    if (!isTextMode) return;
+    if (syncScrollRatio == null) return;
+    const el = textContainerRef.current;
+    if (!el) return;
+    const max = Math.max(el.scrollHeight - el.clientHeight, 0);
+    const nextTop = Math.max(0, Math.min(max, max * syncScrollRatio));
+    if (Math.abs(el.scrollTop - nextTop) < 2) return;
+    isApplyingSyncedScrollRef.current = true;
+    el.scrollTop = nextTop;
+    requestAnimationFrame(() => {
+      isApplyingSyncedScrollRef.current = false;
+    });
+  }, [isTextMode, syncScrollRatio, textLines.length]);
+
+  const handleTextScroll = () => {
+    if (!isTextMode) return;
+    if (isApplyingSyncedScrollRef.current) return;
+    if (!onTextScrollRatioChange) return;
+    const el = textContainerRef.current;
+    if (!el) return;
+    const max = Math.max(el.scrollHeight - el.clientHeight, 1);
+    onTextScrollRatioChange(el.scrollTop / max);
+  };
 
   // ── JSX ────────────────────────────────────────────────────────────────────
 
@@ -408,7 +412,9 @@ useEffect(() => {
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
       style={{
-        borderColor: highlightText ? (palette?.border ?? "rgba(250,204,21,0.6)") : styles.border,
+        borderColor: highlightText
+          ? (palette?.border ?? "rgba(250,204,21,0.6)")
+          : styles.border,
         background: "rgba(6,13,26,0.6)",
         boxShadow: highlightText
           ? (palette?.shadow ?? "0 0 0 1px rgba(250,204,21,0.25), 0 0 16px rgba(250,204,21,0.08)")
@@ -427,9 +433,6 @@ useEffect(() => {
               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
           <span className="text-xs font-semibold text-white">{label}</span>
-          {file && (
-            <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{file.name}</span>
-          )}
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -446,25 +449,124 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* Highlight banner */}
+      {/* Highlight legend — shown in text mode when highlights are active */}
+      {isTextMode && highlightSpecs.length > 0 && (
+        <div
+          className="flex-shrink-0 flex items-center gap-3 px-3 py-1.5 border-b text-[10px] flex-wrap"
+          style={{ borderColor: styles.border, background: "rgba(0,0,0,0.25)" }}
+        >
+          <span className="text-slate-500 font-medium uppercase tracking-wide">Highlights:</span>
+          {highlightSpecs.some((s) => s.kind === "added") && (
+            <span className="flex items-center gap-1">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                style={{ background: "rgba(34,197,94,0.28)", borderBottom: "2px solid #22c55e" }}
+              />
+              <span style={{ color: "#86efac" }}>Added</span>
+            </span>
+          )}
+          {highlightSpecs.some((s) => s.kind === "removed") && (
+            <span className="flex items-center gap-1">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                style={{ background: "rgba(239,68,68,0.22)", borderBottom: "2px solid #ef4444" }}
+              />
+              <span style={{ color: "#fca5a5" }}>Removed</span>
+            </span>
+          )}
+          {highlightSpecs.some((s) => s.kind === "modified") && (
+            <span className="flex items-center gap-1">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                style={{ background: "rgba(251,191,36,0.22)", borderBottom: "2px solid #f59e0b" }}
+              />
+              <span style={{ color: "#fde68a" }}>Modified</span>
+            </span>
+          )}
+          <span className="ml-auto text-slate-600">{highlightSpecs.length} term{highlightSpecs.length !== 1 ? "s" : ""}</span>
+        </div>
+      )}
+
+      {/* Highlight banner (selected diff line) */}
       {highlightText && (
         <div
           className="px-3 py-1.5 border-b text-[10px] flex items-center gap-1.5"
           style={{
             borderColor: palette?.bannerBorder ?? "rgba(250,204,21,0.25)",
-            background: palette?.bannerBg ?? "rgba(250,204,21,0.05)",
+            background:  palette?.bannerBg    ?? "rgba(250,204,21,0.05)",
           }}
         >
-          <span className={`${palette?.bannerText ?? "text-yellow-400"} flex-shrink-0`}>
-            ⚡ {palette?.badge ? `${palette.badge}:` : "Highlighted:"}
+          <span
+            className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded"
+            style={{
+              background: palette?.bannerBorder ?? "rgba(250,204,21,0.15)",
+              color: "#fde68a",
+            }}
+          >
+            {palette?.badge ?? "FOCUS"}
           </span>
-          <span className="text-slate-200 truncate">{highlightText.slice(0, 150)}</span>
+          <span className={`${palette?.bannerText ?? "text-yellow-300"} truncate font-mono`}>
+            {highlightText.slice(0, 120)}
+          </span>
         </div>
       )}
 
-      {/* Canvas body */}
-      <div ref={containerRef} className="flex-1 overflow-auto" style={{ background: "#18181b" }}>
-        {!file && !src ? (
+      {/* Page image body */}
+      <div className="flex-1 overflow-auto" style={{ background: "#18181b" }}>
+        {isTextMode ? (
+          <div
+            ref={textContainerRef}
+            onScroll={handleTextScroll}
+            className="h-full overflow-auto px-3 py-2.5 bg-[#0f1115] text-[#e5e7eb]"
+          >
+            {textPreview ? (
+              <div className="font-mono text-[11px] leading-relaxed">
+                {shownTextLines.map((line, idx) => (
+                  <div key={`line-${idx}`} className="flex items-start">
+                    {showLineNumbers && (
+                      <span className="w-10 pr-2 text-right select-none text-slate-500 flex-shrink-0">
+                        {idx + 1}
+                      </span>
+                    )}
+                    <span className="flex-1 whitespace-pre-wrap break-words">
+                      {renderHighlightedLine(line, `line-${idx}`)}
+                    </span>
+                  </div>
+                ))}
+                {shownTextLines.length < textLines.length && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <p className="text-[10px] text-slate-300">
+                      Showing {shownTextLines.length.toLocaleString()} / {textLines.length.toLocaleString()} lines.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setTextRenderState({ key: textKey, count: visibleTextLines + TEXT_LOAD_MORE_LINES })}
+                      className="text-[10px] px-2 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
+                    >
+                      Load more lines
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="font-mono text-[11px]">No extracted text available</p>
+            )}
+            {textIsTruncated && !showFullText && (
+              <div className="mt-2 flex items-center gap-2">
+                <p className="text-[10px] text-slate-300">
+                  Showing first {MAX_TEXT_MODE_CHARS.toLocaleString()} characters for responsiveness.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setExpandedTextKey(textKey)}
+                  className="text-[10px] px-2 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
+                >
+                  Show full text
+                </button>
+              </div>
+            )}
+          </div>
+        ) : !sessionId || totalPages <= 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
             <svg className="w-10 h-10 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -472,36 +574,41 @@ useEffect(() => {
             </svg>
             <p className="text-xs">No PDF loaded</p>
           </div>
-        ) : loading ? (
-          <div className="flex items-center justify-center h-full gap-2 text-slate-400">
-            <div className="w-4 h-4 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin" />
-            <span className="text-xs">Loading PDF…</span>
-          </div>
-        ) : loadError ? (
+        ) : imgError ? (
           <div className="flex items-center justify-center h-full text-xs text-red-300 p-4 text-center">
-            {loadError}
+            Failed to load page {currentPage}. The session may have expired.
           </div>
         ) : (
-          /* Canvas + overlay */
-          <div className="relative inline-block min-w-full">
-            <canvas ref={canvasRef} className="block max-w-full" />
-            <canvas
-              ref={overlayRef}
-              className="absolute top-0 left-0 pointer-events-none"
-              style={{ mixBlendMode: "multiply" }}
-            />
+          <div className="relative min-w-full">
+            {imgLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-[#18181b]/80 z-10">
+                <div className="w-4 h-4 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin" />
+              </div>
+            )}
+            {debouncedPageUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={debouncedPageUrl}
+                src={debouncedPageUrl}
+                alt={`${label} — page ${currentPage}`}
+                className="block max-w-full"
+                onLoadStart={() => { setImgLoading(true); setImgError(false); }}
+                onLoad={() => setImgLoading(false)}
+                onError={() => { setImgLoading(false); setImgError(true); }}
+              />
+            )}
           </div>
         )}
       </div>
 
       {/* Page navigation */}
-      {totalPages > 1 && !loading && !loadError && (
+      {!isTextMode && totalPages > 1 && (
         <div
           className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-t"
           style={{ borderColor: styles.border, background: "rgba(0,0,0,0.2)" }}
         >
           <button
-            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            onClick={() => { setCurrentPage((p) => Math.max(1, p - 1)); setImgError(false); }}
             disabled={currentPage <= 1}
             className="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-300 disabled:opacity-30 hover:border-slate-400 transition-colors"
           >
@@ -509,7 +616,7 @@ useEffect(() => {
           </button>
           <span className="text-[10px] text-slate-400">Page {currentPage} of {totalPages}</span>
           <button
-            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            onClick={() => { setCurrentPage((p) => Math.min(totalPages, p + 1)); setImgError(false); }}
             disabled={currentPage >= totalPages}
             className="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-300 disabled:opacity-30 hover:border-slate-400 transition-colors"
           >

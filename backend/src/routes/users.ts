@@ -6,6 +6,7 @@ import { authorize } from "../middleware/authorize";
 import { Role } from "@prisma/client";
 import { generateCompliantPassword } from "../lib/password-policy";
 import { sendPasswordEmail } from "../lib/email";
+import { createNotification } from "../lib/notify";
 
 const router = Router();
 
@@ -222,7 +223,7 @@ router.post(
         },
       });
 
-      const emailSent = await sendPasswordEmail({
+      const emailResult = await sendPasswordEmail({
         to: normalizedEmail,
         userId: newUser.userId,
         fullName: `${firstName.trim()} ${lastName.trim()}`,
@@ -230,10 +231,29 @@ router.post(
         action: "created",
       });
 
+      // Notify SUPER_ADMIN users about the new registration
+      const superAdmins = await prisma.user.findMany({
+        where: { role: "SUPER_ADMIN", status: "ACTIVE" },
+        select: { id: true },
+      });
+      const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
+      await Promise.all(
+        superAdmins.map((sa) =>
+          createNotification(
+            sa.id,
+            "SYSTEM",
+            "New User Registered",
+            `${fullName || trimmedUserId} (${trimmedUserId}) joined as ${role}`,
+            { newUserId: newUser.userId },
+          ),
+        ),
+      );
+
       res.status(201).json({
         message: "User created successfully",
         generatedPassword,
-        emailSent,
+        emailSent: emailResult.success,
+        emailError: emailResult.error || undefined,
         id: newUser.id,
         userIdStr: newUser.userId,
       });

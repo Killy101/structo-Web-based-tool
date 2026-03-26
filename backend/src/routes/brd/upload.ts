@@ -15,6 +15,7 @@ import {
   uploadBinaryObject,
   uploadJsonObject,
 } from "../../lib/supabase-storage";
+import { createNotification, notifyMany } from "../../lib/notify";
 
 const router = Router();
 
@@ -343,7 +344,29 @@ router.post(
 
       console.log("=".repeat(80) + "\n");
 
-      // ── 6. Return the extracted data + image metadata to the frontend ────
+      // ── 6. Notify relevant users about the uploaded BRD ──────────────────
+      try {
+        const uploaderUser = await prisma.user.findFirst({
+          where: { id: 1 }, // placeholder; replace with actual uploader from req if auth'd
+          select: { id: true },
+        });
+        // Notify SUPER_ADMIN users
+        const superAdmins = await prisma.user.findMany({
+          where: { role: "SUPER_ADMIN", status: "ACTIVE" },
+          select: { id: true },
+        });
+        await notifyMany(
+          superAdmins.map((u) => u.id),
+          "BRD_STATUS",
+          "BRD Source Uploaded",
+          `"${title}" (${brdId}) was uploaded and processed successfully`,
+          { brdId },
+        );
+      } catch (notifyErr) {
+        console.warn("Failed to send BRD upload notification:", notifyErr);
+      }
+
+      // ── 7. Return the extracted data + image metadata to the frontend ────
       const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || [];
       
       return res.json({

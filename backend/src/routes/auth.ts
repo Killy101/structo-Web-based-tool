@@ -217,11 +217,26 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
       },
     });
 
+    const passwordHistoryCount = await prisma.passwordHistory.count({
+      where: { userId: user.id },
+    });
+    const createdAtMs = new Date(user.createdAt).getTime();
+    const changedAtMs = new Date(user.passwordChangedAt).getTime();
+    const sameAsInitialPassword = Math.abs(changedAtMs - createdAtMs) <= 60_000;
+
+    // Force change only for truly initial credentials:
+    // - no password history at all (legacy seed/migrated records), or
+    // - exactly one history entry and password has never been changed after creation.
+    const mustChangePassword =
+      passwordHistoryCount === 0 ||
+      (passwordHistoryCount === 1 && sameAsInitialPassword);
+
     const token = jwt.sign(
       {
         userId: user.id,
         role: user.role,
         teamId: user.teamId,
+        mustChangePassword,
       },
       process.env.JWT_SECRET!,
       { expiresIn: "7d" },
@@ -237,6 +252,7 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
         role: user.role,
         teamId: user.teamId,
         teamName: user.team?.name ?? null,
+        mustChangePassword,
       },
     });
   } catch (error) {
@@ -335,17 +351,80 @@ router.post(
   authenticate,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { targetUserId, newPassword } = req.body;
+      const { targetUserId, currentPassword, newPassword } = req.body;
       const actorRole = req.user!.role;
-
-      if (!targetUserId) {
-        return res.status(400).json({ error: "Target user ID is required" });
-      }
 
       const secPolicy = await getSecurityPolicy();
       const policyError = validatePasswordPolicy(String(newPassword ?? ""), secPolicy);
       if (policyError) {
         return res.status(400).json({ error: policyError });
+      }
+
+      // Self-service password change flow (used by forced change-password screen).
+      if (!targetUserId) {
+        if (!currentPassword) {
+          return res.status(400).json({ error: "Current password is required" });
+        }
+
+        const actor = await prisma.user.findUnique({
+          where: { id: req.user!.userId },
+        });
+
+        if (!actor) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        const isCurrentValid = await bcrypt.compare(String(currentPassword), actor.password);
+        if (!isCurrentValid) {
+          return res.status(401).json({ error: "Current password is incorrect" });
+        }
+
+        if (await bcrypt.compare(newPassword, actor.password)) {
+          return res.status(400).json({
+            error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.`,
+          });
+        }
+
+        const recentHistory = await prisma.passwordHistory.findMany({
+          where: { userId: actor.id },
+          orderBy: { createdAt: "desc" },
+          take: secPolicy.rememberedCount,
+        });
+
+        for (const h of recentHistory) {
+          if (await bcrypt.compare(newPassword, h.hash)) {
+            return res.status(400).json({
+              error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.`,
+            });
+          }
+        }
+
+        const hash = await bcrypt.hash(newPassword, 10);
+        const now = new Date();
+
+        await prisma.$transaction([
+          prisma.user.update({
+            where: { id: actor.id },
+            data: { password: hash, passwordChangedAt: now },
+          }),
+          prisma.passwordHistory.create({
+            data: { userId: actor.id, hash },
+          }),
+        ]);
+
+        await prisma.userLog.create({
+          data: {
+            userId: actor.id,
+            action: "PASSWORD_CHANGE",
+            details: "Changed own password",
+          },
+        });
+
+        return res.json({ message: "Password changed successfully" });
+      }
+
+      if (!targetUserId) {
+        return res.status(400).json({ error: "Target user ID is required" });
       }
 
       const allowedTargetRoles = CAN_CHANGE_PASSWORD[actorRole];
@@ -479,21 +558,23 @@ router.post(
       });
 
       const targetAny = target as any;
-      const emailSent = targetAny.email
-        ? await sendPasswordEmail({
-            to: String(targetAny.email),
-            userId: target.userId,
-            fullName: [targetAny.firstName, targetAny.lastName].filter(Boolean).join(" "),
-            password: newPassword,
-            action: "reset",
-          })
-        : false;
+      let emailResult: { success: boolean; error?: string } = { success: false, error: "No email address on file" };
+      if (targetAny.email) {
+        emailResult = await sendPasswordEmail({
+          to: String(targetAny.email),
+          userId: target.userId,
+          fullName: [targetAny.firstName, targetAny.lastName].filter(Boolean).join(" "),
+          password: newPassword,
+          action: "reset",
+        });
+      }
 
       res.json({
         message: "Password reset successfully",
         newPassword,
         targetUserId: target.userId,
-        emailSent,
+        emailSent: emailResult.success,
+        emailError: emailResult.error || undefined,
       });
     } catch (error) {
       console.error("Reset user password error:", error);

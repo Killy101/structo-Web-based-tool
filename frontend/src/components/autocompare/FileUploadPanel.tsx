@@ -9,8 +9,9 @@
  * - Real-time upload progress bar (XHR-based, separate from processing progress)
  * - Visual file previews with size and name
  * - Source name input for project identification
- * - Calls parent `onUploaded` callback with the session_id when done
- * - Also passes File objects to parent so PDFs can be rendered in viewers
+ * - Calls parent `onUploaded` callback with the session response when done
+ * - PDF rendering is handled entirely by the Python backend (PyMuPDF); no
+ *   File objects are passed to the parent — only the API response.
  */
 
 import React, { useCallback, useRef, useState } from "react";
@@ -224,7 +225,7 @@ function ProgressBar({ value, label }: { value: number; label: string }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface FileUploadPanelProps {
-  onUploaded: (response: UploadResponse, oldPdf: File, newPdf: File) => void;
+  onUploaded: (response: UploadResponse) => void;
 }
 
 export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
@@ -252,7 +253,7 @@ export default function FileUploadPanel({ onUploaded }: FileUploadPanelProps) {
         sourceName.trim(),
         (pct) => setUploadPct(pct),
       );
-      onUploaded(response, oldPdf!, newPdf!);
+      onUploaded(response);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
