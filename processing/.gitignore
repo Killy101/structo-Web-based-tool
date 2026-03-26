@@ -20,3 +20,6 @@ backend/dist/
 *.tmp
 tmp/
 .env
+
+__pycache__/
+*.pyc
