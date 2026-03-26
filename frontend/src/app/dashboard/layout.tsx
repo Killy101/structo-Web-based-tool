@@ -327,7 +327,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           className={
             isBrdRoute
               ? "flex-1 overflow-hidden"
-              : "flex-1 overflow-y-auto bg-slate-50 dark:bg-[#0d1117]"
+              : "flex-1 overflow-y-auto bg-slate-50 dark:bg-[#07101f]"
           }
         >
           {isUnauthorized ? <Unauthorized /> : children}
