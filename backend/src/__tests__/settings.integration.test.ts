@@ -1,15 +1,11 @@
-jest.mock("../lib/prisma", () => ({
+jest.mock("../lib/db", () => ({
   __esModule: true,
-  default: {
-    appSetting: {
-      findMany: jest.fn(),
-      upsert: jest.fn(),
-    },
-    userLog: {
-      create: jest.fn(),
-    },
-    $transaction: jest.fn(),
-  },
+  default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  pool:    { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  withTransaction: jest.fn().mockImplementation(async (fn: any) => {
+    const client = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+    return fn(client);
+  }),
 }));
 
 jest.mock("jsonwebtoken", () => ({
@@ -21,7 +17,7 @@ import request from "supertest";
 import express from "express";
 import jwt from "jsonwebtoken";
 import settingsRoutes from "../routes/settings";
-import prisma from "../lib/prisma";
+import pool from "../lib/db";
 
 const app = express();
 app.use(express.json());
@@ -37,11 +33,10 @@ describe("GET /settings/governance", () => {
       role: "SUPER_ADMIN",
       teamId: 1,
     });
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
   });
 
   it("returns defaults when no stored settings are found", async () => {
-    ((prisma as any).appSetting.findMany as jest.Mock).mockResolvedValue([]);
-
     const res = await request(app).get("/settings/governance").set(AUTH_HEADER);
 
     expect(res.status).toBe(200);
@@ -77,16 +72,18 @@ describe("GET /settings/operations-status", () => {
   });
 
   it("returns operations status for authenticated users", async () => {
-    ((prisma as any).appSetting.findMany as jest.Mock).mockResolvedValue([
-      {
-        key: "governance.operations",
-        value: {
-          maintenanceMode: true,
-          strictRateLimitMode: false,
-          auditDigestEnabled: true,
+    (pool.query as jest.Mock).mockResolvedValueOnce({
+      rows: [
+        {
+          key: "governance.operations",
+          value: {
+            maintenanceMode: true,
+            strictRateLimitMode: false,
+            auditDigestEnabled: true,
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const res = await request(app)
       .get("/settings/operations-status")
@@ -106,8 +103,8 @@ describe("PATCH /settings/governance", () => {
       role: "SUPER_ADMIN",
       teamId: 1,
     });
-    (prisma.$transaction as jest.Mock).mockResolvedValue([]);
-    (prisma.userLog.create as jest.Mock).mockResolvedValue({ id: 1 });
+    // Return empty for all pool.query calls by default
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
   });
 
   it("normalizes and persists governance settings", async () => {
@@ -136,7 +133,6 @@ describe("PATCH /settings/governance", () => {
     expect(res.body.settings.securityPolicy.minPasswordLength).toBe(15);
     expect(res.body.settings.securityPolicy.minSpecialChars).toBe(1);
     expect(res.body.settings.securityPolicy.sessionTimeoutMinutes).toBe(5);
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(prisma.userLog.create).toHaveBeenCalledTimes(1);
+    expect(pool.query).toHaveBeenCalled();
   });
 });

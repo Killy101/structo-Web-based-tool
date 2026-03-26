@@ -1,37 +1,20 @@
 /**
  * Integration tests for /tasks endpoints.
- * Mocks Prisma and JWT to run without a real DB.
+ * Mocks pool.query and JWT to run without a real DB.
  */
 
-jest.mock("../lib/prisma", () => ({
+jest.mock("../lib/db", () => ({
   __esModule: true,
-  default: {
-    taskAssignment: {
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      create: jest.fn(),
-      update: jest.fn(),
-      delete: jest.fn(),
-    },
-    taskComment: {
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      create: jest.fn(),
-      delete: jest.fn(),
-    },
-    user: {
-      findUnique: jest.fn(),
-    },
-    fileUpload: {
-      findUnique: jest.fn(),
-    },
-    userLog: {
-      create: jest.fn().mockResolvedValue({}),
-    },
-    notification: {
-      create: jest.fn().mockResolvedValue({}),
-    },
-  },
+  default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  pool:    { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  withTransaction: jest.fn().mockImplementation(async (fn: any) => {
+    const client = {
+      query: jest.fn()
+        .mockResolvedValueOnce({ rows: [{ id: 1 }] }) // task INSERT
+        .mockResolvedValue({ rows: [] }), // assignee INSERTs
+    };
+    return fn(client);
+  }),
 }));
 
 jest.mock("jsonwebtoken", () => ({
@@ -42,7 +25,8 @@ jest.mock("jsonwebtoken", () => ({
 import request from "supertest";
 import express from "express";
 import tasksRoutes from "../routes/task";
-import prisma from "../lib/prisma";
+import pool from "../lib/db";
+import { withTransaction } from "../lib/db";
 
 const app = express();
 app.use(express.json());
@@ -75,9 +59,15 @@ const mockTask = {
 };
 
 describe("GET /tasks", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
+
   it("returns tasks for authenticated admin", async () => {
-    (prisma.user.findUnique as jest.Mock).mockResolvedValue({ id: 1, teamId: 1 });
-    (prisma.taskAssignment.findMany as jest.Mock).mockResolvedValue([mockTask]);
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [{ team_id: 1 }] }) // user team lookup
+      .mockResolvedValueOnce({ rows: [mockTask] }); // tasks list
 
     const res = await request(app).get("/tasks").set(AUTH_HEADER);
 
@@ -93,7 +83,10 @@ describe("GET /tasks", () => {
 });
 
 describe("POST /tasks", () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
 
   it("returns 400 when title is missing", async () => {
     const res = await request(app)
@@ -124,8 +117,19 @@ describe("POST /tasks", () => {
   });
 
   it("creates a task successfully", async () => {
-    (prisma.user.findUnique as jest.Mock).mockResolvedValue({ id: 1, teamId: 1 });
-    (prisma.taskAssignment.create as jest.Mock).mockResolvedValue(mockTask);
+    (withTransaction as jest.Mock).mockImplementationOnce(async (fn: any) => {
+      const client = {
+        query: jest.fn()
+          .mockResolvedValueOnce({ rows: [{ id: 1 }] }) // INSERT task
+          .mockResolvedValue({ rows: [] }), // INSERT assignees
+      };
+      return fn(client);
+    });
+
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [{ team_id: 1 }] }) // team lookup
+      .mockResolvedValueOnce({ rows: [mockTask] })        // full task query
+      .mockResolvedValue({ rows: [] });                   // user_logs + notify
 
     const res = await request(app)
       .post("/tasks")
@@ -138,9 +142,15 @@ describe("POST /tasks", () => {
 });
 
 describe("GET /tasks/:id/comments", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
+
   it("returns comments for a task", async () => {
-    (prisma.taskAssignment.findUnique as jest.Mock).mockResolvedValue(mockTask);
-    (prisma.taskComment.findMany as jest.Mock).mockResolvedValue([]);
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [{ id: 1 }] }) // task exists check
+      .mockResolvedValueOnce({ rows: [] }); // comments list
 
     const res = await request(app).get("/tasks/1/comments").set(AUTH_HEADER);
 
@@ -149,7 +159,7 @@ describe("GET /tasks/:id/comments", () => {
   });
 
   it("returns 404 for non-existent task", async () => {
-    (prisma.taskAssignment.findUnique as jest.Mock).mockResolvedValue(null);
+    (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [] }); // task not found
 
     const res = await request(app).get("/tasks/999/comments").set(AUTH_HEADER);
     expect(res.status).toBe(404);
@@ -157,9 +167,12 @@ describe("GET /tasks/:id/comments", () => {
 });
 
 describe("POST /tasks/:id/comments", () => {
-  it("returns 400 when body is empty", async () => {
-    (prisma.taskAssignment.findUnique as jest.Mock).mockResolvedValue(mockTask);
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
 
+  it("returns 400 when body is empty", async () => {
     const res = await request(app)
       .post("/tasks/1/comments")
       .set(AUTH_HEADER)
@@ -169,16 +182,19 @@ describe("POST /tasks/:id/comments", () => {
   });
 
   it("creates a comment successfully", async () => {
-    (prisma.taskAssignment.findUnique as jest.Mock).mockResolvedValue(mockTask);
-    (prisma.taskComment.create as jest.Mock).mockResolvedValue({
+    const mockComment = {
       id: 1,
       assignmentId: 1,
-      authorId: 1,
       body: "Great work!",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      author: { id: 1, userId: "USR-001", firstName: "Alice", lastName: "Smith" },
-    });
+    };
+
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [{ ...mockTask, assignees: [{ userId: 2 }] }] }) // task lookup
+      .mockResolvedValueOnce({ rows: [mockComment] }) // INSERT comment
+      .mockResolvedValueOnce({ rows: [{ id: 1, userId: "USR-001", firstName: "Alice", lastName: "Smith" }] }) // author lookup
+      .mockResolvedValue({ rows: [] }); // notify
 
     const res = await request(app)
       .post("/tasks/1/comments")

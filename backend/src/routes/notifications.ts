@@ -1,260 +1,203 @@
-import { Router, Response } from "express";
-import { Prisma } from "@prisma/client";
-import prisma from "../lib/prisma";
-import { authenticate, AuthRequest } from "../middleware/authenticate";
+import { Router, Response } from 'express'
+import pool from '../lib/db'
+import { authenticate, AuthRequest } from '../middleware/authenticate'
 
-const router = Router();
+const router = Router()
 
-// ── GET /notifications ─────────────────────────────────────
-// Returns all non-archived notifications for the authenticated user.
-// For SUPER_ADMIN / ADMIN roles, also injects virtual feed items for
-// recent BRD uploads and new user registrations (last 7 days).
-router.get("/", authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user!.userId;
-    const role   = req.user!.role;
+    const userId = req.user!.userId
+    const role   = req.user!.role
 
-    // Fetch stored notifications, skipping archived ones
-    const stored = await prisma.notification.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
+    const { rows: stored } = await pool.query(
+      `SELECT id, user_id as "userId", type, title, message, is_read as "isRead", meta, created_at as "createdAt"
+       FROM notifications
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [userId],
+    )
 
-    // Filter out archived in application layer (meta.archived === true)
     const active = stored.filter((n) => {
-      const m = n.meta as Record<string, unknown> | null;
-      return !m?.archived;
-    });
+      const m = n.meta as Record<string, unknown> | null
+      return !m?.archived
+    })
 
-    // ── Admin-level virtual notifications ──────────────────
-    // Inject recent BRD uploads and new users for privileged roles
-    const virtual: typeof active = [];
+    const virtual: typeof active = []
 
-    if (role === "SUPER_ADMIN" || role === "ADMIN") {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    if (role === 'SUPER_ADMIN' || role === 'ADMIN') {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
-      // Recent BRD uploads (last 7 days, latest 20)
-      const recentBrds = await prisma.brd.findMany({
-        where: { createdAt: { gte: sevenDaysAgo } },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        select: {
-          id: true,
-          brdId: true,
-          title: true,
-          createdAt: true,
-          createdBy: { select: { userId: true, firstName: true, lastName: true } },
-        },
-      });
+      const { rows: recentBrds } = await pool.query(
+        `SELECT b.id, b.brd_id as "brdId", b.title, b.created_at as "createdAt",
+                u.user_id as "creatorUserId", u.first_name as "creatorFirstName", u.last_name as "creatorLastName"
+         FROM brds b
+         LEFT JOIN users u ON b.created_by_id = u.id
+         WHERE b.created_at >= $1
+         ORDER BY b.created_at DESC
+         LIMIT 20`,
+        [sevenDaysAgo],
+      )
 
       for (const brd of recentBrds) {
-        const uploaderName = [brd.createdBy?.firstName, brd.createdBy?.lastName]
-          .filter(Boolean).join(" ") || brd.createdBy?.userId || "Unknown";
-        // Only inject if there is no matching stored notification to avoid duplicates
-        const alreadyStored = active.some(
-          (n) => (n.meta as Record<string, unknown> | null)?.brdId === brd.brdId,
-        );
+        const uploaderName = [brd.creatorFirstName, brd.creatorLastName].filter(Boolean).join(' ') || brd.creatorUserId || 'Unknown'
+        const alreadyStored = active.some((n) => (n.meta as Record<string, unknown> | null)?.brdId === brd.brdId)
         if (!alreadyStored) {
           virtual.push({
-            id: -(brd.id + 100000), // negative synthetic ID
+            id: -(brd.id + 100000),
             userId,
-            type: "BRD_STATUS",
-            title: "BRD Source Uploaded",
+            type: 'BRD_STATUS',
+            title: 'BRD Source Uploaded',
             message: `${uploaderName} uploaded "${brd.title ?? brd.brdId}"`,
             isRead: true,
             meta: { brdId: brd.brdId, virtual: true },
             createdAt: brd.createdAt,
-          } as typeof active[0]);
+          } as any)
         }
       }
 
-      // Recent user registrations (last 7 days)
-      const recentUsers = await prisma.user.findMany({
-        where: { createdAt: { gte: sevenDaysAgo } },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        select: {
-          id: true,
-          userId: true,
-          firstName: true,
-          lastName: true,
-          role: true,
-          createdAt: true,
-        },
-      });
+      const { rows: recentUsers } = await pool.query(
+        `SELECT id, user_id as "userId", first_name as "firstName", last_name as "lastName", role, created_at as "createdAt"
+         FROM users
+         WHERE created_at >= $1
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        [sevenDaysAgo],
+      )
 
       for (const nu of recentUsers) {
-        const fullName = [nu.firstName, nu.lastName].filter(Boolean).join(" ") || nu.userId;
-        const alreadyStored = active.some(
-          (n) => (n.meta as Record<string, unknown> | null)?.newUserId === nu.userId,
-        );
+        const fullName = [nu.firstName, nu.lastName].filter(Boolean).join(' ') || nu.userId
+        const alreadyStored = active.some((n) => (n.meta as Record<string, unknown> | null)?.newUserId === nu.userId)
         if (!alreadyStored) {
           virtual.push({
             id: -(nu.id + 200000),
             userId,
-            type: "SYSTEM",
-            title: "New User Registered",
+            type: 'SYSTEM',
+            title: 'New User Registered',
             message: `${fullName} (${nu.userId}) joined as ${nu.role}`,
             isRead: true,
             meta: { newUserId: nu.userId, virtual: true },
             createdAt: nu.createdAt,
-          } as typeof active[0]);
+          } as any)
         }
       }
     }
 
-    // Merge and sort by createdAt desc
-    const all = [...active, ...virtual].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    ).slice(0, 100);
+    const all = [...active, ...virtual]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 100)
 
-    const unreadCount = active.filter((n) => !n.isRead).length;
-
-    res.json({ notifications: all, unreadCount });
+    const unreadCount = active.filter((n) => !n.isRead).length
+    res.json({ notifications: all, unreadCount })
   } catch (error) {
-    console.error("Get notifications error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Get notifications error:', error)
+    res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
-// ── GET /notifications/archived ────────────────────────────
-// Returns archived notifications for the authenticated user
-router.get("/archived", authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/archived', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user!.userId;
-    const stored = await prisma.notification.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
-    const archived = stored.filter((n) => {
-      const m = n.meta as Record<string, unknown> | null;
-      return m?.archived === true;
-    });
-    res.json({ notifications: archived });
+    const userId = req.user!.userId
+    const { rows } = await pool.query(
+      `SELECT id, user_id as "userId", type, title, message, is_read as "isRead", meta, created_at as "createdAt"
+       FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`,
+      [userId],
+    )
+    const archived = rows.filter((n) => {
+      const m = n.meta as Record<string, unknown> | null
+      return m?.archived === true
+    })
+    res.json({ notifications: archived })
   } catch (error) {
-    console.error("Get archived notifications error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Get archived notifications error:', error)
+    res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
-// ── PATCH /notifications/:id/read ──────────────────────────
-// Mark a single notification as read
-router.patch(
-  "/:id/read",
-  authenticate,
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const userId = req.user!.userId;
-      const notifId = parseInt(req.params.id as string);
+router.patch('/:id/read', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId  = req.user!.userId
+    const notifId = parseInt(req.params.id as string)
 
-      const notif = await prisma.notification.findUnique({
-        where: { id: notifId },
-      });
+    const { rows } = await pool.query(
+      `SELECT id, user_id as "userId" FROM notifications WHERE id = $1`,
+      [notifId],
+    )
+    if (!rows[0]) return res.status(404).json({ error: 'Notification not found' })
+    if (rows[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' })
 
-      if (!notif) return res.status(404).json({ error: "Notification not found" });
-      if (notif.userId !== userId) return res.status(403).json({ error: "Forbidden" });
+    const { rows: updated } = await pool.query(
+      `UPDATE notifications SET is_read = true WHERE id = $1
+       RETURNING id, user_id as "userId", type, title, message, is_read as "isRead", meta, created_at as "createdAt"`,
+      [notifId],
+    )
+    res.json({ notification: updated[0] })
+  } catch (error) {
+    console.error('Mark notification read error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-      const updated = await prisma.notification.update({
-        where: { id: notifId },
-        data: { isRead: true },
-      });
+router.patch('/read-all', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId
+    await pool.query(`UPDATE notifications SET is_read = true WHERE user_id = $1 AND is_read = false`, [userId])
+    res.json({ message: 'All notifications marked as read' })
+  } catch (error) {
+    console.error('Mark all read error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-      res.json({ notification: updated });
-    } catch (error) {
-      console.error("Mark notification read error:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  },
-);
+router.delete('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId  = req.user!.userId
+    const notifId = parseInt(req.params.id as string)
 
-// ── PATCH /notifications/read-all ──────────────────────────
-// Mark all notifications as read for the authenticated user
-router.patch(
-  "/read-all",
-  authenticate,
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const userId = req.user!.userId;
+    if (notifId < 0) return res.json({ message: 'Notification deleted' })
 
-      await prisma.notification.updateMany({
-        where: { userId, isRead: false },
-        data: { isRead: true },
-      });
+    const { rows } = await pool.query(
+      `SELECT id, user_id as "userId" FROM notifications WHERE id = $1`,
+      [notifId],
+    )
+    if (!rows[0]) return res.status(404).json({ error: 'Notification not found' })
+    if (rows[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' })
 
-      res.json({ message: "All notifications marked as read" });
-    } catch (error) {
-      console.error("Mark all read error:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  },
-);
+    await pool.query(`DELETE FROM notifications WHERE id = $1`, [notifId])
+    res.json({ message: 'Notification deleted' })
+  } catch (error) {
+    console.error('Delete notification error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-// ── DELETE /notifications/:id ──────────────────────────────
-router.delete(
-  "/:id",
-  authenticate,
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const userId = req.user!.userId;
-      const notifId = parseInt(req.params.id as string);
+router.patch('/:id/archive', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId  = req.user!.userId
+    const notifId = parseInt(req.params.id as string)
 
-      // Virtual (synthetic negative) notifications have no DB row to delete
-      if (notifId < 0) {
-        return res.json({ message: "Notification deleted" });
-      }
+    if (notifId < 0) return res.json({ message: 'Notification archived' })
 
-      const notif = await prisma.notification.findUnique({
-        where: { id: notifId },
-      });
+    const { rows } = await pool.query(
+      `SELECT id, user_id as "userId", meta FROM notifications WHERE id = $1`,
+      [notifId],
+    )
+    if (!rows[0]) return res.status(404).json({ error: 'Notification not found' })
+    if (rows[0].userId !== userId) return res.status(403).json({ error: 'Forbidden' })
 
-      if (!notif) return res.status(404).json({ error: "Notification not found" });
-      if (notif.userId !== userId) return res.status(403).json({ error: "Forbidden" });
+    const existingMeta = (rows[0].meta as Record<string, unknown>) ?? {}
+    const newMeta = { ...existingMeta, archived: true }
 
-      await prisma.notification.delete({ where: { id: notifId } });
-      res.json({ message: "Notification deleted" });
-    } catch (error) {
-      console.error("Delete notification error:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  },
-);
+    const { rows: updated } = await pool.query(
+      `UPDATE notifications SET is_read = true, meta = $1 WHERE id = $2
+       RETURNING id, user_id as "userId", type, title, message, is_read as "isRead", meta, created_at as "createdAt"`,
+      [JSON.stringify(newMeta), notifId],
+    )
+    res.json({ notification: updated[0] })
+  } catch (error) {
+    console.error('Archive notification error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-// ── PATCH /notifications/:id/archive ──────────────────────
-// Soft-archive a notification by setting meta.archived = true
-router.patch(
-  "/:id/archive",
-  authenticate,
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const userId  = req.user!.userId;
-      const notifId = parseInt(req.params.id as string);
-
-      // Virtual notifications have no DB row — just acknowledge
-      if (notifId < 0) {
-        return res.json({ message: "Notification archived" });
-      }
-
-      const notif = await prisma.notification.findUnique({ where: { id: notifId } });
-      if (!notif) return res.status(404).json({ error: "Notification not found" });
-      if (notif.userId !== userId) return res.status(403).json({ error: "Forbidden" });
-
-      const existingMeta = (notif.meta as Record<string, unknown>) ?? {};
-      const updated = await prisma.notification.update({
-        where: { id: notifId },
-        data: {
-          isRead: true,
-          meta: { ...existingMeta, archived: true } as Prisma.InputJsonValue,
-        },
-      });
-
-      res.json({ notification: updated });
-    } catch (error) {
-      console.error("Archive notification error:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  },
-);
-
-export default router;
+export default router

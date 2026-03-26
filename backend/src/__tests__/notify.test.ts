@@ -1,42 +1,38 @@
 /**
  * Unit tests for the notification helper.
- * Mocks Prisma to avoid a live DB connection.
+ * Mocks pool.query to avoid a live DB connection.
  */
 
-jest.mock("../lib/prisma", () => ({
+jest.mock("../lib/db", () => ({
   __esModule: true,
-  default: {
-    notification: {
-      create: jest.fn().mockResolvedValue({ id: 1 }),
-    },
-  },
+  default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  pool:    { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  withTransaction: jest.fn().mockImplementation(async (fn: any) => {
+    const client = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+    return fn(client);
+  }),
 }));
 
-import prisma from "../lib/prisma";
+import pool from "../lib/db";
 import { createNotification, notifyMany } from "../lib/notify";
 
 describe("createNotification", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
   });
 
-  it("creates a notification via prisma", async () => {
+  it("creates a notification via pool.query", async () => {
     await createNotification(1, "SYSTEM", "Test Title", "Test message");
-    expect(prisma.notification.create).toHaveBeenCalledWith({
-      data: {
-        userId: 1,
-        type: "SYSTEM",
-        title: "Test Title",
-        message: "Test message",
-        meta: undefined,
-      },
-    });
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO notifications"),
+      expect.arrayContaining([1, "SYSTEM", "Test Title", "Test message"]),
+    );
   });
 
-  it("does not throw when prisma fails", async () => {
-    (prisma.notification.create as jest.Mock).mockRejectedValueOnce(
-      new Error("DB Error"),
-    );
+  it("does not throw when pool.query fails", async () => {
+    (pool.query as jest.Mock).mockRejectedValueOnce(new Error("DB Error"));
     await expect(
       createNotification(1, "SYSTEM", "Title", "Body"),
     ).resolves.not.toThrow();
@@ -45,24 +41,26 @@ describe("createNotification", () => {
   it("passes meta payload when provided", async () => {
     const meta = { taskId: 42 };
     await createNotification(1, "TASK_ASSIGNED", "Title", "Body", meta);
-    expect(prisma.notification.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ meta }),
-    });
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO notifications"),
+      expect.arrayContaining([meta]),
+    );
   });
 });
 
 describe("notifyMany", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
   });
 
-  it("calls createNotification for each user", async () => {
+  it("calls pool.query once per user", async () => {
     await notifyMany([1, 2, 3], "TASK_ASSIGNED", "Title", "Body");
-    expect(prisma.notification.create).toHaveBeenCalledTimes(3);
+    expect(pool.query).toHaveBeenCalledTimes(3);
   });
 
   it("handles empty user list without error", async () => {
     await expect(notifyMany([], "SYSTEM", "T", "B")).resolves.not.toThrow();
-    expect(prisma.notification.create).not.toHaveBeenCalled();
+    expect(pool.query).not.toHaveBeenCalled();
   });
 });

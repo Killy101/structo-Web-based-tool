@@ -1,622 +1,305 @@
-import { Router, Response } from "express";
-import bcrypt from "bcrypt";
-import prisma from "../lib/prisma";
-import { authenticate, AuthRequest } from "../middleware/authenticate";
-import { authorize } from "../middleware/authorize";
-import { Role } from "@prisma/client";
-import { generateCompliantPassword } from "../lib/password-policy";
-import { sendPasswordEmail } from "../lib/email";
-import { createNotification } from "../lib/notify";
+import { Router, Response } from 'express'
+import bcrypt from 'bcrypt'
+import pool from '../lib/db'
+import { withTransaction } from '../lib/db'
+import { authenticate, AuthRequest } from '../middleware/authenticate'
+import { authorize } from '../middleware/authorize'
+import { generateCompliantPassword } from '../lib/password-policy'
+import { sendPasswordEmail } from '../lib/email'
+import { createNotification } from '../lib/notify'
 
-const router = Router();
+const router = Router()
 
-const CAN_CREATE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "USER"],
-  ADMIN: ["USER"],
-};
+const CAN_CREATE:      Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
+const CAN_DEACTIVATE:  Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
+const CAN_CHANGE_ROLE: Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
+const CAN_EDIT_PROFILE:Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
+const ALLOWED_TARGET_ROLES: Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
 
-const CAN_DEACTIVATE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "USER"],
-  ADMIN: ["USER"],
-};
+router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const actorRole = req.user!.role
+    const actorId   = req.user!.userId
 
-const CAN_CHANGE_ROLE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "USER"],
-  ADMIN: ["USER"],
-};
+    let whereClause = ''
+    const params: unknown[] = []
 
-const CAN_EDIT_PROFILE: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "USER"],
-  ADMIN: ["USER"],
-};
-
-const ALLOWED_TARGET_ROLES: Partial<Record<Role, Role[]>> = {
-  SUPER_ADMIN: ["ADMIN", "USER"],
-  ADMIN: ["USER"],
-};
-
-function generatePassword(): string {
-  return generateCompliantPassword();
-}
-
-// ── GET /users ────────────────────────────────────────────
-router.get(
-  "/",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const actorRole = req.user!.role;
-      const actorId = req.user!.userId;
-
-      let whereClause: any = {};
-
-      // Super Admin can fetch all users.
-      if (actorRole === "ADMIN") {
-        // Admin only sees users in their own team.
-        const admin = await prisma.user.findUnique({
-          where: { id: actorId },
-          select: { teamId: true },
-        });
-        if (admin?.teamId) {
-          whereClause = { teamId: admin.teamId, role: "USER" };
-        } else {
-          return res.json({ users: [] });
-        }
-      }
-
-      const users = await prisma.user.findMany({
-        where: whereClause,
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          userId: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          role: true,
-          status: true,
-          lastLoginAt: true,
-          createdAt: true,
-          updatedAt: true,
-          createdById: true,
-          teamId: true,
-          team: { select: { id: true, name: true, slug: true } },
-          userRoleId: true,
-          userRole: {
-            select: { id: true, name: true, slug: true, features: true },
-          },
-        },
-      });
-
-      res.json({ users });
-    } catch (error) {
-      console.error("Get users error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (actorRole === 'ADMIN') {
+      const { rows: adminRows } = await pool.query(`SELECT team_id FROM users WHERE id = $1`, [actorId])
+      const teamId = adminRows[0]?.team_id
+      if (!teamId) return res.json({ users: [] })
+      whereClause = `WHERE u.team_id = $1 AND u.role = 'USER'`
+      params.push(teamId)
     }
-  },
-);
 
-// ── POST /users/create ────────────────────────────────────
-router.post(
-  "/create",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const { userId, email, role, firstName, lastName, teamId, userRoleId } =
-        req.body;
-      const actorRole = req.user!.role as Role;
+    const { rows: users } = await pool.query(
+      `SELECT u.id, u.user_id as "userId", u.email, u.first_name as "firstName", u.last_name as "lastName",
+              u.role, u.status, u.last_login_at as "lastLoginAt", u.created_at as "createdAt",
+              u.updated_at as "updatedAt", u.created_by_id as "createdById", u.team_id as "teamId",
+              CASE WHEN t.id IS NOT NULL THEN json_build_object('id', t.id, 'name', t.name, 'slug', t.slug) ELSE NULL END as team,
+              u.user_role_id as "userRoleId",
+              CASE WHEN ur.id IS NOT NULL THEN json_build_object('id', ur.id, 'name', ur.name, 'slug', ur.slug, 'features', ur.features) ELSE NULL END as "userRole"
+       FROM users u
+       LEFT JOIN teams t ON u.team_id = t.id
+       LEFT JOIN user_roles ur ON u.user_role_id = ur.id
+       ${whereClause}
+       ORDER BY u.created_at DESC`,
+      params,
+    )
 
-      if (!userId || !role) {
-        return res.status(400).json({ error: "User ID and role are required" });
-      }
+    res.json({ users })
+  } catch (error) {
+    console.error('Get users error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-      if (!firstName || !firstName.trim()) {
-        return res.status(400).json({ error: "First name is required" });
-      }
+router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId, email, role, firstName, lastName, teamId, userRoleId } = req.body
+    const actorRole = req.user!.role
 
-      if (!lastName || !lastName.trim()) {
-        return res.status(400).json({ error: "Last name is required" });
-      }
+    if (!userId || !role) return res.status(400).json({ error: 'User ID and role are required' })
+    if (!firstName?.trim()) return res.status(400).json({ error: 'First name is required' })
+    if (!lastName?.trim())  return res.status(400).json({ error: 'Last name is required' })
 
-      const normalizedEmail = String(email ?? "").trim().toLowerCase();
-      if (!normalizedEmail) {
-        return res.status(400).json({ error: "Email is required" });
-      }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-        return res.status(400).json({ error: "Invalid email format" });
-      }
+    const normalizedEmail = String(email ?? '').trim().toLowerCase()
+    if (!normalizedEmail) return res.status(400).json({ error: 'Email is required' })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return res.status(400).json({ error: 'Invalid email format' })
 
-      const trimmedUserId = userId.trim();
-      if (!/^[a-zA-Z0-9]{3,6}$/.test(trimmedUserId)) {
-        return res.status(400).json({
-          error: "User ID must be 3 to 6 alphanumeric characters",
-        });
-      }
+    const trimmedUserId = userId.trim()
+    if (!/^[a-zA-Z0-9]{3,6}$/.test(trimmedUserId)) return res.status(400).json({ error: 'User ID must be 3 to 6 alphanumeric characters' })
 
-      const allowedRoles = CAN_CREATE[actorRole] ?? [];
-      if (!allowedRoles.includes(role as Role)) {
-        return res
-          .status(403)
-          .json({ error: `You cannot create a user with role ${role}` });
-      }
+    const allowedRoles = CAN_CREATE[actorRole] ?? []
+    if (!allowedRoles.includes(role)) return res.status(403).json({ error: `You cannot create a user with role ${role}` })
 
-      const existingUserId = await prisma.user.findUnique({
-        where: { userId: trimmedUserId },
-      });
-      if (existingUserId) {
-        return res
-          .status(409)
-          .json({ error: "A user with this User ID already exists" });
-      }
+    const { rows: existingId } = await pool.query(`SELECT id FROM users WHERE user_id = $1`, [trimmedUserId])
+    if (existingId.length > 0) return res.status(409).json({ error: 'A user with this User ID already exists' })
 
-      const existingEmail = await prisma.user.findFirst({
-        where: {
-          email: { equals: normalizedEmail, mode: "insensitive" },
-        },
-      });
-      if (existingEmail) {
-        return res.status(409).json({ error: "A user with this email already exists" });
-      }
+    const { rows: existingEmail } = await pool.query(`SELECT id FROM users WHERE LOWER(email) = LOWER($1)`, [normalizedEmail])
+    if (existingEmail.length > 0) return res.status(409).json({ error: 'A user with this email already exists' })
 
-      // Admin auto-assigns their team if no teamId provided
-      let assignTeamId = teamId;
-      if (actorRole === "ADMIN" && !assignTeamId) {
-        const admin = await prisma.user.findUnique({
-          where: { id: req.user!.userId },
-          select: { teamId: true },
-        });
-        assignTeamId = admin?.teamId;
-      }
-
-      if (assignTeamId) {
-        const team = await prisma.team.findUnique({
-          where: { id: assignTeamId },
-        });
-        if (!team) {
-          return res.status(400).json({ error: "Team not found" });
-        }
-      }
-
-      const generatedPassword = generatePassword();
-      const hashedPassword = await bcrypt.hash(generatedPassword, 10);
-
-      // Validate userRoleId if provided
-      if (userRoleId) {
-        const customRole = await prisma.userRole.findUnique({
-          where: { id: userRoleId },
-        });
-        if (!customRole) {
-          return res.status(400).json({ error: "User role not found" });
-        }
-      }
-
-      const newUser = await prisma.$transaction(async (tx) => {
-        const created = await tx.user.create({
-          data: {
-            userId: trimmedUserId,
-            role: role as Role,
-            password: hashedPassword,
-            passwordChangedAt: new Date(),
-            createdById: req.user!.userId,
-            email: normalizedEmail,
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
-            teamId: assignTeamId || null,
-            userRoleId: userRoleId || null,
-          },
-        });
-
-        await tx.passwordHistory.create({
-          data: { userId: created.id, hash: hashedPassword },
-        });
-
-        return created;
-      });
-
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "USER_CREATED",
-          details: `Created user ${trimmedUserId} (${firstName.trim()} ${lastName.trim()}) with role ${role} and email ${normalizedEmail}`,
-        },
-      });
-
-      const emailResult = await sendPasswordEmail({
-        to: normalizedEmail,
-        userId: newUser.userId,
-        fullName: `${firstName.trim()} ${lastName.trim()}`,
-        password: generatedPassword,
-        action: "created",
-      });
-
-      // Notify SUPER_ADMIN users about the new registration
-      const superAdmins = await prisma.user.findMany({
-        where: { role: "SUPER_ADMIN", status: "ACTIVE" },
-        select: { id: true },
-      });
-      const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
-      await Promise.all(
-        superAdmins.map((sa) =>
-          createNotification(
-            sa.id,
-            "SYSTEM",
-            "New User Registered",
-            `${fullName || trimmedUserId} (${trimmedUserId}) joined as ${role}`,
-            { newUserId: newUser.userId },
-          ),
-        ),
-      );
-
-      res.status(201).json({
-        message: "User created successfully",
-        generatedPassword,
-        emailSent: emailResult.success,
-        emailError: emailResult.error || undefined,
-        id: newUser.id,
-        userIdStr: newUser.userId,
-      });
-    } catch (error) {
-      console.error("Create user error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    let assignTeamId = teamId
+    if (actorRole === 'ADMIN' && !assignTeamId) {
+      const { rows: adminRows } = await pool.query(`SELECT team_id FROM users WHERE id = $1`, [req.user!.userId])
+      assignTeamId = adminRows[0]?.team_id
     }
-  },
-);
 
-// ── PATCH /users/:id/profile ─────────────────────────────
-router.patch(
-  "/:id/profile",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const targetId = Number(req.params.id as string);
-      const actorRole = req.user!.role as Role;
-      const { userId, email, firstName, lastName } = req.body;
-
-      if (!Number.isFinite(targetId)) {
-        return res.status(400).json({ error: "Invalid user ID" });
-      }
-
-      const target = await prisma.user.findUnique({ where: { id: targetId } });
-      if (!target) return res.status(404).json({ error: "User not found" });
-
-      const allowedTargets = CAN_EDIT_PROFILE[actorRole] ?? [];
-      if (!allowedTargets.includes(target.role)) {
-        return res.status(403).json({
-          error: `You cannot edit profile details for ${target.role} users`,
-        });
-      }
-
-      const trimmedUserId = String(userId ?? "").trim().toUpperCase();
-      if (!/^[a-zA-Z0-9]{3,6}$/.test(trimmedUserId)) {
-        return res.status(400).json({
-          error: "User ID must be 3 to 6 alphanumeric characters",
-        });
-      }
-
-      const normalizedEmail = String(email ?? "").trim().toLowerCase();
-      if (!normalizedEmail) {
-        return res.status(400).json({ error: "Email is required" });
-      }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-        return res.status(400).json({ error: "Invalid email format" });
-      }
-
-      const normalizedFirstName = String(firstName ?? "").trim();
-      if (!normalizedFirstName) {
-        return res.status(400).json({ error: "First name is required" });
-      }
-
-      const normalizedLastName = String(lastName ?? "").trim();
-      if (!normalizedLastName) {
-        return res.status(400).json({ error: "Last name is required" });
-      }
-
-      const duplicateUserId = await prisma.user.findFirst({
-        where: {
-          userId: trimmedUserId,
-          id: { not: targetId },
-        },
-      });
-      if (duplicateUserId) {
-        return res
-          .status(409)
-          .json({ error: "A user with this User ID already exists" });
-      }
-
-      const duplicateEmail = await prisma.user.findFirst({
-        where: {
-          email: { equals: normalizedEmail, mode: "insensitive" },
-          id: { not: targetId },
-        },
-      });
-      if (duplicateEmail) {
-        return res
-          .status(409)
-          .json({ error: "A user with this email already exists" });
-      }
-
-      const updated = await prisma.user.update({
-        where: { id: targetId },
-        data: {
-          userId: trimmedUserId,
-          email: normalizedEmail,
-          firstName: normalizedFirstName,
-          lastName: normalizedLastName,
-        },
-        select: {
-          id: true,
-          userId: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-        },
-      });
-
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "USER_PROFILE_UPDATED",
-          details: `Updated profile details for ${target.userId} -> ${updated.userId}`,
-        },
-      });
-
-      res.json({
-        message: "User profile updated successfully",
-        user: updated,
-      });
-    } catch (error) {
-      console.error("Update user profile error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (assignTeamId) {
+      const { rows: teamRows } = await pool.query(`SELECT id FROM teams WHERE id = $1`, [assignTeamId])
+      if (!teamRows[0]) return res.status(400).json({ error: 'Team not found' })
     }
-  },
-);
 
-// ── PATCH /users/:id/team ─────────────────────────────────
-router.patch(
-  "/:id/team",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const targetId = parseInt(req.params.id as string);
-      const { teamId } = req.body;
-      const actorRole = req.user!.role as Role;
-
-      const target = await prisma.user.findUnique({ where: { id: targetId } });
-      if (!target) return res.status(404).json({ error: "User not found" });
-
-      if (actorRole === "ADMIN") {
-        if (target.role === "ADMIN" || target.role === "SUPER_ADMIN") {
-          return res
-            .status(403)
-            .json({ error: "You cannot reassign this user's team" });
-        }
-      }
-
-      if (teamId) {
-        const team = await prisma.team.findUnique({ where: { id: teamId } });
-        if (!team) return res.status(400).json({ error: "Team not found" });
-      }
-
-      await prisma.user.update({
-        where: { id: targetId },
-        data: { teamId: teamId || null },
-      });
-
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "TEAM_ASSIGNED",
-          details: `Assigned user ${target.userId} to team ${teamId ?? "none"}`,
-        },
-      });
-
-      res.json({ message: "Team assignment updated" });
-    } catch (error) {
-      console.error("Assign team error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (userRoleId) {
+      const { rows: roleRows } = await pool.query(`SELECT id FROM user_roles WHERE id = $1`, [userRoleId])
+      if (!roleRows[0]) return res.status(400).json({ error: 'User role not found' })
     }
-  },
-);
 
-// ── PATCH /users/:id/role ─────────────────────────────────
-router.patch(
-  "/:id/role",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const targetId = parseInt(req.params.id as string);
-      const { role } = req.body;
-      const actorRole = req.user!.role as Role;
+    const generatedPassword = generateCompliantPassword()
+    const hashedPassword    = await bcrypt.hash(generatedPassword, 10)
 
-      const target = await prisma.user.findUnique({ where: { id: targetId } });
-      if (!target) return res.status(404).json({ error: "User not found" });
+    const newUser = await withTransaction(async (client) => {
+      const { rows: created } = await client.query(
+        `INSERT INTO users (user_id, role, password, password_changed_at, created_by_id, email, first_name, last_name, team_id, user_role_id)
+         VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9)
+         RETURNING id, user_id as "userId"`,
+        [trimmedUserId, role, hashedPassword, req.user!.userId, normalizedEmail, firstName.trim(), lastName.trim(), assignTeamId || null, userRoleId || null],
+      )
+      await client.query(`INSERT INTO password_history (user_id, hash) VALUES ($1, $2)`, [created[0].id, hashedPassword])
+      return created[0]
+    })
 
-      // Check if actor can change this user's role
-      const canChange = CAN_CHANGE_ROLE[actorRole] ?? [];
-      if (!canChange.includes(target.role)) {
-        return res
-          .status(403)
-          .json({ error: "You cannot change this user's role" });
-      }
+    await pool.query(
+      `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_CREATED', $2)`,
+      [req.user!.userId, `Created user ${trimmedUserId} (${firstName.trim()} ${lastName.trim()}) with role ${role} and email ${normalizedEmail}`],
+    )
 
-      // Check if the target role is allowed
-      const allowedTargets = ALLOWED_TARGET_ROLES[actorRole] ?? [];
-      if (!allowedTargets.includes(role as Role)) {
-        return res
-          .status(403)
-          .json({ error: `You cannot assign the role ${role}` });
-      }
+    const emailResult = await sendPasswordEmail({ to: normalizedEmail, userId: newUser.userId, fullName: `${firstName.trim()} ${lastName.trim()}`, password: generatedPassword, action: 'created' })
 
-      // Admin cannot change anyone to ADMIN role
-      if (actorRole === "ADMIN" && role === "ADMIN") {
-        return res
-          .status(403)
-          .json({ error: "Only Super Admin can assign the Admin role" });
-      }
+    const { rows: superAdmins } = await pool.query(`SELECT id FROM users WHERE role = 'SUPER_ADMIN' AND status = 'ACTIVE'`)
+    const fullName = `${firstName.trim()} ${lastName.trim()}`.trim()
+    await Promise.all(superAdmins.map((sa: any) => createNotification(sa.id, 'SYSTEM', 'New User Registered', `${fullName || trimmedUserId} (${trimmedUserId}) joined as ${role}`, { newUserId: newUser.userId })))
 
-      await prisma.user.update({
-        where: { id: targetId },
-        data: { role: role as Role },
-      });
+    res.status(201).json({ message: 'User created successfully', generatedPassword, emailSent: emailResult.success, emailError: emailResult.error || undefined, id: newUser.id, userIdStr: newUser.userId })
+  } catch (error) {
+    console.error('Create user error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "ROLE_CHANGED",
-          details: `Changed ${target.userId} from ${target.role} to ${role}`,
-        },
-      });
+router.patch('/:id/profile', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId  = Number(req.params.id)
+    const actorRole = req.user!.role
+    const { userId, email, firstName, lastName } = req.body
 
-      res.json({ message: "Role updated successfully" });
-    } catch (error) {
-      console.error("Change role error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (!Number.isFinite(targetId)) return res.status(400).json({ error: 'Invalid user ID' })
+
+    const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
+
+    const allowedTargets = CAN_EDIT_PROFILE[actorRole] ?? []
+    if (!allowedTargets.includes(target.role)) return res.status(403).json({ error: `You cannot edit profile details for ${target.role} users` })
+
+    const trimmedUserId = String(userId ?? '').trim().toUpperCase()
+    if (!/^[a-zA-Z0-9]{3,6}$/.test(trimmedUserId)) return res.status(400).json({ error: 'User ID must be 3 to 6 alphanumeric characters' })
+
+    const normalizedEmail = String(email ?? '').trim().toLowerCase()
+    if (!normalizedEmail) return res.status(400).json({ error: 'Email is required' })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return res.status(400).json({ error: 'Invalid email format' })
+
+    const normalizedFirstName = String(firstName ?? '').trim()
+    if (!normalizedFirstName) return res.status(400).json({ error: 'First name is required' })
+    const normalizedLastName = String(lastName ?? '').trim()
+    if (!normalizedLastName) return res.status(400).json({ error: 'Last name is required' })
+
+    const { rows: dupId } = await pool.query(`SELECT id FROM users WHERE user_id = $1 AND id != $2`, [trimmedUserId, targetId])
+    if (dupId.length > 0) return res.status(409).json({ error: 'A user with this User ID already exists' })
+
+    const { rows: dupEmail } = await pool.query(`SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id != $2`, [normalizedEmail, targetId])
+    if (dupEmail.length > 0) return res.status(409).json({ error: 'A user with this email already exists' })
+
+    const { rows: updated } = await pool.query(
+      `UPDATE users SET user_id = $1, email = $2, first_name = $3, last_name = $4, updated_at = NOW()
+       WHERE id = $5
+       RETURNING id, user_id as "userId", email, first_name as "firstName", last_name as "lastName"`,
+      [trimmedUserId, normalizedEmail, normalizedFirstName, normalizedLastName, targetId],
+    )
+
+    await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_PROFILE_UPDATED', $2)`, [req.user!.userId, `Updated profile details for ${target.user_id} -> ${updated[0].userId}`])
+    res.json({ message: 'User profile updated successfully', user: updated[0] })
+  } catch (error) {
+    console.error('Update user profile error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/:id/team', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const { teamId } = req.body
+    const actorRole = req.user!.role
+
+    const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
+
+    if (actorRole === 'ADMIN' && (target.role === 'ADMIN' || target.role === 'SUPER_ADMIN')) {
+      return res.status(403).json({ error: "You cannot reassign this user's team" })
     }
-  },
-);
 
-// ── PATCH /users/:id/deactivate ───────────────────────────
-router.patch(
-  "/:id/deactivate",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const targetId = parseInt(req.params.id as string);
-      const actorRole = req.user!.role as Role;
-
-      const target = await prisma.user.findUnique({ where: { id: targetId } });
-      if (!target) return res.status(404).json({ error: "User not found" });
-
-      const allowed = CAN_DEACTIVATE[actorRole] ?? [];
-      if (!allowed.includes(target.role)) {
-        return res
-          .status(403)
-          .json({ error: "You cannot deactivate this user" });
-      }
-
-      if (target.id === req.user!.userId) {
-        return res
-          .status(400)
-          .json({ error: "You cannot deactivate your own account" });
-      }
-
-      await prisma.user.update({
-        where: { id: targetId },
-        data: { status: "INACTIVE" },
-      });
-
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "USER_DEACTIVATED",
-          details: `Deactivated user ${target.userId}`,
-        },
-      });
-
-      res.json({ message: "User deactivated" });
-    } catch (error) {
-      console.error("Deactivate user error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (teamId) {
+      const { rows: teamRows } = await pool.query(`SELECT id FROM teams WHERE id = $1`, [teamId])
+      if (!teamRows[0]) return res.status(400).json({ error: 'Team not found' })
     }
-  },
-);
 
-// ── PATCH /users/:id/activate ─────────────────────────────
-router.patch(
-  "/:id/activate",
-  authenticate,
-  authorize(["SUPER_ADMIN", "ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const targetId = parseInt(req.params.id as string);
-      const actorRole = req.user!.role as Role;
+    await pool.query(`UPDATE users SET team_id = $1, updated_at = NOW() WHERE id = $2`, [teamId || null, targetId])
+    await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_ASSIGNED', $2)`, [req.user!.userId, `Assigned user ${target.user_id} to team ${teamId ?? 'none'}`])
+    res.json({ message: 'Team assignment updated' })
+  } catch (error) {
+    console.error('Assign team error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-      const target = await prisma.user.findUnique({ where: { id: targetId } });
-      if (!target) return res.status(404).json({ error: "User not found" });
+router.patch('/:id/role', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const { role } = req.body
+    const actorRole = req.user!.role
 
-      const allowed = CAN_DEACTIVATE[actorRole] ?? [];
-      if (!allowed.includes(target.role)) {
-        return res.status(403).json({ error: "You cannot activate this user" });
-      }
+    const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
 
-      await prisma.user.update({
-        where: { id: targetId },
-        data: { status: "ACTIVE" },
-      });
+    const canChange = CAN_CHANGE_ROLE[actorRole] ?? []
+    if (!canChange.includes(target.role)) return res.status(403).json({ error: "You cannot change this user's role" })
 
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "USER_ACTIVATED",
-          details: `Activated user ${target.userId}`,
-        },
-      });
+    const allowedTargets = ALLOWED_TARGET_ROLES[actorRole] ?? []
+    if (!allowedTargets.includes(role)) return res.status(403).json({ error: `You cannot assign the role ${role}` })
 
-      res.json({ message: "User activated" });
-    } catch (error) {
-      console.error("Activate user error:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (actorRole === 'ADMIN' && role === 'ADMIN') return res.status(403).json({ error: 'Only Super Admin can assign the Admin role' })
+
+    await pool.query(`UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2`, [role, targetId])
+    await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'ROLE_CHANGED', $2)`, [req.user!.userId, `Changed ${target.user_id} from ${target.role} to ${role}`])
+    res.json({ message: 'Role updated successfully' })
+  } catch (error) {
+    console.error('Change role error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/:id/deactivate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const actorRole = req.user!.role
+
+    const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
+
+    const allowed = CAN_DEACTIVATE[actorRole] ?? []
+    if (!allowed.includes(target.role)) return res.status(403).json({ error: 'You cannot deactivate this user' })
+    if (target.id === req.user!.userId) return res.status(400).json({ error: 'You cannot deactivate your own account' })
+
+    await pool.query(`UPDATE users SET status = 'INACTIVE', updated_at = NOW() WHERE id = $1`, [targetId])
+    await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_DEACTIVATED', $2)`, [req.user!.userId, `Deactivated user ${target.user_id}`])
+    res.json({ message: 'User deactivated' })
+  } catch (error) {
+    console.error('Deactivate user error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const actorRole = req.user!.role
+
+    const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
+
+    const allowed = CAN_DEACTIVATE[actorRole] ?? []
+    if (!allowed.includes(target.role)) return res.status(403).json({ error: 'You cannot activate this user' })
+
+    await pool.query(`UPDATE users SET status = 'ACTIVE', updated_at = NOW() WHERE id = $1`, [targetId])
+    await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_ACTIVATED', $2)`, [req.user!.userId, `Activated user ${target.user_id}`])
+    res.json({ message: 'User activated' })
+  } catch (error) {
+    console.error('Activate user error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/:id/user-role', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const { userRoleId } = req.body
+
+    const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
+
+    let roleName: string | null = null
+    if (userRoleId !== null && userRoleId !== undefined) {
+      const { rows: roleRows } = await pool.query(`SELECT * FROM user_roles WHERE id = $1`, [Number(userRoleId)])
+      if (!roleRows[0]) return res.status(400).json({ error: 'User role not found' })
+      if (roleRows[0].slug.startsWith('__TEAM_ROLE_POLICY__')) return res.status(400).json({ error: 'Cannot assign a team policy role directly to a user' })
+      roleName = roleRows[0].name
     }
-  },
-);
 
-// ── PATCH /users/:id/user-role (SuperAdmin only) ──────────
-router.patch(
-  "/:id/user-role",
-  authenticate,
-  authorize(["SUPER_ADMIN"]),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const targetId = parseInt(req.params.id as string);
-      const { userRoleId } = req.body; // null to clear
+    await pool.query(`UPDATE users SET user_role_id = $1, updated_at = NOW() WHERE id = $2`, [userRoleId != null ? Number(userRoleId) : null, targetId])
+    await pool.query(
+      `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_ROLE_ASSIGNED', $2)`,
+      [req.user!.userId, roleName ? `Assigned custom role "${roleName}" to user ${target.user_id}` : `Cleared custom role from user ${target.user_id}`],
+    )
+    res.json({ message: 'User role updated' })
+  } catch (error) {
+    console.error('Assign user role error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-      const target = await prisma.user.findUnique({ where: { id: targetId } });
-      if (!target) return res.status(404).json({ error: "User not found" });
-
-      let roleName: string | null = null;
-      if (userRoleId !== null && userRoleId !== undefined) {
-        const customRole = await prisma.userRole.findUnique({
-          where: { id: Number(userRoleId) },
-        });
-        if (!customRole) {
-          return res.status(400).json({ error: "User role not found" });
-        }
-        // Disallow assigning internal team-policy roles directly to users
-        if (customRole.slug.startsWith("__TEAM_ROLE_POLICY__")) {
-          return res
-            .status(400)
-            .json({ error: "Cannot assign a team policy role directly to a user" });
-        }
-        roleName = customRole.name;
-      }
-
-      await prisma.user.update({
-        where: { id: targetId },
-        data: { userRoleId: userRoleId != null ? Number(userRoleId) : null },
-      });
-
-      await prisma.userLog.create({
-        data: {
-          userId: req.user!.userId,
-          action: "USER_ROLE_ASSIGNED",
-          details: roleName
-            ? `Assigned custom role "${roleName}" to user ${target.userId}`
-            : `Cleared custom role from user ${target.userId}`,
-        },
-      });
-
-      res.json({ message: "User role updated" });
-    } catch (error) {
-      console.error("Assign user role error:", error);
-      res.status(500).json({ error: "Internal server error" });
-    }
-  },
-);
-
-export default router;
+export default router
