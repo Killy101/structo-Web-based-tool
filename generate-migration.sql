@@ -12,9 +12,7 @@ SELECT 'INSERT INTO user_roles (id, name, slug, features, created_at, updated_at
   id || ', ' ||
   quote_literal(name) || ', ' ||
   quote_literal(slug) || ', ' ||
-  'ARRAY[' || COALESCE(
-    (SELECT string_agg(quote_literal(f), ',') FROM unnest(features) f), ''
-  ) || ']::text[], ' ||
+  quote_literal(features::text) || '::text[], ' ||
   quote_literal("createdAt") || '::timestamptz, ' ||
   quote_literal("updatedAt") || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
 FROM "UserRole"
