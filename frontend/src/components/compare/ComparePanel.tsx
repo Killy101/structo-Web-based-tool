@@ -21,12 +21,8 @@ import "react-pdf/dist/Page/TextLayer.css";
 
 // Configure pdf.js worker
 if (typeof window !== "undefined") {
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
-    import.meta.url
-  ).toString();
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 }
-
 const PROCESSING_URL =
   process.env.NEXT_PUBLIC_PROCESSING_URL || "http://localhost:8000";
 
