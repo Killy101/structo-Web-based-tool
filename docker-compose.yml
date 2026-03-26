@@ -1,19 +1,5 @@
 services:
 
-  # ── PostgreSQL Database ───────────────────────────────────────────────────────
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: Admin123
-      POSTGRES_DB: mydb
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    ports:
-      - "5432:5432"
-
   # ── Frontend (Next.js) ────────────────────────────────────────────────────────
   frontend:
     build:
@@ -49,9 +35,7 @@ services:
       - ./backend/.env           # create from backend/.env.example
     environment:
       - NODE_ENV=development
-      - DATABASE_URL=postgresql://postgres:Admin123@db:5432/mydb?sslmode=disable
-    depends_on:
-      - db
+      - DATABASE_URL=postgresql://postgres:Admin123@host.docker.internal:5432/mydb?sslmode=disable
 
   # ── Processing (FastAPI + Python) ─────────────────────────────────────────────
   processing:
@@ -68,8 +52,8 @@ services:
 
 # Named volumes prevent node_modules / Python cache from being overwritten by host mounts
 volumes:
-  postgres_data:
   frontend_nm:
   frontend_next:
   backend_nm:
+
 
