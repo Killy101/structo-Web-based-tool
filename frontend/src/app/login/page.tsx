@@ -75,10 +75,15 @@ export default function LoginPage() {
         userId: userId.trim(),
         password,
       });
-      const { token } = response.data;
+      const { token, user } = response.data;
       localStorage.setItem("token", token);
       sessionStorage.setItem("justLoggedIn", "1");
-      router.push("/dashboard");
+      if (user?.mustChangePassword) {
+        sessionStorage.setItem("forcePasswordChangeNotice", "1");
+        router.push("/change-password");
+      } else {
+        router.push("/dashboard");
+      }
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
         if (error.response) {

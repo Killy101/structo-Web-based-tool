@@ -11,6 +11,10 @@ export interface SessionSummary {
   old_pages: number;
   new_pages: number;
   source_name: string;
+  /** Fields added by the validation phase — present when backend >= v2 */
+  needs_update?: number;
+  no_changes?: number;
+  invalid_xml?: number;
 }
 
 export type ChangeType = "added" | "removed" | "modified" | "unchanged";
@@ -43,15 +47,20 @@ export interface ChunkRow {
 // ── Diff line typing ───────────────────────────────────────────────────────────
 
 /**
- * The five Modify sub-sections shown in the DiffPanel.
+ * The four diff categories shown in the DiffPanel.
+ * Values are intentionally identical to the `type` field so the same string
+ * works for both the diff line type and the PDF highlight API.
  *
- *   addition     — text present in NEW but not OLD            (green)
- *   removal      — text present in OLD but not NEW            (red)
- *   modification — text present in both, content changed      (amber)
- *   mismatch     — structural / line-count mismatch           (orange)
- *   emphasis     — line contains emphasis/formatting XML tags  (fuchsia)
+ *   added    — text present in NEW but not OLD            (green)
+ *   removed  — text present in OLD but not NEW            (red)
+ *   modified — text present in both, content changed      (amber)
+ *   mismatch — structural / line-count mismatch           (orange)
+ *
+ * @deprecated "addition", "removal", "modification", "emphasis" are legacy
+ *   values that may still appear in cached sessions. The frontend normalises
+ *   them via `toCategory()` in DiffPanel.
  */
-export type DiffCategory = "addition" | "removal" | "modification" | "mismatch" | "emphasis";
+export type DiffCategory = "added" | "removed" | "modified" | "mismatch" | "addition" | "removal" | "modification" | "emphasis";
 
 /**
  * XML operation sub-type tag shown as a badge on every diff line.
@@ -62,6 +71,12 @@ export type DiffCategory = "addition" | "removal" | "modification" | "mismatch" 
  *   emphasis      — emphasis/formatting tag change
  */
 export type DiffSubType = "edit" | "textual" | "innodreplace" | "emphasis";
+
+/** A single changed span within a diff line */
+export interface DiffSpan {
+  text: string;
+  changed: boolean;
+}
 
 /** A single diff line enriched with category and sub_type */
 export interface DiffLine {
@@ -76,6 +91,10 @@ export interface DiffLine {
   old_text?: string;
   /** For modification lines: new-side text (after " -> ") */
   new_text?: string;
+  /** Char/word-level spans for the old side (changed=true → highlight red) */
+  old_spans?: DiffSpan[];
+  /** Char/word-level spans for the new side (changed=true → highlight blue) */
+  new_spans?: DiffSpan[];
   line: number;
   old_page?: number | null;
   new_page?: number | null;
@@ -92,6 +111,8 @@ export interface DiffGroup {
 }
 
 /** Full chunk detail (returned by /compare/{chunk_id}) */
+export type ChunkValidationStatus = "no_changes" | "needs_update" | "invalid_xml";
+
 export interface ChunkDetail extends ChunkRow {
   old_text: string;
   new_text: string;
@@ -101,9 +122,44 @@ export interface ChunkDetail extends ChunkRow {
   xml_content: string;
   xml_suggested: string;
   xml_saved: string | null;
+  /** Validation fields populated during processing */
+  xml_valid?: boolean;
+  xml_errors?: string[];
+  validation_status?: ChunkValidationStatus;
+  validation_message?: string;
 }
 
 // ── API response shapes ───────────────────────────────────────────────────────
+
+/** Per-chunk result exposed by the status poll during processing */
+export interface ChunkValidationResult {
+  index: number;
+  label: string;
+  filename: string;
+  has_changes: boolean;
+  change_type: string;
+  similarity: number;
+  xml_valid: boolean;
+  xml_errors: string[];
+  validation_status: ChunkValidationStatus;
+  validation_message: string;
+  diff_count: number;
+}
+
+/** Full shape returned by GET /autocompare/status/{session_id} */
+export interface PollStatusResponse {
+  success: boolean;
+  session_id: string;
+  status: string;
+  phase?: string | null;
+  progress: number;
+  summary: SessionSummary | null;
+  error: string | null;
+  expires_at?: number;
+  chunk_validations?: Record<string, ChunkValidationResult>;
+  chunks_done?: number;
+  chunks_total?: number;
+}
 
 export interface UploadResponse {
   success: boolean;

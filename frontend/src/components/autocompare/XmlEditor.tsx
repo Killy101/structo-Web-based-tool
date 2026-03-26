@@ -81,12 +81,12 @@ function tokeniseXml(line: string): Token[] {
 }
 
 const TOKEN_COLORS: Record<TokenType, string> = {
-  "tag":         "#79c0ff",
-  "attr-name":   "#ffa657",
-  "attr-value":  "#a5d6ff",
-  "comment":     "#8b949e",
-  "text":        "#e6edf3",
-  "punctuation": "#79c0ff",
+  "tag":         "#e5e7eb",
+  "attr-name":   "#d1d5db",
+  "attr-value":  "#f3f4f6",
+  "comment":     "#9ca3af",
+  "text":        "#f8fafc",
+  "punctuation": "#e5e7eb",
 };
 
 function SyntaxLine({ line }: { line: string }) {
@@ -238,7 +238,7 @@ function XmlDiffPanel({ original, current }: { original: string; current: string
   if (!hasChanges) {
     return (
       <div className="flex-1 flex items-center justify-center text-xs text-slate-500 gap-2">
-        <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
         </svg>
         No changes from original XML
@@ -253,11 +253,11 @@ function XmlDiffPanel({ original, current }: { original: string; current: string
     >
       {diffLines.map((line, idx) => {
         const bg =
-          line.type === "added"   ? "rgba(34,197,94,0.12)"  :
-          line.type === "removed" ? "rgba(239,68,68,0.12)"  : "transparent";
+          line.type === "added"   ? "rgba(255,255,255,0.06)"  :
+          line.type === "removed" ? "rgba(255,255,255,0.10)"  : "transparent";
         const color =
-          line.type === "added"   ? "#86efac" :
-          line.type === "removed" ? "#fca5a5" : "#8b949e";
+          line.type === "added"   ? "#f8fafc" :
+          line.type === "removed" ? "#e5e7eb" : "#9ca3af";
         const prefix =
           line.type === "added"   ? "+" :
           line.type === "removed" ? "−" : " ";
@@ -482,7 +482,7 @@ export default function XmlEditor({
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
       style={{
-        borderColor: isDirty ? "rgba(245,158,11,0.4)" : "rgba(26,143,209,0.2)",
+        borderColor: isDirty ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.16)",
         background:  "#0d1117",
         height,
         transition: "border-color 0.2s",
@@ -491,10 +491,10 @@ export default function XmlEditor({
       {/* Toolbar */}
       <div
         className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-b"
-        style={{ borderColor: "rgba(26,143,209,0.15)", background: "rgba(13,17,23,0.9)" }}
+        style={{ borderColor: "rgba(255,255,255,0.12)", background: "rgba(13,17,23,0.9)" }}
       >
         <div className="flex items-center gap-2 min-w-0">
-          <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-4 h-4 text-slate-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
           </svg>
           <span className="text-xs font-semibold text-white">XML Editor</span>
@@ -503,8 +503,8 @@ export default function XmlEditor({
           <span
             className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold flex-shrink-0 ${
               validation.valid
-                ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/25"
-                : "bg-red-500/15 text-red-300 border-red-500/25"
+                ? "bg-white/10 text-slate-200 border-white/20"
+                : "bg-white/10 text-slate-200 border-white/20"
             }`}
           >
             {validation.valid ? "Valid XML" : "Invalid XML"}
@@ -512,13 +512,13 @@ export default function XmlEditor({
 
           {/* Unsaved changes indicator (Feature #6) */}
           {isDirty && !readOnly && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-amber-500/15 text-amber-300 border-amber-500/25 flex-shrink-0 animate-pulse">
+            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-white/10 text-slate-200 border-white/20 flex-shrink-0 animate-pulse">
               Unsaved
             </span>
           )}
 
           {normHl && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-cyan-500/15 text-cyan-200 border-cyan-500/30 flex-shrink-0">
+            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-white/10 text-slate-200 border-white/20 flex-shrink-0">
               Highlight Active
             </span>
           )}
@@ -534,7 +534,7 @@ export default function XmlEditor({
               title={showDiff ? "Back to editor" : "Show diff from original XML"}
               className={`flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-semibold border transition-colors ${
                 showDiff
-                  ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                  ? "bg-white/10 border-white/25 text-slate-100"
                   : "border-slate-600 text-slate-400 hover:text-white hover:border-slate-500"
               }`}
             >
@@ -648,15 +648,15 @@ export default function XmlEditor({
                   lineHeight: "1.6",
                   background:
                     focusLine === i + 1
-                      ? "rgba(26,143,209,0.2)"
+                      ? "rgba(255,255,255,0.12)"
                       : (normHl && line.toLowerCase().includes(normHl))
-                        ? "rgba(34,211,238,0.14)"
+                        ? "rgba(255,255,255,0.08)"
                         : undefined,
                   outline:
                     focusLine === i + 1
-                      ? "1px solid rgba(26,143,209,0.4)"
+                      ? "1px solid rgba(255,255,255,0.28)"
                       : (normHl && line.toLowerCase().includes(normHl))
-                        ? "1px solid rgba(34,211,238,0.35)"
+                        ? "1px solid rgba(255,255,255,0.20)"
                         : undefined,
                 }}
               >
@@ -692,8 +692,8 @@ export default function XmlEditor({
       {/* Validation error bar */}
       {!validation.valid && validation.error && (
         <div
-          className="flex-shrink-0 px-3 py-1.5 text-[10px] text-red-300 border-t"
-          style={{ borderColor: "rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)" }}
+          className="flex-shrink-0 px-3 py-1.5 text-[10px] text-slate-200 border-t"
+          style={{ borderColor: "rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.04)" }}
         >
           {validation.error.slice(0, 200)}
         </div>

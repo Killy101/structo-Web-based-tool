@@ -738,7 +738,10 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className={`text-sm font-medium truncate leading-none ${dark ? "text-white" : "text-slate-900"}`}>
-                  {user?.firstName} {user?.lastName}
+                  {user?.userId ?? "Unknown"}
+                </p>
+                <p className={`text-[11px] truncate mt-1 ${dark ? "text-slate-400" : "text-slate-500"}`}>
+                  {user?.team?.name ?? "No team"}
                 </p>
               </div>
               <button
