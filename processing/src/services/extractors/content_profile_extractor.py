@@ -229,7 +229,14 @@ def _extract_file_delivery(doc) -> dict:
             elif ("should be named" in tl or line.startswith(chr(34))
                   or "<level" in tl or "+" in line):
                 if not convention:
-                    convention = _fd_clean(line)
+                    raw = _fd_clean(line)
+                    # Strip leading prose like "The file(s) should be named: "
+                    # so the convention starts at the actual format pattern.
+                    import re as _re_strip
+                    raw = _re_strip.sub(
+                        r"(?i)^the files?\s+should be named[,:]?\s*", "", raw
+                    ).strip()
+                    convention = raw
         if not convention and merged:
             for line in merged:
                 if not _is_example_line(line):
@@ -251,24 +258,34 @@ def _extract_file_delivery(doc) -> dict:
 
 def _extract_short_rc_code(naming_convention: str) -> str:
     """
-    For newer-format BRDs the RC naming convention embeds a short CamelCase
-    or all-caps code as the first quoted token, e.g.:
-      '"MXCNBVReglas" + " – " + <Level 2> + ...'
-      '"JPDietActs" + " – " + <Level 2> + ...'
-      '"CFR" + " – " + <Level 2> + ...'
-    Returns the code if it looks like a compact identifier, "" otherwise.
-    Plain words ("Oklahoma") and multi-word names ("Delaware Code") are ignored.
+    Extract the RC filename code from the naming convention string.
+
+    The first quoted token before a "+" is the RC filename code, e.g.:
+      '"AlabamaAdministrativeCode" + "Title" + ...'  → "AlabamaAdministrativeCode"
+      '"CFR" + " – " + <Level 2> + ...'              → "CFR"
+      '"MXCNBVReglas" + " – " + <Level 2> + ...'     → "MXCNBVReglas"
+      '"JPDietActs" + " – " + <Level 2> + ...'        → "JPDietActs"
+
+    Accepted forms:
+      - All-uppercase acronym >= 2 chars  (CFR, IRS, US)
+      - CamelCase single word with any internal uppercase (AlabamaAdministrativeCode,
+        MXCNBVReglas, JPDietActs)
+
+    Rejected: plain lowercase words, multi-word phrases, single words with no
+    internal structure (e.g. "Oklahoma", "Innodata").
     """
     import re as _re
     m = _re.search(r'["“]([A-Za-z][A-Za-z0-9]{1,})["”]\s*\+', naming_convention)
     if not m:
         return ""
     token = m.group(1)
-    # All-uppercase acronym (CFR, etc.) — accept if >= 3 chars
-    if token.isupper() and len(token) >= 3:
+    # All-uppercase acronym (CFR, IRS, etc.) — accept if >= 2 chars
+    if token.isupper() and len(token) >= 2:
         return token
-    # CamelCase compound with 2+ consecutive uppercase letters (MXCNBVReglas, JPDietActs)
-    if len(token) >= 6 and _re.search(r'[A-Z]{2,}', token):
+    # CamelCase: has at least one uppercase letter after the first character
+    # Accepts: AlabamaAdministrativeCode, MXCNBVReglas, JPDietActs
+    # Rejects: Oklahoma (no internal uppercase), innodata (starts lowercase)
+    if _re.search(r'[A-Z]', token[1:]):
         return token
     return ""
 
@@ -453,11 +470,33 @@ def extract_content_profile(doc) -> dict:
 
     # ── 2. Top-level scalar fields ───────────────────────────────────────────
     toc_sections_pre: list[dict] = toc.get("sections") or []
+
+    import re as _re_path
+    _HARDCODED_PATH_RE = _re_path.compile(r"hardcoded\s*[–\-—]?\s*(/\S+)", _re_path.IGNORECASE)
+
+    def _path_from_section(sec: dict) -> str:
+        """
+        Return the path segment for a Level 0 or Level 1 section.
+        Priority:
+          1. "path" key already populated by toc_extractor (legacy BRDs)
+          2. Parse it live from the "definition" field
+             e.g. "Hardcoded – /us"         → "/us"
+                  "Hardcoded –/aladmincode"  → "/aladmincode"
+                  "Hardcoded - /de"          → "/de"
+        Never falls back to a hardcoded value like "/us".
+        """
+        path = str(sec.get("path") or "").strip()
+        if path:
+            return path
+        defn = str(sec.get("definition") or "")
+        m = _HARDCODED_PATH_RE.search(defn)
+        return m.group(1).rstrip(".,;") if m else ""
+
     _level_paths: dict[str, str] = {}
     for _sec in toc_sections_pre:
         _lv = str(_sec.get("level", "")).strip()
         if _lv in ("0", "1"):
-            _level_paths[_lv] = str(_sec.get("path") or "").strip()
+            _level_paths[_lv] = _path_from_section(_sec)
 
     _derived_path = _level_paths.get("0", "") + _level_paths.get("1", "")
 
@@ -469,35 +508,13 @@ def extract_content_profile(doc) -> dict:
         or ""
     )
 
-    # Try dedicated extractor first (reads Source Name directly from the doc)
-    _doc_rc = _extract_rc_filename(doc) if hasattr(doc, "tables") else ""
-    rc_filename = (
-        _doc_rc
-        or metadata.get("rc_filename")
-        or metadata.get("document_type")
-        or metadata.get("source_name")
-        or scope.get("document_type")
-        or ""
-    )
-
-    # For newer-format BRDs the "Content Category Name" is the long descriptive
-    # name (e.g. "Comisión Nacional Bancaria y de Valores (MX.CNBV) Reglas").
-    # The actual RC filename short code lives in the naming convention string
-    # (e.g. "MXCNBVReglas"). Prefer the short code when available.
+    # rc_filename = the full naming convention format string from the File
+    # Naming section, e.g.:
+    #   '"CFR" + " – " + <Level 2> + " – " + <MM/DD/YYYY of extraction>'
+    #   '"AlabamaAdministrativeCode" + "Title" + title number from <Level 2> + ...'
     # We extract file_delivery first so we can use it here.
     file_delivery = _extract_file_delivery(doc) if hasattr(doc, "paragraphs") else {}
-    _short_code = _extract_short_rc_code(file_delivery.get("rc_naming_convention", ""))
-    if _short_code:
-        rc_filename = _short_code
-    elif not rc_filename:
-        # JSON-backed sources (no doc): try extracting from rootPath last segment
-        # e.g. "/KR/KRNARKActs" → "KRNARKActs"
-        _root_path = (metadata.get("root_path") or metadata.get("rootPath") or "")
-        if _root_path:
-            import re as _re2
-            _seg = _root_path.rstrip("/").split("/")[-1]
-            if _seg and _re2.search(r'[A-Z]{2,}', _seg):
-                rc_filename = _seg
+    rc_filename = file_delivery.get("rc_naming_convention", "").strip()
 
     # ── 3. Build Level rows from extracted TOC ───────────────────────────────
     toc_sections: list[dict] = toc.get("sections") or []
@@ -515,6 +532,17 @@ def extract_content_profile(doc) -> dict:
         note         = str(sec.get("note",        "")).strip()
         sme_comments = str(sec.get("smeComments", "")).strip()
 
+        # Path: prefer the pre-extracted "path" key (populated by toc_extractor
+        # for Level 0/1 from their "Hardcoded – /xxx" definition), then fall
+        # back to building it from the name for numbered levels.
+        extracted_path = str(sec.get("path") or "").strip()
+        if extracted_path:
+            row_path = extracted_path
+        elif name:
+            row_path = f"/{name}"
+        else:
+            row_path = ""
+
         description_parts: list[str] = []
         if required:   description_parts.append(f"Required: {required}")
         if name:       description_parts.append(f"Name: {name}")
@@ -525,7 +553,7 @@ def extract_content_profile(doc) -> dict:
             "levelNumber":  f"Level {level_raw}",
             "description":  "\n".join(description_parts),
             "redjayXmlTag": _build_redjay_tag(level_raw, example),
-            "path":         f"/{name}" if name else "",
+            "path":         row_path,
             "remarksNotes": note or sme_comments,
         })
 

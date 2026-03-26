@@ -132,6 +132,8 @@ class BRDData:
     # ── Content profile ────────────────────────────────────────────────────────
     content_profile_levels: list[ContentProfileLevel] = field(default_factory=list)
     heading_annotation: str = "Level 2"
+    rc_filename: str = ""           # e.g. "AlabamaAdministrativeCode", "CFR"
+    hardcoded_path: str = ""        # e.g. "/us/aladmincode", "/us/cfr"
 
     # ── Explicit BRD config overrides ─────────────────────────────────────────
     config: BRDConfigOverrides = field(default_factory=BRDConfigOverrides)
@@ -868,9 +870,13 @@ def _build_levels(doc) -> list[LevelData]:
     return levels
 
 
-def _build_content_profile_levels(doc, levels: list[LevelData]) -> list[ContentProfileLevel]:
+def _build_content_profile_levels(
+    doc, levels: list[LevelData]
+) -> tuple[list[ContentProfileLevel], str, str]:
     """
     Build ContentProfileLevel rows from the content profile extractor.
+
+    Returns (cp_levels, rc_filename, hardcoded_path).
 
     Side-effects on LevelData (both applied before pattern generation):
       1. Sets LevelData.redjay_xml_tag from the content profile row.
@@ -923,7 +929,10 @@ def _build_content_profile_levels(doc, levels: list[LevelData]) -> list[ContentP
                 extras = [e for e in existing if e not in seen_ex]
                 lv.examples = redjay_examples + extras
 
-    return cp_levels
+    rc_filename    = str(cp.get("rc_filename")    or "").strip()
+    hardcoded_path = str(cp.get("hardcoded_path") or "").strip()
+
+    return cp_levels, rc_filename, hardcoded_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -978,7 +987,7 @@ def extract_brd(docx_path: str, brd_id: str | None = None) -> BRDData:
     levels = _build_levels(doc)
 
     # ── 5. Content profile (enriches LevelData.redjay_xml_tag as side-effect) ─
-    cp_levels = _build_content_profile_levels(doc, levels)
+    cp_levels, cp_rc_filename, cp_hardcoded_path = _build_content_profile_levels(doc, levels)
 
     # ── 6. Embedded BRD config overrides ──────────────────────────────────────
     config = _extract_brd_config_overrides(doc_text)
@@ -1004,6 +1013,8 @@ def extract_brd(docx_path: str, brd_id: str | None = None) -> BRDData:
         levels=levels,
         content_profile_levels=cp_levels,
         heading_annotation="Level 2",
+        rc_filename=cp_rc_filename,
+        hardcoded_path=cp_hardcoded_path,
         config=config,
         cell_images=cell_images,
     )
@@ -1083,6 +1094,8 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
 
     content_profile_dict: dict[str, Any] = {
         "heading_annotation": brd.heading_annotation,
+        "rc_filename":        brd.rc_filename,
+        "hardcoded_path":     brd.hardcoded_path,
         "levels": [
             {
                 "levelNumber":  cp.level_number,

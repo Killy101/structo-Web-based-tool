@@ -371,6 +371,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     onDataChange({
       rc_filename:        rcFilename,
       heading_annotation: headingAnnotation,
+      hardcoded_path:     hardcodedPath,
       levels:    levels.map(r => ({ levelNumber: r.levelNumber, description: r.description, redjayXmlTag: r.redjayXmlTag, path: r.path, remarksNotes: r.remarksNotes })),
       whitespace: whitespace.map(r => ({ tags: r.tags, innodReplace: r.innodReplace })),
     });

@@ -311,23 +311,23 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             Strict rate-limit mode is active — requests are limited to 60 per minute per IP.
           </div>
         )}
-        {!isBrdRoute && (
-          <header className="flex-shrink-0 flex items-center px-6 h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+        {!isBrdRoute && pathname !== "/dashboard" && (
+          <header className="flex-shrink-0 flex items-center px-6 h-14 border-b border-slate-200 dark:border-[#21262d] bg-white dark:bg-[#0d1117]">
             <div>
-              <h1 className="text-lg font-semibold text-slate-900 dark:text-white leading-none">
+              <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-slate-400 dark:text-[#7d8590]">
+                {PAGE_META[pathname]?.subtitle ?? ""}
+              </p>
+              <h1 className="text-sm font-semibold text-slate-900 dark:text-[#e6edf3] leading-tight mt-0.5">
                 {PAGE_META[pathname]?.title ?? "Dashboard"}
               </h1>
-              {PAGE_META[pathname]?.subtitle && (
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {PAGE_META[pathname].subtitle}
-                </p>
-              )}
             </div>
           </header>
         )}
         <main
           className={
-            isBrdRoute ? "flex-1 overflow-hidden" : "flex-1 overflow-y-auto p-6"
+            isBrdRoute
+              ? "flex-1 overflow-hidden"
+              : "flex-1 overflow-y-auto bg-slate-50 dark:bg-[#0d1117]"
           }
         >
           {isUnauthorized ? <Unauthorized /> : children}
