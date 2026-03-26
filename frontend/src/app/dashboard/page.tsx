@@ -1,400 +1,389 @@
 "use client";
 import React from "react";
-import {
-  Card,
-  CardHeader,
-  Badge,
-  Button,
-  EmptyState,
-} from "../../components/ui";
-import TetrisLoading from "../../components/ui/tetris-loader";
 import { useAuth } from "../../context/AuthContext";
 import { useBrds, useDashboard, useUserLogs } from "../../hooks";
-import {
-  TASK_STATUS_COLORS,
-  ROLE_CHART_COLORS,
-  ROLE_LABELS,
-  formatTimeAgo,
-} from "../../utils";
+import { formatTimeAgo } from "../../utils";
 import { Role, TaskStatus } from "../../types";
+import TetrisLoading from "../../components/ui/tetris-loader";
 
-const BRD_STATUS_BADGE: Record<string, string> = {
-  DRAFT: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-  IN_REVIEW: "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
-  APPROVED:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
-  ARCHIVED:
-    "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+const THEME_STYLE = `
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+.dash-root {
+  font-family: 'IBM Plex Sans', sans-serif;
+  --dash-accent:  #00b896;
+  --dash-bg:      #f4f6f8;
+  --dash-surface: #ffffff;
+  --dash-border:  #e1e5ea;
+  --dash-text:    #111827;
+  --dash-muted:   #6b7280;
+  --dash-dim:     #9ca3af;
+  --dash-hover:   #f9fafb;
+}
+.dark .dash-root {
+  --dash-bg:      #0d1117;
+  --dash-surface: #161b22;
+  --dash-border:  #21262d;
+  --dash-text:    #e6edf3;
+  --dash-muted:   #7d8590;
+  --dash-dim:     #484f58;
+  --dash-hover:   #1c2128;
+}
+.dash-root .font-mono { font-family: 'IBM Plex Mono', monospace; }
+
+@keyframes dash-fade-up {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.dash-fade   { animation: dash-fade-up 0.3s ease both; }
+.dash-fade-1 { animation-delay: 0.04s; }
+.dash-fade-2 { animation-delay: 0.09s; }
+.dash-fade-3 { animation-delay: 0.14s; }
+`;
+
+const STATUS_HEX: Record<string, string> = {
+  DRAFT:       "#6b7280",
+  IN_REVIEW:   "#3b82f6",
+  APPROVED:    "#22c55e",
+  ARCHIVED:    "#a855f7",
+  PAUSED:      "#f59e0b",
+  COMPLETED:   "#22c55e",
+  ON_HOLD:     "#ef4444",
+  PENDING:     "#f59e0b",
+  IN_PROGRESS: "#3b82f6",
+  SYSTEM:      "#6b7280",
 };
 
-type ActivityItem = {
-  id: string;
-  at: string;
-  title: string;
-  description: string;
-  tag: string;
+const ROLE_HEX: Record<string, string> = {
+  SUPER_ADMIN: "#ef4444",
+  ADMIN:       "#f59e0b",
+  USER:        "#22c55e",
 };
 
-const ACTIVITY_PAGE_SIZE = 5;
+function Pill({ label, color }: { label: string; color: string }) {
+  return (
+    <span
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium uppercase tracking-wide whitespace-nowrap"
+      style={{ background: color + "26", color, border: `1px solid ${color}33` }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={`rounded-lg overflow-hidden ${className}`}
+      style={{ background: "var(--dash-surface)", border: "1px solid var(--dash-border)" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SectionHead({ title, sub, action }: { title: string; sub?: string; action?: React.ReactNode }) {
+  return (
+    <div
+      className="flex items-start justify-between px-5 py-4"
+      style={{ borderBottom: "1px solid var(--dash-border)" }}
+    >
+      <div>
+        <p className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--dash-text)" }}>{title}</p>
+        {sub && <p className="text-[11px] font-mono mt-0.5" style={{ color: "var(--dash-muted)" }}>{sub}</p>}
+      </div>
+      {action && <div className="ml-4 flex-shrink-0 flex items-center gap-1">{action}</div>}
+    </div>
+  );
+}
+
+function NavBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="w-6 h-6 flex items-center justify-center font-mono text-xs rounded transition-colors"
+      style={{ color: disabled ? "var(--dash-dim)" : "var(--dash-muted)", cursor: disabled ? "not-allowed" : "pointer" }}
+      onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLButtonElement).style.color = "var(--dash-text)"; }}
+      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = disabled ? "var(--dash-dim)" : "var(--dash-muted)"; }}
+    >{children}</button>
+  );
+}
+
+function GhostBtn({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11px] font-mono px-3 py-1.5 rounded transition-all"
+      style={{ color: "var(--dash-muted)", border: "1px solid var(--dash-border)", background: "transparent" }}
+      onMouseEnter={e => { const b = e.currentTarget as HTMLButtonElement; b.style.color = "var(--dash-accent)"; b.style.borderColor = "var(--dash-accent)"; }}
+      onMouseLeave={e => { const b = e.currentTarget as HTMLButtonElement; b.style.color = "var(--dash-muted)"; b.style.borderColor = "var(--dash-border)"; }}
+    >{children}</button>
+  );
+}
+
+function StatCard({ label, value, accent = false }: { label: string; value: number; accent?: boolean }) {
+  return (
+    <div
+      className="flex flex-col justify-between p-5 rounded-lg transition-colors duration-200"
+      style={{ background: "var(--dash-surface)", border: "1px solid var(--dash-border)" }}
+      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = accent ? "var(--dash-accent)" : "var(--dash-muted)"; }}
+      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "var(--dash-border)"; }}
+    >
+      <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-muted)" }}>{label}</p>
+      <p className="mt-3 text-3xl font-mono font-semibold tabular-nums" style={{ color: accent ? "var(--dash-accent)" : "var(--dash-text)" }}>
+        {value.toLocaleString()}
+      </p>
+    </div>
+  );
+}
+
+function BarRow({ label, count, total, color }: { label: string; count: number; total: number; color: string }) {
+  const pct = total > 0 ? (count / total) * 100 : 0;
+  return (
+    <div className="flex items-center gap-3 py-2.5">
+      <p className="w-28 text-[11px] font-mono truncate flex-shrink-0 capitalize" style={{ color: "var(--dash-muted)" }}>
+        {label.replace(/_/g, " ")}
+      </p>
+      <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--dash-border)" }}>
+        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="w-8 text-right text-[11px] font-mono tabular-nums" style={{ color: "var(--dash-text)" }}>{count}</span>
+    </div>
+  );
+}
+
+type ActivityItem = { id: string; at: string; title: string; description: string; tag: string };
+const PAGE_SIZE = 8;
 
 export default function DashboardPage() {
   const { user } = useAuth();
   const { stats, isLoading, refetch } = useDashboard();
   const { brds, isLoading: brdLoading, refetch: refetchBrds } = useBrds();
-  const {
-    logs,
-    isLoading: logsLoading,
-    refetch: refetchLogs,
-  } = useUserLogs(
+  const { logs, isLoading: logsLoading, refetch: refetchLogs } = useUserLogs(
     user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" ? "all" : "mine",
   );
-  const [activityPage, setActivityPage] = React.useState(1);
-
-  const statCards = [
-    { label: "Users", value: stats?.totalUsers ?? 0 },
-    { label: "Documents", value: stats?.totalFiles ?? 0 },
-    { label: "BRD Sources", value: stats?.totalBrds ?? brds.length },
-    { label: "Pending", value: stats?.pendingValidation ?? 0 },
-    { label: "Tasks", value: stats?.totalTasks ?? 0 },
-    { label: "Uploads (7d)", value: stats?.recentUploads7d ?? 0 },
-  ];
-
-  const totalUsers = stats?.usersByRole.reduce((a, b) => a + b.count, 0) ?? 0;
+  const [page, setPage] = React.useState(1);
   const allBusy = isLoading || brdLoading || logsLoading;
 
-  const recentActivity: ActivityItem[] = React.useMemo(() => {
-    const fromLogs: ActivityItem[] = logs.map((log) => ({
-      id: `log-${log.id}`,
-      at: log.createdAt,
-      title: log.action.replace(/_/g, " "),
-      description:
-        log.details ||
-        `${log.user?.firstName ?? ""} ${log.user?.lastName ?? ""}`.trim(),
-      tag: "System",
+  const activity: ActivityItem[] = React.useMemo(() => {
+    const fromLogs: ActivityItem[] = logs.map((l) => ({
+      id: `log-${l.id}`, at: l.createdAt,
+      title: l.action.replace(/_/g, " "),
+      description: `${l.user?.firstName ?? ""} ${l.user?.lastName ?? ""}`.trim() || l.details || "—",
+      tag: "SYSTEM",
     }));
-
-    const fromFiles: ActivityItem[] = (stats?.recentActivity ?? []).map(
-      (f) => ({
-        id: `file-${f.id}`,
-        at: f.uploadedAt,
-        title: "File Uploaded",
-        description: `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""} uploaded ${f.originalName}`,
-        tag: f.status,
-      }),
-    );
-
+    const fromFiles: ActivityItem[] = (stats?.recentActivity ?? []).map((f) => ({
+      id: `file-${f.id}`, at: f.uploadedAt,
+      title: "FILE UPLOADED",
+      description: `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""} · ${f.originalName}`,
+      tag: f.status,
+    }));
     return [...fromLogs, ...fromFiles]
       .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
-      .slice(0, 50);
+      .slice(0, 100);
   }, [logs, stats?.recentActivity]);
 
-  const activityTotalPages = Math.max(
-    1,
-    Math.ceil(recentActivity.length / ACTIVITY_PAGE_SIZE),
-  );
+  const totalPages = Math.max(1, Math.ceil(activity.length / PAGE_SIZE));
+  React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
+  const paged = activity.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  React.useEffect(() => {
-    if (activityPage > activityTotalPages) {
-      setActivityPage(activityTotalPages);
-    }
-  }, [activityPage, activityTotalPages]);
-
-  const pagedActivity = React.useMemo(() => {
-    const start = (activityPage - 1) * ACTIVITY_PAGE_SIZE;
-    const end = start + ACTIVITY_PAGE_SIZE;
-    return recentActivity.slice(start, end);
-  }, [activityPage, recentActivity]);
-
-  const activityRangeStart =
-    recentActivity.length === 0
-      ? 0
-      : (activityPage - 1) * ACTIVITY_PAGE_SIZE + 1;
-  const activityRangeEnd = Math.min(
-    activityPage * ACTIVITY_PAGE_SIZE,
-    recentActivity.length,
-  );
+  const totalUsers = stats?.usersByRole?.reduce((a, b) => a + b.count, 0) ?? 0;
+  const totalTasks = (stats?.tasksByStatus ?? []).reduce((a, b) => a + b.count, 0);
 
   if (allBusy) {
     return (
-      <div className="flex items-center justify-center h-72">
-        <TetrisLoading size="sm" speed="fast" loadingText="Loading dashboard..." />
+      <div className="dash-root flex items-center justify-center h-full min-h-[400px]" style={{ background: "var(--dash-bg)" }}>
+        <style>{THEME_STYLE}</style>
+        <div className="text-center space-y-3">
+          <TetrisLoading size="sm" speed="fast" loadingText="" />
+          <p className="text-[11px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-muted)" }}>Initialising</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="w-full max-w-screen-2xl space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
-        {statCards.map((s) => (
-          <Card
-            key={s.label}
-            className="p-4 border border-slate-200 dark:border-slate-800"
-          >
-            <p className="text-[11px] uppercase tracking-wider text-slate-500">
-              {s.label}
-            </p>
-            <p className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1">
-              {s.value}
-            </p>
-          </Card>
-        ))}
-      </div>
+    <div className="dash-root min-h-full" style={{ background: "var(--dash-bg)" }}>
+      <style>{THEME_STYLE}</style>
+      <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <Card className="xl:col-span-2 overflow-hidden">
-          <CardHeader
-            title="Recent Activity"
-            subtitle="All movements across users and processes"
-            action={
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  refetch();
-                  refetchBrds();
-                  refetchLogs();
-                }}
-              >
-                Refresh Data
-              </Button>
-            }
-          />
-          {!recentActivity.length ? (
-            <EmptyState
-              icon="🗂️"
-              title="No activity yet"
-              description="System movement logs will appear here."
+        {/* Header */}
+        <div className="dash-fade flex items-end justify-between">
+          <div>
+            <p className="text-[10px] font-mono uppercase tracking-[0.2em]" style={{ color: "var(--dash-muted)" }}>Overview</p>
+            <h1 className="mt-1 text-xl font-semibold tracking-tight" style={{ color: "var(--dash-text)" }}>
+              {user?.firstName ? `${user.firstName}'s workspace` : "Workspace"}
+            </h1>
+          </div>
+          <GhostBtn onClick={() => { refetch(); refetchBrds(); refetchLogs(); }}>↻ Refresh</GhostBtn>
+        </div>
+
+        {/* Stats */}
+        <div className="dash-fade dash-fade-1 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
+          <StatCard label="Users"       value={stats?.totalUsers ?? 0} />
+          <StatCard label="Documents"   value={stats?.totalFiles ?? 0} />
+          <StatCard label="BRD Sources" value={stats?.totalBrds ?? brds.length} accent />
+          <StatCard label="Pending"     value={stats?.pendingValidation ?? 0} />
+          <StatCard label="Tasks"       value={stats?.totalTasks ?? 0} />
+          <StatCard label="Uploads 7d"  value={stats?.recentUploads7d ?? 0} />
+        </div>
+
+        {/* Row 2 */}
+        <div className="dash-fade dash-fade-2 grid grid-cols-1 xl:grid-cols-12 gap-4">
+
+          {/* Activity — 7 cols */}
+          <Panel className="xl:col-span-7">
+            <SectionHead
+              title="Activity Feed"
+              sub={`${activity.length} events`}
+              action={
+                <>
+                  <span className="text-[10px] font-mono mr-1" style={{ color: "var(--dash-dim)" }}>
+                    {activity.length === 0 ? "0" : `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, activity.length)}`} / {activity.length}
+                  </span>
+                  <NavBtn disabled={page === 1} onClick={() => setPage(p => p - 1)}>←</NavBtn>
+                  <NavBtn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>→</NavBtn>
+                </>
+              }
             />
-          ) : (
-            <>
-              <div className="divide-y divide-[rgba(26,143,209,0.06)]">
-                {pagedActivity.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-4 px-6 py-3.5 hover:bg-[rgba(26,143,209,0.04)] transition-colors"
-                  >
-                    <div className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
-                        {item.title}
-                      </p>
-                      <p className="text-xs text-slate-500 truncate">
-                        {item.description}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <Badge className="bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                        {item.tag}
-                      </Badge>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        {formatTimeAgo(item.at)}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                <p className="text-xs text-slate-500">
-                  {activityRangeStart}-{activityRangeEnd} of{" "}
-                  {recentActivity.length}
-                </p>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={activityPage === 1}
-                    onClick={() =>
-                      setActivityPage((prev) => Math.max(1, prev - 1))
-                    }
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={activityPage >= activityTotalPages}
-                    onClick={() =>
-                      setActivityPage((prev) =>
-                        Math.min(activityTotalPages, prev + 1),
-                      )
-                    }
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            </>
-          )}
-        </Card>
-
-        <Card>
-          <CardHeader title="Users by Role" subtitle="Distribution" />
-          <div className="p-6 space-y-4">
-            {!stats?.usersByRole?.length ? (
-              <EmptyState icon="👤" title="No users yet" />
+            {/* Col headers */}
+            <div className="grid grid-cols-[auto_1fr_auto_auto] gap-3 px-5 py-2" style={{ borderBottom: "1px solid var(--dash-border)" }}>
+              <span className="w-3" />
+              <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Event</p>
+              <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Tag</p>
+              <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>When</p>
+            </div>
+            {paged.length === 0 ? (
+              <p className="px-5 py-10 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No activity yet</p>
             ) : (
-              stats.usersByRole.map((item) => (
-                <div key={item.role}>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-sm text-slate-500">
-                      {ROLE_LABELS[item.role as Role]}
-                    </span>
-                    <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-                      {item.count}
-                    </span>
+              paged.map((item, i) => (
+                <div
+                  key={item.id}
+                  className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-3 px-5 py-3 transition-colors duration-100"
+                  style={{ borderTop: i !== 0 ? "1px solid var(--dash-border)" : undefined }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "var(--dash-hover)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                >
+                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: "var(--dash-accent)", opacity: 0.7 }} />
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-mono font-medium uppercase tracking-wide truncate" style={{ color: "var(--dash-text)" }}>{item.title}</p>
+                    <p className="text-[11px] truncate mt-0.5" style={{ color: "var(--dash-muted)" }}>{item.description}</p>
                   </div>
-                  <div className="w-full rounded-full h-2 bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                    <div
-                      className="h-2 rounded-full transition-all duration-700"
-                      style={{
-                        width: `${totalUsers > 0 ? (item.count / totalUsers) * 100 : 0}%`,
-                        backgroundColor: ROLE_CHART_COLORS[item.role as Role],
-                      }}
-                    />
-                  </div>
+                  <Pill label={item.tag} color={STATUS_HEX[item.tag] ?? "#6b7280"} />
+                  <span className="text-[10px] font-mono tabular-nums flex-shrink-0" style={{ color: "var(--dash-dim)" }}>{formatTimeAgo(item.at)}</span>
                 </div>
               ))
             )}
-          </div>
-        </Card>
-      </div>
+          </Panel>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <Card>
-          <CardHeader
-            title="Processing Overview"
-            subtitle="File status across the pipeline"
-          />
-          <div className="p-6 grid grid-cols-2 gap-3">
-            {(stats?.filesByStatus ?? []).map((item) => (
-              <div
-                key={item.status}
-                className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-800"
-              >
-                <span className="text-xs text-slate-500">{item.status}</span>
-                <Badge
-                  className={TASK_STATUS_COLORS[item.status as TaskStatus]}
-                >
-                  {item.count}
-                </Badge>
+          {/* Right stack — 5 cols */}
+          <div className="xl:col-span-5 flex flex-col gap-4">
+            <Panel>
+              <SectionHead title="Users by Role" sub={`${totalUsers} total`} />
+              <div className="px-5 py-3">
+                {!stats?.usersByRole?.length
+                  ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No users</p>
+                  : stats.usersByRole.map((item) => (
+                      <BarRow key={item.role} label={item.role} count={item.count} total={totalUsers} color={ROLE_HEX[item.role as Role] ?? "#6b7280"} />
+                    ))
+                }
               </div>
-            ))}
+            </Panel>
+            <Panel>
+              <SectionHead title="Tasks" sub={`${totalTasks} total`} />
+              <div className="px-5 py-3">
+                {(stats?.tasksByStatus ?? []).length === 0
+                  ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No tasks</p>
+                  : (stats?.tasksByStatus ?? []).map((item) => (
+                      <BarRow key={item.status} label={item.status} count={item.count} total={totalTasks} color={STATUS_HEX[item.status] ?? "#6b7280"} />
+                    ))
+                }
+              </div>
+            </Panel>
           </div>
-        </Card>
+        </div>
 
-        <Card>
-          <CardHeader title="Task Overview" subtitle="Task status breakdown" />
-          <div className="p-6 grid grid-cols-1 gap-3">
-            {(stats?.tasksByStatus ?? []).length === 0 ? (
-              <EmptyState icon="✅" title="No tasks yet" />
-            ) : (
-              (stats?.tasksByStatus ?? []).map((item) => {
-                const total = (stats?.tasksByStatus ?? []).reduce(
-                  (a, b) => a + b.count,
-                  0,
-                );
-                const pct = total > 0 ? Math.round((item.count / total) * 100) : 0;
-                const colors: Record<string, string> = {
-                  PENDING: "#f59e0b",
-                  IN_PROGRESS: "#3b82f6",
-                  COMPLETED: "#10b981",
-                };
-                return (
-                  <div key={item.status}>
-                    <div className="flex justify-between mb-1">
-                      <span className="text-xs text-slate-500 capitalize">
-                        {item.status.replace("_", " ")}
-                      </span>
-                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                        {item.count}
-                      </span>
+        {/* Row 3 */}
+        <div className="dash-fade dash-fade-3 grid grid-cols-1 xl:grid-cols-12 gap-4">
+
+          {/* Pipeline — 3 cols */}
+          <Panel className="xl:col-span-3">
+            <SectionHead title="Pipeline" sub="File status" />
+            <div className="px-5 py-2">
+              {(stats?.filesByStatus ?? []).length === 0
+                ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No files</p>
+                : (stats?.filesByStatus ?? []).map((item, i, arr) => (
+                    <div key={item.status} className="flex items-center justify-between py-2.5"
+                      style={{ borderBottom: i !== arr.length - 1 ? "1px solid var(--dash-border)" : undefined }}>
+                      <span className="text-[11px] font-mono" style={{ color: "var(--dash-muted)" }}>{item.status}</span>
+                      <Pill label={String(item.count)} color={STATUS_HEX[item.status as TaskStatus] ?? "#6b7280"} />
                     </div>
-                    <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                      <div
-                        className="h-2 rounded-full transition-all duration-700"
-                        style={{
-                          width: `${pct}%`,
-                          backgroundColor: colors[item.status] ?? "#94a3b8",
-                        }}
-                      />
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </Card>
-
-        <Card>
-          <CardHeader title="BRD Status" subtitle="BRD document states" />
-          <div className="p-6 grid grid-cols-2 gap-3">
-            {(stats?.brdsByStatus ?? []).length === 0 ? (
-              <EmptyState icon="📄" title="No BRDs yet" />
-            ) : (
-              (stats?.brdsByStatus ?? []).map((item) => {
-                const brdColors: Record<string, string> = {
-                  DRAFT: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-                  PAUSED: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-                  COMPLETED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
-                  APPROVED: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-                  ON_HOLD: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
-                };
-                return (
-                  <div
-                    key={item.status}
-                    className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-800"
-                  >
-                    <span className="text-xs text-slate-500">{item.status}</span>
-                    <Badge className={brdColors[item.status] ?? "bg-slate-100 text-slate-700"}>
-                      {item.count}
-                    </Badge>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </Card>
-
-        <Card className="overflow-hidden">
-          <CardHeader
-            title="BRD Sources"
-            subtitle="Live list from BRD database"
-          />
-          {!brds.length ? (
-            <EmptyState
-              icon="📄"
-              title="No BRD sources"
-              description="Upload and save BRD sources to populate this list."
-            />
-          ) : (
-            <div className="divide-y divide-slate-200 dark:divide-slate-800">
-              {brds.slice(0, 10).map((src) => (
-                <div
-                  key={src.id}
-                  className="px-6 py-3.5 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
-                      {src.title}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {src.id} · {src.geography || "—"} ·{" "}
-                      {src.format.toUpperCase()} · Updated {src.lastUpdated}
-                    </p>
-                  </div>
-                  <Badge
-                    className={
-                      BRD_STATUS_BADGE[src.status] ??
-                      "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                    }
-                  >
-                    {src.status}
-                  </Badge>
-                </div>
-              ))}
+                  ))
+              }
             </div>
-          )}
-        </Card>
+          </Panel>
+
+          {/* BRD status — 3 cols */}
+          <Panel className="xl:col-span-3">
+            <SectionHead title="BRD Status" sub="Document states" />
+            <div className="px-5 py-2">
+              {(stats?.brdsByStatus ?? []).length === 0
+                ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No BRDs</p>
+                : (stats?.brdsByStatus ?? []).map((item, i, arr) => (
+                    <div key={item.status} className="flex items-center justify-between py-2.5"
+                      style={{ borderBottom: i !== arr.length - 1 ? "1px solid var(--dash-border)" : undefined }}>
+                      <span className="text-[11px] font-mono" style={{ color: "var(--dash-muted)" }}>{item.status}</span>
+                      <Pill label={String(item.count)} color={STATUS_HEX[item.status] ?? "#6b7280"} />
+                    </div>
+                  ))
+              }
+            </div>
+          </Panel>
+
+          {/* BRD sources table — 6 cols */}
+          <Panel className="xl:col-span-6">
+            <SectionHead title="BRD Sources" sub={`${brds.length} sources`} />
+            {brds.length === 0
+              ? <p className="px-5 py-10 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No BRD sources yet</p>
+              : (
+                <>
+                  <div className="grid grid-cols-[1fr_48px_80px] px-5 py-2" style={{ borderBottom: "1px solid var(--dash-border)" }}>
+                    <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Source</p>
+                    <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Fmt</p>
+                    <p className="text-[10px] font-mono uppercase tracking-widest text-right" style={{ color: "var(--dash-dim)" }}>Status</p>
+                  </div>
+                  {brds.slice(0, 8).map((src, i) => (
+                    <div
+                      key={src.id}
+                      className="grid grid-cols-[1fr_48px_80px] items-center gap-2 px-5 py-3 transition-colors duration-100"
+                      style={{ borderTop: i !== 0 ? "1px solid var(--dash-border)" : undefined }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "var(--dash-hover)"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-medium truncate" style={{ color: "var(--dash-text)" }}>{src.title}</p>
+                        <p className="text-[10px] font-mono mt-0.5 truncate" style={{ color: "var(--dash-dim)" }}>
+                          {src.geography || "—"} · {src.lastUpdated}
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-mono uppercase" style={{ color: "var(--dash-muted)" }}>{src.format}</span>
+                      <div className="flex justify-end">
+                        <Pill label={src.status} color={STATUS_HEX[src.status] ?? "#6b7280"} />
+                      </div>
+                    </div>
+                  ))}
+                  {brds.length > 8 && (
+                    <div className="px-5 py-3" style={{ borderTop: "1px solid var(--dash-border)" }}>
+                      <p className="text-[10px] font-mono" style={{ color: "var(--dash-dim)" }}>+{brds.length - 8} more sources</p>
+                    </div>
+                  )}
+                </>
+              )
+            }
+          </Panel>
+        </div>
+
       </div>
     </div>
   );
