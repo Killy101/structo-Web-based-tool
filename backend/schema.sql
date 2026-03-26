@@ -4,16 +4,16 @@
 
 -- ── Enums ──────────────────────────────────────────────────────────────────
 
-CREATE TYPE role_enum           AS ENUM ('SUPER_ADMIN', 'ADMIN', 'USER');
-CREATE TYPE status_enum         AS ENUM ('ACTIVE', 'INACTIVE');
-CREATE TYPE task_status_enum    AS ENUM ('PENDING', 'PROCESSING', 'PROCESSED', 'SUBMITTED', 'APPROVED', 'REJECTED');
-CREATE TYPE assignment_status   AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED');
-CREATE TYPE brd_format_enum     AS ENUM ('NEW', 'OLD');
-CREATE TYPE brd_status_enum     AS ENUM ('DRAFT', 'PAUSED', 'COMPLETED', 'APPROVED', 'ON_HOLD');
+CREATE TYPE IF NOT EXISTS role_enum           AS ENUM ('SUPER_ADMIN', 'ADMIN', 'USER');
+CREATE TYPE IF NOT EXISTS status_enum         AS ENUM ('ACTIVE', 'INACTIVE');
+CREATE TYPE IF NOT EXISTS task_status_enum    AS ENUM ('PENDING', 'PROCESSING', 'PROCESSED', 'SUBMITTED', 'APPROVED', 'REJECTED');
+CREATE TYPE IF NOT EXISTS assignment_status   AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED');
+CREATE TYPE IF NOT EXISTS brd_format_enum     AS ENUM ('NEW', 'OLD');
+CREATE TYPE IF NOT EXISTS brd_status_enum     AS ENUM ('DRAFT', 'PAUSED', 'COMPLETED', 'APPROVED', 'ON_HOLD');
 
 -- ── user_roles ──────────────────────────────────────────────────────────────
 
-CREATE TABLE user_roles (
+CREATE TABLE IF NOT EXISTS user_roles (
   id         SERIAL      PRIMARY KEY,
   name       TEXT        NOT NULL UNIQUE,
   slug       TEXT        NOT NULL UNIQUE,
@@ -24,7 +24,7 @@ CREATE TABLE user_roles (
 
 -- ── teams ───────────────────────────────────────────────────────────────────
 
-CREATE TABLE teams (
+CREATE TABLE IF NOT EXISTS teams (
   id         SERIAL      PRIMARY KEY,
   name       TEXT        NOT NULL UNIQUE,
   slug       TEXT        NOT NULL UNIQUE,
@@ -34,7 +34,7 @@ CREATE TABLE teams (
 
 -- ── users ───────────────────────────────────────────────────────────────────
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id                  SERIAL        PRIMARY KEY,
   user_id             TEXT          NOT NULL UNIQUE,
   password            TEXT          NOT NULL,
@@ -54,18 +54,18 @@ CREATE TABLE users (
 
 -- ── password_history ────────────────────────────────────────────────────────
 
-CREATE TABLE password_history (
+CREATE TABLE IF NOT EXISTS password_history (
   id         SERIAL      PRIMARY KEY,
   user_id    INT         NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   hash       TEXT        NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_password_history_user_created ON password_history (user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_password_history_user_created ON password_history (user_id, created_at);
 
 -- ── user_logs ───────────────────────────────────────────────────────────────
 
-CREATE TABLE user_logs (
+CREATE TABLE IF NOT EXISTS user_logs (
   id         SERIAL      PRIMARY KEY,
   user_id    INT         NOT NULL REFERENCES users (id),
   action     TEXT        NOT NULL,
@@ -75,7 +75,7 @@ CREATE TABLE user_logs (
 
 -- ── notifications ───────────────────────────────────────────────────────────
 
-CREATE TABLE notifications (
+CREATE TABLE IF NOT EXISTS notifications (
   id         SERIAL      PRIMARY KEY,
   user_id    INT         NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   type       TEXT        NOT NULL,
@@ -86,11 +86,11 @@ CREATE TABLE notifications (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_notifications_user_id ON notifications (user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications (user_id);
 
 -- ── file_uploads ─────────────────────────────────────────────────────────────
 
-CREATE TABLE file_uploads (
+CREATE TABLE IF NOT EXISTS file_uploads (
   id             SERIAL           PRIMARY KEY,
   original_name  TEXT             NOT NULL,
   file_type      TEXT             NOT NULL,
@@ -105,7 +105,7 @@ CREATE TABLE file_uploads (
 
 -- ── file_outputs ─────────────────────────────────────────────────────────────
 
-CREATE TABLE file_outputs (
+CREATE TABLE IF NOT EXISTS file_outputs (
   id           SERIAL      PRIMARY KEY,
   upload_id    INT         NOT NULL UNIQUE REFERENCES file_uploads (id),
   filename     TEXT        NOT NULL,
@@ -116,7 +116,7 @@ CREATE TABLE file_outputs (
 
 -- ── validations ──────────────────────────────────────────────────────────────
 
-CREATE TABLE validations (
+CREATE TABLE IF NOT EXISTS validations (
   id              SERIAL      PRIMARY KEY,
   upload_id       INT         NOT NULL UNIQUE REFERENCES file_uploads (id),
   validated_by_id INT         NOT NULL REFERENCES users (id),
@@ -127,7 +127,7 @@ CREATE TABLE validations (
 
 -- ── task_assignments ─────────────────────────────────────────────────────────
 
-CREATE TABLE task_assignments (
+CREATE TABLE IF NOT EXISTS task_assignments (
   id            SERIAL          PRIMARY KEY,
   title         TEXT            NOT NULL,
   description   TEXT,
@@ -144,7 +144,7 @@ CREATE TABLE task_assignments (
 
 -- ── task_assignees ───────────────────────────────────────────────────────────
 
-CREATE TABLE task_assignees (
+CREATE TABLE IF NOT EXISTS task_assignees (
   id            SERIAL      PRIMARY KEY,
   assignment_id INT         NOT NULL REFERENCES task_assignments (id) ON DELETE CASCADE,
   user_id       INT         NOT NULL REFERENCES users (id),
@@ -154,7 +154,7 @@ CREATE TABLE task_assignees (
 
 -- ── task_comments ────────────────────────────────────────────────────────────
 
-CREATE TABLE task_comments (
+CREATE TABLE IF NOT EXISTS task_comments (
   id            SERIAL      PRIMARY KEY,
   assignment_id INT         NOT NULL REFERENCES task_assignments (id) ON DELETE CASCADE,
   author_id     INT         NOT NULL REFERENCES users (id),
@@ -165,7 +165,7 @@ CREATE TABLE task_comments (
 
 -- ── brds ─────────────────────────────────────────────────────────────────────
 
-CREATE TABLE brds (
+CREATE TABLE IF NOT EXISTS brds (
   brd_id        TEXT           NOT NULL PRIMARY KEY,
   title         TEXT           NOT NULL,
   format        brd_format_enum NOT NULL DEFAULT 'NEW',
@@ -179,7 +179,7 @@ CREATE TABLE brds (
 
 -- ── brd_sections ─────────────────────────────────────────────────────────────
 
-CREATE TABLE brd_sections (
+CREATE TABLE IF NOT EXISTS brd_sections (
   id              SERIAL      PRIMARY KEY,
   brd_id          TEXT        NOT NULL UNIQUE REFERENCES brds (brd_id) ON DELETE CASCADE,
   scope           JSONB,
@@ -198,7 +198,7 @@ CREATE TABLE brd_sections (
 -- image_data stores the raw binary bytes (BYTEA).
 -- No more Supabase storage paths.
 
-CREATE TABLE brd_cell_images (
+CREATE TABLE IF NOT EXISTS brd_cell_images (
   id           SERIAL      PRIMARY KEY,
   brd_id       TEXT        NOT NULL REFERENCES brd_sections (brd_id) ON DELETE CASCADE,
   table_index  INT         NOT NULL,
@@ -215,12 +215,12 @@ CREATE TABLE brd_cell_images (
   UNIQUE (brd_id, table_index, row_index, col_index, rid)
 );
 
-CREATE INDEX idx_brd_cell_images_brd_id         ON brd_cell_images (brd_id);
-CREATE INDEX idx_brd_cell_images_brd_id_section ON brd_cell_images (brd_id, section);
+CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id         ON brd_cell_images (brd_id);
+CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id_section ON brd_cell_images (brd_id, section);
 
 -- ── brd_versions ─────────────────────────────────────────────────────────────
 
-CREATE TABLE brd_versions (
+CREATE TABLE IF NOT EXISTS brd_versions (
   id              SERIAL      PRIMARY KEY,
   brd_id          TEXT        NOT NULL REFERENCES brds (brd_id) ON DELETE CASCADE,
   version_num     INT         NOT NULL,
@@ -235,11 +235,11 @@ CREATE TABLE brd_versions (
   UNIQUE (brd_id, version_num)
 );
 
-CREATE INDEX idx_brd_versions_brd_id ON brd_versions (brd_id);
+CREATE INDEX IF NOT EXISTS idx_brd_versions_brd_id ON brd_versions (brd_id);
 
 -- ── app_settings ─────────────────────────────────────────────────────────────
 
-CREATE TABLE app_settings (
+CREATE TABLE IF NOT EXISTS app_settings (
   id         SERIAL      PRIMARY KEY,
   key        TEXT        NOT NULL UNIQUE,
   value      JSONB       NOT NULL,
