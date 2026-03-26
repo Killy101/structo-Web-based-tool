@@ -3,7 +3,7 @@
 -- Steps:
 --   1. Open pgAdmin → connect to Windows PG18 → Query Tool
 --   2. Paste and run this script
---   3. Copy ALL output rows
+--   3. Copy ALL output rows (the ?column? column)
 --   4. Save as migration_data.sql
 --   5. Run: docker compose exec -T db psql -U postgres -d mydb < migration_data.sql
 
@@ -52,7 +52,7 @@ FROM "User"
 
 UNION ALL
 
--- brds (from "Brd")
+-- brds (from "Brd") — maps createdbyid → user_id
 SELECT 'INSERT INTO brds (id, brd_id, title, format, status, created_at, updated_at, deleted_at, user_id) VALUES (' ||
   id || ', ' ||
   quote_literal(brdid) || ', ' ||
@@ -62,27 +62,27 @@ SELECT 'INSERT INTO brds (id, brd_id, title, format, status, created_at, updated
   quote_literal(createdat) || '::timestamptz, ' ||
   quote_literal(updatedat) || '::timestamptz, ' ||
   COALESCE(quote_literal(deletedat), 'NULL') || '::timestamptz, ' ||
-  COALESCE(userid::text, 'NULL') ||
+  COALESCE(createdbyid::text, 'NULL') ||
   ') ON CONFLICT (id) DO NOTHING;'
 FROM "Brd"
 
 UNION ALL
 
--- password_history (from "PasswordHistory")
+-- password_history (from "PasswordHistory") — column is "hash" not "passwordhash"
 SELECT 'INSERT INTO password_history (id, user_id, password_hash, created_at) VALUES (' ||
   id || ', ' ||
   userid || ', ' ||
-  quote_literal(passwordhash) || ', ' ||
+  quote_literal(hash) || ', ' ||
   quote_literal(createdat) || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
 FROM "PasswordHistory"
 
 UNION ALL
 
--- user_logs (from "UserLog")
+-- user_logs (from "UserLog") — column is "details" not "description"
 SELECT 'INSERT INTO user_logs (id, action, description, created_at, user_id) VALUES (' ||
   id || ', ' ||
   quote_literal(action) || ', ' ||
-  COALESCE(quote_literal(description), 'NULL') || ', ' ||
+  COALESCE(quote_literal(details), 'NULL') || ', ' ||
   quote_literal(createdat) || '::timestamptz, ' ||
   COALESCE(userid::text, 'NULL') ||
   ') ON CONFLICT (id) DO NOTHING;'
