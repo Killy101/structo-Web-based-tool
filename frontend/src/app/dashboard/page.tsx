@@ -1,389 +1,898 @@
 "use client";
-import React from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { useBrds, useDashboard, useUserLogs } from "../../hooks";
+import { useDashboard, useUserLogs } from "../../hooks";
+import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
 import { Role, TaskStatus } from "../../types";
 import TetrisLoading from "../../components/ui/tetris-loader";
 
-const THEME_STYLE = `
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+/* ─── Injected styles ──────────────────────────────────────────────────────── */
+// ── Brd type (mirrors BRD page) ─────────────────────────────────────────────
+type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
+interface Brd {
+  id: string; title: string; sourceName?: string; contentName?: string;
+  status: BrdStatus; version: string; lastUpdated: string;
+  geography: string; format: "new" | "old";
+}
+function brdDisplayTitle(b: Brd) {
+  return b.sourceName?.trim() || b.contentName?.trim() || b.title;
+}
 
-.dash-root {
-  font-family: 'IBM Plex Sans', sans-serif;
-  --dash-accent:  #00b896;
-  --dash-bg:      #f4f6f8;
-  --dash-surface: #ffffff;
-  --dash-border:  #e1e5ea;
-  --dash-text:    #111827;
-  --dash-muted:   #6b7280;
-  --dash-dim:     #9ca3af;
-  --dash-hover:   #f9fafb;
-}
-.dark .dash-root {
-  --dash-bg:      #0d1117;
-  --dash-surface: #161b22;
-  --dash-border:  #21262d;
-  --dash-text:    #e6edf3;
-  --dash-muted:   #7d8590;
-  --dash-dim:     #484f58;
-  --dash-hover:   #1c2128;
-}
-.dash-root .font-mono { font-family: 'IBM Plex Mono', monospace; }
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800&family=JetBrains+Mono:wght@400;500&display=swap');
 
-@keyframes dash-fade-up {
-  from { opacity: 0; transform: translateY(5px); }
-  to   { opacity: 1; transform: translateY(0); }
+.db { font-family:'Plus Jakarta Sans',sans-serif; }
+.db .jb { font-family:'JetBrains Mono',monospace; }
+
+/* tokens — light */
+.db {
+  --c-bg:    #f0f4fb;
+  --c-card:  #ffffff;
+  --c-b:     #e4eaf4;
+  --c-txt:   #0d1b3e;
+  --c-sub:   #5a6e96;
+  --c-dim:   #96a8c8;
+  --c-a:     #1a6bff;
+  --c-ahi:   #3d8bff;
+  --c-alo:   rgba(26,107,255,.08);
+  --c-sh:    0 1px 2px rgba(13,27,62,.06),0 4px 14px rgba(13,27,62,.06);
+  --c-shl:   0 6px 24px rgba(13,27,62,.11);
 }
-.dash-fade   { animation: dash-fade-up 0.3s ease both; }
-.dash-fade-1 { animation-delay: 0.04s; }
-.dash-fade-2 { animation-delay: 0.09s; }
-.dash-fade-3 { animation-delay: 0.14s; }
+/* tokens — dark */
+.dark .db {
+  --c-bg:    #07101f;
+  --c-card:  #0c1829;
+  --c-b:     #17253f;
+  --c-txt:   #d8e4ff;
+  --c-sub:   #637898;
+  --c-dim:   #374d6a;
+  --c-a:     #3d8bff;
+  --c-ahi:   #6aabff;
+  --c-alo:   rgba(61,139,255,.09);
+  --c-sh:    0 1px 2px rgba(0,0,0,.25),0 4px 14px rgba(0,0,0,.22);
+  --c-shl:   0 6px 24px rgba(0,0,0,.45);
+}
+
+.db .card {
+  background:var(--c-card);
+  border:1px solid var(--c-b);
+  border-radius:16px;
+  box-shadow:var(--c-sh);
+}
+
+/* entrance */
+@keyframes db-up { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes db-in { from{opacity:0} to{opacity:1} }
+@keyframes db-cx { from{transform:scaleX(0)} to{transform:scaleX(1)} }
+@keyframes db-cy { from{transform:scaleY(0)} to{transform:scaleY(1)} }
+@keyframes db-num{ from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
+@keyframes db-ln { from{stroke-dashoffset:600;opacity:0} to{stroke-dashoffset:0;opacity:1} }
+@keyframes db-pl { 0%,100%{opacity:1}50%{opacity:.35} }
+
+.db .u  { animation:db-up .42s cubic-bezier(.16,1,.3,1) both }
+.db .d1 { animation-delay:.04s } .db .d2 { animation-delay:.08s }
+.db .d3 { animation-delay:.12s } .db .d4 { animation-delay:.16s }
+.db .d5 { animation-delay:.20s } .db .d6 { animation-delay:.24s }
+.db .d7 { animation-delay:.28s } .db .d8 { animation-delay:.32s }
+
+/* progress bars */
+.db .pb { height:5px; border-radius:5px; background:var(--c-b); overflow:hidden; }
+.db .pf {
+  height:100%; border-radius:5px; transform-origin:left;
+  animation:db-cx .75s cubic-bezier(.16,1,.3,1) both;
+}
+
+/* row hover */
+.db .tr { border-radius:9px; transition:background .12s; cursor:default; }
+.db .tr:hover { background:var(--c-alo); }
+
+/* live dot */
+.db .ld { width:7px;height:7px;border-radius:50%;background:#22c55e;animation:db-pl 1.8s infinite; }
+
+/* badge */
+.db .bdg {
+  display:inline-flex;align-items:center;
+  padding:1px 7px;border-radius:20px;
+  font-size:9.5px;font-weight:700;letter-spacing:.04em;
+  white-space:nowrap;font-family:'JetBrains Mono',monospace;
+}
+
+/* scrollbar */
+.db ::-webkit-scrollbar { width:3px; height:3px; }
+.db ::-webkit-scrollbar-track { background:transparent; }
+.db ::-webkit-scrollbar-thumb { background:var(--c-b); border-radius:3px; }
 `;
 
-const STATUS_HEX: Record<string, string> = {
-  DRAFT:       "#6b7280",
-  IN_REVIEW:   "#3b82f6",
-  APPROVED:    "#22c55e",
-  ARCHIVED:    "#a855f7",
-  PAUSED:      "#f59e0b",
-  COMPLETED:   "#22c55e",
-  ON_HOLD:     "#ef4444",
-  PENDING:     "#f59e0b",
-  IN_PROGRESS: "#3b82f6",
-  SYSTEM:      "#6b7280",
+/* ─── Status colours ──────────────────────────────────────────────────────── */
+type SC = { bg: string; fg: string };
+const LIGHT: Record<string, SC> = {
+  COMPLETED:   { bg:"#dcfce7", fg:"#15803d" },
+  APPROVED:    { bg:"#dcfce7", fg:"#15803d" },
+  PENDING:     { bg:"#fef3c7", fg:"#b45309" },
+  IN_PROGRESS: { bg:"#dbeafe", fg:"#1d4ed8" },
+  IN_REVIEW:   { bg:"#dbeafe", fg:"#1d4ed8" },
+  DRAFT:       { bg:"#f1f5f9", fg:"#475569" },
+  ARCHIVED:    { bg:"#ede9fe", fg:"#6d28d9" },
+  PAUSED:      { bg:"#fef3c7", fg:"#b45309" },
+  ON_HOLD:     { bg:"#fee2e2", fg:"#c53030" },
+  SYSTEM:      { bg:"#f1f5f9", fg:"#475569" },
+};
+const DARK: Record<string, SC> = {
+  COMPLETED:   { bg:"rgba(21,128,61,.18)",  fg:"#4ade80" },
+  APPROVED:    { bg:"rgba(21,128,61,.18)",  fg:"#4ade80" },
+  PENDING:     { bg:"rgba(180,83,9,.18)",   fg:"#fbbf24" },
+  IN_PROGRESS: { bg:"rgba(29,78,216,.2)",   fg:"#60a5fa" },
+  IN_REVIEW:   { bg:"rgba(29,78,216,.2)",   fg:"#60a5fa" },
+  DRAFT:       { bg:"rgba(71,85,105,.15)",  fg:"#94a3b8" },
+  ARCHIVED:    { bg:"rgba(109,40,217,.18)", fg:"#a78bfa" },
+  PAUSED:      { bg:"rgba(180,83,9,.18)",   fg:"#fbbf24" },
+  ON_HOLD:     { bg:"rgba(197,48,48,.18)",  fg:"#f87171" },
+  SYSTEM:      { bg:"rgba(71,85,105,.15)",  fg:"#94a3b8" },
 };
 
-const ROLE_HEX: Record<string, string> = {
-  SUPER_ADMIN: "#ef4444",
-  ADMIN:       "#f59e0b",
-  USER:        "#22c55e",
-};
+/* ─── Accent palette for bars / rings ─────────────────────────────────────── */
+const ACCENTS = ["#1a6bff","#00c2ff","#7c3aed","#16a34a","#e85d04","#db2777"];
 
-function Pill({ label, color }: { label: string; color: string }) {
-  return (
-    <span
-      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium uppercase tracking-wide whitespace-nowrap"
-      style={{ background: color + "26", color, border: `1px solid ${color}33` }}
-    >
-      {label}
-    </span>
-  );
+/* ─── Helpers ─────────────────────────────────────────────────────────────── */
+function useDark() {
+  const [dark, setDark] = useState(false);
+  useEffect(() => {
+    const check = () => setDark(document.documentElement.classList.contains("dark"));
+    check();
+    const mo = new MutationObserver(check);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => mo.disconnect();
+  }, []);
+  return dark;
 }
 
-function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div
-      className={`rounded-lg overflow-hidden ${className}`}
-      style={{ background: "var(--dash-surface)", border: "1px solid var(--dash-border)" }}
-    >
-      {children}
-    </div>
-  );
+function Badge({ label }: { label: string }) {
+  const dark = useDark();
+  const map  = dark ? DARK : LIGHT;
+  const c    = map[label] ?? map.SYSTEM;
+  return <span className="bdg" style={{ background: c.bg, color: c.fg }}>{label}</span>;
 }
 
-function SectionHead({ title, sub, action }: { title: string; sub?: string; action?: React.ReactNode }) {
+function CountUp({ to, prefix = "", suffix = "" }: { to: number; prefix?: string; suffix?: string }) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    let s: number | null = null;
+    const step = (ts: number) => {
+      if (!s) s = ts;
+      const p = Math.min((ts - s) / 900, 1);
+      setV(Math.round((1 - Math.pow(1 - p, 4)) * to));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [to]);
+  return <>{prefix}{v.toLocaleString()}{suffix}</>;
+}
+
+/* ─── Live clock / date widget ────────────────────────────────────────────── */
+function LiveClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const hh   = now.getHours().toString().padStart(2, "0");
+  const mm   = now.getMinutes().toString().padStart(2, "0");
+  const ss   = now.getSeconds().toString().padStart(2, "0");
+  const ampm = now.getHours() >= 12 ? "PM" : "AM";
+  const hh12 = (now.getHours() % 12 || 12).toString().padStart(2, "0");
+
+  const dayName = now.toLocaleDateString("en-US", { weekday: "long" });
+  const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  // Progress through the day as percentage
+  const dayPct = Math.round(((now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()) / 86400) * 100);
+
   return (
-    <div
-      className="flex items-start justify-between px-5 py-4"
-      style={{ borderBottom: "1px solid var(--dash-border)" }}
-    >
-      <div>
-        <p className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--dash-text)" }}>{title}</p>
-        {sub && <p className="text-[11px] font-mono mt-0.5" style={{ color: "var(--dash-muted)" }}>{sub}</p>}
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "flex-end",
+      gap: 4,
+      minWidth: 180,
+    }}>
+      {/* Time row */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+        <span
+          className="jb"
+          style={{
+            fontSize: 28,
+            fontWeight: 700,
+            letterSpacing: "-0.03em",
+            color: "var(--c-txt)",
+            lineHeight: 1,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {hh12}:{mm}
+          <span style={{ opacity: now.getSeconds() % 2 === 0 ? 1 : 0.3, transition: "opacity 0.15s" }}>:</span>
+          {ss}
+        </span>
+        <span
+          className="jb"
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: "var(--c-a)",
+            letterSpacing: "0.05em",
+            paddingBottom: 2,
+          }}
+        >
+          {ampm}
+        </span>
       </div>
-      {action && <div className="ml-4 flex-shrink-0 flex items-center gap-1">{action}</div>}
-    </div>
-  );
-}
 
-function NavBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="w-6 h-6 flex items-center justify-center font-mono text-xs rounded transition-colors"
-      style={{ color: disabled ? "var(--dash-dim)" : "var(--dash-muted)", cursor: disabled ? "not-allowed" : "pointer" }}
-      onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLButtonElement).style.color = "var(--dash-text)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = disabled ? "var(--dash-dim)" : "var(--dash-muted)"; }}
-    >{children}</button>
-  );
-}
-
-function GhostBtn({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="text-[11px] font-mono px-3 py-1.5 rounded transition-all"
-      style={{ color: "var(--dash-muted)", border: "1px solid var(--dash-border)", background: "transparent" }}
-      onMouseEnter={e => { const b = e.currentTarget as HTMLButtonElement; b.style.color = "var(--dash-accent)"; b.style.borderColor = "var(--dash-accent)"; }}
-      onMouseLeave={e => { const b = e.currentTarget as HTMLButtonElement; b.style.color = "var(--dash-muted)"; b.style.borderColor = "var(--dash-border)"; }}
-    >{children}</button>
-  );
-}
-
-function StatCard({ label, value, accent = false }: { label: string; value: number; accent?: boolean }) {
-  return (
-    <div
-      className="flex flex-col justify-between p-5 rounded-lg transition-colors duration-200"
-      style={{ background: "var(--dash-surface)", border: "1px solid var(--dash-border)" }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = accent ? "var(--dash-accent)" : "var(--dash-muted)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "var(--dash-border)"; }}
-    >
-      <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-muted)" }}>{label}</p>
-      <p className="mt-3 text-3xl font-mono font-semibold tabular-nums" style={{ color: accent ? "var(--dash-accent)" : "var(--dash-text)" }}>
-        {value.toLocaleString()}
-      </p>
-    </div>
-  );
-}
-
-function BarRow({ label, count, total, color }: { label: string; count: number; total: number; color: string }) {
-  const pct = total > 0 ? (count / total) * 100 : 0;
-  return (
-    <div className="flex items-center gap-3 py-2.5">
-      <p className="w-28 text-[11px] font-mono truncate flex-shrink-0 capitalize" style={{ color: "var(--dash-muted)" }}>
-        {label.replace(/_/g, " ")}
-      </p>
-      <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--dash-border)" }}>
-        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+      {/* Date row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: "var(--c-sub)", letterSpacing: "0.01em" }}>
+          {dayName},&nbsp;{dateStr}
+        </span>
       </div>
-      <span className="w-8 text-right text-[11px] font-mono tabular-nums" style={{ color: "var(--dash-text)" }}>{count}</span>
+
     </div>
   );
 }
 
-type ActivityItem = { id: string; at: string; title: string; description: string; tag: string };
-const PAGE_SIZE = 8;
+/* SVG area line chart */
+function LineChart({ data }: { data: number[] }) {
+  const ref = useRef<SVGSVGElement>(null);
+  const [hov, setHov] = useState<{ xi: number; xp: number; yp: number; val: number } | null>(null);
+  if (data.length < 2) return null;
+
+  const W = 500, H = 140, pl = 34, pr = 10, pt = 8, pb = 24;
+  const cw = W - pl - pr, ch = H - pt - pb;
+  const mn = Math.min(...data) * 0.88, mx = Math.max(...data) * 1.08 || 1;
+  const px = (i: number) => pl + (i / (data.length - 1)) * cw;
+  const py = (v: number) => pt + ch - ((v - mn) / (mx - mn)) * ch;
+  const pts = data.map((v, i) => [px(i), py(v)] as [number, number]);
+  const linePath = `M ${pts.map(p => p.join(",")).join(" L ")}`;
+  const areaPath = `M ${px(0)},${pt + ch} ${pts.map(p => `L ${p.join(",")}`).join(" ")} L ${px(data.length - 1)},${pt + ch} Z`;
+  const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const yTicks = [0, .25, .5, .75, 1].map(t => ({ y: pt + ch * (1 - t), v: Math.round(mn + (mx - mn) * t) }));
+
+  return (
+    <div style={{ position: "relative", width: "100%" }}>
+      <svg
+        ref={ref}
+        width="100%" viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        style={{ display: "block", cursor: "crosshair" }}
+        onMouseLeave={() => setHov(null)}
+        onMouseMove={e => {
+          const r = ref.current!.getBoundingClientRect();
+          const rx = (e.clientX - r.left) / r.width * W;
+          const ci = Math.max(0, Math.min(data.length - 1, Math.round((rx - pl) / cw * (data.length - 1))));
+          setHov({ xi: ci, xp: (px(ci) / W) * 100, yp: ((py(data[ci]) - pt) / ch) * 100, val: data[ci] });
+        }}
+      >
+        <defs>
+          <linearGradient id="dbg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--c-a)" stopOpacity=".18" />
+            <stop offset="100%" stopColor="var(--c-a)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {yTicks.map((t, i) => (
+          <g key={i}>
+            <line x1={pl} y1={t.y} x2={W - pr} y2={t.y}
+              stroke="var(--c-b)" strokeWidth=".75" strokeDasharray="3 4" />
+            <text x={pl - 4} y={t.y + 3.5} textAnchor="end"
+              fontSize="9" fill="var(--c-dim)"
+              fontFamily="'JetBrains Mono',monospace">{t.v}</text>
+          </g>
+        ))}
+        {data.map((_, i) => (
+          <text key={i} x={px(i)} y={H - 5} textAnchor="middle"
+            fontSize="9" fill="var(--c-dim)"
+            fontFamily="'Plus Jakarta Sans',sans-serif">
+            {DAYS[i % 7]}
+          </text>
+        ))}
+        <path d={areaPath} fill="url(#dbg)"
+          style={{ animation: "db-in .7s ease .5s both" }} />
+        <path d={linePath} fill="none" stroke="var(--c-a)" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round"
+          strokeDasharray="600"
+          style={{ animation: "db-ln 1s cubic-bezier(.16,1,.3,1) .2s both" }} />
+        {hov && (
+          <>
+            <line x1={px(hov.xi)} y1={pt} x2={px(hov.xi)} y2={pt + ch}
+              stroke="var(--c-a)" strokeWidth=".8" strokeDasharray="3 3" opacity=".5" />
+            <circle cx={px(hov.xi)} cy={py(data[hov.xi])} r="4.5"
+              fill="var(--c-a)" stroke="white" strokeWidth="2" />
+          </>
+        )}
+      </svg>
+      {hov && (
+        <div style={{
+          position: "absolute",
+          left: `${hov.xp}%`, top: `${Math.max(4, hov.yp - 10)}%`,
+          transform: "translate(-50%,-100%)",
+          background: "var(--c-card)", border: "1px solid var(--c-b)",
+          borderRadius: 9, padding: "6px 10px",
+          boxShadow: "var(--c-shl)", pointerEvents: "none", zIndex: 10,
+        }}>
+          <p className="jb" style={{ fontSize: 13, fontWeight: 600, color: "var(--c-a)" }}>
+            {hov.val.toLocaleString()}
+          </p>
+          <p style={{ fontSize: 10, color: "var(--c-sub)" }}>
+            {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][hov.xi % 7]}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Concentric donut */
+function Donut({ segs, size = 140 }: {
+  segs: { pct: number; color: string; track: string; label: string }[];
+  size?: number;
+}) {
+  const cx = size / 2, cy = size / 2;
+  const outerR = size / 2 - 8, gap = 13, sw = 9;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+      {segs.map((s, i) => {
+        const r    = outerR - i * gap;
+        const circ = 2 * Math.PI * r;
+        const arc  = (s.pct / 100) * circ;
+        return (
+          <g key={i}>
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke={s.track} strokeWidth={sw} />
+            <circle cx={cx} cy={cy} r={r} fill="none"
+              stroke={s.color} strokeWidth={sw} strokeLinecap="round"
+              strokeDasharray={`${arc} ${circ - arc}`}
+              strokeDashoffset={circ * .25}
+              style={{ animation: `db-in .4s ease ${.2 + i * .12}s both` }} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ─── Main page ───────────────────────────────────────────────────────────── */
+const TXN_SIZE = 6;
 
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user }    = useAuth();
   const { stats, isLoading, refetch } = useDashboard();
-  const { brds, isLoading: brdLoading, refetch: refetchBrds } = useBrds();
-  const { logs, isLoading: logsLoading, refetch: refetchLogs } = useUserLogs(
-    user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" ? "all" : "mine",
+  const { logs, isLoading: logLoad, refetch: refetchLogs } = useUserLogs(
+    user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" ? "all" : "mine"
   );
-  const [page, setPage] = React.useState(1);
-  const allBusy = isLoading || brdLoading || logsLoading;
+  const [brds,    setBrds]    = useState<Brd[]>([]);
+  const [brdLoad, setBrdLoad] = useState(true);
+  const [txp, setTxp] = useState(1);
+  const dark = useDark();
 
-  const activity: ActivityItem[] = React.useMemo(() => {
-    const fromLogs: ActivityItem[] = logs.map((l) => ({
-      id: `log-${l.id}`, at: l.createdAt,
-      title: l.action.replace(/_/g, " "),
-      description: `${l.user?.firstName ?? ""} ${l.user?.lastName ?? ""}`.trim() || l.details || "—",
-      tag: "SYSTEM",
+  // Fetch full BRD list directly — same call as BRD page, gives real status/geography/title
+  const refetchBrds = useCallback(async () => {
+    setBrdLoad(true);
+    try { const r = await api.get<Brd[]>("/brd"); setBrds(r.data); }
+    catch { /* silent — dashboard degrades gracefully */ }
+    finally { setBrdLoad(false); }
+  }, []);
+  useEffect(() => { refetchBrds(); }, [refetchBrds]);
+
+  type Act = { id: string; at: string; action: string; user: string; source: string; tag: string };
+
+  const acts: Act[] = useMemo(() => {
+    const fromLogs: Act[] = logs.map(l => ({
+      id:     `l${l.id}`,
+      at:     l.createdAt,
+      action: l.action.replace(/_/g, " "),
+      user:   `${l.user?.firstName ?? ""} ${l.user?.lastName ?? ""}`.trim() || "—",
+      source: l.details?.slice(0, 14) ?? "—",
+      tag:    "SYSTEM",
     }));
-    const fromFiles: ActivityItem[] = (stats?.recentActivity ?? []).map((f) => ({
-      id: `file-${f.id}`, at: f.uploadedAt,
-      title: "FILE UPLOADED",
-      description: `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""} · ${f.originalName}`,
-      tag: f.status,
+    const fromFiles: Act[] = (stats?.recentActivity ?? []).map(f => ({
+      id:     `f${f.id}`,
+      at:     f.uploadedAt,
+      action: f.originalName?.slice(0, 20) ?? "File",
+      user:   `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""}`.trim() || "—",
+      source: (() => { const b = brds.find(x => x.id === (f as any).brdId); return b ? brdDisplayTitle(b).slice(0, 16) : "—"; })(),
+      tag:    f.status,
     }));
     return [...fromLogs, ...fromFiles]
       .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
       .slice(0, 100);
-  }, [logs, stats?.recentActivity]);
+  }, [logs, stats?.recentActivity, brds]);
 
-  const totalPages = Math.max(1, Math.ceil(activity.length / PAGE_SIZE));
-  React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
-  const paged = activity.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalTxp = Math.max(1, Math.ceil(acts.length / TXN_SIZE));
+  useEffect(() => { if (txp > totalTxp) setTxp(totalTxp); }, [txp, totalTxp]);
+  const paged = acts.slice((txp - 1) * TXN_SIZE, txp * TXN_SIZE);
 
-  const totalUsers = stats?.usersByRole?.reduce((a, b) => a + b.count, 0) ?? 0;
-  const totalTasks = (stats?.tasksByStatus ?? []).reduce((a, b) => a + b.count, 0);
 
-  if (allBusy) {
+
+  const totalUsers  = stats?.usersByRole?.reduce((a, b) => a + b.count, 0) ?? 0;
+  const totalTasks  = (stats?.tasksByStatus ?? []).reduce((a, b) => a + b.count, 0);
+  const totalDocs   = stats?.totalFiles ?? 0;
+  const pending     = stats?.pendingValidation ?? 0;
+  const uploads7d   = stats?.recentUploads7d ?? 0;
+
+  // Derive BRD stats directly from the real Brd[] — no approximations
+  const totalBrds = brds.length;
+  const brdsByStatus = useMemo(() => {
+    const counts: Record<string, number> = {};
+    brds.forEach(b => { counts[b.status] = (counts[b.status] ?? 0) + 1; });
+    return Object.entries(counts)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [brds]);
+  const brdByContinent = useMemo(() => {
+    const CONT_KW: Record<string, string[]> = {
+      Americas: ["united states","usa","canada","brazil","mexico","colombia","argentina","chile","peru","venezuela","ecuador","bolivia","administrative code","code of federal","cfr","federal register","alabama","alaska","arizona","california","florida","georgia","illinois","new york","texas","washington"],
+      Asia:     ["china","japan","korea","india","singapore","philippines","indonesia","thailand","vietnam","malaysia","hong kong","taiwan"],
+      Europe:   ["europe","uk","united kingdom","france","germany","spain","italy","netherlands","poland","sweden","norway","denmark","finland","switzerland","austria","belgium","portugal","russia"],
+      Africa:   ["africa","nigeria","kenya","south africa","egypt","ghana","ethiopia"],
+      Oceania:  ["australia","new zealand","pacific","anz"],
+    };
+    const counts: Record<string, number> = { Americas:0, Asia:0, Europe:0, Africa:0, Oceania:0, Other:0 };
+    brds.forEach(b => {
+      const g = b.geography.toLowerCase();
+      let matched = false;
+      for (const [cont, kws] of Object.entries(CONT_KW)) {
+        if (kws.some(kw => g.includes(kw))) { counts[cont]++; matched = true; break; }
+      }
+      if (!matched) counts.Other++;
+    });
+    return Object.entries(counts).filter(([,v])=>v>0).map(([region,count])=>({region,count}));
+  }, [brds]);
+
+  // Real: events per day for the last 7 days
+  const lineData = useMemo(() => {
+    const now = Date.now();
+    const DAY = 86400000;
+    const buckets = Array(7).fill(0);
+    // Count login events per day for user traffic
+    logs.forEach(l => {
+      if (l.action?.toUpperCase().includes("LOGIN")) {
+        const daysAgo = Math.floor((now - new Date(l.createdAt).getTime()) / DAY);
+        if (daysAgo >= 0 && daysAgo < 7) buckets[6 - daysAgo]++;
+      }
+    });
+    return buckets;
+  }, [logs]);
+
+  /* Donut rings */
+  const RING_C = [
+    { l:"BRDs",  v:totalBrds,  color:"#1a6bff", trackL:"#dbeafe", trackD:"rgba(26,107,255,.14)" },
+    { l:"Docs",  v:totalDocs,  color:"#00c2ff", trackL:"#cffafe", trackD:"rgba(0,194,255,.12)"  },
+    { l:"Tasks", v:totalTasks, color:"#7c3aed", trackL:"#ede9fe", trackD:"rgba(124,58,237,.13)" },
+    { l:"Users", v:totalUsers, color:"#16a34a", trackL:"#dcfce7", trackD:"rgba(22,163,74,.13)"  },
+  ];
+  // Ring fill = that metric as % of the combined total (visual proportion)
+  const sumOf4 = Math.max(totalBrds + totalDocs + totalTasks + totalUsers, 1);
+  const ringSegs = RING_C.map(r => ({
+    pct:   r.v === 0 ? 0 : Math.max(5, Math.round((r.v / sumOf4) * 90)),
+    color: r.color,
+    track: dark ? r.trackD : r.trackL,
+    label: r.l,
+    raw:   r.v,
+  }));
+
+  /* BRD status bars — real data from /brd */
+  const brdStatuses = brdsByStatus;
+  const brdTotal    = totalBrds || 1;
+
+  if (isLoading || brdLoad || logLoad) {
     return (
-      <div className="dash-root flex items-center justify-center h-full min-h-[400px]" style={{ background: "var(--dash-bg)" }}>
-        <style>{THEME_STYLE}</style>
-        <div className="text-center space-y-3">
+      <div className="db flex items-center justify-center h-full" style={{ background: "var(--c-bg)" }}>
+        <style>{CSS}</style>
+        <div className="flex flex-col items-center gap-3">
           <TetrisLoading size="sm" speed="fast" loadingText="" />
-          <p className="text-[11px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-muted)" }}>Initialising</p>
+          <p className="jb text-[10px] tracking-widest uppercase" style={{ color: "var(--c-sub)" }}>Loading</p>
         </div>
       </div>
     );
   }
 
+  /* ── Shared card class ── */
+  const C = "card";
+
   return (
-    <div className="dash-root min-h-full" style={{ background: "var(--dash-bg)" }}>
-      <style>{THEME_STYLE}</style>
-      <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
+    <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "20px 32px 36px" }}>
+      <style>{CSS}</style>
 
-        {/* Header */}
-        <div className="dash-fade flex items-end justify-between">
-          <div>
-            <p className="text-[10px] font-mono uppercase tracking-[0.2em]" style={{ color: "var(--dash-muted)" }}>Overview</p>
-            <h1 className="mt-1 text-xl font-semibold tracking-tight" style={{ color: "var(--dash-text)" }}>
-              {user?.firstName ? `${user.firstName}'s workspace` : "Workspace"}
-            </h1>
+      {/* ── Page heading ── */}
+      <div className="u mb-5" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+        <div>
+          <h1 className="text-[22px] font-extrabold tracking-tight" style={{ color: "var(--c-txt)" }}>Dashboard</h1>
+          <p className="text-[12px] mt-0.5" style={{ color: "var(--c-sub)" }}>
+            {user?.firstName ? `Welcome back, ${user.firstName}` : "Document processing overview"}
+          </p>
+        </div>
+        <LiveClock />
+      </div>
+
+      {/* ══ 3-COLUMN GRID ══
+           col-1: flex-1   col-2: flex-1   col-3: 240px fixed
+           All inside the shell's p-6 box — no extra padding added.        */}
+      <div className="grid gap-5" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 270px" }}>
+
+        {/* ╔══════════ COL 1 ══════════╗ */}
+        <div className="flex flex-col gap-4 min-w-0">
+
+          {/* KPI 2×2 */}
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label:"BRD Sources", val:totalBrds,  sub:"total registered" },
+              { label:"Documents",   val:totalDocs,   sub:uploads7d > 0 ? `${uploads7d} uploaded this week` : "no uploads this week" },
+              { label:"Pending",     val:pending,     sub:pending > 0 ? "awaiting review" : "none pending" },
+              { label:"Users",       val:totalUsers,  sub:totalTasks > 0 ? `${totalTasks} active tasks` : "no active tasks" },
+            ].map((k, i) => (
+              <div key={k.label} className={`${C} u d${i+1}`} style={{ padding: "16px 18px 14px", minHeight: 100 }}>
+                <p className="text-[11px] font-medium mb-2.5" style={{ color:"var(--c-sub)" }}>{k.label}</p>
+                <p className="jb text-[28px] font-bold leading-none" style={{ color:"var(--c-txt)" }}>
+                  <CountUp to={k.val} />
+                </p>
+                <p className="text-[10px] mt-2.5" style={{ color:"var(--c-sub)" }}>{k.sub}</p>
+              </div>
+            ))}
           </div>
-          <GhostBtn onClick={() => { refetch(); refetchBrds(); refetchLogs(); }}>↻ Refresh</GhostBtn>
-        </div>
 
-        {/* Stats */}
-        <div className="dash-fade dash-fade-1 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
-          <StatCard label="Users"       value={stats?.totalUsers ?? 0} />
-          <StatCard label="Documents"   value={stats?.totalFiles ?? 0} />
-          <StatCard label="BRD Sources" value={stats?.totalBrds ?? brds.length} accent />
-          <StatCard label="Pending"     value={stats?.pendingValidation ?? 0} />
-          <StatCard label="Tasks"       value={stats?.totalTasks ?? 0} />
-          <StatCard label="Uploads 7d"  value={stats?.recentUploads7d ?? 0} />
-        </div>
-
-        {/* Row 2 */}
-        <div className="dash-fade dash-fade-2 grid grid-cols-1 xl:grid-cols-12 gap-4">
-
-          {/* Activity — 7 cols */}
-          <Panel className="xl:col-span-7">
-            <SectionHead
-              title="Activity Feed"
-              sub={`${activity.length} events`}
-              action={
-                <>
-                  <span className="text-[10px] font-mono mr-1" style={{ color: "var(--dash-dim)" }}>
-                    {activity.length === 0 ? "0" : `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, activity.length)}`} / {activity.length}
-                  </span>
-                  <NavBtn disabled={page === 1} onClick={() => setPage(p => p - 1)}>←</NavBtn>
-                  <NavBtn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>→</NavBtn>
-                </>
-              }
-            />
-            {/* Col headers */}
-            <div className="grid grid-cols-[auto_1fr_auto_auto] gap-3 px-5 py-2" style={{ borderBottom: "1px solid var(--dash-border)" }}>
-              <span className="w-3" />
-              <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Event</p>
-              <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Tag</p>
-              <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>When</p>
+          {/* Line chart */}
+          <div className={`${C} u d5 p-4`}>
+            <div className="flex items-start justify-between mb-1">
+              <div>
+                <p className="text-[13px] font-bold" style={{ color:"var(--c-txt)" }}>User Traffic</p>
+                <p className="text-[11px] mt-0.5" style={{ color:"var(--c-sub)" }}>Last 7 days · login activity</p>
+              </div>
+              <div className="flex gap-3 text-[10px]" style={{ color:"var(--c-sub)" }}>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-0.5 rounded" style={{ background:"var(--c-a)" }}/>Logins
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ background:"var(--c-dim)" }}/>Daily
+                </span>
+              </div>
             </div>
-            {paged.length === 0 ? (
-              <p className="px-5 py-10 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No activity yet</p>
-            ) : (
-              paged.map((item, i) => (
-                <div
-                  key={item.id}
-                  className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-3 px-5 py-3 transition-colors duration-100"
-                  style={{ borderTop: i !== 0 ? "1px solid var(--dash-border)" : undefined }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "var(--dash-hover)"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
-                >
-                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: "var(--dash-accent)", opacity: 0.7 }} />
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-mono font-medium uppercase tracking-wide truncate" style={{ color: "var(--dash-text)" }}>{item.title}</p>
-                    <p className="text-[11px] truncate mt-0.5" style={{ color: "var(--dash-muted)" }}>{item.description}</p>
-                  </div>
-                  <Pill label={item.tag} color={STATUS_HEX[item.tag] ?? "#6b7280"} />
-                  <span className="text-[10px] font-mono tabular-nums flex-shrink-0" style={{ color: "var(--dash-dim)" }}>{formatTimeAgo(item.at)}</span>
-                </div>
-              ))
-            )}
-          </Panel>
+            <p className="jb text-[26px] font-bold mt-1" style={{ color:"var(--c-txt)" }}>
+              <CountUp to={lineData.reduce((a, b) => a + b, 0)} />
+            </p>
+            <p className="text-[11px] mb-3" style={{ color:"var(--c-sub)" }}>
+              {lineData.reduce((a, b) => a + b, 0) > 0
+                ? `${lineData.reduce((a, b) => a + b, 0)} logins this week`
+                : "no logins this week"}
+            </p>
+            <LineChart data={lineData} />
+          </div>
 
-          {/* Right stack — 5 cols */}
-          <div className="xl:col-span-5 flex flex-col gap-4">
-            <Panel>
-              <SectionHead title="Users by Role" sub={`${totalUsers} total`} />
-              <div className="px-5 py-3">
-                {!stats?.usersByRole?.length
-                  ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No users</p>
-                  : stats.usersByRole.map((item) => (
-                      <BarRow key={item.role} label={item.role} count={item.count} total={totalUsers} color={ROLE_HEX[item.role as Role] ?? "#6b7280"} />
-                    ))
+          {/* Activity table */}
+          <div className={`${C} u d6 overflow-hidden`}>
+            <div className="flex items-center justify-between px-4 pt-4 pb-3">
+              <div>
+                <p className="text-[13px] font-bold" style={{ color:"var(--c-txt)" }}>Recent Activity</p>
+                <p className="text-[11px] mt-0.5" style={{ color:"var(--c-sub)" }}>{acts.length} total events</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="jb text-[10px]" style={{ color:"var(--c-dim)" }}>
+                  {(txp-1)*TXN_SIZE+1}–{Math.min(txp*TXN_SIZE,acts.length)} / {acts.length}
+                </span>
+                {[{l:"←",d:txp===1,f:()=>setTxp(p=>p-1)},{l:"→",d:txp>=totalTxp,f:()=>setTxp(p=>p+1)}]
+                  .map(b=>(
+                    <button key={b.l} onClick={b.f} disabled={b.d}
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                      style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                        color: b.d?"var(--c-dim)":"var(--c-sub)", cursor:b.d?"not-allowed":"pointer" }}
+                    >{b.l}</button>
+                  ))
                 }
               </div>
-            </Panel>
-            <Panel>
-              <SectionHead title="Tasks" sub={`${totalTasks} total`} />
-              <div className="px-5 py-3">
-                {(stats?.tasksByStatus ?? []).length === 0
-                  ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No tasks</p>
-                  : (stats?.tasksByStatus ?? []).map((item) => (
-                      <BarRow key={item.status} label={item.status} count={item.count} total={totalTasks} color={STATUS_HEX[item.status] ?? "#6b7280"} />
-                    ))
-                }
-              </div>
-            </Panel>
+            </div>
+
+            {/* Table header */}
+            <div className="grid px-4 py-1.5 text-[9.5px] font-bold uppercase tracking-widest jb"
+              style={{ gridTemplateColumns:"1fr 100px 72px 64px",
+                borderTop:"1px solid var(--c-b)", borderBottom:"1px solid var(--c-b)",
+                color:"var(--c-dim)" }}>
+              <span>Event</span><span>Source</span><span>When</span><span className="text-right">Status</span>
+            </div>
+
+            <div className="px-2 pb-3 pt-1">
+              {paged.length === 0
+                ? <p className="text-center py-8 text-[12px]" style={{color:"var(--c-dim)"}}>No activity yet</p>
+                : paged.map((a, i) => {
+                    const sc = dark ? (DARK[a.tag]??DARK.SYSTEM) : (LIGHT[a.tag]??LIGHT.SYSTEM);
+                    return (
+                      <div key={a.id} className="tr u grid items-center px-2 py-2"
+                        style={{ gridTemplateColumns:"1fr 100px 72px 64px",
+                          animationDelay:`${i*.04}s` }}>
+                        {/* avatar + name */}
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-7 h-7 rounded-[8px] flex items-center justify-center jb text-[11px] font-bold flex-shrink-0"
+                            style={{ background:sc.bg, color:sc.fg }}>
+                            {a.user[0]?.toUpperCase() ?? "?"}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-semibold truncate" style={{color:"var(--c-txt)"}}>
+                              {a.action.slice(0,20)}
+                            </p>
+                            <p className="text-[10px] truncate" style={{color:"var(--c-sub)"}}>
+                              {a.user.slice(0,18)}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="jb text-[10px] truncate" style={{color:"var(--c-sub)"}}>
+                          {a.source.slice(0,12)}
+                        </span>
+                        <span className="jb text-[10px]" style={{color:"var(--c-dim)"}}>
+                          {formatTimeAgo(a.at)}
+                        </span>
+                        <div className="flex justify-end">
+                          <Badge label={a.tag} />
+                        </div>
+                      </div>
+                    );
+                  })
+              }
+            </div>
           </div>
         </div>
 
-        {/* Row 3 */}
-        <div className="dash-fade dash-fade-3 grid grid-cols-1 xl:grid-cols-12 gap-4">
+        {/* ╔══════════ COL 2 ══════════╗ */}
+        <div className="flex flex-col gap-4 min-w-0">
 
-          {/* Pipeline — 3 cols */}
-          <Panel className="xl:col-span-3">
-            <SectionHead title="Pipeline" sub="File status" />
-            <div className="px-5 py-2">
-              {(stats?.filesByStatus ?? []).length === 0
-                ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No files</p>
-                : (stats?.filesByStatus ?? []).map((item, i, arr) => (
-                    <div key={item.status} className="flex items-center justify-between py-2.5"
-                      style={{ borderBottom: i !== arr.length - 1 ? "1px solid var(--dash-border)" : undefined }}>
-                      <span className="text-[11px] font-mono" style={{ color: "var(--dash-muted)" }}>{item.status}</span>
-                      <Pill label={String(item.count)} color={STATUS_HEX[item.status as TaskStatus] ?? "#6b7280"} />
+          {/* System overview — concentric donut */}
+          <div className={`${C} u d2 p-4`}>
+            <p className="text-[13px] font-bold mb-4" style={{color:"var(--c-txt)"}}>System Overview</p>
+            <div className="flex items-center gap-4">
+              {/* donut */}
+              <div className="relative flex-shrink-0">
+                <Donut segs={ringSegs} size={130} />
+                
+              </div>
+              {/* legend */}
+              <div className="flex flex-col gap-2.5 flex-1 min-w-0">
+                {RING_C.map((r, i) => (
+                  <div key={r.l} className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:r.color}}/>
+                      <span className="text-[11px]" style={{color:"var(--c-sub)"}}>{r.l}</span>
                     </div>
-                  ))
-              }
-            </div>
-          </Panel>
-
-          {/* BRD status — 3 cols */}
-          <Panel className="xl:col-span-3">
-            <SectionHead title="BRD Status" sub="Document states" />
-            <div className="px-5 py-2">
-              {(stats?.brdsByStatus ?? []).length === 0
-                ? <p className="py-4 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No BRDs</p>
-                : (stats?.brdsByStatus ?? []).map((item, i, arr) => (
-                    <div key={item.status} className="flex items-center justify-between py-2.5"
-                      style={{ borderBottom: i !== arr.length - 1 ? "1px solid var(--dash-border)" : undefined }}>
-                      <span className="text-[11px] font-mono" style={{ color: "var(--dash-muted)" }}>{item.status}</span>
-                      <Pill label={String(item.count)} color={STATUS_HEX[item.status] ?? "#6b7280"} />
-                    </div>
-                  ))
-              }
-            </div>
-          </Panel>
-
-          {/* BRD sources table — 6 cols */}
-          <Panel className="xl:col-span-6">
-            <SectionHead title="BRD Sources" sub={`${brds.length} sources`} />
-            {brds.length === 0
-              ? <p className="px-5 py-10 text-center text-[11px] font-mono" style={{ color: "var(--dash-dim)" }}>No BRD sources yet</p>
-              : (
-                <>
-                  <div className="grid grid-cols-[1fr_48px_80px] px-5 py-2" style={{ borderBottom: "1px solid var(--dash-border)" }}>
-                    <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Source</p>
-                    <p className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "var(--dash-dim)" }}>Fmt</p>
-                    <p className="text-[10px] font-mono uppercase tracking-widest text-right" style={{ color: "var(--dash-dim)" }}>Status</p>
+                    <span className="jb text-[11px] font-medium" style={{color:"var(--c-txt)"}}>
+                      {sumOf4 > 0 ? Math.round(((ringSegs[i]?.raw ?? 0) / sumOf4) * 100) : 0}%
+                    </span>
                   </div>
-                  {brds.slice(0, 8).map((src, i) => (
-                    <div
-                      key={src.id}
-                      className="grid grid-cols-[1fr_48px_80px] items-center gap-2 px-5 py-3 transition-colors duration-100"
-                      style={{ borderTop: i !== 0 ? "1px solid var(--dash-border)" : undefined }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "var(--dash-hover)"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
-                    >
-                      <div className="min-w-0">
-                        <p className="text-[12px] font-medium truncate" style={{ color: "var(--dash-text)" }}>{src.title}</p>
-                        <p className="text-[10px] font-mono mt-0.5 truncate" style={{ color: "var(--dash-dim)" }}>
-                          {src.geography || "—"} · {src.lastUpdated}
-                        </p>
+                ))}
+                <p className="text-[10px] leading-relaxed mt-1 pt-2" style={{borderTop:"1px solid var(--c-b)", color:"var(--c-sub)"}}>
+                  Percentages reflect system utilisation across key resource categories.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* BRD Status Plans */}
+          <div className={`${C} u d3 p-4`}>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>BRD Status Plans</p>
+                
+              </div>
+              <button
+                onClick={() => { refetch(); refetchBrds(); refetchLogs(); }}
+                className="text-[10px] font-semibold px-2.5 py-1 rounded-full transition-opacity hover:opacity-75"
+                style={{ background:"var(--c-alo)", color:"var(--c-a)", border:"1px solid var(--c-a)22" }}
+              >↻ Refresh</button>
+            </div>
+            {brdStatuses.length === 0
+              ? <p className="text-center text-[12px] py-4" style={{color:"var(--c-dim)"}}>No BRD data</p>
+              : brdStatuses.map((s, i) => {
+                  const pct = Math.round((s.count / brdTotal) * 100);
+                  const col = ACCENTS[i % ACCENTS.length];
+                  return (
+                    <div key={s.status} className="mb-4 last:mb-0">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] font-semibold tracking-wide" style={{color:"var(--c-txt)"}}>{s.status}</span>
+                        <span className="jb text-[10px]" style={{color:"var(--c-sub)"}}>
+                          {s.count} / {brdTotal}
+                        </span>
                       </div>
-                      <span className="text-[10px] font-mono uppercase" style={{ color: "var(--dash-muted)" }}>{src.format}</span>
-                      <div className="flex justify-end">
-                        <Pill label={src.status} color={STATUS_HEX[src.status] ?? "#6b7280"} />
+                      <div className="pb">
+                        <div className="pf" style={{ width:`${pct}%`, background:col, animationDelay:`${.15+i*.07}s` }} />
                       </div>
+                      <p className="text-right jb text-[10px] mt-0.5 font-semibold" style={{color:col}}>{pct}%</p>
                     </div>
-                  ))}
-                  {brds.length > 8 && (
-                    <div className="px-5 py-3" style={{ borderTop: "1px solid var(--dash-border)" }}>
-                      <p className="text-[10px] font-mono" style={{ color: "var(--dash-dim)" }}>+{brds.length - 8} more sources</p>
-                    </div>
-                  )}
-                </>
-              )
+                  );
+                })
             }
-          </Panel>
+          </div>
+
+          {/* Pipeline — Bubble chart */}
+          <div className={`${C} u d4 p-5`}>
+            <div className="flex items-start justify-between mb-1">
+              <div>
+                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Pipeline</p>
+                <p className="text-[11px] mt-0.5" style={{color:"var(--c-sub)"}}>Feature activity · all time</p>
+              </div>
+            </div>
+            {(() => {
+              const features = [
+                { label: "BRD",              short: "BRD",     count: totalBrds, color: "#1a6bff" },
+                { label: "Metajson Creation", short: "Meta",   count: (stats?.filesByStatus ?? []).find(s => (s.status as string) === "COMPLETED")?.count ?? 0, color: "#00c2ff" },
+                { label: "Content Profile",   short: "Profile", count: (stats?.filesByStatus ?? []).find(s => (s.status as string) === "IN_PROGRESS" || (s.status as string) === "PENDING")?.count ?? 0, color: "#7c3aed" },
+                { label: "Compare Tool",      short: "Compare", count: pending,  color: "#16a34a" },
+              ];
+              const maxVal = Math.max(...features.map(f => f.count), 1);
+              const W = 340, H = 150;
+              // Position bubbles in a loose organic scatter
+              const positions = [
+                { cx: 72,  cy: 72  },
+                { cx: 185, cy: 55  },
+                { cx: 270, cy: 90  },
+                { cx: 155, cy: 118 },
+              ];
+              return (
+                <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block", overflow: "visible" }}>
+                  <defs>
+                    {features.map((f, i) => (
+                      <radialGradient key={i} id={`bg${i}`} cx="35%" cy="35%" r="65%">
+                        <stop offset="0%" stopColor={f.color} stopOpacity="0.55" />
+                        <stop offset="100%" stopColor={f.color} stopOpacity="0.18" />
+                      </radialGradient>
+                    ))}
+                  </defs>
+                  {features.map((f, i) => {
+                    const minR = 28, maxR = 58;
+                    const r = minR + ((f.count / maxVal) * (maxR - minR));
+                    const p = positions[i];
+                    return (
+                      <g key={f.label} style={{ animation: `db-up .5s cubic-bezier(.16,1,.3,1) ${.1 + i * .1}s both` }}>
+                        {/* Glow ring */}
+                        <circle cx={p.cx} cy={p.cy} r={r + 6}
+                          fill="none" stroke={f.color} strokeWidth="1"
+                          opacity="0.15" />
+                        {/* Main bubble */}
+                        <circle cx={p.cx} cy={p.cy} r={r}
+                          fill={`url(#bg${i})`}
+                          stroke={f.color} strokeWidth="1.5" strokeOpacity="0.5" />
+                        {/* Count */}
+                        <text x={p.cx} y={p.cy - 4} textAnchor="middle"
+                          fontSize={r > 40 ? 18 : 14} fontWeight="700"
+                          fill={f.color} fontFamily="'JetBrains Mono',monospace"
+                          style={{ filter: "brightness(1.3)" }}>
+                          {f.count}
+                        </text>
+                        {/* Short label */}
+                        <text x={p.cx} y={p.cy + (r > 40 ? 14 : 11)} textAnchor="middle"
+                          fontSize={r > 40 ? 9 : 8} fontWeight="600"
+                          fill={f.color} fontFamily="'Plus Jakarta Sans',sans-serif"
+                          opacity="0.85">
+                          {f.short}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </svg>
+              );
+            })()}
+            {/* Legend row */}
+            {(() => {
+              const features = [
+                { label: "BRD",               color: "#1a6bff" },
+                { label: "Metajson Creation",  color: "#00c2ff" },
+                { label: "Content Profile",    color: "#7c3aed" },
+                { label: "Compare Tool",       color: "#16a34a" },
+              ];
+              return (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
+                  {features.map(f => (
+                    <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
+                      <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
+                      {f.label}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
         </div>
 
+        {/* ╔══════════ COL 3 — sidebar ══════════╗ */}
+        <div className="flex flex-col gap-4 min-w-0" style={{ width: 270 }}>
+
+          {/* Tasks breakdown — real data */}
+          <div className={`${C} u d1 p-4`}>
+            <div className="flex justify-between items-center mb-3">
+              <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Tasks</p>
+              <span className="jb text-[11px]" style={{color:"var(--c-sub)"}}>{totalTasks} total</span>
+            </div>
+            {(stats?.tasksByStatus ?? []).length === 0
+              ? <p className="text-[11px] text-center py-3" style={{color:"var(--c-dim)"}}>No tasks yet</p>
+              : (stats?.tasksByStatus ?? []).map((t, i) => {
+                  const pct   = totalTasks > 0 ? Math.round((t.count / totalTasks) * 100) : 0;
+                  const cols  = ["#1a6bff","#22c55e","#f59e0b","#ef4444","#a855f7"];
+                  const color = cols[i % cols.length];
+                  return (
+                    <div key={t.status} className="mb-2.5 last:mb-0">
+                      <div className="flex justify-between text-[10px] mb-1">
+                        <span style={{color:"var(--c-sub)"}}>{t.status.replace(/_/g," ")}</span>
+                        <span className="jb" style={{color:"var(--c-txt)"}}>{t.count}</span>
+                      </div>
+                      <div className="pb" style={{height:5}}>
+                        <div className="pf" style={{ width:`${pct}%`, background:color, animationDelay:`${.1+i*.06}s` }} />
+                      </div>
+                    </div>
+                  );
+                })
+            }
+          </div>
+
+          {/* Balance */}
+          <div className={`${C} u d2 p-4`}>
+            <div className="flex justify-between items-center mb-3">
+              <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Balance</p>
+              <span style={{color:"var(--c-dim)"}}>···</span>
+            </div>
+            <p className="text-[9.5px] font-bold uppercase tracking-widest mb-1" style={{color:"var(--c-sub)"}}>Total BRD Sources</p>
+            <p className="jb text-[24px] font-bold mb-3" style={{color:"var(--c-txt)"}}>
+              <CountUp to={totalBrds} />
+            </p>
+            {/* Continent mini-breakdown */}
+            {brdByContinent.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {brdByContinent.map(r => (
+                  <span key={r.region} className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full jb"
+                    style={{ background:"var(--c-acc-lo)", color:"var(--c-acc)" }}>
+                    {r.region} · {r.count}
+                  </span>
+                ))}
+              </div>
+            )}
+            {brds.length === 0
+              ? <p className="text-[11px] text-center py-3" style={{color:"var(--c-dim)"}}>No sources yet</p>
+              : <div style={{ maxHeight: 620, overflowY: "auto", marginRight: -4, paddingRight: 4, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {brds.map((b, i) => {
+                    const bg = i % 2 === 0
+                      ? "linear-gradient(135deg, #1a6bff 0%, #0d50d4 100%)"
+                      : "linear-gradient(135deg, #0d2d6b 0%, #081a44 100%)";
+                    const STATUS_COLOR: Record<string,string> = {
+                      COMPLETED:"#4ade80", APPROVED:"#818cf8", DRAFT:"#93c5fd",
+                      PAUSED:"#fbbf24", ON_HOLD:"#f87171",
+                    };
+                    return (
+                      <div key={b.id} className="u rounded-[13px] p-3.5 flex-shrink-0"
+                        style={{ background: bg, animationDelay:`${.08+i*.04}s` }}>
+                        {/* Top row: BRD badge + geography */}
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[8px] font-black tracking-[.12em] px-1.5 py-0.5 rounded-[4px]"
+                            style={{ background:"rgba(255,255,255,.18)", color:"#fff" }}>
+                            BRD
+                          </span>
+                          <span className="text-[10px]" style={{ color:"rgba(255,255,255,.6)" }}>
+                            {b.geography || "—"}
+                          </span>
+                        </div>
+                        {/* Real display title */}
+                        <p className="text-[13px] font-bold leading-snug truncate" style={{ color:"#fff" }}>
+                          {brdDisplayTitle(b)}
+                        </p>
+                        {/* ID · real status (colored) */}
+                        <div className="flex items-center justify-between mt-1.5">
+                          <span className="jb text-[9px]" style={{ color:"rgba(255,255,255,.42)" }}>
+                            {b.id} · {b.format?.toUpperCase()}
+                          </span>
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                            style={{ background:"rgba(0,0,0,.25)", color: STATUS_COLOR[b.status] ?? "#fff" }}>
+                            {b.status}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+            }
+          </div>
+
+
+        </div>
       </div>
     </div>
   );

@@ -712,8 +712,10 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           style={{ borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)" }}
         >
           {collapsed ? (
-            <div
-              className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold"
+            <button
+              onClick={() => setShowLogoutModal(true)}
+              title="Logout"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold transition-all hover:ring-2 hover:ring-red-400/50 hover:opacity-80"
               style={{
                 background: "rgba(26, 143, 209, 0.12)",
                 color: "#42b4f5",
@@ -721,7 +723,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             >
               {user?.firstName?.[0]}
               {user?.lastName?.[0]}
-            </div>
+            </button>
           ) : (
             <div
               className="flex items-center gap-2.5 px-2 py-2 rounded-xl transition-colors group"

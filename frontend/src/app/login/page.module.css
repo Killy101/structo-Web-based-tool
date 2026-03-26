@@ -293,7 +293,7 @@
 
 .brandTitle {
   font-family: "Syne", sans-serif;
-  font-size: clamp(38px, 4vw, 62px);
+  font-size: clamp(56px, 6vw, 88px); /* was clamp(38px, 4vw, 62px) */
   font-weight: 800;
   color: #ffffff;
   letter-spacing: -2.5px;

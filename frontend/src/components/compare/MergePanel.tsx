@@ -596,55 +596,27 @@ export default function MergePanel({ activeJob }: MergePanelProps = {}) {
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
       {/* ── Mode Switcher ── */}
-      <div className="flex-shrink-0 flex items-center gap-1 p-1 bg-slate-800/60 rounded-xl border border-slate-700/40 w-fit">
-        <button
-          onClick={() => setMode("chunks")}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all
-            ${
-              mode === "chunks"
+      <div className="flex-shrink-0 flex items-center gap-1 p-1 rounded-xl border border-slate-700/40 w-fit"
+        style={{ background: "rgba(15,23,42,0.6)" }}>
+        {[
+          { key: "chunks", label: "XML Chunk Merge", icon: "M4 6h16M4 10h16M4 14h8M4 18h8" },
+          { key: "pdf",    label: "PDF Diff Merge",  icon: "M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" },
+        ].map(({ key, label, icon }) => (
+          <button
+            key={key}
+            onClick={() => setMode(key as "chunks" | "pdf")}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all ${
+              mode === key
                 ? "bg-slate-700 text-white shadow-sm"
                 : "text-slate-500 hover:text-slate-300"
             }`}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 6h16M4 10h16M4 14h8M4 18h8"
-            />
-          </svg>
-          Merge XML Chunks
-        </button>
-        <button
-          onClick={() => setMode("pdf")}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all
-            ${
-              mode === "pdf"
-                ? "bg-slate-700 text-white shadow-sm"
-                : "text-slate-500 hover:text-slate-300"
-            }`}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
-            />
-          </svg>
-          PDF Diff Merge
-        </button>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d={icon} />
+            </svg>
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* ════════════════════════════════════════════════════════ */}
