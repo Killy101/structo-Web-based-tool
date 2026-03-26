@@ -125,7 +125,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: 
 
 router.patch('/:id/progress', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const taskId    = parseInt(req.params.id)
+    const taskId    = parseInt(req.params.id as string)
     const { percentage, status } = req.body
     const actorId   = req.user!.userId
     const actorRole = req.user!.role
@@ -179,7 +179,7 @@ router.patch('/:id/progress', authenticate, async (req: AuthRequest, res: Respon
 
 router.get('/:id/comments', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const taskId = parseInt(req.params.id)
+    const taskId = parseInt(req.params.id as string)
     const { rows: taskRows } = await pool.query(`SELECT id FROM task_assignments WHERE id = $1`, [taskId])
     if (!taskRows[0]) return res.status(404).json({ error: 'Task not found' })
 
@@ -201,7 +201,7 @@ router.get('/:id/comments', authenticate, async (req: AuthRequest, res: Response
 
 router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const taskId  = parseInt(req.params.id)
+    const taskId  = parseInt(req.params.id as string)
     const actorId = req.user!.userId
     const { body } = req.body
 
@@ -242,7 +242,7 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
 
 router.delete('/:id/comments/:commentId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const commentId = parseInt(req.params.commentId)
+    const commentId = parseInt(req.params.commentId as string)
     const actorId   = req.user!.userId
     const actorRole = req.user!.role
 
@@ -262,7 +262,7 @@ router.delete('/:id/comments/:commentId', authenticate, async (req: AuthRequest,
 
 router.delete('/:id', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const taskId = parseInt(req.params.id)
+    const taskId = parseInt(req.params.id as string)
     const { rows } = await pool.query(`SELECT deleted_at FROM task_assignments WHERE id = $1`, [taskId])
     if (!rows[0] || rows[0].deleted_at !== null) return res.status(404).json({ error: 'Task not found' })
     await pool.query(`UPDATE task_assignments SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`, [taskId])
@@ -275,7 +275,7 @@ router.delete('/:id', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (
 
 router.post('/:id/restore', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
-    const taskId = parseInt(req.params.id)
+    const taskId = parseInt(req.params.id as string)
     const { rows } = await pool.query(`SELECT deleted_at FROM task_assignments WHERE id = $1`, [taskId])
     if (!rows[0]) return res.status(404).json({ error: 'Task not found' })
     if (rows[0].deleted_at === null) return res.status(400).json({ error: 'Task is not deleted' })

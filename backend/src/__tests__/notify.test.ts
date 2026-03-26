@@ -43,7 +43,7 @@ describe("createNotification", () => {
     await createNotification(1, "TASK_ASSIGNED", "Title", "Body", meta);
     expect(pool.query).toHaveBeenCalledWith(
       expect.stringContaining("INSERT INTO notifications"),
-      expect.arrayContaining([meta]),
+      expect.arrayContaining([JSON.stringify(meta)]),
     );
   });
 });
