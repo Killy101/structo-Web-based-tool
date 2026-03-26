@@ -29,7 +29,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
       const { rows: recentBrds } = await pool.query(
-        `SELECT b.id, b.brd_id as "brdId", b.title, b.created_at as "createdAt",
+        `SELECT b.brd_id as "brdId", b.title, b.created_at as "createdAt",
                 u.user_id as "creatorUserId", u.first_name as "creatorFirstName", u.last_name as "creatorLastName"
          FROM brds b
          LEFT JOIN users u ON b.created_by_id = u.id
@@ -44,7 +44,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
         const alreadyStored = active.some((n) => (n.meta as Record<string, unknown> | null)?.brdId === brd.brdId)
         if (!alreadyStored) {
           virtual.push({
-            id: -(brd.id + 100000),
+            id: -(Math.abs(brd.brdId.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0)) + 100000),
             userId,
             type: 'BRD_STATUS',
             title: 'BRD Source Uploaded',
