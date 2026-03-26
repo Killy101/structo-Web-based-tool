@@ -4,12 +4,12 @@
 
 -- ── Enums ──────────────────────────────────────────────────────────────────
 
-CREATE TYPE IF NOT EXISTS role_enum           AS ENUM ('SUPER_ADMIN', 'ADMIN', 'USER');
-CREATE TYPE IF NOT EXISTS status_enum         AS ENUM ('ACTIVE', 'INACTIVE');
-CREATE TYPE IF NOT EXISTS task_status_enum    AS ENUM ('PENDING', 'PROCESSING', 'PROCESSED', 'SUBMITTED', 'APPROVED', 'REJECTED');
-CREATE TYPE IF NOT EXISTS assignment_status   AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED');
-CREATE TYPE IF NOT EXISTS brd_format_enum     AS ENUM ('NEW', 'OLD');
-CREATE TYPE IF NOT EXISTS brd_status_enum     AS ENUM ('DRAFT', 'PAUSED', 'COMPLETED', 'APPROVED', 'ON_HOLD');
+DO $$ BEGIN CREATE TYPE role_enum        AS ENUM ('SUPER_ADMIN', 'ADMIN', 'USER');                                                       EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE status_enum      AS ENUM ('ACTIVE', 'INACTIVE');                                                                      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE task_status_enum AS ENUM ('PENDING', 'PROCESSING', 'PROCESSED', 'SUBMITTED', 'APPROVED', 'REJECTED');                 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE assignment_status AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED');                                                    EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE brd_format_enum  AS ENUM ('NEW', 'OLD');                                                                              EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE brd_status_enum  AS ENUM ('DRAFT', 'PAUSED', 'COMPLETED', 'APPROVED', 'ON_HOLD');                                     EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ── user_roles ──────────────────────────────────────────────────────────────
 
