@@ -4,15 +4,16 @@
 --   1. Open pgAdmin → connect to Windows PG18 → Query Tool
 --   2. Paste and run this script
 --   3. Copy ALL output rows (the ?column? column)
---   4. Save as migration_data.sql
---   5. Run: docker compose exec -T db psql -U postgres -d mydb < migration_data.sql
+--   4. Save as migration_data.sql (remove header row if present)
+--   5. Strip quotes with PowerShell then import into Docker
 
 -- user_roles (from "UserRole")
+-- features stored as JSON array [a,b] → convert to PG array {a,b}
 SELECT 'INSERT INTO user_roles (id, name, slug, features, created_at, updated_at) VALUES (' ||
   id || ', ' ||
   quote_literal(name) || ', ' ||
   quote_literal(slug) || ', ' ||
-  quote_literal(features::text) || '::text[], ' ||
+  quote_literal(replace(replace(features::text, '[', '{'), ']', '}')) || '::text[], ' ||
   quote_literal(createdat) || '::timestamptz, ' ||
   quote_literal(updatedat) || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
 FROM "UserRole"
@@ -52,9 +53,8 @@ FROM "User"
 
 UNION ALL
 
--- brds (from "Brd") — maps createdbyid → user_id
-SELECT 'INSERT INTO brds (id, brd_id, title, format, status, created_at, updated_at, deleted_at, user_id) VALUES (' ||
-  id || ', ' ||
+-- brds (from "Brd") — brd_id is TEXT primary key (no id column), created_by_id NOT NULL
+SELECT 'INSERT INTO brds (brd_id, title, format, status, created_at, updated_at, deleted_at, created_by_id) VALUES (' ||
   quote_literal(brdid) || ', ' ||
   quote_literal(title) || ', ' ||
   quote_literal(format) || '::brd_format_enum, ' ||
@@ -62,14 +62,14 @@ SELECT 'INSERT INTO brds (id, brd_id, title, format, status, created_at, updated
   quote_literal(createdat) || '::timestamptz, ' ||
   quote_literal(updatedat) || '::timestamptz, ' ||
   COALESCE(quote_literal(deletedat), 'NULL') || '::timestamptz, ' ||
-  COALESCE(createdbyid::text, 'NULL') ||
-  ') ON CONFLICT (id) DO NOTHING;'
+  COALESCE(createdbyid::text, '1') ||
+  ') ON CONFLICT (brd_id) DO NOTHING;'
 FROM "Brd"
 
 UNION ALL
 
--- password_history (from "PasswordHistory") — column is "hash" not "passwordhash"
-SELECT 'INSERT INTO password_history (id, user_id, password_hash, created_at) VALUES (' ||
+-- password_history (from "PasswordHistory") — column is "hash" not "password_hash"
+SELECT 'INSERT INTO password_history (id, user_id, hash, created_at) VALUES (' ||
   id || ', ' ||
   userid || ', ' ||
   quote_literal(hash) || ', ' ||
@@ -79,7 +79,7 @@ FROM "PasswordHistory"
 UNION ALL
 
 -- user_logs (from "UserLog") — column is "details" not "description"
-SELECT 'INSERT INTO user_logs (id, action, description, created_at, user_id) VALUES (' ||
+SELECT 'INSERT INTO user_logs (id, action, details, created_at, user_id) VALUES (' ||
   id || ', ' ||
   quote_literal(action) || ', ' ||
   COALESCE(quote_literal(details), 'NULL') || ', ' ||
