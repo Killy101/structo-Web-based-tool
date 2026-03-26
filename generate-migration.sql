@@ -26,8 +26,8 @@ SELECT 'INSERT INTO teams (id, name, slug, created_at, updated_at) VALUES (' ||
   quote_literal(name) || ', ' ||
   quote_literal(slug) || ', ' ||
   quote_literal(createdat) || '::timestamptz, ' ||
-  quote_literal(updatedat) || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
-FROM "Team"
+    quote_literal(updatedat) || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
+  FROM "Team"
 
 UNION ALL
 

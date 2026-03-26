@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
+  
 -- ── teams ───────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS teams (

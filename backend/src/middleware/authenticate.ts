@@ -16,7 +16,9 @@ export const authenticate = (
   next: NextFunction,
 ) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1];
+    const tokenFromHeader = req.headers.authorization?.split(" ")[1];
+    const tokenFromQuery = typeof req.query.token === "string" ? req.query.token : undefined;
+    const token = tokenFromHeader || tokenFromQuery;
     if (!token) {
       return res.status(401).json({ error: "No token provided" });
     }

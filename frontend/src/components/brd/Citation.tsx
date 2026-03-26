@@ -1,6 +1,7 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
+import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 interface CitationRow {
   id: string;
@@ -321,7 +322,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
         {value ? (shouldFmt ? renderCitationRulesDisplay(value) : value) : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
         {cellImgs.map(img => (
           <img key={img.id}
-            src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`}
+            src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
             alt={img.cellText || img.mediaName}
             className="mt-1 max-w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#1a1f35]"
             onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
@@ -374,7 +375,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
                       <div className="group">
                         {renderCell(row, col.key, idx)}
                         {getCellImgs(row.level, col.key).map(img => (
-                          <img key={`m-${img.id}`} src={`${API_BASE_CIT}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                         {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                       </div>

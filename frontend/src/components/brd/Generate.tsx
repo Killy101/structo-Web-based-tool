@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from "react";
 import api from "@/app/lib/api";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
+import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 // ── Cell image types ───────────────────────────────────────────────────────────
 interface CellImageMeta {
@@ -19,11 +20,11 @@ interface CellImageMeta {
 }
 
 // ── useCellImages hook ─────────────────────────────────────────────────────────
-function useCellImages(brdId?: string) {
+function useCellImages(brdId?: string, enabled = true) {
   const [images, setImages] = useState<CellImageMeta[]>([]);
 
   useEffect(() => {
-    if (!brdId) return;
+    if (!enabled || !brdId) return;
     api
       .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
       .then(r => {
@@ -33,7 +34,7 @@ function useCellImages(brdId?: string) {
       .catch((err) => {
         console.error("[useCellImages] Error fetching images:", err);
       });
-  }, [brdId]);
+  }, [brdId, enabled]);
 
   return { images };
 }
@@ -42,7 +43,7 @@ function useCellImages(brdId?: string) {
 function InlineImageCell({ brdId, image }: { brdId?: string; image: CellImageMeta }) {
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   if (!brdId) return null;
-  const imgSrc = image.blobUrl || `${API_BASE}/brd/${brdId}/images/${image.id}/blob`;
+  const imgSrc = image.blobUrl || buildBrdImageBlobUrl(brdId, image.id, API_BASE);
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
@@ -70,6 +71,7 @@ interface Props {
   onEdit?: (step: number) => void;
   onComplete?: () => void;
   canEdit?: boolean;
+  showCellImages?: boolean;
 }
 
 type SaveStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
@@ -642,9 +644,14 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
     <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
       <table className="w-full text-[11.5px]"><tbody>
         {fields.map((f, i) => {
-          // Try fieldLabel first, then rowIndex fallback (metadata header = row 0, data from row 1)
+          // Try field key first (new uploads), then display label, then rowIndex fallback.
+          const byKey = imagesByLabel.get(f.key.toLowerCase()) || [];
           const byLabel = imagesByLabel.get(f.label.toLowerCase()) || [];
-          const rowImages = byLabel.length > 0 ? byLabel : (imagesByMetaRow.get(i + 1) || []);
+          const rowImages = byKey.length > 0
+            ? byKey
+            : byLabel.length > 0
+              ? byLabel
+              : (imagesByMetaRow.get(i + 1) || []);
           return (
             <tr key={f.key} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
               <td className="px-3 py-2 w-36 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
@@ -825,7 +832,9 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
 
 function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const levels = useMemo(() => asExtractedLevels(cpData), [cpData]);
-  const hardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
+  const hardcodedPathFromData = String(cpData?.hardcoded_path ?? cpData?.hardcodedPath ?? "").trim();
+  const derivedHardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
+  const hardcodedPath = hardcodedPathFromData || derivedHardcodedPath;
   const rcFilename = String(cpData?.rc_filename ?? "");
   const headingAnnotation = String(cpData?.heading_annotation ?? "");
   const wsRows = useMemo(() => { const e = asExtractedWhitespace(cpData); return e.length > 0 ? e : DEFAULT_WHITESPACE_ROWS; }, [cpData]);
@@ -914,7 +923,7 @@ const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; descriptio
   content:  { label:"Content Profile",  sublabel:"Export",   description:"Levels & whitespace rules as Excel",        iconKey:"content",  accentLight:"#f5f3ff", accentDark:"#2a1f45", iconColorLight:"#7c3aed", iconColorDark:"#a78bfa", btnBg:"#7c3aed", btnHover:"#6d28d9", badgeLabel:".xls"  },
 };
 
-export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true }: Props) {
+export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true, showCellImages = true }: Props) {
   const isApproved = status === "APPROVED";
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
@@ -930,7 +939,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const docPageRef        = useRef<HTMLDivElement>(null);
   const contentProfileRef = useRef<HTMLDivElement>(null);
   
-  const { images } = useCellImages(brdId);
+  const { images } = useCellImages(brdId, showCellImages);
 
   useEffect(() => {
     const timers = doneResetTimers.current;

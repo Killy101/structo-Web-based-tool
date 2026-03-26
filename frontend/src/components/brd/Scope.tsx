@@ -1,6 +1,7 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import React, { useEffect, useRef, useState } from "react";
 import api from "@/app/lib/api";
+import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 /* ─────────────── types ─────────────── */
 interface ScopeRow {
@@ -1081,7 +1082,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                             <InlineCell value={row.title} placeholder="Document title…" wrap strikethrough={oos} onChange={val => updateRow(row.id, "title", val)}/>
                           </div>
                           {getCellImgs(row.stableKey, "title").map(img => (
-                            <img key={img.id} src={`${API_BASE_SCOPE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} existingImages={getCellImgs(row.stableKey, "title")} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
                         </div>
@@ -1090,7 +1091,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                         <div className="group">
                           <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "referenceLink", val)}/>
                           {getCellImgs(row.stableKey, "referenceLink").map(img => (
-                            <img key={img.id} src={`${API_BASE_SCOPE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} existingImages={getCellImgs(row.stableKey, "referenceLink")} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
                         </div>
@@ -1099,7 +1100,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                         <div className="group">
                           <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "contentUrl", val)}/>
                           {getCellImgs(row.stableKey, "contentUrl").map(img => (
-                            <img key={img.id} src={`${API_BASE_SCOPE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} existingImages={getCellImgs(row.stableKey, "contentUrl")} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
                         </div>
@@ -1108,7 +1109,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                         <div className="group">
                           <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
                           {getCellImgs(row.stableKey, "issuingAuth").map(img => (
-                            <img key={img.id} src={`${API_BASE_SCOPE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} existingImages={getCellImgs(row.stableKey, "issuingAuth")} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
                         </div>
@@ -1117,7 +1118,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                         <div className="group" onClick={e => e.stopPropagation()}>
                           <InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} onChange={val => updateRow(row.id, "asrbId", val)}/>
                           {getCellImgs(row.stableKey, "asrbId").map(img => (
-                            <img key={img.id} src={`${API_BASE_SCOPE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} existingImages={getCellImgs(row.stableKey, "asrbId")} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
                         </div>
@@ -1126,7 +1127,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                         <div className="group">
                           <InlineCell value={row.smeComments} placeholder="Comments…" wrap strikethrough={oos} onChange={val => updateRow(row.id, "smeComments", val)}/>
                           {getCellImgs(row.stableKey, "smeComments").map(img => (
-                            <img key={img.id} src={`${API_BASE_SCOPE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} existingImages={getCellImgs(row.stableKey, "smeComments")} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
                         </div>
