@@ -54,20 +54,20 @@ function WorkflowCard({
 }) {
   const gradient =
     color === "blue"
-      ? "from-blue-600/20 to-blue-500/5 border-blue-500/30 hover:border-blue-400/50"
-      : "from-violet-600/20 to-violet-500/5 border-violet-500/30 hover:border-violet-400/50";
+      ? "border-blue-500/30 hover:border-blue-400/50 bg-blue-500/5 dark:bg-gradient-to-br dark:from-blue-600/20 dark:to-blue-500/5"
+      : "border-violet-500/30 hover:border-violet-400/50 bg-violet-500/5 dark:bg-gradient-to-br dark:from-violet-600/20 dark:to-violet-500/5";
   const badgeColor =
     color === "blue"
-      ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
-      : "bg-violet-500/20 text-violet-300 border-violet-500/30";
+      ? "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/30"
+      : "bg-violet-100 text-violet-700 border-violet-200 dark:bg-violet-500/20 dark:text-violet-300 dark:border-violet-500/30";
   const iconBg =
     color === "blue"
-      ? "bg-blue-500/15 text-blue-400 border-blue-500/20"
-      : "bg-violet-500/15 text-violet-400 border-violet-500/20";
+      ? "bg-blue-100 text-blue-600 border-blue-200 dark:bg-blue-500/15 dark:text-blue-400 dark:border-blue-500/20"
+      : "bg-violet-100 text-violet-600 border-violet-200 dark:bg-violet-500/15 dark:text-violet-400 dark:border-violet-500/20";
   const stepDot =
     color === "blue"
-      ? "bg-blue-500/40 text-blue-300"
-      : "bg-violet-500/40 text-violet-300";
+      ? "bg-blue-100 text-blue-700 dark:bg-blue-500/40 dark:text-blue-300"
+      : "bg-violet-100 text-violet-700 dark:bg-violet-500/40 dark:text-violet-300";
   const btnClass =
     color === "blue"
       ? "bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-500/25"
@@ -75,7 +75,7 @@ function WorkflowCard({
 
   return (
     <div
-      className={`relative flex flex-col rounded-2xl border bg-gradient-to-br ${gradient} p-6 transition-all duration-200 ${locked ? "opacity-60" : "cursor-pointer hover:shadow-xl"}`}
+      className={`relative flex flex-col rounded-2xl border ${gradient} p-6 transition-all duration-200 ${locked ? "opacity-60" : "cursor-pointer hover:shadow-xl"}`}
       onClick={locked ? undefined : onClick}
     >
       {locked && (
@@ -106,8 +106,8 @@ function WorkflowCard({
       </div>
 
       {/* Title + Description */}
-      <h3 className="text-base font-bold text-white mb-1">{title}</h3>
-      <p className="text-sm text-slate-400 leading-relaxed mb-5">
+      <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">{title}</h3>
+      <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed mb-5">
         {description}
       </p>
 
@@ -120,7 +120,7 @@ function WorkflowCard({
             >
               {i + 1}
             </span>
-            <span className="text-xs text-slate-400">{step}</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">{step}</span>
           </li>
         ))}
       </ol>
@@ -151,6 +151,323 @@ function WorkflowCard({
   );
 }
 
+// ── Chunk Workflow Modal ──────────────────────────────────────────────────────
+
+type FileCount = 2 | 3;
+
+export type ConversionPair =
+  | "pdf-to-pdf"
+  | "pdf-to-html"
+  | "html-to-html";
+
+export interface ChunkOpts {
+  fileCount: FileCount;
+  conversionPair: ConversionPair;
+}
+
+const CONVERSION_OPTIONS: {
+  value: ConversionPair;
+  label: string;
+  from: string;
+  to: string;
+  fromExt: string;
+  toExt: string;
+  description: string;
+}[] = [
+  {
+    value: "pdf-to-pdf",
+    label: "PDF → PDF",
+    from: "PDF",
+    to: "PDF",
+    fromExt: ".pdf",
+    toExt: ".pdf",
+    description: "Compare two PDF revisions",
+  },
+  {
+    value: "pdf-to-html",
+    label: "PDF → HTML",
+    from: "PDF",
+    to: "HTML",
+    fromExt: ".pdf",
+    toExt: ".html",
+    description: "Convert & diff PDF to HTML",
+  },
+  {
+    value: "html-to-html",
+    label: "HTML → HTML",
+    from: "HTML",
+    to: "HTML",
+    fromExt: ".html",
+    toExt: ".html",
+    description: "Compare two HTML revisions",
+  },
+];
+
+function FileTypeIcon({ ext, size = 20 }: { ext: string; size?: number }) {
+  const isPdf = ext === ".pdf";
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
+      <rect x="2" y="1" width="12" height="16" rx="2"
+        fill={isPdf ? "rgba(239,68,68,0.15)" : "rgba(59,130,246,0.15)"}
+        stroke={isPdf ? "rgba(239,68,68,0.5)" : "rgba(59,130,246,0.5)"}
+        strokeWidth="1.2" />
+      <rect x="10" y="1" width="4" height="4" rx="0"
+        fill={isPdf ? "rgba(239,68,68,0.25)" : "rgba(59,130,246,0.25)"} />
+      <path d="M10 1 L14 5 L10 5 Z"
+        fill={isPdf ? "rgba(239,68,68,0.35)" : "rgba(59,130,246,0.35)"} />
+      <text x="4" y="13.5" fontSize="4.5" fontWeight="700" letterSpacing="0.2"
+        fill={isPdf ? "#f87171" : "#60a5fa"} fontFamily="monospace">
+        {isPdf ? "PDF" : "HTM"}
+      </text>
+    </svg>
+  );
+}
+
+function ArrowRight() {
+  return (
+    <svg className="w-4 h-4 shrink-0" viewBox="0 0 16 16" fill="none">
+      <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5"
+        strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChunkWorkflowModal({
+  open,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: (opts: ChunkOpts) => void;
+}) {
+  const [fileCount, setFileCount] = React.useState<FileCount>(2);
+  const [conversionPair, setConversionPair] = React.useState<ConversionPair>("pdf-to-pdf");
+
+  if (!open) return null;
+
+  const selectedOption = CONVERSION_OPTIONS.find((o) => o.value === conversionPair)!;
+
+  function handleConfirm() {
+    onConfirm({ fileCount, conversionPair });
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+      style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(6px)" }}
+    >
+      {/* Sheet */}
+      <div
+        className="relative w-full max-w-[460px] rounded-2xl overflow-hidden shadow-2xl
+          bg-white dark:bg-[#0a0d1c]
+          border border-violet-200 dark:border-violet-500/20"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Accent bar */}
+        <div className="h-0.5 w-full" style={{
+          background: "linear-gradient(90deg, transparent, #7c3aed 40%, #a855f7 60%, transparent)"
+        }} />
+
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-violet-100 dark:border-violet-500/15">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 bg-violet-100 dark:bg-violet-500/15 border border-violet-200 dark:border-violet-500/30">
+              <svg className="text-violet-500 dark:text-violet-400" style={{ width: 18, height: 18 }}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                  d="M4 6h16M4 10h16M4 14h8M4 18h8" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-[15px] font-semibold text-slate-900 dark:text-slate-100">
+                Configure Chunking
+              </h2>
+              <p className="text-[11px] mt-0.5 text-slate-500 dark:text-slate-500">
+                Workflow 2 · Chunk-based Comparison
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors
+              text-slate-400 dark:text-slate-500
+              bg-slate-100 dark:bg-white/5
+              border border-slate-200 dark:border-white/10
+              hover:bg-slate-200 dark:hover:bg-white/10"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+
+          {/* Step 1: Conversion pair */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-500/20 border border-violet-200 dark:border-violet-500/30">
+                1
+              </span>
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                Document Conversion Type
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {CONVERSION_OPTIONS.map((opt) => {
+                const active = conversionPair === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => setConversionPair(opt.value)}
+                    className={`relative flex flex-col items-center gap-2 rounded-xl py-3.5 px-2 transition-all duration-150 border
+                      ${active
+                        ? "bg-violet-50 dark:bg-violet-500/16 border-violet-400 dark:border-violet-500/55"
+                        : "bg-slate-50 dark:bg-white/4 border-slate-200 dark:border-white/9 hover:border-violet-300 dark:hover:border-violet-500/30"
+                      }`}
+                  >
+                    {active && <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />}
+                    <div className="flex items-center gap-1">
+                      <FileTypeIcon ext={opt.fromExt} size={18} />
+                      <ArrowRight />
+                      <FileTypeIcon ext={opt.toExt} size={18} />
+                    </div>
+                    <span className={`text-[11px] font-semibold leading-tight text-center
+                      ${active ? "text-violet-700 dark:text-violet-300" : "text-slate-700 dark:text-slate-300"}`}>
+                      {opt.label}
+                    </span>
+                    <span className="text-[10px] leading-tight text-center text-slate-500 dark:text-slate-500">
+                      {opt.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="h-px bg-slate-100 dark:bg-violet-500/15" />
+
+          {/* Step 2: File count */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-500/20 border border-violet-200 dark:border-violet-500/30">
+                2
+              </span>
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                Number of Input Files
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {([2, 3] as FileCount[]).map((n) => {
+                const active = fileCount === n;
+                return (
+                  <button
+                    key={n}
+                    onClick={() => setFileCount(n)}
+                    className={`relative flex items-center gap-3 rounded-xl px-4 py-3.5 transition-all duration-150 text-left border
+                      ${active
+                        ? "bg-violet-50 dark:bg-violet-500/16 border-violet-400 dark:border-violet-500/55"
+                        : "bg-slate-50 dark:bg-white/4 border-slate-200 dark:border-white/9 hover:border-violet-300 dark:hover:border-violet-500/30"
+                      }`}
+                  >
+                    {active && <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />}
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 font-bold text-base border
+                      ${active
+                        ? "bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-500/35"
+                        : "bg-white dark:bg-white/5 text-slate-500 dark:text-slate-500 border-slate-200 dark:border-white/10"
+                      }`}>
+                      {n}
+                    </div>
+                    <div>
+                      <div className={`text-[12px] font-semibold
+                        ${active ? "text-violet-700 dark:text-violet-300" : "text-slate-700 dark:text-slate-300"}`}>
+                        {n === 2 ? "2 Files" : "3 Files"}
+                      </div>
+                      <div className="text-[10px] mt-0.5 text-slate-500 dark:text-slate-500">
+                        {n === 2
+                          ? `Old ${selectedOption.fromExt} + New ${selectedOption.toExt}`
+                          : "Old + New + innod.xml"}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Preview strip */}
+          <div className="rounded-xl px-4 py-3 flex items-center gap-3 bg-violet-50 dark:bg-violet-500/7 border border-violet-100 dark:border-violet-500/15">
+            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+              <div className="flex flex-col items-center gap-1">
+                <FileTypeIcon ext={selectedOption.fromExt} size={16} />
+                <span className="text-[9px] font-medium text-slate-400 dark:text-slate-500">OLD</span>
+              </div>
+              <div className="h-px flex-1 bg-slate-200 dark:bg-violet-500/20" style={{ minWidth: 6 }} />
+              <div className="flex flex-col items-center gap-1">
+                <FileTypeIcon ext={selectedOption.toExt} size={16} />
+                <span className="text-[9px] font-medium text-slate-400 dark:text-slate-500">NEW</span>
+              </div>
+              {fileCount === 3 && (
+                <>
+                  <div className="h-px flex-1 bg-slate-200 dark:bg-violet-500/20" style={{ minWidth: 6 }} />
+                  <div className="flex flex-col items-center gap-1">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none">
+                      <rect x="2" y="1" width="12" height="16" rx="2"
+                        fill="rgba(16,185,129,0.12)" stroke="rgba(16,185,129,0.5)" strokeWidth="1.2" />
+                      <text x="3.5" y="13.5" fontSize="4" fontWeight="700"
+                        fill="#34d399" fontFamily="monospace">XML</text>
+                    </svg>
+                    <span className="text-[9px] font-medium text-slate-400 dark:text-slate-500">XML</span>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="h-7 w-px mx-1 shrink-0 bg-slate-200 dark:bg-violet-500/20" />
+            <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-500">
+              <span className="font-semibold text-slate-700 dark:text-slate-300">
+                {fileCount} upload{fileCount > 1 ? "s" : ""}
+              </span>{" "}
+              · {selectedOption.label}
+              {fileCount === 3 && " + XML"}
+            </p>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-2.5 px-6 pb-5">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl text-[13px] font-semibold transition-colors
+              text-slate-600 dark:text-slate-400
+              bg-slate-100 dark:bg-white/4
+              border border-slate-200 dark:border-white/9
+              hover:bg-slate-200 dark:hover:bg-white/8"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            className="flex-[2] py-2.5 rounded-xl text-[13px] font-semibold text-white flex items-center justify-center gap-2 transition-all"
+            style={{
+              background: "linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)",
+              boxShadow: "0 4px 24px rgba(124,58,237,0.35)",
+            }}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 6h16M4 10h16M4 14h8M4 18h8" />
+            </svg>
+            Chunk Now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 // ── Page Header ───────────────────────────────────────────────────────────────
 
 function PageHeader({
@@ -217,7 +534,7 @@ function PageHeader({
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <h1 className="text-base font-bold text-white truncate">
+          <h1 className="text-base font-bold text-slate-900 dark:text-white truncate">
             {titles[workflow]}
           </h1>
           {workflow !== "selector" && (
@@ -308,11 +625,13 @@ function WorkflowSelector({
   canCompare,
   canMerge,
   onSelect,
+  onChunkClick,
 }: {
   canChunk: boolean;
   canCompare: boolean;
   canMerge: boolean;
   onSelect: (w: Workflow) => void;
+  onChunkClick: () => void;
 }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -339,10 +658,10 @@ function WorkflowSelector({
             />
           </svg>
         </div>
-        <h2 className="text-xl font-bold text-white mb-2">
+        <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
           Select a Comparison Workflow
         </h2>
-        <p className="text-sm text-slate-500 max-w-lg mx-auto">
+        <p className="text-sm text-slate-500 dark:text-slate-500 max-w-lg mx-auto">
           Upload your Old PDF, New PDF, and XML file — then choose how you want
           to review the changes.
         </p>
@@ -388,7 +707,7 @@ function WorkflowSelector({
           badge="Workflow 2"
           color="violet"
           locked={!canChunk}
-          onClick={() => onSelect("chunk")}
+          onClick={() => canChunk && onChunkClick()}
           icon={
             <svg
               className="w-6 h-6"
@@ -509,6 +828,8 @@ export default function ComparePage() {
   const canMerge = isSuperAdmin || features.includes("compare-merge");
 
   const [workflow, setWorkflow] = useState<Workflow>("selector");
+  const [chunkModalOpen, setChunkModalOpen] = useState(false);
+  const [chunkOpts, setChunkOpts] = useState<ChunkOpts | null>(null);
 
   // Active job — set by ChunkPanel after /upload succeeds
   const [activeJob, setActiveJob] = useState<JobState | null>(null);
@@ -517,9 +838,21 @@ export default function ComparePage() {
   const [selectedChunk, setSelectedChunk] = useState<PdfChunk | null>(null);
   const [selectedChunkSourceName, setSelectedChunkSourceName] =
     useState<string>("");
+  const [allChunks, setAllChunks] = useState<PdfChunk[]>([]);
+  const [jobOldPdf, setJobOldPdf] = useState<File | null>(null);
+  const [jobNewPdf, setJobNewPdf] = useState<File | null>(null);
+  const [jobXmlFile, setJobXmlFile] = useState<File | null>(null);
 
   function handleJobCreated(job: JobState) {
     setActiveJob(job);
+  }
+
+  function handleChunkDone(updatedChunk: PdfChunk) {
+    // Update the chunk in allChunks — e.g. when span-level detection corrects
+    // a false-positive has_changes flag from the fast word-diff pass.
+    setAllChunks(prev =>
+      prev.map(c => c.index === updatedChunk.index ? { ...c, ...updatedChunk } : c)
+    );
   }
 
   function handleNavigateToCompare(chunk: PdfChunk, sourceName: string) {
@@ -533,10 +866,7 @@ export default function ComparePage() {
   }
 
   return (
-    <div
-      className="flex flex-col h-full min-h-0 -m-6"
-      style={{ background: "rgba(4, 9, 20, 0.6)" }}
-    >
+    <div className="flex flex-col h-full min-h-0 -mx-6 -mb-6">
       {/* ── Page Header ─────────────────────────────────────────────────────── */}
       <PageHeader
         workflow={workflow}
@@ -547,6 +877,16 @@ export default function ComparePage() {
         onViewChunks={() => setWorkflow("compare")}
       />
 
+      {/* ── Chunk Workflow Modal ─────────────────────────────────────────────── */}
+      <ChunkWorkflowModal
+        open={chunkModalOpen}
+        onClose={() => setChunkModalOpen(false)}
+        onConfirm={(opts) => {
+          setChunkOpts(opts);
+          setWorkflow("chunk");
+        }}
+      />
+
       {/* ── Content ──────────────────────────────────────────────────────────── */}
       {workflow === "selector" && (
         <WorkflowSelector
@@ -554,15 +894,28 @@ export default function ComparePage() {
           canCompare={canCompare}
           canMerge={canMerge}
           onSelect={setWorkflow}
+          onChunkClick={() => setChunkModalOpen(true)}
         />
       )}
 
       {workflow === "chunk" && (
         <div className="flex-1 overflow-hidden p-4 min-h-0">
           <ChunkPanel
-            onNavigateToCompare={handleNavigateToCompare}
+            onNavigateToCompare={(chunk, sourceName) => {
+              setSelectedChunk(chunk);
+              setSelectedChunkSourceName(sourceName);
+              setWorkflow("compare");
+            }}
+            onAllChunksReady={(chunks) => setAllChunks(chunks)}
+            onFilesReady={(oldPdf, newPdf, xmlFile) => {
+              setJobOldPdf(oldPdf);
+              setJobNewPdf(newPdf);
+              setJobXmlFile(xmlFile ?? null);
+            }}
             onJobCreated={handleJobCreated}
             activeJob={activeJob}
+            fileCount={chunkOpts?.fileCount ?? 2}
+            conversionPair={chunkOpts?.conversionPair ?? "pdf-to-pdf"}
           />
         </div>
       )}
@@ -572,6 +925,12 @@ export default function ComparePage() {
           <ComparePanel
             initialChunk={selectedChunk}
             initialSourceName={selectedChunkSourceName}
+            initialOldPdf={jobOldPdf}
+            initialNewPdf={jobNewPdf}
+            initialXmlFile={jobXmlFile}
+            allChunks={allChunks}
+            onChunkDone={handleChunkDone}
+            onNavigateToChunk={(chunk) => setSelectedChunk(chunk)}
             activeJob={activeJob}
           />
         </div>

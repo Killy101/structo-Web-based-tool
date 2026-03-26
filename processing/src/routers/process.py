@@ -361,14 +361,13 @@ def _normalise_metadata(metadata: dict[str, Any] | None, format_: str) -> dict[s
         return result
 
     # Legacy / frontend camelCase path
-    has_new_name = bool(
-        t("contentCategoryName") or t("content_category_name") or t("document_title")
-    )
-    has_old_name = bool(t("sourceName") or t("source_name"))
-    has_old_type = bool(t("sourceType") or t("source_type"))
-    auto_new_schema = has_new_name and not has_old_name and not has_old_type
-
-    if format_ == "new" or auto_new_schema:
+    # FIX: removed auto_new_schema heuristic that was overriding the explicit
+    # format_ parameter. When frontend sends old-format metadata with
+    # source_name (correct) but no sourceName, the old heuristic saw
+    # has_new_name=False *and* has_old_name=False → auto_new_schema=True and
+    # silently fell into the new-format branch, dropping sourceType,
+    # payloadSubtype, status etc. format_ is authoritative — trust it.
+    if format_ == "new":
         return {
             "Content Category Name": t("contentCategoryName") or t("content_category_name") or t("document_title"),
             "Publication Date":      t("publicationDate")     or t("publication_date")      or "{iso-date}",
@@ -384,7 +383,12 @@ def _normalise_metadata(metadata: dict[str, Any] | None, format_: str) -> dict[s
         }
     else:
         return {
-            "Source Name":      t("sourceName")     or t("source_name")     or t("contentCategoryName") or t("content_category_name") or t("document_title"),
+            # FIX: read source_name first — frontend now sends source_name for old-format BRDs
+            # so the round-trip key is consistent with what we persist.
+            # sourceName / content_category_name / document_title kept as fallbacks.
+            "Source Name":      t("source_name")     or t("sourceName")     or t("content_category_name") or t("contentCategoryName") or t("document_title"),
+            # FIX: pass authoritative_source through — previously dropped entirely
+            "Authoritative Source": t("authoritative_source") or t("authoritativeSource"),
             "Source Type":      t("sourceType")     or t("source_type"),
             "Publication Date": t("publicationDate") or t("publication_date") or "{iso-date}",
             "Last Updated Date":t("lastUpdatedDate") or t("last_updated_date") or "{iso-date}",

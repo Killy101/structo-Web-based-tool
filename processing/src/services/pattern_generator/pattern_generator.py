@@ -464,36 +464,6 @@ def generate_level_patterns(language: str, levels: list[dict]) -> dict[str, list
             if key not in explicit_regex_levels:
                 inferred[key] = list(default_patterns)
 
-    # ── AI fallback: call Gemini for levels that still have no specific pattern ──
-    # Only fires when rule-based inference + redjay + defaults all gave up
-    # (returned catch-all). Skipped silently if GEMINI_API_KEY is not set.
-    try:
-        from .ai_pattern_fallback import ai_infer_patterns as _ai_infer
-        for level_def in level_defs:
-            key = str(level_def.level)
-            if key == "2":
-                continue
-            current = inferred.get(key, [])
-            if current and not _is_generic_pattern_set(current):
-                continue  # rules already produced something specific
-            if key in explicit_regex_levels:
-                continue  # explicit authored regex — don't override
-            ai_patterns = _ai_infer(
-                definition=level_def.definition,
-                examples=level_def.examples,
-                level=level_def.level,
-                language=language,
-            )
-            if ai_patterns:
-                inferred[key] = ai_patterns
-    except ImportError:
-        pass  # ai_pattern_fallback.py not installed — silently skip
-    except Exception as _ai_err:
-        import logging
-        logging.getLogger(__name__).warning(
-            "AI pattern fallback error: %s", _ai_err
-        )
-
     # Level 2 is always document-title catch-all.
     if "2" in inferred:
         inferred["2"] = [r"^.*$"]
