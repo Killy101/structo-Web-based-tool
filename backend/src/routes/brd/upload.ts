@@ -1,374 +1,238 @@
 // routes/brd/upload.ts
-import { Router, Request, Response } from "express";
-import multer from "multer";
-import FormData from "form-data";
-import fetch from "node-fetch";
-import fs from "fs";
-import path from "path";
-import prisma from "../../lib/prisma";
-import { uploadLimiter, processingLimiter } from "../../middleware/rateLimits";
-import { Prisma } from "@prisma/client"; 
-import { requireBrdCreate, requireBrdEdit } from "../../middleware/brd-access";
-import {
-  makeStoragePointer,
-  sanitizePathPart,
-  uploadBinaryObject,
-  uploadJsonObject,
-} from "../../lib/supabase-storage";
-import { createNotification, notifyMany } from "../../lib/notify";
+import { Router, Request, Response } from 'express'
+import multer from 'multer'
+import FormData from 'form-data'
+import fetch from 'node-fetch'
+import fs from 'fs'
+import path from 'path'
+import pool from '../../lib/db'
+import { withTransaction } from '../../lib/db'
+import { uploadLimiter, processingLimiter } from '../../middleware/rateLimits'
+import { requireBrdCreate, requireBrdEdit } from '../../middleware/brd-access'
+import { notifyMany } from '../../lib/notify'
 
-const router = Router();
+const router = Router()
 
-const PROCESSING_URL = process.env.PROCESSING_URL ?? "http://localhost:8000";
+const PROCESSING_URL = process.env.PROCESSING_URL ?? 'http://localhost:8000'
 
 const upload = multer({
-  dest: path.join(process.cwd(), "tmp", "uploads"),
+  dest: path.join(process.cwd(), 'tmp', 'uploads'),
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter(_, file, cb) {
-    const allowed = [".pdf", ".doc", ".docx"];
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) cb(null, true);
-    else cb(new Error("Only PDF, DOC, DOCX files are allowed"));
+    const allowed = ['.pdf', '.doc', '.docx']
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (allowed.includes(ext)) cb(null, true)
+    else cb(new Error('Only PDF, DOC, DOCX files are allowed'))
   },
-});
+})
 
 interface ProcessingResult {
-  filename:         string;
-  char_count:       number;
-  detected_format?: string;   // "new" | "old" — auto-detected by Python
-  scope:            Record<string, unknown>;
-  metadata:         Record<string, unknown>;
-  toc:              Record<string, unknown>;
-  citations:        Record<string, unknown>;
-  content_profile?: Record<string, unknown>;
-  contentProfile?:  Record<string, unknown>;
-  brd_config?:      Record<string, unknown>;
-  brdConfig?:       Record<string, unknown>;
-  image_metadata?:  ImageMeta[];
+  filename:         string
+  char_count:       number
+  detected_format?: string   // "new" | "old" — auto-detected by Python
+  scope:            Record<string, unknown>
+  metadata:         Record<string, unknown>
+  toc:              Record<string, unknown>
+  citations:        Record<string, unknown>
+  content_profile?: Record<string, unknown>
+  contentProfile?:  Record<string, unknown>
+  brd_config?:      Record<string, unknown>
+  brdConfig?:       Record<string, unknown>
+  image_metadata?:  ImageMeta[]
 }
 
 interface ImageMeta {
-  tableIndex: number;
-  rowIndex:   number;
-  colIndex:   number;
-  rid:        string;
-  mediaName:  string;
-  mimeType:   string;
-  cellText:   string;
-  imageData:  string; // base64 encoded
-}
-
-function sectionPath(brdId: string, name: string): string {
-  return `brd/${brdId}/sections/${name}.json`;
-}
-
-function imagePath(brdId: string, image: ImageMeta, index: number): string {
-  const safeMediaName = sanitizePathPart(image.mediaName || `image-${index}`);
-  const safeRid = sanitizePathPart(image.rid || `rid-${index}`);
-  return `brd/${brdId}/images/${String(image.tableIndex)}-${String(image.rowIndex)}-${String(image.colIndex)}-${safeRid}-${safeMediaName}`;
+  tableIndex: number
+  rowIndex:   number
+  colIndex:   number
+  rid:        string
+  mediaName:  string
+  mimeType:   string
+  cellText:   string
+  imageData:  string // base64 encoded
 }
 
 function stripQuotes(s: string): string {
   return s
     .trim()
-    .replace(/^["\u201c\u201d\u2018\u2019]+|["\u201c\u201d\u2018\u2019]+$/g, "")
-    .trim();
+    .replace(/^["\u201c\u201d\u2018\u2019]+|["\u201c\u201d\u2018\u2019]+$/g, '')
+    .trim()
 }
 
 const BOILERPLATE_TITLES = new Set([
-  "structuring requirements",
-  "content structure",
-  "formatting requirements",
-  "document structure",
-  "template instructions",
-  "instructions",
-  "overview",
-  "introduction",
-  "background",
-  "purpose",
-  "scope",
-  "document history",
-  "glossary",
-  "file delivery",
-  "system display",
-  "citation visualization",
-  "legal",
-  "copyright",
-]);
+  'structuring requirements', 'content structure', 'formatting requirements',
+  'document structure', 'template instructions', 'instructions', 'overview',
+  'introduction', 'background', 'purpose', 'scope', 'document history',
+  'glossary', 'file delivery', 'system display', 'citation visualization',
+  'legal', 'copyright',
+])
 
 function isBoilerplate(title: string): boolean {
-  const t = title.trim().toLowerCase();
-  return BOILERPLATE_TITLES.has(t) || [...BOILERPLATE_TITLES].some(b => t.includes(b));
+  const t = title.trim().toLowerCase()
+  return BOILERPLATE_TITLES.has(t) || [...BOILERPLATE_TITLES].some(b => t.includes(b))
 }
 
-function buildTitle(
-  meta: Record<string, string>,
-  originalName: string
-): string {
-  const categoryName  = stripQuotes(meta.content_category_name ?? "");
-  const documentTitle = stripQuotes(meta.document_title        ?? "");
-  const issuingAgency = stripQuotes(meta.issuing_agency        ?? "");
+function buildTitle(meta: Record<string, string>, originalName: string): string {
+  const categoryName  = stripQuotes(meta.content_category_name ?? '')
+  const documentTitle = stripQuotes(meta.document_title        ?? '')
+  const issuingAgency = stripQuotes(meta.issuing_agency        ?? '')
 
-  let rawTitle = "";
+  let rawTitle = ''
 
   if (categoryName && documentTitle && !isBoilerplate(documentTitle)) {
-    const catLower = categoryName.toLowerCase();
-    const docLower = documentTitle.toLowerCase();
-
-    const isRedundant =
-      catLower === docLower ||
-      catLower.includes(docLower) ||
-      docLower.includes(catLower);
-
+    const catLower = categoryName.toLowerCase()
+    const docLower = documentTitle.toLowerCase()
+    const isRedundant = catLower === docLower || catLower.includes(docLower) || docLower.includes(catLower)
     if (isRedundant) {
-      rawTitle = categoryName.length >= documentTitle.length
-        ? categoryName
-        : documentTitle;
+      rawTitle = categoryName.length >= documentTitle.length ? categoryName : documentTitle
     } else {
-      rawTitle = `${categoryName} - ${documentTitle}`;
+      rawTitle = `${categoryName} - ${documentTitle}`
     }
   } else if (categoryName) {
-    rawTitle = categoryName;
+    rawTitle = categoryName
   } else if (documentTitle) {
-    rawTitle = documentTitle;
+    rawTitle = documentTitle
   } else if (issuingAgency) {
-    rawTitle = issuingAgency;
+    rawTitle = issuingAgency
   } else {
     rawTitle = originalName
-      .replace(/\.(pdf|doc|docx)$/i, "")
-      .replace(/_{2,}/g, " ")
-      .replace(/_/g, " ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+      .replace(/\.(pdf|doc|docx)$/i, '')
+      .replace(/_{2,}/g, ' ')
+      .replace(/_/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
   }
 
-  return rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
+  return rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1)
 }
 
-// routes/brd/upload.ts - CORRECTED VERSION
-
 router.post(
-  "/upload",
+  '/upload',
   requireBrdCreate,
   uploadLimiter,
-  upload.single("file"),
+  upload.single('file'),
   async (req: Request, res: Response) => {
-    const file = req.file;
+    const file = req.file
 
-    if (!file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
+    if (!file) return res.status(400).json({ error: 'No file uploaded' })
 
     try {
-      // ── 1. Generate BRD ID FIRST (before calling Python) ─────────────────
-      // IMPORTANT: Must use MAX numeric suffix, NOT count().
-      // count() produces collisions when any BRD has ever been deleted —
-      // e.g. 9 rows exist but the highest id is BRD-010, so count+1 = BRD-010
-      // which already exists and the upsert silently overwrites it.
-      const allBrdIds = await prisma.brd.findMany({ select: { brdId: true } });
-      const maxNum = allBrdIds.reduce((max, { brdId }) => {
-        const n = parseInt(brdId.replace("BRD-", ""), 10);
-        return isNaN(n) ? max : Math.max(max, n);
-      }, 0);
-      const brdId = `BRD-${String(maxNum + 1).padStart(3, "0")}`;
-      
-      console.log("\n" + "=".repeat(80));
-      console.log("🚀 UPLOAD PROCESS STARTED");
-      console.log("=".repeat(80));
-      console.log(`📄 File: ${file.originalname}`);
-      console.log(`🆔 Generated BRD ID: ${brdId}`);
-      console.log(`🎯 Format: auto-detecting…`);
-      console.log(`🔗 Processing URL: ${PROCESSING_URL}`);
+      // ── 1. Generate BRD ID — use MAX numeric suffix to avoid collisions ──
+      const { rows: allBrds } = await pool.query(`SELECT brd_id FROM brds`)
+      const maxNum = (allBrds as Array<{ brd_id: string }>).reduce((max, { brd_id }) => {
+        const n = parseInt(brd_id.replace('BRD-', ''), 10)
+        return isNaN(n) ? max : Math.max(max, n)
+      }, 0)
+      const brdId = `BRD-${String(maxNum + 1).padStart(3, '0')}`
 
-      // ── 2. Forward to Python processor WITH brd_id query param ───────────
-      const form = new FormData();
-      form.append("file", fs.createReadStream(file.path), {
+      console.log('\n' + '='.repeat(80))
+      console.log('UPLOAD PROCESS STARTED')
+      console.log('='.repeat(80))
+      console.log(`File: ${file.originalname}`)
+      console.log(`Generated BRD ID: ${brdId}`)
+      console.log(`Processing URL: ${PROCESSING_URL}`)
+
+      // ── 2. Forward to Python processor ───────────────────────────────────
+      const form = new FormData()
+      form.append('file', fs.createReadStream(file.path), {
         filename: file.originalname,
         contentType: file.mimetype,
-      });
+      })
 
-      const processUrl = `${PROCESSING_URL}/process?brd_id=${encodeURIComponent(brdId)}`;
-      console.log(`📡 URL: ${processUrl}`);
-
+      const processUrl = `${PROCESSING_URL}/process?brd_id=${encodeURIComponent(brdId)}`
       const pyRes = await fetch(processUrl, {
-        method: "POST",
+        method: 'POST',
         body: form,
         headers: form.getHeaders(),
-      });
-
-      console.log(`📡 Response status: ${pyRes.status} ${pyRes.statusText}`);
+      })
 
       if (!pyRes.ok) {
-        const errText = await pyRes.text();
-        console.error(`❌ Processing service error:`, errText);
-        throw new Error(`Processing service error [${pyRes.status}]: ${errText}`);
+        const errText = await pyRes.text()
+        throw new Error(`Processing service error [${pyRes.status}]: ${errText}`)
       }
 
-      const extracted = (await pyRes.json()) as ProcessingResult;
-      
-      console.log(`\n✅ Processing successful!`);
-      console.log(`   📊 Images extracted: ${extracted.image_metadata?.length || 0}`);
+      const extracted = (await pyRes.json()) as ProcessingResult
+      console.log(`Processing successful! Images extracted: ${extracted.image_metadata?.length || 0}`)
 
-      // ── 3. Persist heavy payloads to Supabase Storage ───────────────────
-      const meta = (extracted.metadata ?? {}) as Record<string, string>;
-      const title = buildTitle(meta, file.originalname);
+      // ── 3. Prepare section data ───────────────────────────────────────────
+      const meta = (extracted.metadata ?? {}) as Record<string, string>
+      const title = buildTitle(meta, file.originalname)
+      const detectedFormat = extracted.detected_format === 'old' ? 'old' : 'new'
 
-      // Use format auto-detected by Python; fall back to "new"
-      const detectedFormat = extracted.detected_format === "old" ? "old" : "new";
-
-      // Strip pathTransform and levelPatterns from brdConfig before storing.
-      // These are always re-derived at generate time by the Python pattern
-      // generator — storing stale versions causes the generator to load old
-      // rules and override freshly-computed cleanup patterns.
-      const rawBrdConfig = extracted.brd_config || extracted.brdConfig || null;
-      let cleanBrdConfig: Record<string, unknown> | null = null;
-      if (rawBrdConfig && typeof rawBrdConfig === "object" && !Array.isArray(rawBrdConfig)) {
-        const { pathTransform, path_transform, levelPatterns, level_patterns, ...rest } = rawBrdConfig as Record<string, unknown>;
-        void pathTransform; void path_transform; void levelPatterns; void level_patterns;
-        cleanBrdConfig = rest;
+      // Strip runtime-only fields from brdConfig before storing
+      const rawBrdConfig = extracted.brd_config || extracted.brdConfig || null
+      let cleanBrdConfig: Record<string, unknown> | null = null
+      if (rawBrdConfig && typeof rawBrdConfig === 'object' && !Array.isArray(rawBrdConfig)) {
+        const { pathTransform, path_transform, levelPatterns, level_patterns, ...rest } = rawBrdConfig as Record<string, unknown>
+        void pathTransform; void path_transform; void levelPatterns; void level_patterns
+        cleanBrdConfig = rest
       }
 
-      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile ?? null;
+      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile ?? null
 
-      const storageSectionPaths = {
-        scope: await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope ?? null),
-        metadata: await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata ?? null),
-        toc: await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc ?? null),
-        citations: await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations ?? null),
-        contentProfile: await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile),
-        brdConfig: await uploadJsonObject(sectionPath(brdId, "brdConfig"), cleanBrdConfig),
-      };
+      // ── 4. Persist everything in a transaction ────────────────────────────
+      await withTransaction(async (client) => {
+        // Create or update BRD record
+        await client.query(
+          `INSERT INTO brds (brd_id, title, format, status, created_by_id)
+           VALUES ($1, $2, $3, 'DRAFT', 1)
+           ON CONFLICT (brd_id) DO UPDATE SET title = $2, format = $3`,
+          [brdId, title, detectedFormat === 'old' ? 'OLD' : 'NEW'],
+        )
 
-      const imageRecords = await Promise.all((extracted.image_metadata ?? []).map(async (img, index) => {
-        const storagePath = imagePath(brdId, img, index);
-        const bytes = Buffer.from(img.imageData, "base64");
-        await uploadBinaryObject(storagePath, bytes, img.mimeType || "image/png");
+        // Store all sections as JSONB directly
+        await client.query(
+          `INSERT INTO brd_sections (brd_id, scope, metadata, toc, citations, content_profile, brd_config)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (brd_id) DO UPDATE
+             SET scope = $2, metadata = $3, toc = $4, citations = $5,
+                 content_profile = $6, brd_config = $7, updated_at = NOW()`,
+          [
+            brdId,
+            JSON.stringify(extracted.scope ?? null),
+            JSON.stringify(extracted.metadata ?? null),
+            JSON.stringify(extracted.toc ?? null),
+            JSON.stringify(extracted.citations ?? null),
+            JSON.stringify(extractedContentProfile),
+            JSON.stringify(cleanBrdConfig),
+          ],
+        )
 
-        return {
-          brdId,
-          tableIndex: img.tableIndex,
-          rowIndex: img.rowIndex,
-          colIndex: img.colIndex,
-          rid: img.rid,
-          mediaName: img.mediaName,
-          mimeType: img.mimeType,
-          cellText: img.cellText || "",
-          blobUrl: storagePath,
-        };
-      }));
+        // Delete old images and insert new ones as BYTEA
+        await client.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
 
-      console.log(`   📝 Creating BRD record: ${brdId} (format: ${detectedFormat})`);
-      
-      // Create BRD record in a transaction
-      await prisma.$transaction(async (tx) => {
-        // Create the BRD record
-        const brd = await tx.brd.upsert({
-          where: { brdId: brdId },
-          create: {
-            brdId: brdId,
-            title: title,
-            format: detectedFormat === "old" ? "OLD" : "NEW",
-            status: "DRAFT",
-            createdById: 1,
-          },
-          update: {
-            title: title,
-            format: detectedFormat === "old" ? "OLD" : "NEW",
-          }
-        });
-        console.log(`   ✅ BRD record created/updated: ${brd.brdId}`);
-
-        // ── 4. Store sections — metadata inline, others as storage pointers ─
-        // Metadata is stored inline in the DB column so the list endpoint can
-        // read geography/version without downloading from Supabase Storage.
-        // All other sections are stored as pointers (fetched lazily when viewing).
-        const brdSections = await tx.brdSections.upsert({
-          where: { brdId: brdId },
-          create: {
-            brdId: brdId,
-            scope:          (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
-            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
-            toc:            (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
-            citations:      (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
-            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
-          },
-          update: {
-            scope:          (makeStoragePointer(storageSectionPaths.scope) as any) || Prisma.JsonNull,
-            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
-            toc:            (makeStoragePointer(storageSectionPaths.toc) as any) || Prisma.JsonNull,
-            citations:      (makeStoragePointer(storageSectionPaths.citations) as any) || Prisma.JsonNull,
-            contentProfile: (makeStoragePointer(storageSectionPaths.contentProfile) as any) || Prisma.JsonNull,
-            brdConfig:      (makeStoragePointer(storageSectionPaths.brdConfig) as any) || Prisma.JsonNull,
-          }
-        });
-        console.log(`   ✅ BrdSections record created/verified: ${brdSections.brdId}`);
-
-        // ── 5. Save image metadata + storage paths (no BYTEA in DB) ────────
-        if (imageRecords.length > 0) {
-          console.log(`   🔍 First image metadata:`, {
-            tableIndex: imageRecords[0].tableIndex,
-            rowIndex: imageRecords[0].rowIndex,
-            colIndex: imageRecords[0].colIndex,
-            mediaName: imageRecords[0].mediaName,
-            mimeType: imageRecords[0].mimeType,
-          });
-
-          console.log(`   💾 Attempting to save ${imageRecords.length} image pointers to PostgreSQL...`);
-
-          // Delete any existing images for this BRD
-          const deleteResult = await tx.brdCellImage.deleteMany({
-            where: { brdId: brdId }
-          });
-          console.log(`      Deleted ${deleteResult.count} existing images`);
-
-          // Save new images
-          if (imageRecords.length > 0) {
-            console.log(`      Creating ${imageRecords.length} new images...`);
-            
-            const saved = await tx.brdCellImage.createMany({
-              data: imageRecords
-            });
-            console.log(`   ✅ SUCCESS: Saved ${saved.count} image rows with Supabase paths`);
-            
-            // Verify count
-            const verifyCount = await tx.brdCellImage.count({
-              where: { brdId: brdId }
-            });
-            console.log(`      Verified: ${verifyCount} images in database for ${brdId}`);
-          }
-        } else {
-          console.log("   ℹ️ No images to save");
+        for (const img of (extracted.image_metadata ?? [])) {
+          const imageBytes = Buffer.from(img.imageData, 'base64')
+          await client.query(
+            `INSERT INTO brd_cell_images
+               (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, image_data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', imageBytes],
+          )
         }
-      });
+      })
 
-      console.log("=".repeat(80) + "\n");
+      console.log('='.repeat(80) + '\n')
 
-      // ── 6. Notify relevant users about the uploaded BRD ──────────────────
+      // ── 5. Notify SUPER_ADMIN users ───────────────────────────────────────
       try {
-        const uploaderUser = await prisma.user.findFirst({
-          where: { id: 1 }, // placeholder; replace with actual uploader from req if auth'd
-          select: { id: true },
-        });
-        // Notify SUPER_ADMIN users
-        const superAdmins = await prisma.user.findMany({
-          where: { role: "SUPER_ADMIN", status: "ACTIVE" },
-          select: { id: true },
-        });
+        const { rows: superAdmins } = await pool.query(
+          `SELECT id FROM users WHERE role = 'SUPER_ADMIN' AND status = 'ACTIVE'`,
+        )
         await notifyMany(
-          superAdmins.map((u) => u.id),
-          "BRD_STATUS",
-          "BRD Source Uploaded",
+          superAdmins.map((u: any) => u.id),
+          'BRD_STATUS',
+          'BRD Source Uploaded',
           `"${title}" (${brdId}) was uploaded and processed successfully`,
           { brdId },
-        );
+        )
       } catch (notifyErr) {
-        console.warn("Failed to send BRD upload notification:", notifyErr);
+        console.warn('Failed to send BRD upload notification:', notifyErr)
       }
 
-      // ── 7. Return the extracted data + image metadata to the frontend ────
-      const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || [];
-      
+      // ── 6. Return extracted data (strip binary imageData from response) ───
+      const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || []
+
       return res.json({
         brdId,
         title,
@@ -381,176 +245,128 @@ router.post(
         contentProfile: extractedContentProfile,
         brdConfig: cleanBrdConfig,
         imageMetadata: responseImageMetadata,
-      });
+      })
 
     } catch (err) {
-      console.error("\n❌ Upload error:", err);
+      console.error('\nUpload error:', err)
       return res.status(500).json({
-        error: err instanceof Error ? err.message : "Upload processing failed",
-      });
+        error: err instanceof Error ? err.message : 'Upload processing failed',
+      })
     } finally {
-      // Clean up temp file
       if (file?.path) {
         fs.unlink(file.path, (err) => {
-          if (err) console.warn(`⚠️ Failed to clean up temp file ${file.path}:`, err);
-        });
-        console.log(`🧹 Cleaned up temp file: ${file.path}`);
+          if (err) console.warn(`Failed to clean up temp file ${file.path}:`, err)
+        })
       }
     }
-  }
-);
+  },
+)
+
 // ── POST /brd/re-upload/:brdId — replace sections for an existing BRD ────────
-// Used when a finalized document is received after the draft has been reviewed.
-// The BRD record itself (title, format, status) is preserved; only the extracted
-// sections and images are replaced.
 router.post(
-  "/re-upload/:brdId",
+  '/re-upload/:brdId',
   requireBrdEdit,
   processingLimiter,
-  upload.single("file"),
+  upload.single('file'),
   async (req: Request, res: Response) => {
-    const file = req.file;
-    const brdId = String(req.params.brdId);
+    const file  = req.file
+    const brdId = String(req.params.brdId)
 
-    if (!file) return res.status(400).json({ error: "No file uploaded" });
+    if (!file) return res.status(400).json({ error: 'No file uploaded' })
 
     try {
-      // Confirm the BRD exists and is not deleted
-      const existing = await prisma.brd.findUnique({
-        where: { brdId },
-        select: { brdId: true, deletedAt: true, status: true },
-      });
-      if (!existing || existing.deletedAt !== null) {
-        return res.status(404).json({ error: "BRD not found" });
+      // Confirm BRD exists and is not deleted
+      const { rows } = await pool.query(
+        `SELECT brd_id, deleted_at FROM brds WHERE brd_id = $1`,
+        [brdId],
+      )
+      if (!rows[0] || rows[0].deleted_at !== null) {
+        return res.status(404).json({ error: 'BRD not found' })
       }
 
-      const existingSections = await prisma.brdSections.findUnique({
-        where: { brdId },
-        select: {
-          scope: true,
-          metadata: true,
-          toc: true,
-          citations: true,
-          contentProfile: true,
-          brdConfig: true,
-        },
-      });
+      // Fetch existing sections as fallback
+      const { rows: existingRows } = await pool.query(
+        `SELECT scope, metadata, toc, citations, content_profile, brd_config
+         FROM brd_sections WHERE brd_id = $1`,
+        [brdId],
+      )
+      const existing = existingRows[0] ?? {}
 
-      // Forward to Python processor with the same brdId
-      const form = new FormData();
-      form.append("file", fs.createReadStream(file.path), {
+      // Forward to Python processor
+      const form = new FormData()
+      form.append('file', fs.createReadStream(file.path), {
         filename: file.originalname,
         contentType: file.mimetype,
-      });
+      })
 
       const pyRes = await fetch(
         `${PROCESSING_URL}/process?brd_id=${encodeURIComponent(brdId)}`,
-        { method: "POST", body: form, headers: form.getHeaders() },
-      );
+        { method: 'POST', body: form, headers: form.getHeaders() },
+      )
 
       if (!pyRes.ok) {
-        const errText = (await pyRes.text()).slice(0, 500);
-        throw new Error(`Processing service error [${pyRes.status}]: ${errText}`);
+        const errText = (await pyRes.text()).slice(0, 500)
+        throw new Error(`Processing service error [${pyRes.status}]: ${errText}`)
       }
 
-      const extracted = (await pyRes.json()) as ProcessingResult;
+      const extracted = (await pyRes.json()) as ProcessingResult
 
-      // Re-upload should load final BRD extraction data.
-      // Fallback to existing pointer only when a specific extracted section is missing.
-      const scopePointer = extracted.scope !== undefined && extracted.scope !== null
-        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "scope"), extracted.scope)) as any)
-        : ((existingSections?.scope as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "scope"), null)) as any));
+      // Use extracted value if present, otherwise fall back to existing DB value
+      const newScope     = extracted.scope     !== undefined && extracted.scope     !== null ? JSON.stringify(extracted.scope)     : (existing.scope     ?? null)
+      const newMetadata  = extracted.metadata  !== undefined && extracted.metadata  !== null ? JSON.stringify(extracted.metadata)  : (existing.metadata  ?? null)
+      const newToc       = extracted.toc       !== undefined && extracted.toc       !== null ? JSON.stringify(extracted.toc)       : (existing.toc       ?? null)
+      const newCitations = extracted.citations !== undefined && extracted.citations !== null ? JSON.stringify(extracted.citations) : (existing.citations  ?? null)
 
-      const metadataPointer = extracted.metadata !== undefined && extracted.metadata !== null
-        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "metadata"), extracted.metadata)) as any)
-        : ((existingSections?.metadata as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "metadata"), null)) as any));
+      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile
+      const newContentProfile = extractedContentProfile !== undefined && extractedContentProfile !== null
+        ? JSON.stringify(extractedContentProfile) : (existing.content_profile ?? null)
 
-      const tocPointer = extracted.toc !== undefined && extracted.toc !== null
-        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "toc"), extracted.toc)) as any)
-        : ((existingSections?.toc as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "toc"), null)) as any));
+      const extractedBrdConfig = extracted.brd_config || extracted.brdConfig
+      const newBrdConfig = extractedBrdConfig !== undefined && extractedBrdConfig !== null
+        ? JSON.stringify(extractedBrdConfig) : (existing.brd_config ?? null)
 
-      const citationsPointer = extracted.citations !== undefined && extracted.citations !== null
-        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), extracted.citations)) as any)
-        : ((existingSections?.citations as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "citations"), null)) as any));
+      await withTransaction(async (client) => {
+        await client.query(
+          `INSERT INTO brd_sections (brd_id, scope, metadata, toc, citations, content_profile, brd_config)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (brd_id) DO UPDATE
+             SET scope = $2, metadata = $3, toc = $4, citations = $5,
+                 content_profile = $6, brd_config = $7, updated_at = NOW()`,
+          [brdId, newScope, newMetadata, newToc, newCitations, newContentProfile, newBrdConfig],
+        )
 
-      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile;
-      const contentProfilePointer = extractedContentProfile !== undefined && extractedContentProfile !== null
-        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), extractedContentProfile)) as any)
-        : ((existingSections?.contentProfile as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "contentProfile"), null)) as any));
-
-      const extractedBrdConfig = extracted.brd_config || extracted.brdConfig;
-      const brdConfigPointer = extractedBrdConfig !== undefined && extractedBrdConfig !== null
-        ? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "brdConfig"), extractedBrdConfig)) as any)
-        : ((existingSections?.brdConfig as any) ?? (makeStoragePointer(await uploadJsonObject(sectionPath(brdId, "brdConfig"), null)) as any));
-
-      const imageRecords = await Promise.all(
-        (extracted.image_metadata ?? []).map(async (img, index) => {
-          const storagePath2 = imagePath(brdId, img, index);
-          await uploadBinaryObject(storagePath2, Buffer.from(img.imageData, "base64"), img.mimeType || "image/png");
-          return {
-            brdId,
-            tableIndex: img.tableIndex,
-            rowIndex:   img.rowIndex,
-            colIndex:   img.colIndex,
-            rid:        img.rid,
-            mediaName:  img.mediaName,
-            mimeType:   img.mimeType,
-            cellText:   img.cellText || "",
-            blobUrl:    storagePath2,
-          };
-        }),
-      );
-
-      await prisma.$transaction(async (tx) => {
-        // Update brdSections — metadata stored inline, others as pointers
-        await tx.brdSections.upsert({
-          where:  { brdId },
-          create: {
-            brdId,
-            scope:          (scopePointer as any) || Prisma.JsonNull,
-            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
-            toc:            (tocPointer as any) || Prisma.JsonNull,
-            citations:      (citationsPointer as any) || Prisma.JsonNull,
-            contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
-            brdConfig:      (brdConfigPointer as any) || Prisma.JsonNull,
-          },
-          update: {
-            scope:          (scopePointer as any) || Prisma.JsonNull,
-            metadata:       (extracted.metadata as any) ?? Prisma.JsonNull,
-            toc:            (tocPointer as any) || Prisma.JsonNull,
-            citations:      (citationsPointer as any) || Prisma.JsonNull,
-            contentProfile: (contentProfilePointer as any) || Prisma.JsonNull,
-            brdConfig:      (brdConfigPointer as any) || Prisma.JsonNull,
-          },
-        });
-
-        // Replace images
-        await tx.brdCellImage.deleteMany({ where: { brdId } });
-        if (imageRecords.length > 0) {
-          await tx.brdCellImage.createMany({ data: imageRecords });
+        await client.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
+        for (const img of (extracted.image_metadata ?? [])) {
+          const imageBytes = Buffer.from(img.imageData, 'base64')
+          await client.query(
+            `INSERT INTO brd_cell_images
+               (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, image_data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', Buffer.from(img.imageData, 'base64')],
+          )
         }
-      });
+      })
 
-      const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || [];
+      const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || []
 
       return res.json({
         brdId,
-        format: extracted.detected_format === "old" ? "old" : "new",
+        format: extracted.detected_format === 'old' ? 'old' : 'new',
         scope:          extracted.scope,
         metadata:       extracted.metadata,
         toc:            extracted.toc,
         citations:      extracted.citations,
         contentProfile: extractedContentProfile,
-        brdConfig:      extracted.brd_config || extracted.brdConfig || null,
+        brdConfig:      extractedBrdConfig ?? null,
         imageMetadata:  responseImageMetadata,
-      });
+      })
     } catch (err) {
-      console.error("[POST /brd/re-upload/:brdId]", err);
-      return res.status(500).json({ error: err instanceof Error ? err.message : "Re-upload failed" });
+      console.error('[POST /brd/re-upload/:brdId]', err)
+      return res.status(500).json({ error: err instanceof Error ? err.message : 'Re-upload failed' })
     } finally {
-      if (file?.path) fs.unlink(file.path, () => {});
+      if (file?.path) fs.unlink(file.path, () => {})
     }
   },
-);
+)
 
-export default router;
+export default router

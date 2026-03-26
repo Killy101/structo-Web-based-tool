@@ -307,6 +307,7 @@ function VersionHistoryModal({
               brdConfig:      viewingVersion.brdConfig,
             }}
             canEdit={false}
+            showCellImages={false}
           />
         </div>
       </div>
@@ -352,6 +353,7 @@ function VersionHistoryModal({
               brdConfig:      editingVersion.brdConfig,
             }}
             canEdit={true}
+            showCellImages={false}
           />
         </div>
       </div>
@@ -994,8 +996,8 @@ export default function BrdPage() {
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
                       <button disabled={!canView}
-                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
-                        title="View BRD"
+                        onClick={() => setHistoryBrd(brd)}
+                        title="View BRD Version"
                         className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EyeIcon />
                       </button>

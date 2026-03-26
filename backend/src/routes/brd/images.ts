@@ -1,280 +1,181 @@
 // routes/brd/images.ts
-// Stores image binaries in Supabase Storage and keeps only storage paths in DB.
+// Stores image binaries as BYTEA in the brd_cell_images.image_data column.
 
-import { Router, Request, Response } from "express";
-import prisma from "../../lib/prisma";
-import { AuthRequest } from "../../middleware/authenticate";
+import { Router, Request, Response } from 'express'
+import pool from '../../lib/db'
+import { AuthRequest } from '../../middleware/authenticate'
 import {
   canReadBrdStatus,
   getBrdAccessPolicy,
   requireBrdEdit,
-} from "../../middleware/brd-access";
-import {
-  downloadBinaryObject,
-  removeObjects,
-  sanitizePathPart,
-  uploadBinaryObject,
-} from "../../lib/supabase-storage";
+} from '../../middleware/brd-access'
 
-const router = Router();
+const router = Router()
 
 async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
-  const brd = await prisma.brd.findUnique({
-    where: { brdId: String(req.params.brdId) },
-    select: { status: true, deletedAt: true },
-  });
-
-  if (!brd || brd.deletedAt !== null) {
-    res.status(404).json({ error: "BRD not found" });
-    return false;
+  const { rows } = await pool.query(
+    `SELECT status, deleted_at FROM brds WHERE brd_id = $1`,
+    [String(req.params.brdId)],
+  )
+  const brd = rows[0]
+  if (!brd || brd.deleted_at !== null) {
+    res.status(404).json({ error: 'BRD not found' })
+    return false
   }
-
-  const accessPolicy = getBrdAccessPolicy(res);
+  const accessPolicy = getBrdAccessPolicy(res)
   if (!canReadBrdStatus(accessPolicy, brd.status)) {
-    res
-      .status(403)
-      .json({ error: "You can only view BRDs with APPROVED or ON_HOLD status." });
-    return false;
+    res.status(403).json({ error: 'You can only view BRDs with APPROVED or ON_HOLD status.' })
+    return false
   }
-
-  return true;
+  return true
 }
 
 // ── GET /brd/:brdId/images ─────────────────────────────────────────────────
 // Returns image metadata (no binary data)
-router.get("/:brdId/images", async (req: AuthRequest, res: Response) => {
+router.get('/:brdId/images', async (req: AuthRequest, res: Response) => {
   try {
-    if (!(await ensureReadableBrd(req, res))) {
-      return;
-    }
+    if (!(await ensureReadableBrd(req, res))) return
 
-    const brdId = String(req.params.brdId);
+    const { rows: images } = await pool.query(
+      `SELECT id, table_index as "tableIndex", row_index as "rowIndex",
+              col_index as "colIndex", rid, media_name as "mediaName",
+              mime_type as "mimeType", cell_text as "cellText",
+              section, field_label as "fieldLabel"
+       FROM brd_cell_images
+       WHERE brd_id = $1
+       ORDER BY table_index ASC, row_index ASC, col_index ASC`,
+      [String(req.params.brdId)],
+    )
 
-    const images = await prisma.brdCellImage.findMany({
-      where: { brdId },
-      select: {
-        id:         true,
-        tableIndex: true,
-        rowIndex:   true,
-        colIndex:   true,
-        rid:        true,
-        mediaName:  true,
-        mimeType:   true,
-        cellText:   true,
-        section:    true,
-        fieldLabel: true,
-      },
-      orderBy: [
-        { tableIndex: "asc" },
-        { rowIndex:   "asc" },
-        { colIndex:   "asc" },
-      ],
-    });
-
-    return res.json({ images });
+    return res.json({ images })
   } catch (err) {
-    console.error("[GET /brd/:brdId/images]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('[GET /brd/:brdId/images]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
 // ── GET /brd/:brdId/images/:imageId/blob ──────────────────────────────────
-// Serves raw image bytes from Supabase Storage
-router.get("/:brdId/images/:imageId/blob", async (req: AuthRequest, res: Response) => {
+// Serves raw image bytes from the image_data BYTEA column
+router.get('/:brdId/images/:imageId/blob', async (req: AuthRequest, res: Response) => {
   try {
-    if (!(await ensureReadableBrd(req, res))) {
-      return;
-    }
+    if (!(await ensureReadableBrd(req, res))) return
 
-    const imageId = Number(req.params.imageId);
-    if (isNaN(imageId)) {
-      return res.status(400).json({ error: "Invalid imageId" });
-    }
+    const imageId = Number(req.params.imageId)
+    if (isNaN(imageId)) return res.status(400).json({ error: 'Invalid imageId' })
 
-    const img = await prisma.brdCellImage.findUnique({
-      where:  { id: imageId },
-      select: { blobUrl: true, mimeType: true, brdId: true },
-    });
+    const { rows } = await pool.query(
+      `SELECT image_data as "imageData", mime_type as "mimeType", brd_id as "brdId"
+       FROM brd_cell_images WHERE id = $1`,
+      [imageId],
+    )
+    const img = rows[0]
+    if (!img) return res.status(404).json({ error: 'Image not found' })
+    if (img.brdId !== String(req.params.brdId)) return res.status(404).json({ error: 'Image not found' })
+    if (!img.imageData) return res.status(404).json({ error: 'No image data stored' })
 
-    if (!img) {
-      return res.status(404).json({ error: "Image not found" });
-    }
-
-    // Security: make sure the image belongs to the requested BRD
-    if (img.brdId !== String(req.params.brdId)) {
-      return res.status(404).json({ error: "Image not found" });
-    }
-
-    if (!img.blobUrl) {
-      return res.status(404).json({ error: "No image path stored" });
-    }
-
-    const bytes = await downloadBinaryObject(img.blobUrl);
-
-    res.set("Content-Type", img.mimeType || "image/png");
-    res.set("Cache-Control", "public, max-age=86400"); // 24 hour cache
-    res.set("X-Content-Type-Options", "nosniff");
-    return res.send(bytes);
-
+    res.set('Content-Type', img.mimeType || 'image/png')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.set('X-Content-Type-Options', 'nosniff')
+    return res.send(img.imageData)
   } catch (err) {
-    console.error("[GET /brd/:brdId/images/:imageId/blob]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('[GET /brd/:brdId/images/:imageId/blob]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
 // ── POST /brd/:brdId/images ───────────────────────────────────────────────────
-// Called by the BRD processing pipeline after extraction.
-// Deletes all existing images for this BRD and inserts fresh records,
-// ensuring section / fieldLabel are always up-to-date.
-router.post("/:brdId/images", requireBrdEdit, async (req: Request, res: Response) => {
+// Replaces all images for a BRD with fresh records (destructive).
+router.post('/:brdId/images', requireBrdEdit, async (req: Request, res: Response) => {
   try {
-    const brdId = String(req.params.brdId);
+    const brdId = String(req.params.brdId)
     const records: Array<{
-      tableIndex: number;
-      rowIndex:   number;
-      colIndex:   number;
-      rid:        string;
-      mediaName:  string;
-      mimeType:   string;
-      cellText:   string;
-      section:    string;
-      fieldLabel: string;
-      imageData:  string; // base64
-    }> = req.body.images;
+      tableIndex: number
+      rowIndex:   number
+      colIndex:   number
+      rid:        string
+      mediaName:  string
+      mimeType:   string
+      cellText:   string
+      section:    string
+      fieldLabel: string
+      imageData:  string // base64
+    }> = req.body.images
 
-    if (!Array.isArray(records)) {
-      return res.status(400).json({ error: "images must be an array" });
+    if (!Array.isArray(records)) return res.status(400).json({ error: 'images must be an array' })
+
+    await pool.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
+
+    for (const r of records) {
+      const imageBytes = Buffer.from(r.imageData, 'base64')
+      await pool.query(
+        `INSERT INTO brd_cell_images
+           (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [brdId, r.tableIndex, r.rowIndex, r.colIndex, r.rid, r.mediaName, r.mimeType,
+         r.cellText ?? '', r.section ?? 'unknown', r.fieldLabel ?? '', imageBytes],
+      )
     }
 
-    const imageRows = await Promise.all(records.map(async (r, index) => {
-      const safeMediaName = sanitizePathPart(r.mediaName || `image-${index}`);
-      const safeRid = sanitizePathPart(r.rid || `rid-${index}`);
-      const storagePath = `brd/${brdId}/images/${String(r.tableIndex)}-${String(r.rowIndex)}-${String(r.colIndex)}-${safeRid}-${safeMediaName}`;
-
-      await uploadBinaryObject(
-        storagePath,
-        Buffer.from(r.imageData, "base64"),
-        r.mimeType || "image/png",
-      );
-
-      return {
-        brdId,
-        tableIndex: r.tableIndex,
-        rowIndex: r.rowIndex,
-        colIndex: r.colIndex,
-        rid: r.rid,
-        mediaName: r.mediaName,
-        mimeType: r.mimeType,
-        cellText: r.cellText ?? "",
-        section: r.section ?? "unknown",
-        fieldLabel: r.fieldLabel ?? "",
-        blobUrl: storagePath,
-      };
-    }));
-
-    // Delete stale records, then insert fresh rows with storage paths
-    await prisma.$transaction([
-      prisma.brdCellImage.deleteMany({ where: { brdId } }),
-      prisma.brdCellImage.createMany({
-        data: imageRows,
-      }),
-    ]);
-
-    return res.json({ saved: records.length });
+    return res.json({ saved: records.length })
   } catch (err) {
-    console.error("[POST /brd/:brdId/images]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('[POST /brd/:brdId/images]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
 // ── POST /brd/:brdId/images/upload ───────────────────────────────────────────
 // Non-destructive single-image insert used by the manual "Add Image" UI.
-// Does NOT delete existing images unlike POST /brd/:brdId/images.
-router.post("/:brdId/images/upload", requireBrdEdit, async (req: Request, res: Response) => {
+router.post('/:brdId/images/upload', requireBrdEdit, async (req: Request, res: Response) => {
   try {
-    const brdId = String(req.params.brdId);
-    const { imageData, mimeType, mediaName, section, fieldLabel, cellText } = req.body;
+    const brdId = String(req.params.brdId)
+    const { imageData, mimeType, mediaName, section, fieldLabel, cellText } = req.body
 
-    if (!imageData || !mimeType) {
-      return res.status(400).json({ error: "imageData and mimeType are required" });
-    }
+    if (!imageData || !mimeType) return res.status(400).json({ error: 'imageData and mimeType are required' })
 
-    // Use a high tableIndex so manual images don't collide with extracted ones
-    const existing = await prisma.brdCellImage.findMany({
-      where:   { brdId },
-      select:  { tableIndex: true },
-      orderBy: { tableIndex: "desc" },
-      take:    1,
-    });
-    const nextTableIndex = (existing[0]?.tableIndex ?? -1) + 1;
-    const safeMediaName = sanitizePathPart(mediaName ?? `manual-${Date.now()}`);
-    const storagePath = `brd/${brdId}/images/${String(nextTableIndex)}-0-0-manual-${Date.now()}-${safeMediaName}`;
+    const { rows: existing } = await pool.query(
+      `SELECT table_index FROM brd_cell_images WHERE brd_id = $1 ORDER BY table_index DESC LIMIT 1`,
+      [brdId],
+    )
+    const nextTableIndex = (existing[0]?.table_index ?? -1) + 1
+    const imageBytes = Buffer.from(imageData, 'base64')
+    const rid = `manual-${Date.now()}`
 
-    await uploadBinaryObject(
-      storagePath,
-      Buffer.from(imageData, "base64"),
-      mimeType,
-    );
+    const { rows: created } = await pool.query(
+      `INSERT INTO brd_cell_images
+         (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
+       VALUES ($1, $2, 0, 0, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, media_name as "mediaName", mime_type as "mimeType",
+                 section, field_label as "fieldLabel", cell_text as "cellText"`,
+      [brdId, nextTableIndex, rid, mediaName ?? 'image', mimeType, cellText ?? '',
+       section ?? 'unknown', fieldLabel ?? '', imageBytes],
+    )
 
-    const record = await prisma.brdCellImage.create({
-      data: {
-        brdId,
-        tableIndex: nextTableIndex,
-        rowIndex:   0,
-        colIndex:   0,
-        rid:        `manual-${Date.now()}`,
-        mediaName:  mediaName  ?? "image",
-        mimeType:   mimeType,
-        cellText:   cellText   ?? "",
-        section:    section    ?? "unknown",
-        fieldLabel: fieldLabel ?? "",
-        blobUrl:    storagePath,
-      },
-      select: { id: true, mediaName: true, mimeType: true, section: true, fieldLabel: true, cellText: true, blobUrl: true },
-    });
-
-    return res.json({ success: true, image: record });
+    return res.json({ success: true, image: created[0] })
   } catch (err) {
-    console.error("[POST /brd/:brdId/images/upload]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('[POST /brd/:brdId/images/upload]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
 // ── DELETE /brd/:brdId/images/:imageId ───────────────────────────────────────
-// Removes a single manually-uploaded image.
-// Verifies the image belongs to the specified BRD before deleting.
-router.delete("/:brdId/images/:imageId", requireBrdEdit, async (req: Request, res: Response) => {
+router.delete('/:brdId/images/:imageId', requireBrdEdit, async (req: Request, res: Response) => {
   try {
-    const brdId   = String(req.params.brdId);
-    const imageId = Number(req.params.imageId);
+    const brdId   = String(req.params.brdId)
+    const imageId = Number(req.params.imageId)
+    if (isNaN(imageId)) return res.status(400).json({ error: 'Invalid imageId' })
 
-    if (isNaN(imageId)) {
-      return res.status(400).json({ error: "Invalid imageId" });
-    }
+    const { rows } = await pool.query(
+      `SELECT brd_id FROM brd_cell_images WHERE id = $1`,
+      [imageId],
+    )
+    if (!rows[0] || rows[0].brd_id !== brdId) return res.status(404).json({ error: 'Image not found' })
 
-    const img = await prisma.brdCellImage.findUnique({
-      where:  { id: imageId },
-      select: { brdId: true, blobUrl: true },
-    });
-
-    if (!img || img.brdId !== brdId) {
-      return res.status(404).json({ error: "Image not found" });
-    }
-
-    if (img.blobUrl) {
-      try {
-        await removeObjects([img.blobUrl]);
-      } catch (storageErr) {
-        console.warn("[DELETE /brd/:brdId/images/:imageId] failed to remove from storage", storageErr);
-      }
-    }
-
-    await prisma.brdCellImage.delete({ where: { id: imageId } });
-    return res.json({ success: true });
+    await pool.query(`DELETE FROM brd_cell_images WHERE id = $1`, [imageId])
+    return res.json({ success: true })
   } catch (err) {
-    console.error("[DELETE /brd/:brdId/images/:imageId]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('[DELETE /brd/:brdId/images/:imageId]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
-export default router;
+export default router

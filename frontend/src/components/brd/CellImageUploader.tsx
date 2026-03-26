@@ -2,6 +2,7 @@
 // CellImageUploader.tsx
 import React, { useEffect, useRef, useState } from "react";
 import api from "@/app/lib/api";
+import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -235,7 +236,7 @@ export default function CellImageUploader({
               {existingImages.map(img => (
                 <div key={img.id} className="rounded-lg overflow-hidden border border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#161b2e]">
                   <img
-                    src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`}
+                    src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
                     alt={img.cellText || img.mediaName}
                     className="w-full max-h-32 object-contain"
                     loading="lazy"
