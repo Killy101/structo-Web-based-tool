@@ -1,0 +1,91 @@
+-- Run this in pgAdmin (connected to Windows PostgreSQL 18, mydb)
+-- It generates INSERT statements for the snake_case tables in Docker.
+-- Steps:
+--   1. Open pgAdmin → connect to Windows PG18 → Query Tool
+--   2. Paste and run this script
+--   3. Copy ALL output rows
+--   4. Save as migration_data.sql
+--   5. Run: docker compose exec -T db psql -U postgres -d mydb < migration_data.sql
+
+-- user_roles (from "UserRole")
+SELECT 'INSERT INTO user_roles (id, name, slug, features, created_at, updated_at) VALUES (' ||
+  id || ', ' ||
+  quote_literal(name) || ', ' ||
+  quote_literal(slug) || ', ' ||
+  'ARRAY[' || COALESCE(
+    (SELECT string_agg(quote_literal(f), ',') FROM unnest(features) f), ''
+  ) || ']::text[], ' ||
+  quote_literal("createdAt") || '::timestamptz, ' ||
+  quote_literal("updatedAt") || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
+FROM "UserRole"
+
+UNION ALL
+
+-- teams (from "Team")
+SELECT 'INSERT INTO teams (id, name, slug, created_at, updated_at) VALUES (' ||
+  id || ', ' ||
+  quote_literal(name) || ', ' ||
+  quote_literal(slug) || ', ' ||
+  quote_literal("createdAt") || '::timestamptz, ' ||
+  quote_literal("updatedAt") || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
+FROM "Team"
+
+UNION ALL
+
+-- users (from "User")
+SELECT 'INSERT INTO users (id, user_id, password, email, first_name, last_name, role, status, last_login_at, password_changed_at, created_at, updated_at, created_by_id, team_id, user_role_id) VALUES (' ||
+  id || ', ' ||
+  quote_literal("userId") || ', ' ||
+  quote_literal(password) || ', ' ||
+  COALESCE(quote_literal(email), 'NULL') || ', ' ||
+  COALESCE(quote_literal("firstName"), 'NULL') || ', ' ||
+  COALESCE(quote_literal("lastName"), 'NULL') || ', ' ||
+  quote_literal(role) || '::role_enum, ' ||
+  quote_literal(status) || '::status_enum, ' ||
+  COALESCE(quote_literal("lastLoginAt"), 'NULL') || '::timestamptz, ' ||
+  COALESCE(quote_literal("passwordChangedAt"), 'NULL') || '::timestamptz, ' ||
+  quote_literal("createdAt") || '::timestamptz, ' ||
+  quote_literal("updatedAt") || '::timestamptz, ' ||
+  COALESCE("createdById"::text, 'NULL') || ', ' ||
+  COALESCE("teamId"::text, 'NULL') || ', ' ||
+  COALESCE("userRoleId"::text, 'NULL') ||
+  ') ON CONFLICT (id) DO NOTHING;'
+FROM "User"
+
+UNION ALL
+
+-- brds (from "Brd")
+SELECT 'INSERT INTO brds (id, brd_id, title, format, status, created_at, updated_at, deleted_at, user_id) VALUES (' ||
+  id || ', ' ||
+  quote_literal("brdId") || ', ' ||
+  quote_literal(title) || ', ' ||
+  quote_literal(format) || '::brd_format_enum, ' ||
+  quote_literal(status) || '::brd_status_enum, ' ||
+  quote_literal("createdAt") || '::timestamptz, ' ||
+  quote_literal("updatedAt") || '::timestamptz, ' ||
+  COALESCE(quote_literal("deletedAt"), 'NULL') || '::timestamptz, ' ||
+  COALESCE("userId"::text, 'NULL') ||
+  ') ON CONFLICT (id) DO NOTHING;'
+FROM "Brd"
+
+UNION ALL
+
+-- password_history (from "PasswordHistory")
+SELECT 'INSERT INTO password_history (id, user_id, password_hash, created_at) VALUES (' ||
+  id || ', ' ||
+  "userId" || ', ' ||
+  quote_literal("passwordHash") || ', ' ||
+  quote_literal("createdAt") || '::timestamptz) ON CONFLICT (id) DO NOTHING;'
+FROM "PasswordHistory"
+
+UNION ALL
+
+-- user_logs (from "UserLog")
+SELECT 'INSERT INTO user_logs (id, action, description, created_at, user_id) VALUES (' ||
+  id || ', ' ||
+  quote_literal(action) || ', ' ||
+  COALESCE(quote_literal(description), 'NULL') || ', ' ||
+  quote_literal("createdAt") || '::timestamptz, ' ||
+  COALESCE("userId"::text, 'NULL') ||
+  ') ON CONFLICT (id) DO NOTHING;'
+FROM "UserLog";
