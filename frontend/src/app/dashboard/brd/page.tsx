@@ -36,6 +36,7 @@ interface BrdVersionDetail extends BrdVersionSummary {
   citations?:      Record<string, unknown>;
   contentProfile?: Record<string, unknown>;
   brdConfig?:      Record<string, unknown>;
+  imageIds?:       number[] | null;
 }
 
 function displayTitle(brd: Brd): string {
@@ -307,6 +308,7 @@ function VersionHistoryModal({
               brdConfig:      viewingVersion.brdConfig,
             }}
             canEdit={false}
+            imageIds={viewingVersion.imageIds ?? null}
           />
         </div>
       </div>
@@ -352,6 +354,7 @@ function VersionHistoryModal({
               brdConfig:      editingVersion.brdConfig,
             }}
             canEdit={true}
+            imageIds={editingVersion.imageIds ?? null}
           />
         </div>
       </div>

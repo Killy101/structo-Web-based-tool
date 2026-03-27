@@ -69,7 +69,8 @@ router.get('/:brdId/versions/:versionNum', async (req: AuthRequest, res: Respons
       `SELECT id, brd_id as "brdId", version_num as "versionNum", label, saved_at as "savedAt",
               scope, metadata, toc, citations,
               content_profile as "contentProfile",
-              brd_config as "brdConfig"
+              brd_config as "brdConfig",
+              image_ids as "imageIds"
        FROM brd_versions
        WHERE brd_id = $1 AND version_num = $2`,
       [brdId, versionNum],
@@ -89,6 +90,7 @@ router.get('/:brdId/versions/:versionNum', async (req: AuthRequest, res: Respons
       citations:      version.citations      ?? null,
       contentProfile: version.contentProfile ?? null,
       brdConfig:      version.brdConfig      ?? null,
+      imageIds:       Array.isArray(version.imageIds) ? version.imageIds : null,
     })
   } catch (err) {
     console.error('[GET /brd/:brdId/versions/:versionNum]', err)
@@ -109,11 +111,19 @@ router.post('/:brdId/versions', requireBrdEdit, async (req: Request, res: Respon
     const nextNum = (latestRows[0]?.version_num ?? 0) + 1
     const vLabel  = label || `v${nextNum}.0`
 
+    // Capture the current image IDs for this BRD so version views show only
+    // the images that existed at the time of the snapshot (not future uploads).
+    const { rows: imgRows } = await pool.query(
+      `SELECT id FROM brd_cell_images WHERE brd_id = $1 ORDER BY id`,
+      [brdId],
+    )
+    const imageIds = imgRows.map((r: { id: number }) => r.id)
+
     try {
       const { rows: created } = await pool.query(
         `INSERT INTO brd_versions
-           (brd_id, version_num, label, scope, metadata, toc, citations, content_profile, brd_config)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (brd_id, version_num, label, scope, metadata, toc, citations, content_profile, brd_config, image_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING id, brd_id as "brdId", version_num as "versionNum", label, saved_at as "savedAt"`,
         [
           brdId, nextNum, vLabel,
@@ -123,6 +133,7 @@ router.post('/:brdId/versions', requireBrdEdit, async (req: Request, res: Respon
           JSON.stringify(citations      ?? null),
           JSON.stringify(contentProfile ?? null),
           JSON.stringify(brdConfig      ?? null),
+          JSON.stringify(imageIds),
         ],
       )
       const version = created[0]

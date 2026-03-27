@@ -232,8 +232,12 @@ CREATE TABLE IF NOT EXISTS brd_versions (
   citations       JSONB,
   content_profile JSONB,
   brd_config      JSONB,
+  image_ids       JSONB,
   UNIQUE (brd_id, version_num)
 );
+
+-- Migration: add image_ids to existing databases
+ALTER TABLE brd_versions ADD COLUMN IF NOT EXISTS image_ids JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_brd_versions_brd_id ON brd_versions (brd_id);
 

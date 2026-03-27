@@ -72,6 +72,9 @@ interface Props {
   onComplete?: () => void;
   canEdit?: boolean;
   showCellImages?: boolean;
+  /** When set, only images whose id is in this list are displayed.
+   *  Used by version history to avoid bleeding images added in later versions. */
+  imageIds?: number[] | null;
 }
 
 type SaveStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
@@ -923,7 +926,7 @@ const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; descriptio
   content:  { label:"Content Profile",  sublabel:"Export",   description:"Levels & whitespace rules as Excel",        iconKey:"content",  accentLight:"#f5f3ff", accentDark:"#2a1f45", iconColorLight:"#7c3aed", iconColorDark:"#a78bfa", btnBg:"#7c3aed", btnHover:"#6d28d9", badgeLabel:".xls"  },
 };
 
-export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true, showCellImages = true }: Props) {
+export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true, showCellImages = true, imageIds }: Props) {
   const isApproved = status === "APPROVED";
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
@@ -939,7 +942,11 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const docPageRef        = useRef<HTMLDivElement>(null);
   const contentProfileRef = useRef<HTMLDivElement>(null);
   
-  const { images } = useCellImages(brdId, showCellImages);
+  const { images: allImages } = useCellImages(brdId, showCellImages);
+  // Filter to only images that existed at the time this version was saved.
+  // If imageIds is null/undefined (e.g. current edit view), show all images.
+  const allowedIds = imageIds != null ? new Set(imageIds) : null;
+  const images = allowedIds ? allImages.filter(img => allowedIds.has(img.id)) : allImages;
 
   useEffect(() => {
     const timers = doneResetTimers.current;
