@@ -47,10 +47,20 @@ CREATE TABLE IF NOT EXISTS users (
   password_changed_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-  created_by_id       INT           REFERENCES users (id),
-  team_id             INT           REFERENCES teams (id),
-  user_role_id        INT           REFERENCES user_roles (id)
+  created_by_id         INT           REFERENCES users (id),
+  team_id               INT           REFERENCES teams (id),
+  user_role_id          INT           REFERENCES user_roles (id),
+  failed_login_attempts INT           NOT NULL DEFAULT 0,
+  account_locked_until  TIMESTAMPTZ
 );
+
+-- ── users indexes ───────────────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_users_user_id_lower ON users (LOWER(user_id));
+CREATE INDEX IF NOT EXISTS idx_users_id ON users (id);
+CREATE INDEX IF NOT EXISTS idx_users_role_status ON users (role, status);
+CREATE INDEX IF NOT EXISTS idx_users_team_id_role ON users (team_id, role);
+CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users (LOWER(email));
 
 -- ── password_history ────────────────────────────────────────────────────────
 

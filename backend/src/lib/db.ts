@@ -11,9 +11,9 @@ if (!connectionString) {
 
 export const pool = new Pool({
   connectionString,
-  max: 10,
-  connectionTimeoutMillis: 8000,
-  idleTimeoutMillis: 30000,
+  max: 50,
+  connectionTimeoutMillis: 15000,
+  idleTimeoutMillis: 300000,
 })
 
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {

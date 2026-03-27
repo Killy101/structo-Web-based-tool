@@ -97,8 +97,38 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     if (!userRow) return res.status(401).json({ error: 'Invalid User ID or password' })
     if (userRow.status === 'INACTIVE') return res.status(403).json({ error: 'Your account has been deactivated. Contact your admin.' })
 
+    // Account lockout check
+    if (userRow.account_locked_until && new Date() < new Date(userRow.account_locked_until)) {
+      const unlockAt = new Date(userRow.account_locked_until)
+      const minutesLeft = Math.ceil((unlockAt.getTime() - Date.now()) / 60000)
+      return res.status(403).json({ error: `Account locked due to too many failed login attempts. Try again in ${minutesLeft} minute(s).` })
+    }
+
     const isPasswordValid = await bcrypt.compare(password, userRow.password)
-    if (!isPasswordValid) return res.status(401).json({ error: 'Invalid User ID or password' })
+    if (!isPasswordValid) {
+      const newAttempts = (userRow.failed_login_attempts ?? 0) + 1
+      if (newAttempts >= 5) {
+        const lockUntil = new Date(Date.now() + 30 * 60 * 1000)
+        await pool.query(
+          `UPDATE users SET failed_login_attempts = $1, account_locked_until = $2 WHERE id = $3`,
+          [newAttempts, lockUntil, userRow.id],
+        )
+        return res.status(403).json({ error: 'Account locked due to too many failed login attempts. Try again in 30 minutes.' })
+      }
+      await pool.query(
+        `UPDATE users SET failed_login_attempts = $1 WHERE id = $2`,
+        [newAttempts, userRow.id],
+      )
+      return res.status(401).json({ error: 'Invalid User ID or password' })
+    }
+
+    // Reset lockout counters on successful login
+    if ((userRow.failed_login_attempts ?? 0) > 0 || userRow.account_locked_until) {
+      await pool.query(
+        `UPDATE users SET failed_login_attempts = 0, account_locked_until = NULL WHERE id = $1`,
+        [userRow.id],
+      )
+    }
 
     const secPolicy = await getSecurityPolicy()
     const expiresAt = new Date(userRow.password_changed_at)
