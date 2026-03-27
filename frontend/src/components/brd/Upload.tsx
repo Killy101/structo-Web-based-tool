@@ -300,6 +300,7 @@ export default function Upload({ onComplete }: Props) {
 
       const res = await api.post<ExtractedResult>("/brd/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 300000, // 5 minutes — BRD processing (image extraction, scope, TOC, etc.) can be slow for large files
       });
 
       clearInterval(stepInterval);

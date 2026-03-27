@@ -49,6 +49,8 @@ interface ImageMeta {
   mediaName:  string
   mimeType:   string
   cellText:   string
+  section?:   string // "metadata" | "scope" | "toc" | "citations" | "unknown"
+  fieldLabel?: string
   imageData:  string // base64 encoded
 }
 
@@ -205,9 +207,9 @@ router.post(
           const imageBytes = Buffer.from(img.imageData, 'base64')
           await client.query(
             `INSERT INTO brd_cell_images
-               (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, image_data)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', imageBytes],
+               (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
           )
         }
       })
@@ -340,9 +342,9 @@ router.post(
           const imageBytes = Buffer.from(img.imageData, 'base64')
           await client.query(
             `INSERT INTO brd_cell_images
-               (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, image_data)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', Buffer.from(img.imageData, 'base64')],
+               (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
           )
         }
       })
