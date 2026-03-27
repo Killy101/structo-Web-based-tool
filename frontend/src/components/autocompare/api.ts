@@ -7,9 +7,9 @@
  */
 
 import type {
-  AutoGenerateResponse,
   ChunksResponse,
   CompareChunkResponse,
+  PollStatusResponse,
   ReuploadResponse,
   SaveResponse,
   ValidateAllResponse,
@@ -105,14 +105,7 @@ export async function startProcessing(
 
 // ── Status poll ───────────────────────────────────────────────────────────────
 
-export async function pollStatus(sessionId: string): Promise<{
-  success: boolean;
-  session_id: string;
-  status: string;
-  progress: number;
-  summary: unknown;
-  error: string | null;
-}> {
+export async function pollStatus(sessionId: string): Promise<PollStatusResponse> {
   const res = await fetch(`${BASE}/autocompare/status/${encodeURIComponent(sessionId)}`);
   return handleResponse(res);
 }
@@ -151,60 +144,6 @@ export async function saveChunkXml(
   return handleResponse(res);
 }
 
-// ── Auto-generate XML ─────────────────────────────────────────────────────────
-
-export async function autoGenerateXml(
-  sessionId: string,
-  chunkId: string | number,
-  lineContext?: {
-    diff_index?: number;
-    diff_text?: string;
-    old_text?: string;
-    new_text?: string;
-    category?: string;
-  },
-): Promise<AutoGenerateResponse> {
-  const res = await fetch(`${BASE}/autocompare/autogenerate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId,
-      chunk_id: String(chunkId),
-      ...lineContext,
-    }),
-  });
-  return handleResponse(res);
-}
-
-// ── Batch auto-generate for all changed chunks ────────────────────────────────
-
-/**
- * Sequentially auto-generates XML for every chunk that has PDF changes.
- * Calls onProgress(completed, total) after each chunk.
- * Returns counts of { generated, failed }.
- */
-export async function autoGenerateAllChanged(
-  sessionId: string,
-  changedChunkIds: (string | number)[],
-  onProgress?: (completed: number, total: number) => void,
-): Promise<{ generated: number; failed: number }> {
-  let generated = 0;
-  let failed = 0;
-  const total = changedChunkIds.length;
-
-  for (let i = 0; i < total; i++) {
-    try {
-      await autoGenerateXml(sessionId, changedChunkIds[i]);
-      generated++;
-    } catch {
-      failed++;
-    }
-    onProgress?.(i + 1, total);
-  }
-
-  return { generated, failed };
-}
-
 // ── Validate XML ──────────────────────────────────────────────────────────────
 
 export async function validateChunkXml(
@@ -234,15 +173,31 @@ export function downloadChunkXml(sessionId: string, chunkId: string | number): v
   window.open(`${BASE}/autocompare/download/${encodeURIComponent(sessionId)}/${chunkId}`, "_blank");
 }
 
-// ── PDF viewer URL helper ────────────────────────────────────────────────────
+// ── PDF page image URL helper ────────────────────────────────────────────────
 
 /**
- * Returns the URL to fetch the original old/new PDF from the backend.
- * Used by PdfViewer when the session was restored from localStorage and
- * the File objects are no longer available in memory.
+ * Returns the URL to fetch a single rendered PDF page as a PNG image.
+ * The Python backend uses PyMuPDF to render the page server-side.
+ *
+ * @param sessionId   Active session identifier.
+ * @param which       "old" or "new" — which PDF to read.
+ * @param pageNum     1-based page number.
+ * @param hlText      Optional text to highlight on the page.
+ * @param hlKind      Highlight colour hint: "added" | "removed" | "modified".
  */
-export function getPdfUrl(sessionId: string, which: "old" | "new"): string {
-  return `${BASE}/autocompare/pdf/${encodeURIComponent(sessionId)}/${which}`;
+export function getPdfPageUrl(
+  sessionId: string,
+  which: "old" | "new",
+  pageNum: number,
+  hlText?: string,
+  hlKind?: "added" | "removed" | "modified",
+): string {
+  let url = `${BASE}/autocompare/pdf-page/${encodeURIComponent(sessionId)}/${which}/${pageNum}?scale=1.5`;
+  if (hlText && hlText.trim().length >= 2) {
+    url += `&hl_text=${encodeURIComponent(hlText.slice(0, 300))}`;
+    if (hlKind) url += `&hl_kind=${encodeURIComponent(hlKind)}`;
+  }
+  return url;
 }
 
 // ── Download ALL chunks as a ZIP ──────────────────────────────────────────────
@@ -289,6 +244,27 @@ export async function downloadAllChunks(
       }, i * 300);
     });
   }
+}
+
+// ── Export status report ──────────────────────────────────────────────────────
+
+/**
+ * Downloads a status report for all chunks in the session.
+ * `fmt` is "json" (default) or "csv".
+ */
+export function exportStatusReport(
+  sessionId: string,
+  sourceName: string,
+  fmt: "json" | "csv" = "json",
+): void {
+  const url = `${BASE}/autocompare/export-report/${encodeURIComponent(sessionId)}?fmt=${fmt}`;
+  const ext  = fmt === "csv" ? "csv" : "json";
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `${sourceName || "autocompare"}_report.${ext}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 // ── Re-upload XML chunks ──────────────────────────────────────────────────────

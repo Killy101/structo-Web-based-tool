@@ -10,22 +10,12 @@
     "dev": "nodemon",
     "build": "tsc",
     "start": "node dist/index.js",
-   "test": "npx jest",
-"test:watch": "npx jest --watch",
-"test:coverage": "npx jest --coverage",
-"migrate:brd-storage:dry-run": "tsx src/scripts/migrate-brd-storage-to-supabase.ts --dry-run",
-"migrate:brd-storage": "tsx src/scripts/migrate-brd-storage-to-supabase.ts",
-"repair:brd-section-paths:dry-run": "tsx src/scripts/repair-brd-section-storage-paths.ts --dry-run",
-"repair:brd-section-paths": "tsx src/scripts/repair-brd-section-storage-paths.ts"
-
+    "test": "npx jest",
+    "test:watch": "npx jest --watch",
+    "test:coverage": "npx jest --coverage"
   },
   "keywords": [],
   "dependencies": {
-    "@neondatabase/serverless": "^1.0.2",
-    "@prisma/adapter-neon": "^7.4.1",
-    "@prisma/adapter-pg": "^7.4.1",
-    "@prisma/client": "^7.4.1",
-    "@supabase/supabase-js": "^2.97.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
@@ -35,6 +25,7 @@
     "multer": "^2.0.2",
     "node-fetch": "^3.3.2",
     "nodemailer": "^8.0.1",
+    "pg": "^8.11.0",
     "resend": "^6.9.2",
     "uuid": "^13.0.0"
   },
@@ -49,19 +40,16 @@
     "@types/node": "^25.3.0",
     "@types/node-fetch": "^2.6.13",
     "@types/nodemailer": "^7.0.11",
+    "@types/pg": "^8.11.0",
     "@types/supertest": "^7.2.0",
     "@types/uuid": "^10.0.0",
     "dotenv": "^17.3.1",
     "jest": "^30.3.0",
     "nodemon": "^3.1.14",
-    "prisma": "^7.4.1",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
-  },
-  "prisma": {
-    "schema": "./prisma/schema.prisma"
   }
 }

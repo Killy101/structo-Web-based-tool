@@ -45,6 +45,10 @@ export interface OperationsPolicyState {
   maintenanceMode: boolean;
   strictRateLimitMode: boolean;
   auditDigestEnabled: boolean;
+  maintenanceBannerMessage: string;
+  maintenanceWindowStartUtc: string;
+  maintenanceWindowEndUtc: string;
+  maintenanceLearnMoreUrl: string;
 }
 
 export interface GovernanceSettings {
@@ -181,6 +185,7 @@ export interface AuthResponse {
   user: Pick<User, "id" | "userId" | "firstName" | "lastName" | "role"> & {
     teamId: number | null;
     teamName: string | null;
+    mustChangePassword?: boolean;
   };
 }
 
@@ -253,6 +258,7 @@ export interface CreateUserResponse {
   message: string;
   generatedPassword: string;
   emailSent?: boolean;
+  emailError?: string;
   id: number;
   userIdStr: string;
 }

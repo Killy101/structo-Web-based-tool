@@ -9,9 +9,10 @@ Endpoints
     GET  /autocompare/chunks              List all chunks for a session
     GET  /autocompare/compare/{chunk_id}  Full comparison data for a single chunk
     POST /autocompare/save                Save edited XML for a chunk
-    POST /autocompare/autogenerate        AI-generate XML updates for a chunk
     POST /autocompare/validate            Validate XML for a chunk
     GET  /autocompare/download/{session_id}/{chunk_id}  Download single chunk XML
+    GET  /autocompare/download-all/{session_id}         Download all chunks as ZIP
+    GET  /autocompare/export-report/{session_id}        Export status report as JSON
     POST /autocompare/reupload            Re-upload new XML chunks to existing session
 
 Design notes
@@ -19,77 +20,43 @@ Design notes
 - XML files are already pre-chunked — no XML chunking is performed.
 - No merge endpoint — each chunk is downloaded individually.
 - /upload accepts multiple XML files (the pre-chunked set).
+- No external AI/LLM dependency — runs fully offline on AWS.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
+import threading
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from contextlib import asynccontextmanager
+import fitz  # PyMuPDF
+from fastapi import APIRouter, BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
 
 from src.services.autocompare_service import (
+    _build_diff_groups,
     cleanup_old_sessions,
+    export_session_report,
     get_chunk_detail,
     get_chunk_xml_content,
     get_chunks_list,
     get_session,
+    _get_session_lock,
     process_upload,
     reupload_xml_files,
     save_chunk_xml,
     start_processing,
     validate_all_chunks,
     validate_chunk_xml,
-    _generate_xml_suggestion,
-    _generate_diff_lines,
+    DIFF_PAGE_SIZE,
 )
-from src.services.autocompare_langchain import generate_xml_suggestion_langchain
 
 router = APIRouter(prefix="/autocompare", tags=["autocompare"])
 logger = logging.getLogger(__name__)
-
-
-def _langchain_enabled() -> bool:
-    return os.getenv("AUTOCOMPARE_LANGCHAIN_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-
-
-# ── 0. HEALTH ─────────────────────────────────────────────────────────────────
-
-@router.get("/health/ai")
-async def ai_health_endpoint():
-    """
-    Check availability of AI providers used by the autogenerate endpoint.
-    Returns connectivity status for Ollama and whether OpenAI is configured.
-    """
-    import urllib.request
-
-    ollama_base = os.getenv("AUTOCOMPARE_LANGCHAIN_OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    ollama_ok = False
-    try:
-        with urllib.request.urlopen(f"{ollama_base}/api/tags", timeout=3) as resp:
-            ollama_ok = resp.status == 200
-    except Exception:
-        ollama_ok = False
-
-    openai_configured = bool(os.getenv("OPENAI_API_KEY", "").strip())
-
-    return {
-        "langchain_enabled": _langchain_enabled(),
-        "ollama": {
-            "available": ollama_ok,
-            "base_url": ollama_base,
-            "model": os.getenv("AUTOCOMPARE_LANGCHAIN_OLLAMA_MODEL", "qwen2.5:7b-instruct"),
-        },
-        "openai": {
-            "configured": openai_configured,
-            "model": os.getenv("AUTOCOMPARE_LANGCHAIN_OPENAI_MODEL", "gpt-4o-mini"),
-        },
-    }
 
 
 # ── 1. UPLOAD ─────────────────────────────────────────────────────────────────
@@ -162,31 +129,40 @@ class StartRequest(BaseModel):
 async def start_endpoint(payload: StartRequest, background_tasks: BackgroundTasks):
     """
     Kick off background processing for an uploaded session.
-    No tag_name parameter — XML is already chunked.
+    Uses a per-session lock to prevent duplicate background tasks from
+    concurrent /start calls (race-condition fix).
     """
     session = get_session(payload.session_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Session {payload.session_id} not found")
 
-    if session["status"] == "processing":
-        raise HTTPException(status_code=409, detail="Session is already processing")
+    lock = _get_session_lock(payload.session_id)
+    async with lock:
+        # Re-read status inside the lock to guard against concurrent calls
+        session = get_session(payload.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {payload.session_id} not found")
 
-    if session["status"] == "done":
-        return {
-            "success":    True,
-            "session_id": payload.session_id,
-            "status":     "done",
-            "message":    "Session already processed",
-        }
+        if session["status"] == "processing":
+            raise HTTPException(status_code=409, detail="Session is already processing")
+
+        if session["status"] == "done":
+            return {
+                "success":    True,
+                "session_id": payload.session_id,
+                "status":     "done",
+                "message":    "Session already processed",
+            }
+
+        session["status"] = "processing"
+        session["phase"] = "extracting_pdf"
+        session["progress"] = 0
 
     background_tasks.add_task(
         _run_processing,
         payload.session_id,
         payload.batch_size,
     )
-
-    session["status"] = "processing"
-    session["progress"] = 0
 
     return {
         "success":    True,
@@ -217,13 +193,17 @@ async def status_endpoint(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     return {
-        "success":    True,
-        "session_id": session_id,
-        "status":     session["status"],
-        "progress":   session["progress"],
-        "summary":    session.get("summary"),
-        "error":      session.get("error"),
-        "expires_at": session.get("expires_at"),
+        "success":           True,
+        "session_id":        session_id,
+        "status":            session["status"],
+        "phase":             session.get("phase"),
+        "progress":          session["progress"],
+        "summary":           session.get("summary"),
+        "error":             session.get("error"),
+        "expires_at":        session.get("expires_at"),
+        "chunk_validations": session.get("chunk_validations", {}),
+        "chunks_done":       len(session.get("chunk_validations", {})),
+        "chunks_total":      session.get("xml_file_count", 0),
     }
 
 
@@ -257,13 +237,32 @@ async def chunks_endpoint(session_id: str):
 # ── 5. COMPARE SINGLE CHUNK ───────────────────────────────────────────────────
 
 @router.get("/compare/{chunk_id}")
-async def compare_chunk_endpoint(chunk_id: str, session_id: str):
-    """Return full comparison data for a single chunk."""
+async def compare_chunk_endpoint(
+    chunk_id: str,
+    session_id: str,
+    include_text: bool = Query(default=False, description="Include old_text/new_text (large — opt-in)"),
+    include_spans: bool = Query(default=False, description="Include char-level diff spans (expensive — opt-in)"),
+    diff_page: int = Query(default=1, ge=1, description="Diff-lines page number (1-based)"),
+    diff_limit: int = Query(default=30, ge=1, le=200, description="Diff-lines per page"),
+):
+    """
+    Return comparison data for a single chunk.
+
+    By default returns only metadata + first page of diff_lines (no text blobs,
+    no char spans). Use include_text=true and include_spans=true to opt-in to
+    the heavier fields. Use diff_page/diff_limit to paginate through diff lines.
+    """
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    chunk = get_chunk_detail(session_id, chunk_id)
+    chunk = get_chunk_detail(
+        session_id, chunk_id,
+        include_text=include_text,
+        include_spans=include_spans,
+        diff_page=diff_page,
+        diff_limit=diff_limit,
+    )
     if not chunk:
         raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
 
@@ -273,6 +272,58 @@ async def compare_chunk_endpoint(chunk_id: str, session_id: str):
         "chunk_id":    chunk_id,
         "source_name": session["source_name"],
         "chunk":       chunk,
+    }
+
+
+# ── 5b. PAGINATED DIFF LINES ──────────────────────────────────────────────────
+
+@router.get("/diff/{chunk_id}")
+async def diff_lines_endpoint(
+    chunk_id: str,
+    session_id: str,
+    page: int = Query(default=1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(default=30, ge=1, le=200, description="Lines per page"),
+    include_spans: bool = Query(default=False, description="Include char-level diff spans"),
+):
+    """
+    Return a paginated slice of diff_lines for a chunk.
+
+    Lighter than /compare/{chunk_id} — returns ONLY diff metadata, no text blobs,
+    no XML content. Use for infinite-scroll / load-more in the DiffPanel.
+
+    Response shape:
+        {
+          "chunk_id": "1",
+          "diff_lines": [...],   // slice of length ≤ limit
+          "total": 87,           // total diff lines in chunk
+          "page": 1,
+          "limit": 30,
+          "has_more": true
+        }
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    chunk = get_chunk_detail(
+        session_id, chunk_id,
+        include_text=False,
+        include_spans=include_spans,
+        diff_page=page,
+        diff_limit=limit,
+    )
+    if not chunk:
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
+
+    return {
+        "success":   True,
+        "session_id": session_id,
+        "chunk_id":  chunk_id,
+        "diff_lines": chunk["diff_lines"],
+        "total":     chunk["diff_total"],
+        "page":      chunk["diff_page"],
+        "limit":     chunk["diff_limit"],
+        "has_more":  chunk["diff_has_more"],
     }
 
 
@@ -313,85 +364,7 @@ async def save_endpoint(payload: SaveRequest):
     }
 
 
-# ── 7. AUTO-GENERATE XML UPDATES ─────────────────────────────────────────────
-
-class AutoGenerateRequest(BaseModel):
-    session_id: str
-    chunk_id:   str
-    diff_index: Optional[int] = None
-    diff_text: Optional[str] = None
-    old_text: Optional[str] = None
-    new_text: Optional[str] = None
-    category: Optional[str] = None
-
-
-@router.post("/autogenerate")
-async def autogenerate_endpoint(payload: AutoGenerateRequest):
-    """AI-assisted XML update generation for a single chunk, based on New PDF content."""
-    session = get_session(payload.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {payload.session_id} not found")
-
-    chunk = get_chunk_detail(payload.session_id, payload.chunk_id)
-    if not chunk:
-        raise HTTPException(status_code=404, detail=f"Chunk {payload.chunk_id} not found")
-
-    # Use the saved (user-edited) XML as the base, falling back to original
-    base_xml = chunk.get("xml_saved") or chunk.get("xml_content", "")
-    generation_method = "deterministic"
-    used_fallback = False
-
-    suggested = ""
-    if _langchain_enabled():
-        try:
-            suggested, meta = generate_xml_suggestion_langchain(
-                xml_chunk=base_xml,
-                old_pdf_text=chunk.get("old_text", ""),
-                new_pdf_text=chunk.get("new_text", ""),
-                focus_old_text=payload.old_text,
-                focus_new_text=payload.new_text,
-                focus_text=payload.diff_text,
-            )
-            provider = str(meta.get("provider") or "langchain")
-            generation_method = f"langchain:{provider}"
-        except Exception as exc:
-            used_fallback = True
-            logger.warning(
-                "LangChain autogenerate failed for session=%s chunk=%s: %s",
-                payload.session_id,
-                payload.chunk_id,
-                exc,
-            )
-
-    if not suggested:
-        suggested = _generate_xml_suggestion(
-            xml_chunk=base_xml,
-            old_pdf_text=chunk.get("old_text", ""),
-            new_pdf_text=chunk.get("new_text", ""),
-            focus_old_text=payload.old_text,
-            focus_new_text=payload.new_text,
-            focus_text=payload.diff_text,
-        )
-
-    has_line_focus = any([
-        payload.diff_index is not None,
-        bool(payload.diff_text),
-        bool(payload.old_text),
-        bool(payload.new_text),
-    ])
-
-    return {
-        "success":       True,
-        "session_id":    payload.session_id,
-        "chunk_id":      payload.chunk_id,
-        "suggested_xml": suggested,
-        "generation_scope": "line" if has_line_focus else "chunk",
-        "generation_method": generation_method,
-        "used_fallback": used_fallback,
-    }
-
-
-# ── 8. VALIDATE XML ──────────────────────────────────────────────────────────
+# ── 7. VALIDATE XML ──────────────────────────────────────────────────────────
 
 class ValidateRequest(BaseModel):
     session_id: str
@@ -479,6 +452,244 @@ async def serve_pdf_endpoint(session_id: str, which: str):
         },
     )
 
+
+# ── 10c. RENDER PDF PAGE AS IMAGE ────────────────────────────────────────────
+
+# D: Global PDF document cache — avoids reopening on every request.
+_PDF_CACHE: dict[str, "fitz.Document"] = {}
+_PDF_CACHE_LOCK = threading.Lock()
+
+
+def _get_cached_doc(pdf_path) -> "fitz.Document":
+    """Return a cached fitz.Document, opening it only once per path."""
+    import fitz as _fitz
+    key = str(pdf_path)
+    with _PDF_CACHE_LOCK:
+        if key not in _PDF_CACHE:
+            _PDF_CACHE[key] = _fitz.open(key)
+        return _PDF_CACHE[key]
+
+
+# RGBA color tuples for highlight kinds (r, g, b, fill_opacity)
+_HIGHLIGHT_COLORS = {
+    "added":    (0.133, 0.773, 0.369),   # green
+    "removed":  (0.937, 0.267, 0.267),   # red
+    "modified": (0.961, 0.620, 0.043),   # amber
+}
+_DEFAULT_HIGHLIGHT_COLOR = (0.984, 0.800, 0.082)  # yellow fallback
+
+
+def _normalise_for_search(text: str) -> str:
+    """Normalise text for PDF search — collapse whitespace, fix common PDF artifacts."""
+    import unicodedata
+    # Normalise unicode (handles ligatures, accented chars, etc.)
+    text = unicodedata.normalize("NFKC", text)
+    # Replace non-breaking and special spaces
+    text = re.sub(r"[\u00a0\u2002\u2003\u2009\u200b]", " ", text)
+    # Normalise dashes (en-dash, em-dash, soft-hyphen → regular hyphen)
+    text = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u00ad]", "-", text)
+    # Collapse multiple spaces
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
+def _search_page_for_text(page, raw_text: str) -> list:
+    """
+    Try multiple search strategies to locate text on a PDF page.
+    Returns a list of fitz.Rect objects (may be empty).
+    """
+    import fitz as _fitz
+    _FLAGS = getattr(_fitz, "TEXT_IGNORECASE", 0)
+    _HIT_MAX = 16
+
+    text = _normalise_for_search(raw_text)
+    if len(text) < 2:
+        return []
+
+    # Strategy 1: full normalised text (up to 200 chars to avoid wrap issues)
+    rects = page.search_for(text[:200], quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
+    if rects:
+        return rects
+
+    # Strategy 2: first 80 chars (avoids line-break splits in PDF layout)
+    if len(text) > 80:
+        rects = page.search_for(text[:80], quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
+        if rects:
+            return rects
+
+    # Strategy 3: first significant phrase (up to first punctuation or 50 chars)
+    phrase_match = re.match(r"^(.{20,60}?[.,;:!?])", text)
+    if phrase_match:
+        rects = page.search_for(phrase_match.group(1), quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
+        if rects:
+            return rects
+
+    # Strategy 4: first 40 chars of words only (strips punctuation artifacts)
+    words_only = " ".join(re.findall(r"[A-Za-z0-9]+", text))[:40]
+    if len(words_only) >= 10:
+        rects = page.search_for(words_only, quads=False, flags=_FLAGS, hit_max=_HIT_MAX)
+        if rects:
+            return rects
+
+    return []
+
+
+def _render_pdf_page(
+    pdf_path,
+    page_num: int,
+    scale: float = 1.5,
+    hl_text: str = "",
+    hl_kind: str = "",
+    hl_added: Optional[list[str]] = None,
+    hl_removed: Optional[list[str]] = None,
+    hl_modified: Optional[list[str]] = None,
+) -> bytes:
+    """
+    Render a single PDF page to PNG bytes using PyMuPDF.
+    Uses multi-strategy text search for reliable highlight positioning.
+    """
+    import fitz as _fitz
+
+    # E: Limit highlight terms to 5 per kind; truncate each to 300 chars.
+    MAX_HIGHLIGHT_TERMS = 5
+    MAX_TERM_LEN = 300
+
+    entries: list[tuple[str, str]] = []
+    for t in (hl_added or [])[:MAX_HIGHLIGHT_TERMS]:
+        entries.append((t[:MAX_TERM_LEN], "added"))
+    for t in (hl_removed or [])[:MAX_HIGHLIGHT_TERMS]:
+        entries.append((t[:MAX_TERM_LEN], "removed"))
+    for t in (hl_modified or [])[:MAX_HIGHLIGHT_TERMS]:
+        entries.append((t[:MAX_TERM_LEN], "modified"))
+    if hl_text and hl_text.strip():
+        entries.append((hl_text[:MAX_TERM_LEN], hl_kind))
+
+    has_hl = bool(entries)
+
+    # D: Use cached document when no highlights are needed (safe — no mutations).
+    # When highlights are needed, open a fresh copy so mutations don't persist
+    # in the cache and bleed into other requests for the same page.
+    if has_hl:
+        doc = _fitz.open(str(pdf_path))
+        own_doc = True
+    else:
+        doc = _get_cached_doc(pdf_path)
+        own_doc = False
+
+    try:
+        total = len(doc)
+        page_idx = max(0, min(page_num - 1, total - 1))
+        page = doc[page_idx]
+
+        if has_hl:
+            seen: set[str] = set()
+            used_terms = 0
+            for raw_text, kind in entries:
+                if used_terms >= MAX_HIGHLIGHT_TERMS:
+                    break
+                norm_key = " ".join((raw_text or "").lower().split())
+                if len(norm_key) < 2 or norm_key in seen:
+                    continue
+                seen.add(norm_key)
+                used_terms += 1
+
+                color = _HIGHLIGHT_COLORS.get(kind, _DEFAULT_HIGHLIGHT_COLOR)
+                rects = _search_page_for_text(page, raw_text)
+
+                if rects:
+                    shape = page.new_shape()
+                    for rect in rects:
+                        shape.draw_rect(rect)
+                    shape.finish(
+                        color=color,
+                        fill=color,
+                        fill_opacity=0.40,
+                        width=1.0,
+                    )
+                    shape.commit()
+
+        mat = _fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat)
+        # I: Output JPEG for faster transfer (85% quality is visually lossless for page renders).
+        return pix.tobytes("jpeg", jpg_quality=85)
+    finally:
+        if own_doc:
+            doc.close()
+
+
+@router.get("/pdf-page/{session_id}/{which}/{page_num}")
+async def pdf_page_endpoint(
+    session_id: str,
+    which: str,
+    page_num: int,
+    scale: float = 1.5,
+    hl_text: str = "",
+    hl_kind: str = "",
+    hl_added: Optional[list[str]] = Query(default=None),
+    hl_removed: Optional[list[str]] = Query(default=None),
+    hl_modified: Optional[list[str]] = Query(default=None),
+):
+    """
+    Render a single PDF page as a PNG image using PyMuPDF.
+
+    Path params:
+        session_id — session identifier
+        which      — "old" or "new"
+        page_num   — 1-based page number
+
+    Query params:
+        scale   — render scale factor (default 1.5 ≈ 108 DPI); clamped to [0.5, 3.0]
+        hl_text — text to highlight (URL-encoded); omit for no highlight
+        hl_kind — highlight color hint: "added" | "removed" | "modified"
+
+    Returns a PNG image suitable for display in an <img> element.
+    The response is cached for 5 minutes on the client to reduce redundant renders.
+    Highlight params bypass the cache (different query string = different URL).
+    """
+    from pathlib import Path as _Path
+
+    if which not in ("old", "new"):
+        raise HTTPException(status_code=400, detail="which must be 'old' or 'new'")
+
+    if page_num < 1:
+        raise HTTPException(status_code=400, detail="page_num must be >= 1")
+
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    pdf_path = _Path(session["storage"]["original"]) / f"{which}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail=f"{which}.pdf not found for this session")
+
+    # Clamp scale to a safe range
+    scale = max(0.5, min(float(scale), 3.0))
+
+    try:
+        img_bytes = _render_pdf_page(
+            pdf_path,
+            page_num,
+            scale,
+            hl_text.strip(),
+            hl_kind.strip(),
+            hl_added=hl_added,
+            hl_removed=hl_removed,
+            hl_modified=hl_modified,
+        )
+    except Exception as exc:
+        logger.error("pdf-page render error session=%s which=%s page=%d: %s", session_id, which, page_num, exc)
+        raise HTTPException(status_code=500, detail=f"Page render failed: {exc}")
+
+    # I: Highlighted pages are cached for 60 s (query string already varies).
+    has_highlights = bool(hl_text or hl_added or hl_removed or hl_modified)
+    cache_header = "private, max-age=60" if has_highlights else "private, max-age=300"
+
+    return Response(
+        content=img_bytes,
+        media_type="image/jpeg",
+        headers={"Cache-Control": cache_header},
+    )
+
 # ── 9. DOWNLOAD SINGLE CHUNK XML ─────────────────────────────────────────────
 
 @router.get("/download/{session_id}/{chunk_id}")
@@ -559,6 +770,7 @@ async def download_all_endpoint(session_id: str):
     if not chunks:
         raise HTTPException(status_code=404, detail="No chunks available")
 
+    skipped: list[str] = []
     buf = io.BytesIO()
     with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
         for chunk in chunks:
@@ -566,9 +778,19 @@ async def download_all_endpoint(session_id: str):
             try:
                 filename, xml_content = get_chunk_xml_content(session_id, chunk_id)
                 zf.writestr(filename, xml_content.encode("utf-8"))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "download-all: skipping chunk %s for session %s — %s",
+                    chunk_id, session_id, exc,
+                )
+                skipped.append(chunk_id)
     buf.seek(0)
+
+    if skipped:
+        logger.warning(
+            "download-all: session %s ZIP missing %d chunk(s): %s",
+            session_id, len(skipped), skipped,
+        )
 
     safe_name = re.sub(r"[^\w.\-]", "_", session.get("source_name", "chunks"))
     return Response(
@@ -577,10 +799,56 @@ async def download_all_endpoint(session_id: str):
         headers={"Content-Disposition": f'attachment; filename="{safe_name}_chunks.zip"'},
     )
 
+
+# ── 11c. EXPORT STATUS REPORT ─────────────────────────────────────────────────
+
+@router.get("/export-report/{session_id}")
+async def export_report_endpoint(session_id: str, fmt: str = "json"):
+    """
+    Export a status report for all chunks in a session.
+    `fmt` must be "json" (default) or "csv".
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    try:
+        report = export_session_report(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    safe_name = re.sub(r"[^\w.\-]", "_", session.get("source_name", "report"))
+
+    if fmt.lower() == "csv":
+        import csv
+        import io as _io
+
+        output = _io.StringIO()
+        fieldnames = [
+            "index", "label", "filename", "change_type", "has_changes",
+            "similarity_pct", "page_start", "page_end", "xml_size_bytes",
+            "is_updated", "is_modified", "auto_reviewed",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(report["chunks"])
+        return Response(
+            content=output.getvalue().encode("utf-8"),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_report.csv"'},
+        )
+
+    import json as _json
+    return Response(
+        content=_json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_report.json"'},
+    )
+
 # ── 12. CLEANUP ───────────────────────────────────────────────────────────────
 
 @router.delete("/cleanup")
 async def cleanup_endpoint(ttl: int = 3600):
     """Remove sessions older than `ttl` seconds from memory and disk."""
     removed = cleanup_old_sessions(ttl=ttl)
-    return {"success": True, "removed": removed}    
+    return {"success": True, "removed": removed}

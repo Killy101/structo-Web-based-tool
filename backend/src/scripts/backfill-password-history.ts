@@ -1,41 +1,41 @@
-import { PrismaClient, User } from "@prisma/client";
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
-import { v4 as uuidv4 } from "uuid";
+import pool from '../lib/db'
 
-const prisma = new PrismaClient();
-const supabase = createSupabaseClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-);
+export const createPasswordHistory = async (userId: number, passwordHash: string, createdAt: Date) => {
+  const { rows: existing } = await pool.query(
+    `SELECT id FROM password_history WHERE user_id = $1 AND hash = $2 LIMIT 1`,
+    [userId, passwordHash],
+  )
 
-export const createPasswordHistory = async (user: User) => {
-  const existing = await prisma.passwordHistory.findFirst({
-    where: {
-      userId: user.id,
-      hash: user.password,
-    },
-    select: { id: true },
-  });
+  if (existing[0]) return existing[0]
 
-  if (existing) {
-    return existing;
+  await pool.query(
+    `INSERT INTO password_history (user_id, hash, created_at) VALUES ($1, $2, $3)`,
+    [userId, passwordHash, createdAt],
+  )
+
+  return null
+}
+
+async function main() {
+  const { rows: users } = await pool.query(
+    `SELECT id, password, password_changed_at, created_at FROM users WHERE password IS NOT NULL`,
+  )
+
+  let backfilled = 0
+  for (const user of users) {
+    const result = await createPasswordHistory(
+      user.id,
+      user.password,
+      user.password_changed_at ?? user.created_at,
+    )
+    if (result === null) backfilled++
   }
 
-  await prisma.passwordHistory.create({
-    data: {
-      userId: user.id,
-      hash: user.password,
-      createdAt: user.passwordChangedAt ?? new Date(),
-    },
-  });
+  console.log(`Backfilled ${backfilled} password history entries for ${users.length} users.`)
+  await pool.end()
+}
 
-  return null;
-};
-
-export const getSupabaseClient = () => {
-  return supabase;
-};
-
-export const prismaClient = () => {
-  return prisma;
-};
+main().catch((err) => {
+  console.error('Backfill error:', err)
+  process.exit(1)
+})

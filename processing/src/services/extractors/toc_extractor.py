@@ -14,6 +14,27 @@ import re
 
 # Helpers
 
+# ─────────────────────────────────────────────
+# Shared: parse hardcoded path from definition
+# ─────────────────────────────────────────────
+
+# Matches a path segment in a definition, e.g.:
+#   "Hardcoded – /us"          → "/us"
+#   "Hardcoded –/aladmincode"  → "/aladmincode"
+#   "Hardcoded - /de"          → "/de"
+_HARDCODED_PATH_RE = re.compile(r"hardcoded\s*[–\-—]?\s*(/\S+)", re.IGNORECASE)
+
+
+def _extract_path_from_definition(definition: str) -> str:
+    """
+    Pull the path segment out of a Level 0 / Level 1 definition, e.g.:
+      "Hardcoded – /us"         → "/us"
+      "Hardcoded –/aladmincode" → "/aladmincode"
+    Returns "" if no path is found.
+    """
+    m = _HARDCODED_PATH_RE.search(definition)
+    return m.group(1).rstrip(".,;") if m else ""
+
 def _clean(text: str) -> str:
     """Normalise whitespace while preserving meaningful line breaks."""
     normalized = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
@@ -127,16 +148,19 @@ def extract_toc(doc) -> dict:
             if len(level_raw) > 5:
                 continue
 
+            definition = cell_text("definition")
             sections.append({
                 "id":              level_raw,
                 "level":           level_raw,
                 "name":            cell_text("name"),
                 "required":        _required_value(cell_text("required")),
-                "definition":      cell_text("definition"),
+                "definition":      definition,
                 "example":         cell_text("example"),
                 "note":            cell_text("note"),
                 "tocRequirements": cell_text("tocRequirements"),
                 "smeComments":     cell_text("smeComments"),
+                # Populated for Level 0/1 whose definition is "Hardcoded – /xxx"
+                "path":            _extract_path_from_definition(definition),
             })
 
         # Found and processed the table — return immediately
@@ -157,6 +181,8 @@ _LEGACY_FIELD_RE = re.compile(
 )
 
 
+
+
 def extract_toc_legacy(doc) -> dict:
     """
     Legacy BRDs store levels as paragraphs instead of a table:
@@ -169,7 +195,17 @@ def extract_toc_legacy(doc) -> dict:
                           "Note: ..."
 
     Collects from Heading 3 "Levels" through the next major section heading.
+
+    FIX: The previous version broke out of the loop on *any* Heading 3
+    encountered while collecting, which caused Level 0 and Level 1 to be
+    dropped whenever a sub-heading appeared before their bullet lines were
+    fully read.  Now only stop-keyword headings (and Heading 2+) terminate
+    collection; unrecognised Heading 3s inside the Levels section are ignored.
+
     Output shape is identical to extract_toc().
+    Each Level 0 / Level 1 section also gets a "path" key derived from its
+    definition (e.g. "Hardcoded – /us" → "/us") so that content_profile_extractor
+    can assemble hardcoded_path without hardcoding "/us" itself.
     """
     sections = []
     current: dict | None = None
@@ -185,13 +221,16 @@ def extract_toc_legacy(doc) -> dict:
 
     def _flush():
         if current and current.get("level"):
+            # Derive path for Level 0 / Level 1 from the definition field
+            if current["level"] in ("0", "1") and not current.get("path"):
+                current["path"] = _extract_path_from_definition(current["definition"])
             sections.append(current)
 
     collecting = False
 
     for p in doc.paragraphs:
-        style     = p.style.name if p.style else ""
-        text      = p.text.replace("\xa0", " ").strip()
+        style      = p.style.name if p.style else ""
+        text       = p.text.replace("\xa0", " ").strip()
         text_lower = text.lower()
         is_heading = style.startswith("Heading")
 
@@ -203,14 +242,20 @@ def extract_toc_legacy(doc) -> dict:
         if not collecting:
             continue
 
-        # Stop at next major section heading (Heading 2 or 3)
+        # Always stop at a known stop-keyword heading (any heading level)
         if is_heading and any(s in text_lower for s in _stop_lower):
             break
-        # Also stop at any Heading 3 that isn't the opening "Levels" heading —
-        # e.g. "Annotated Header Text Levels" lives inside Document Structure but
-        # its "Level N" paragraphs are references, not level definitions.
-        if style.startswith("Heading 3") and collecting:
+
+        # Stop at Heading 2 (a new top-level section) — but NOT at Heading 3,
+        # because sub-headings like "Annotated Header Text" live inside the
+        # Levels section and should not prematurely terminate collection.
+        if style.startswith("Heading 2") and collecting:
             break
+
+        # A Heading 3 that is *not* the opening "Levels" heading and *not* a
+        # stop keyword: just skip the heading line itself, keep collecting.
+        if is_heading:
+            continue
 
         # Detect "Level N" marker line
         m_level = _LEGACY_LEVEL_RE.match(text)
@@ -227,6 +272,7 @@ def extract_toc_legacy(doc) -> dict:
                 "note":            "",
                 "tocRequirements": "",
                 "smeComments":     "",
+                "path":            "",   # populated in _flush() for L0/L1
             }
             continue
 

@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Badge,
   Button,
@@ -48,7 +48,104 @@ const DEFAULT_OPERATIONS_POLICY: OperationsPolicyState = {
   maintenanceMode: false,
   strictRateLimitMode: false,
   auditDigestEnabled: true,
+  maintenanceBannerMessage:
+    "Our system is currently undergoing maintenance to improve performance and reliability. We\'ll be back shortly. Thank you for your patience and understanding.",
+  maintenanceWindowStartUtc: "",
+  maintenanceWindowEndUtc: "",
+  maintenanceLearnMoreUrl: "",
 };
+
+type GovernanceHistoryChange = {
+  field: string;
+  section: "security" | "operations";
+  before: unknown;
+  after: unknown;
+};
+
+type GovernanceHistoryDetails = {
+  message?: string;
+  sections?: Array<"security" | "operations">;
+  changes?: GovernanceHistoryChange[];
+};
+
+function parseGovernanceHistoryDetails(details?: string | null): GovernanceHistoryDetails | null {
+  if (!details) return null;
+  try {
+    const parsed = JSON.parse(details) as GovernanceHistoryDetails;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function sectionBadgeColor(section: "security" | "operations"): string {
+  return section === "security"
+    ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
+    : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+}
+
+function buildPolicyPresetFeatures(
+  teamSlug: string,
+  role: "ADMIN" | "USER",
+): string[] {
+  const slug = teamSlug.toLowerCase();
+
+  if (slug === "pre-production") {
+    return role === "ADMIN"
+      ? [
+          "dashboard",
+          "brd-process",
+          "user-management",
+          "compare-basic",
+          "compare-pdf-xml-only",
+          "user-logs",
+        ]
+      : ["dashboard", "brd-process", "compare-basic", "compare-pdf-xml-only"];
+  }
+
+  if (slug === "production") {
+    return role === "ADMIN"
+      ? [
+          "dashboard",
+          "brd-view-generate",
+          "user-management",
+          "compare-basic",
+          "compare-pdf-xml-only",
+          "user-logs",
+        ]
+      : ["dashboard", "brd-view-generate", "compare-basic", "compare-pdf-xml-only"];
+  }
+
+  if (slug === "updating") {
+    return role === "ADMIN"
+      ? [
+          "dashboard",
+          "brd-view-generate",
+          "user-management",
+          "compare-basic",
+          "compare-pdf-xml-only",
+          "user-logs",
+        ]
+      : [
+          "dashboard",
+          "brd-view-generate",
+          "compare-basic",
+          "compare-chunk",
+          "compare-merge",
+        ];
+  }
+
+  return role === "ADMIN"
+    ? ["dashboard", "brd-process", "user-management", "compare-basic", "user-logs"]
+    : ["dashboard", "brd-process", "compare-basic"];
+}
+
+function buildViewGeneratePreset(role: "ADMIN" | "USER"): string[] {
+  return role === "ADMIN"
+    ? ["dashboard", "brd-view-generate", "compare-basic", "user-management", "user-logs"]
+    : ["dashboard", "brd-view-generate", "compare-basic"];
+}
 
 // ─── Add Team Modal ───────────────────────────────────────────────────────────
 function AddTeamModal({
@@ -402,6 +499,16 @@ function EditRoleModal({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const prevRoleId = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (role && role.id !== prevRoleId.current) {
+      prevRoleId.current = role.id;
+      setName(role.name);
+      setSelectedFeatures(role.features ?? []);
+      setError("");
+    }
+  }, [role]);
+
   const toggleFeature = (feature: string) => {
     setSelectedFeatures((prev) =>
       prev.includes(feature)
@@ -582,6 +689,11 @@ export default function SettingsPage() {
     "governance" | "teams" | "team-policies" | "roles" | "history"
   >("governance");
   const { logs: historyLogs, isLoading: historyLoading } = useGovernanceHistory();
+  const [teamSearch, setTeamSearch] = useState("");
+  const [teamMemberFilter, setTeamMemberFilter] = useState<"all" | "with-members" | "empty">("all");
+  const [roleSearch, setRoleSearch] = useState("");
+  const [roleUsageFilter, setRoleUsageFilter] = useState<"all" | "with-users" | "unused">("all");
+  const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<number>>(new Set());
 
   // ─── Dirty-state tracking ────────────────────────────────────
   const [isDirty, setIsDirty] = useState(false);
@@ -604,6 +716,44 @@ export default function SettingsPage() {
       JSON.stringify(governanceSettings.operationsPolicy);
     setIsDirty(secChanged || opsChanged);
   }, [securityPolicy, operationsPolicy, governanceSettings]);
+
+  const filteredTeams = useMemo(() => {
+    const query = teamSearch.trim().toLowerCase();
+    return teams
+      .filter((team) => {
+        const matchesQuery =
+          !query ||
+          team.name.toLowerCase().includes(query) ||
+          team.slug.toLowerCase().includes(query);
+
+        const memberCount = team._count?.members ?? 0;
+        const matchesMemberFilter =
+          teamMemberFilter === "all" ||
+          (teamMemberFilter === "with-members" ? memberCount > 0 : memberCount === 0);
+
+        return matchesQuery && matchesMemberFilter;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [teams, teamSearch, teamMemberFilter]);
+
+  const filteredRoles = useMemo(() => {
+    const query = roleSearch.trim().toLowerCase();
+    return roles
+      .filter((role) => {
+        const matchesQuery =
+          !query ||
+          role.name.toLowerCase().includes(query) ||
+          role.slug.toLowerCase().includes(query);
+
+        const userCount = role._count?.users ?? 0;
+        const matchesUsageFilter =
+          roleUsageFilter === "all" ||
+          (roleUsageFilter === "with-users" ? userCount > 0 : userCount === 0);
+
+        return matchesQuery && matchesUsageFilter;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [roles, roleSearch, roleUsageFilter]);
 
   // Warn before browser navigation when unsaved changes exist
   useEffect(() => {
@@ -737,6 +887,56 @@ export default function SettingsPage() {
               ?.data?.error ?? "Failed to save governance settings");
       show(msg, "error");
     }
+  };
+
+  const discardGovernanceChanges = () => {
+    if (!governanceSettings) return;
+    setSecurityPolicy(governanceSettings.securityPolicy);
+    setOperationsPolicy(governanceSettings.operationsPolicy);
+    setIsDirty(false);
+    show("Discarded unsaved governance changes", "info");
+  };
+
+  const applyPolicyPreset = async (
+    policy: TeamRoleFeaturePolicyItem,
+    role: "ADMIN" | "USER",
+    preset: "team-default" | "view-generate",
+  ) => {
+    const source =
+      preset === "team-default"
+        ? buildPolicyPresetFeatures(policy.team.slug, role)
+        : buildViewGeneratePreset(role);
+
+    const allowedKeys = new Set(featureCatalog.map((f) => f.key));
+    const features = source.filter((key) => allowedKeys.has(key));
+    const key = `${policy.team.id}:${role}`;
+
+    setSavingPolicyKey(key);
+    try {
+      await updatePolicy(policy.team.id, role, features);
+      show(
+        `${policy.team.name} ${role} preset applied (${preset === "team-default" ? "Team Default" : "View + Generate"})`,
+        "success",
+      );
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : ((err as { response?: { data?: { error?: string } } })?.response
+              ?.data?.error ?? "Failed to apply policy preset");
+      show(msg, "error");
+    } finally {
+      setSavingPolicyKey(null);
+    }
+  };
+
+  const toggleHistoryExpand = (id: number) => {
+    setExpandedHistoryIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   // ─── Team columns ──────────────────────────────────────────
@@ -915,32 +1115,52 @@ export default function SettingsPage() {
       render: (row: TeamRoleFeaturePolicyItem) => {
         const isSaving = savingPolicyKey === `${row.team.id}:ADMIN`;
         return (
-          <div className="flex flex-wrap gap-2">
-            {featureCatalog.map((feature) => {
-              const isOn = row.ADMIN.features.includes(feature.key);
-              return (
-                <label
-                  key={`${row.team.id}-ADMIN-${feature.key}`}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  <input
-                    type="checkbox"
-                    checked={isOn}
-                    disabled={isSaving}
-                    onChange={() =>
-                      handleTeamPolicyToggle(row, "ADMIN", feature.key)
-                    }
-                    className="w-3.5 h-3.5 rounded border-slate-300 text-[#1a56f0] focus:ring-[#1a56f0]"
-                  />
-                  <span className="text-slate-600 dark:text-slate-300">
-                    {feature.label}
-                  </span>
-                </label>
-              );
-            })}
-            {isSaving && (
-              <span className="text-xs text-slate-400 italic">Saving...</span>
-            )}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={isSaving}
+                onClick={() => void applyPolicyPreset(row, "ADMIN", "team-default")}
+              >
+                Apply Team Default
+              </Button>
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={isSaving}
+                onClick={() => void applyPolicyPreset(row, "ADMIN", "view-generate")}
+              >
+                Apply View + Generate
+              </Button>
+              {isSaving && (
+                <span className="text-xs text-slate-400 italic">Saving...</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {featureCatalog.map((feature) => {
+                const isOn = row.ADMIN.features.includes(feature.key);
+                return (
+                  <label
+                    key={`${row.team.id}-ADMIN-${feature.key}`}
+                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isOn}
+                      disabled={isSaving}
+                      onChange={() =>
+                        handleTeamPolicyToggle(row, "ADMIN", feature.key)
+                      }
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-[#1a56f0] focus:ring-[#1a56f0]"
+                    />
+                    <span className="text-slate-600 dark:text-slate-300">
+                      {feature.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
         );
       },
@@ -951,32 +1171,52 @@ export default function SettingsPage() {
       render: (row: TeamRoleFeaturePolicyItem) => {
         const isSaving = savingPolicyKey === `${row.team.id}:USER`;
         return (
-          <div className="flex flex-wrap gap-2">
-            {featureCatalog.map((feature) => {
-              const isOn = row.USER.features.includes(feature.key);
-              return (
-                <label
-                  key={`${row.team.id}-USER-${feature.key}`}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  <input
-                    type="checkbox"
-                    checked={isOn}
-                    disabled={isSaving}
-                    onChange={() =>
-                      handleTeamPolicyToggle(row, "USER", feature.key)
-                    }
-                    className="w-3.5 h-3.5 rounded border-slate-300 text-[#1a56f0] focus:ring-[#1a56f0]"
-                  />
-                  <span className="text-slate-600 dark:text-slate-300">
-                    {feature.label}
-                  </span>
-                </label>
-              );
-            })}
-            {isSaving && (
-              <span className="text-xs text-slate-400 italic">Saving...</span>
-            )}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={isSaving}
+                onClick={() => void applyPolicyPreset(row, "USER", "team-default")}
+              >
+                Apply Team Default
+              </Button>
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={isSaving}
+                onClick={() => void applyPolicyPreset(row, "USER", "view-generate")}
+              >
+                Apply View + Generate
+              </Button>
+              {isSaving && (
+                <span className="text-xs text-slate-400 italic">Saving...</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {featureCatalog.map((feature) => {
+                const isOn = row.USER.features.includes(feature.key);
+                return (
+                  <label
+                    key={`${row.team.id}-USER-${feature.key}`}
+                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isOn}
+                      disabled={isSaving}
+                      onChange={() =>
+                        handleTeamPolicyToggle(row, "USER", feature.key)
+                      }
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-[#1a56f0] focus:ring-[#1a56f0]"
+                    />
+                    <span className="text-slate-600 dark:text-slate-300">
+                      {feature.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
         );
       },
@@ -1086,6 +1326,14 @@ export default function SettingsPage() {
                         Unsaved changes
                       </span>
                     )}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={discardGovernanceChanges}
+                      disabled={!isDirty || governanceSaving}
+                    >
+                      Discard Changes
+                    </Button>
                     <Button
                       size="sm"
                       onClick={() => void persistGovernanceConfig()}
@@ -1254,6 +1502,53 @@ export default function SettingsPage() {
                       </label>
                     ))}
                   </div>
+
+                  <div className="grid grid-cols-1 gap-3 pt-2">
+                    <Input
+                      label="Maintenance Banner Message"
+                      value={operationsPolicy.maintenanceBannerMessage}
+                      onChange={(e) =>
+                        setOperationsPolicy((prev) => ({
+                          ...prev,
+                          maintenanceBannerMessage: e.target.value,
+                        }))
+                      }
+                      placeholder="Message shown in maintenance banner and API responses"
+                    />
+                    <Input
+                      label="Maintenance Window Start (UTC)"
+                      value={operationsPolicy.maintenanceWindowStartUtc}
+                      onChange={(e) =>
+                        setOperationsPolicy((prev) => ({
+                          ...prev,
+                          maintenanceWindowStartUtc: e.target.value,
+                        }))
+                      }
+                      placeholder="e.g. 2:00AM UTC - March 19th, 2026"
+                    />
+                    <Input
+                      label="Maintenance Window End (UTC)"
+                      value={operationsPolicy.maintenanceWindowEndUtc}
+                      onChange={(e) =>
+                        setOperationsPolicy((prev) => ({
+                          ...prev,
+                          maintenanceWindowEndUtc: e.target.value,
+                        }))
+                      }
+                      placeholder="e.g. 3:00AM UTC - March 19th, 2026"
+                    />
+                    <Input
+                      label="Maintenance Learn More URL"
+                      value={operationsPolicy.maintenanceLearnMoreUrl}
+                      onChange={(e) =>
+                        setOperationsPolicy((prev) => ({
+                          ...prev,
+                          maintenanceLearnMoreUrl: e.target.value,
+                        }))
+                      }
+                      placeholder="https://status.example.com/maintenance"
+                    />
+                  </div>
                 </div>
               </div>
             </Card>
@@ -1270,9 +1565,33 @@ export default function SettingsPage() {
                   </Button>
                 }
               />
+              <div className="grid grid-cols-1 gap-3 px-6 pb-4 md:grid-cols-2">
+                <Input
+                  label="Search Teams"
+                  value={teamSearch}
+                  onChange={(e) => setTeamSearch(e.target.value)}
+                  placeholder="Search by team name or slug"
+                />
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Member Filter
+                  <select
+                    value={teamMemberFilter}
+                    onChange={(e) =>
+                      setTeamMemberFilter(
+                        e.target.value as "all" | "with-members" | "empty",
+                      )
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    <option value="all">All teams</option>
+                    <option value="with-members">With members</option>
+                    <option value="empty">No members</option>
+                  </select>
+                </label>
+              </div>
               <Table
                 columns={teamColumns}
-                data={teams}
+                data={filteredTeams}
                 keyExtractor={(row) => row.id}
                 isLoading={teamsLoading}
                 emptyMessage="No teams yet. Create the first one."
@@ -1309,9 +1628,33 @@ export default function SettingsPage() {
                   </Button>
                 }
               />
+              <div className="grid grid-cols-1 gap-3 px-6 pb-4 md:grid-cols-2">
+                <Input
+                  label="Search Roles"
+                  value={roleSearch}
+                  onChange={(e) => setRoleSearch(e.target.value)}
+                  placeholder="Search by role name or slug"
+                />
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Usage Filter
+                  <select
+                    value={roleUsageFilter}
+                    onChange={(e) =>
+                      setRoleUsageFilter(
+                        e.target.value as "all" | "with-users" | "unused",
+                      )
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    <option value="all">All roles</option>
+                    <option value="with-users">Assigned roles</option>
+                    <option value="unused">Unused roles</option>
+                  </select>
+                </label>
+              </div>
               <Table
                 columns={roleColumns}
-                data={roles}
+                data={filteredRoles}
                 keyExtractor={(row) => row.id}
                 isLoading={rolesLoading}
                 emptyMessage="No custom roles yet. Create one to assign specific feature access to users."
@@ -1340,6 +1683,9 @@ export default function SettingsPage() {
                     const actor = log.user
                       ? `${[log.user.firstName, log.user.lastName].filter(Boolean).join(" ") || log.user.userId}`
                       : `User #${log.userId}`;
+                    const parsedDetails = parseGovernanceHistoryDetails(log.details);
+                    const changeCount = parsedDetails?.changes?.length ?? 0;
+                    const isExpanded = expandedHistoryIds.has(log.id);
                     return (
                       <div key={log.id} className="flex items-start gap-4 px-6 py-3">
                         <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0 text-xs font-bold">
@@ -1350,11 +1696,50 @@ export default function SettingsPage() {
                             <span className="font-medium">{actor}</span>{" "}
                             updated governance settings
                           </p>
-                          {log.details && (
+                          {parsedDetails?.sections?.length ? (
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              {parsedDetails.sections.map((section) => (
+                                <span
+                                  key={`${log.id}-${section}`}
+                                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${sectionBadgeColor(section)}`}
+                                >
+                                  {section === "security" ? "Security" : "Operations"}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {changeCount > 0 ? (
+                            <div className="mt-2">
+                              <button
+                                type="button"
+                                onClick={() => toggleHistoryExpand(log.id)}
+                                className="text-xs font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                              >
+                                {isExpanded
+                                  ? "Hide field-level changes"
+
+                                  : `Show field-level changes (${changeCount})`}
+                              </button>
+                              {isExpanded && (
+                                <div className="mt-2 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/40">
+                                  {(parsedDetails?.changes ?? []).map((change) => (
+                                    <div key={`${log.id}-${change.section}-${change.field}`} className="text-xs text-slate-600 dark:text-slate-300">
+                                      <span className="font-semibold">{change.field}</span>{" "}
+                                      <span className="text-slate-400">({change.section})</span>
+                                      <div className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400 break-all">
+                                        {JSON.stringify(change.before)} → {JSON.stringify(change.after)}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : log.details ? (
                             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                               {log.details}
                             </p>
-                          )}
+                          ) : null}
                         </div>
                         <time className="text-xs text-slate-400 whitespace-nowrap mt-0.5">
                           {new Date(log.createdAt).toLocaleString()}

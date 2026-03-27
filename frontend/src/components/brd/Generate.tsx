@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from "react";
 import api from "@/app/lib/api";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
+import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 // ── Cell image types ───────────────────────────────────────────────────────────
 interface CellImageMeta {
@@ -19,15 +20,11 @@ interface CellImageMeta {
 }
 
 // ── useCellImages hook ─────────────────────────────────────────────────────────
-function useCellImages(brdId?: string) {
-  const [images,  setImages]  = useState<CellImageMeta[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
+function useCellImages(brdId?: string, enabled = true) {
+  const [images, setImages] = useState<CellImageMeta[]>([]);
 
   useEffect(() => {
-    if (!brdId) return;
-    setLoading(true);
-    setError(null);
+    if (!enabled || !brdId) return;
     api
       .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
       .then(r => {
@@ -36,20 +33,19 @@ function useCellImages(brdId?: string) {
       })
       .catch((err) => {
         console.error("[useCellImages] Error fetching images:", err);
-        setError("Could not load images");
-      })
-      .finally(() => setLoading(false));
-  }, [brdId]);
+      });
+  }, [brdId, enabled]);
 
-  return { images, loading, error };
+  return { images };
 }
 
 // ── InlineImageCell component for displaying images in table cells ────────────
 function InlineImageCell({ brdId, image }: { brdId?: string; image: CellImageMeta }) {
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   if (!brdId) return null;
-  const imgSrc = image.blobUrl || `${API_BASE}/brd/${brdId}/images/${image.id}/blob`;
+  const imgSrc = image.blobUrl || buildBrdImageBlobUrl(brdId, image.id, API_BASE);
   return (
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={imgSrc}
       alt={image.cellText || image.mediaName}
@@ -75,6 +71,7 @@ interface Props {
   onEdit?: (step: number) => void;
   onComplete?: () => void;
   canEdit?: boolean;
+  showCellImages?: boolean;
 }
 
 type SaveStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
@@ -147,34 +144,35 @@ function deriveTitle(metadata: Record<string, unknown> | undefined, fallback: st
 function buildTemplateMetadataValues(format: Format, metadata?: Record<string, unknown>): Record<string, string> {
   if (!metadata) return {};
   const t = (key: string): string => (typeof metadata[key] === "string" ? String(metadata[key]).trim() : "");
+  const p = (...keys: string[]): string => keys.map(t).find(Boolean) ?? "";
   if (format === "old") {
     return {
       // Legacy "Source Name" label → stored as content_category_name by extractor
-      sourceName:           t("content_category_name") || t("source_name") || t("document_title"),
+      sourceName:           p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
       // Legacy "Authoritative Source" label → stored as authoritative_source (and mirrored to issuing_agency)
-      authoritativeSource:  t("authoritative_source") || t("issuing_agency"),
-      sourceType:           t("source_type"),
-      publicationDate:      t("publication_date"),
-      lastUpdatedDate:      t("last_updated_date"),
-      processingDate:       t("processing_date"),
-      issuingAgency:        t("issuing_agency"),
-      contentUrl:           t("content_uri"),
-      geography:            t("geography"),
-      language:             t("language"),
-      payloadSubtype:       t("payload_subtype"),
-      status:               t("status"),
+      authoritativeSource:  p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+      sourceType:           p("source_type", "sourceType", "Source Type"),
+      publicationDate:      p("publication_date", "publicationDate", "Publication Date"),
+      lastUpdatedDate:      p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+      processingDate:       p("processing_date", "processingDate", "Processing Date"),
+      issuingAgency:        p("issuing_agency", "issuingAgency", "Issuing Agency"),
+      contentUrl:           p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      geography:            p("geography", "Geography"),
+      language:             p("language", "Language"),
+      payloadSubtype:       p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+      status:               p("status", "Status"),
     };
   }
   return {
-    contentCategoryName:     t("content_category_name") || t("document_title"),
-    publicationDate:         t("publication_date"),
-    lastUpdatedDate:         t("last_updated_date"),
-    processingDate:          t("processing_date"),
-    issuingAgency:           t("issuing_agency"),
-    relatedGovernmentAgency: t("related_government_agency"),
-    contentUri:              t("content_uri"),
-    geography:               t("geography"),
-    language:                t("language"),
+    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
+    lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+    processingDate:          p("processing_date", "processingDate", "Processing Date"),
+    issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+    relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
+    contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    geography:               p("geography", "Geography"),
+    language:                p("language", "Language"),
   };
 }
 function asScopeEntryArray(v: unknown): ScopeEntry[] {
@@ -387,7 +385,7 @@ function AssistiveTouch() {
     const SZ = 52;
     setPos({ x: Math.max(0, Math.min(window.innerWidth - SZ, dragStart.current.px + dx)), y: Math.max(0, Math.min(window.innerHeight - SZ, dragStart.current.py + dy)) });
   }
-  function onPointerUp(_e: React.PointerEvent) {
+  function onPointerUp() {
     if (!dragStart.current) return; dragStart.current = null; setDragging(false);
     const SZ = 52; const cx = pos.x + SZ / 2;
     setPos(p => ({ ...p, x: cx < window.innerWidth / 2 ? 12 : window.innerWidth - SZ - 12 }));
@@ -646,9 +644,14 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
     <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
       <table className="w-full text-[11.5px]"><tbody>
         {fields.map((f, i) => {
-          // Try fieldLabel first, then rowIndex fallback (metadata header = row 0, data from row 1)
+          // Try field key first (new uploads), then display label, then rowIndex fallback.
+          const byKey = imagesByLabel.get(f.key.toLowerCase()) || [];
           const byLabel = imagesByLabel.get(f.label.toLowerCase()) || [];
-          const rowImages = byLabel.length > 0 ? byLabel : (imagesByMetaRow.get(i + 1) || []);
+          const rowImages = byKey.length > 0
+            ? byKey
+            : byLabel.length > 0
+              ? byLabel
+              : (imagesByMetaRow.get(i + 1) || []);
           return (
             <tr key={f.key} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
               <td className="px-3 py-2 w-36 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
@@ -829,7 +832,9 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
 
 function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const levels = useMemo(() => asExtractedLevels(cpData), [cpData]);
-  const hardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
+  const hardcodedPathFromData = String(cpData?.hardcoded_path ?? cpData?.hardcodedPath ?? "").trim();
+  const derivedHardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
+  const hardcodedPath = hardcodedPathFromData || derivedHardcodedPath;
   const rcFilename = String(cpData?.rc_filename ?? "");
   const headingAnnotation = String(cpData?.heading_annotation ?? "");
   const wsRows = useMemo(() => { const e = asExtractedWhitespace(cpData); return e.length > 0 ? e : DEFAULT_WHITESPACE_ROWS; }, [cpData]);
@@ -918,7 +923,7 @@ const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; descriptio
   content:  { label:"Content Profile",  sublabel:"Export",   description:"Levels & whitespace rules as Excel",        iconKey:"content",  accentLight:"#f5f3ff", accentDark:"#2a1f45", iconColorLight:"#7c3aed", iconColorDark:"#a78bfa", btnBg:"#7c3aed", btnHover:"#6d28d9", badgeLabel:".xls"  },
 };
 
-export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true }: Props) {
+export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true, showCellImages = true }: Props) {
   const isApproved = status === "APPROVED";
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
@@ -926,6 +931,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const [saving,    setSaving]      = useState(false);
   const [savedToDB, setSavedToDB]   = useState(false);
   const [saveError, setSaveError]   = useState<string | null>(null);
+  const [savedVersionLabel, setSavedVersionLabel] = useState<string | null>(null);
   const generateUnlocked            = !canEdit || savedToDB;
   const [metajsonModal, setMetajsonModal] = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"metajson.json"});
   const [innodModal,    setInnodModal]    = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"innod_metajson.json"});
@@ -933,9 +939,14 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const docPageRef        = useRef<HTMLDivElement>(null);
   const contentProfileRef = useRef<HTMLDivElement>(null);
   
-  const { images } = useCellImages(brdId);
+  const { images } = useCellImages(brdId, showCellImages);
 
-  useEffect(() => { return () => { Object.values(doneResetTimers.current).forEach(t => window.clearTimeout(t)); }; }, []);
+  useEffect(() => {
+    const timers = doneResetTimers.current;
+    return () => {
+      Object.values(timers).forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
 
   const scopeData          = asRecord(initialData?.scope);
   const metadataData       = asRecord(initialData?.metadata);
@@ -977,11 +988,35 @@ export default function Generate({ brdId, title, format, status, initialData, on
   }
 
   async function handleSaveBrd() {
-    if (!brdId) return; setSaving(true); setSaveError(null);
+    if (!brdId) return; setSaving(true); setSaveError(null); setSavedVersionLabel(null);
     try {
       await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      try {
+        const versionResponse = await api.post<{ versionNum: number; label?: string }>(`/brd/${brdId}/versions`, {
+          scope: scopeData,
+          metadata: metadataData,
+          toc: tocData,
+          citations: citationsData,
+          contentProfile: contentProfileData,
+          brdConfig: brdConfigData,
+        });
+        setSavedVersionLabel(
+          versionResponse.data.label?.trim() ||
+            `v${versionResponse.data.versionNum}.0`,
+        );
+      } catch (versionErr: unknown) {
+        const versionError = versionErr as { response?: { data?: { error?: string } }; message?: string };
+        setSaveError(
+          versionError?.response?.data?.error ??
+            versionError?.message ??
+            "BRD saved, but failed to create a new version snapshot.",
+        );
+      }
       setSavedToDB(true);
-    } catch (err: any) { setSaveError(err?.response?.data?.error ?? err?.message ?? "Save failed."); }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setSaveError(error?.response?.data?.error ?? error?.message ?? "Save failed.");
+    }
     finally { setSaving(false); }
   }
 
@@ -1166,8 +1201,8 @@ export default function Generate({ brdId, title, format, status, initialData, on
                 ) : (
                   <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-500/10">
                     <svg className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">{saveStatusLabel}</span></p>
-                    <button onClick={()=>setSavedToDB(false)} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
+                    <p className="text-[12px] font-medium text-emerald-800 dark:text-emerald-400">Saved — <span className="font-bold">{brdId}</span> is now visible in the registry as <span className="font-bold">{saveStatusLabel}</span>{savedVersionLabel ? <> and snapshot <span className="font-bold">{savedVersionLabel}</span> was created</> : null}</p>
+                    <button onClick={()=>{ setSavedToDB(false); setSavedVersionLabel(null); }} className="ml-auto text-[11px] text-emerald-600 dark:text-emerald-400 underline hover:no-underline">Re-save</button>
                   </div>
                 )}
               </div>

@@ -5,28 +5,35 @@
  * Database calls are mocked via jest.mock so no live DB is needed.
  */
 
-jest.mock("../lib/prisma", () => ({
+jest.mock("../lib/db", () => ({
   __esModule: true,
-  default: {
-    user: {
-      findUnique: jest.fn(),
-      findFirst: jest.fn(),
-      update: jest.fn(),
-    },
-    userLog: {
-      create: jest.fn().mockResolvedValue({}),
-    },
-    userRole: {
-      findUnique: jest.fn(),
-    },
-  },
+  default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  pool:    { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  withTransaction: jest.fn().mockImplementation(async (fn: any) => {
+    const client = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+    return fn(client);
+  }),
+}));
+
+jest.mock("../lib/get-security-policy", () => ({
+  getSecurityPolicy: jest.fn().mockResolvedValue({
+    minPasswordLength: 15,
+    requireUppercase: true,
+    requireNumber: true,
+    minSpecialChars: 1,
+    rememberedCount: 24,
+    minPasswordAgeDays: 7,
+    maxPasswordAgeDays: 90,
+    sessionTimeoutMinutes: 30,
+    enforceMfaForAdmins: false,
+  }),
 }));
 
 import request from "supertest";
 import express from "express";
 import cors from "cors";
 import authRoutes from "../routes/auth";
-import prisma from "../lib/prisma";
+import pool from "../lib/db";
 
 const app = express();
 app.use(express.json());
@@ -34,24 +41,26 @@ app.use(cors());
 app.use("/auth", authRoutes);
 
 // Note: userId must match /^[a-zA-Z0-9]{3,6}$/ per auth route validation
-const mockUser = {
+const mockUserRow = {
   id: 1,
-  userId: "USR001",
-  firstName: "Alice",
-  lastName: "Smith",
+  user_id: "USR001",
+  first_name: "Alice",
+  last_name: "Smith",
   role: "USER",
   status: "ACTIVE",
   password: "$2b$10$placeholder_bcrypt_hash",
-  teamId: 1,
-  team: { id: 1, name: "Pre-Production" },
-  lastLoginAt: null,
-  passwordChangedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // 10 days ago
-  userRole: null,
+  team_id: 1,
+  teamName: "Pre-Production",
+  teamSlug: "pre-production",
+  last_login_at: null,
+  password_changed_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+  created_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
 };
 
 describe("POST /auth/login", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
   });
 
   it("returns 400 when userId is missing", async () => {
@@ -66,15 +75,15 @@ describe("POST /auth/login", () => {
   it("returns 400 when password is missing", async () => {
     const res = await request(app)
       .post("/auth/login")
-      .send({ userId: "USR-001" });
+      .send({ userId: "USR001" });
 
     expect(res.status).toBe(400);
     expect(res.body).toHaveProperty("error");
   });
 
   it("returns 401 when user does not exist", async () => {
-    // Auth route uses findFirst, not findUnique
-    (prisma.user.findFirst as jest.Mock).mockResolvedValue(null);
+    // Both possible user lookup queries return empty
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
 
     const res = await request(app)
       .post("/auth/login")
@@ -85,16 +94,14 @@ describe("POST /auth/login", () => {
   });
 
   it("returns 403 when user is inactive", async () => {
-    (prisma.user.findFirst as jest.Mock).mockResolvedValue({
-      ...mockUser,
-      status: "INACTIVE",
+    (pool.query as jest.Mock).mockResolvedValueOnce({
+      rows: [{ ...mockUserRow, status: "INACTIVE" }],
     });
 
     const res = await request(app)
       .post("/auth/login")
       .send({ userId: "USR001", password: "Test@1234" });
 
-    // INACTIVE users receive 403 Forbidden
     expect(res.status).toBe(403);
   });
 });

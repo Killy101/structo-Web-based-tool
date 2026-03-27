@@ -2,19 +2,14 @@
  * Integration tests for /notifications endpoints.
  */
 
-jest.mock("../lib/prisma", () => ({
+jest.mock("../lib/db", () => ({
   __esModule: true,
-  default: {
-    notification: {
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      count: jest.fn(),
-      create: jest.fn(),
-      update: jest.fn(),
-      updateMany: jest.fn(),
-      delete: jest.fn(),
-    },
-  },
+  default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  pool:    { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  withTransaction: jest.fn().mockImplementation(async (fn: any) => {
+    const client = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+    return fn(client);
+  }),
 }));
 
 jest.mock("jsonwebtoken", () => ({
@@ -25,7 +20,7 @@ jest.mock("jsonwebtoken", () => ({
 import request from "supertest";
 import express from "express";
 import notificationsRoutes from "../routes/notifications";
-import prisma from "../lib/prisma";
+import pool from "../lib/db";
 
 const app = express();
 app.use(express.json());
@@ -45,9 +40,13 @@ const mockNotif = {
 };
 
 describe("GET /notifications", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
+
   it("returns notifications for the authenticated user", async () => {
-    (prisma.notification.findMany as jest.Mock).mockResolvedValue([mockNotif]);
-    (prisma.notification.count as jest.Mock).mockResolvedValue(1);
+    (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [mockNotif] });
 
     const res = await request(app).get("/notifications").set(AUTH_HEADER);
 
@@ -63,12 +62,15 @@ describe("GET /notifications", () => {
 });
 
 describe("PATCH /notifications/:id/read", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
+
   it("marks a notification as read", async () => {
-    (prisma.notification.findUnique as jest.Mock).mockResolvedValue(mockNotif);
-    (prisma.notification.update as jest.Mock).mockResolvedValue({
-      ...mockNotif,
-      isRead: true,
-    });
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [{ id: 1, userId: 1 }] }) // findUnique
+      .mockResolvedValueOnce({ rows: [{ ...mockNotif, isRead: true }] }); // update
 
     const res = await request(app)
       .patch("/notifications/1/read")
@@ -79,7 +81,7 @@ describe("PATCH /notifications/:id/read", () => {
   });
 
   it("returns 404 for non-existent notification", async () => {
-    (prisma.notification.findUnique as jest.Mock).mockResolvedValue(null);
+    (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
 
     const res = await request(app)
       .patch("/notifications/999/read")
@@ -89,9 +91,8 @@ describe("PATCH /notifications/:id/read", () => {
   });
 
   it("returns 403 when notification belongs to another user", async () => {
-    (prisma.notification.findUnique as jest.Mock).mockResolvedValue({
-      ...mockNotif,
-      userId: 999,
+    (pool.query as jest.Mock).mockResolvedValueOnce({
+      rows: [{ id: 1, userId: 999 }],
     });
 
     const res = await request(app)
@@ -103,9 +104,12 @@ describe("PATCH /notifications/:id/read", () => {
 });
 
 describe("PATCH /notifications/read-all", () => {
-  it("marks all notifications as read", async () => {
-    (prisma.notification.updateMany as jest.Mock).mockResolvedValue({ count: 3 });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
 
+  it("marks all notifications as read", async () => {
     const res = await request(app)
       .patch("/notifications/read-all")
       .set(AUTH_HEADER);
@@ -116,9 +120,15 @@ describe("PATCH /notifications/read-all", () => {
 });
 
 describe("DELETE /notifications/:id", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+  });
+
   it("deletes a notification", async () => {
-    (prisma.notification.findUnique as jest.Mock).mockResolvedValue(mockNotif);
-    (prisma.notification.delete as jest.Mock).mockResolvedValue(mockNotif);
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [{ id: 1, userId: 1 }] }) // find
+      .mockResolvedValueOnce({ rows: [] }); // delete
 
     const res = await request(app)
       .delete("/notifications/1")

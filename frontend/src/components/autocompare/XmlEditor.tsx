@@ -81,12 +81,12 @@ function tokeniseXml(line: string): Token[] {
 }
 
 const TOKEN_COLORS: Record<TokenType, string> = {
-  "tag":         "#79c0ff",
-  "attr-name":   "#ffa657",
-  "attr-value":  "#a5d6ff",
-  "comment":     "#8b949e",
-  "text":        "#e6edf3",
-  "punctuation": "#79c0ff",
+  "tag":         "#e5e7eb",
+  "attr-name":   "#d1d5db",
+  "attr-value":  "#f3f4f6",
+  "comment":     "#9ca3af",
+  "text":        "#f8fafc",
+  "punctuation": "#e5e7eb",
 };
 
 function SyntaxLine({ line }: { line: string }) {
@@ -173,8 +173,127 @@ function useUndoRedo(initial: string) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
+// ── XML Diff View (original vs current) ──────────────────────────────────────
+
+interface XmlDiffLine {
+  type: "equal" | "added" | "removed";
+  text: string;
+  lineNo: number;
+}
+
+function buildXmlDiff(original: string, current: string): XmlDiffLine[] {
+  const origLines = original.split("\n");
+  const currLines = current.split("\n");
+
+  // Simple LCS-based diff using equality check
+  const result: XmlDiffLine[] = [];
+  let i = 0, j = 0;
+
+  // Build a basic diff by walking both arrays
+  while (i < origLines.length || j < currLines.length) {
+    if (i >= origLines.length) {
+      result.push({ type: "added", text: currLines[j], lineNo: j + 1 });
+      j++;
+    } else if (j >= currLines.length) {
+      result.push({ type: "removed", text: origLines[i], lineNo: i + 1 });
+      i++;
+    } else if (origLines[i] === currLines[j]) {
+      result.push({ type: "equal", text: currLines[j], lineNo: j + 1 });
+      i++; j++;
+    } else {
+      // Look ahead up to 4 lines to find a match (simple context diff)
+      let matchedOrig = -1, matchedCurr = -1;
+      for (let d = 1; d <= 4; d++) {
+        if (j + d < currLines.length && origLines[i] === currLines[j + d]) {
+          matchedCurr = d; break;
+        }
+        if (i + d < origLines.length && origLines[i + d] === currLines[j]) {
+          matchedOrig = d; break;
+        }
+      }
+      if (matchedCurr > 0) {
+        for (let k = 0; k < matchedCurr; k++) {
+          result.push({ type: "added", text: currLines[j + k], lineNo: j + k + 1 });
+        }
+        j += matchedCurr;
+      } else if (matchedOrig > 0) {
+        for (let k = 0; k < matchedOrig; k++) {
+          result.push({ type: "removed", text: origLines[i + k], lineNo: i + k + 1 });
+        }
+        i += matchedOrig;
+      } else {
+        result.push({ type: "removed", text: origLines[i], lineNo: i + 1 });
+        result.push({ type: "added",   text: currLines[j],  lineNo: j + 1 });
+        i++; j++;
+      }
+    }
+  }
+  return result;
+}
+
+function XmlDiffPanel({ original, current }: { original: string; current: string }) {
+  const diffLines = buildXmlDiff(original, current);
+  const hasChanges = diffLines.some((l) => l.type !== "equal");
+
+  if (!hasChanges) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-xs text-slate-500 gap-2">
+        <svg className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+        No changes from original XML
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex-1 overflow-auto"
+      style={{ fontFamily: "monospace", fontSize: "11px", lineHeight: "1.6", background: "#0d1117" }}
+    >
+      {diffLines.map((line, idx) => {
+        const bg =
+          line.type === "added"   ? "rgba(255,255,255,0.06)"  :
+          line.type === "removed" ? "rgba(255,255,255,0.10)"  : "transparent";
+        const color =
+          line.type === "added"   ? "#f8fafc" :
+          line.type === "removed" ? "#e5e7eb" : "#9ca3af";
+        const prefix =
+          line.type === "added"   ? "+" :
+          line.type === "removed" ? "−" : " ";
+
+        return (
+          <div
+            key={idx}
+            className="flex"
+            style={{ background: bg }}
+          >
+            <span
+              className="flex-shrink-0 select-none text-right pr-2 pl-1"
+              style={{ width: "2rem", color: "#484f58", borderRight: "1px solid rgba(255,255,255,0.05)" }}
+            >
+              {line.lineNo}
+            </span>
+            <span
+              className="flex-shrink-0 w-5 text-center"
+              style={{ color: line.type === "equal" ? "#484f58" : color }}
+            >
+              {prefix}
+            </span>
+            <span className="flex-1 whitespace-pre px-1" style={{ color: line.type === "equal" ? "#6e7681" : color }}>
+              {line.text || " "}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface XmlEditorProps {
   value: string;
+  /** Original XML content (before any edits) — used for the diff view */
+  originalValue?: string;
   onChange?: (v: string) => void;
   readOnly?: boolean;
   onSave?: (v: string) => void;
@@ -188,6 +307,7 @@ interface XmlEditorProps {
 
 export default function XmlEditor({
   value,
+  originalValue,
   onChange,
   readOnly = false,
   onSave,
@@ -197,6 +317,7 @@ export default function XmlEditor({
   focusRequestId = 0,
   highlightText,
 }: XmlEditorProps) {
+  const [showDiff, setShowDiff] = React.useState(false);
   const textareaRef  = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const gutterRef    = useRef<HTMLDivElement>(null);
@@ -361,7 +482,7 @@ export default function XmlEditor({
     <div
       className="flex flex-col h-full rounded-xl overflow-hidden border"
       style={{
-        borderColor: isDirty ? "rgba(245,158,11,0.4)" : "rgba(26,143,209,0.2)",
+        borderColor: isDirty ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.16)",
         background:  "#0d1117",
         height,
         transition: "border-color 0.2s",
@@ -370,10 +491,10 @@ export default function XmlEditor({
       {/* Toolbar */}
       <div
         className="flex-shrink-0 flex items-center justify-between px-3 py-2 border-b"
-        style={{ borderColor: "rgba(26,143,209,0.15)", background: "rgba(13,17,23,0.9)" }}
+        style={{ borderColor: "rgba(255,255,255,0.12)", background: "rgba(13,17,23,0.9)" }}
       >
         <div className="flex items-center gap-2 min-w-0">
-          <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-4 h-4 text-slate-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
           </svg>
           <span className="text-xs font-semibold text-white">XML Editor</span>
@@ -382,8 +503,8 @@ export default function XmlEditor({
           <span
             className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold flex-shrink-0 ${
               validation.valid
-                ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/25"
-                : "bg-red-500/15 text-red-300 border-red-500/25"
+                ? "bg-white/10 text-slate-200 border-white/20"
+                : "bg-white/10 text-slate-200 border-white/20"
             }`}
           >
             {validation.valid ? "Valid XML" : "Invalid XML"}
@@ -391,13 +512,13 @@ export default function XmlEditor({
 
           {/* Unsaved changes indicator (Feature #6) */}
           {isDirty && !readOnly && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-amber-500/15 text-amber-300 border-amber-500/25 flex-shrink-0 animate-pulse">
+            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-white/10 text-slate-200 border-white/20 flex-shrink-0 animate-pulse">
               Unsaved
             </span>
           )}
 
           {normHl && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-cyan-500/15 text-cyan-200 border-cyan-500/30 flex-shrink-0">
+            <span className="text-[9px] px-1.5 py-0.5 rounded border font-semibold bg-white/10 text-slate-200 border-white/20 flex-shrink-0">
               Highlight Active
             </span>
           )}
@@ -406,8 +527,26 @@ export default function XmlEditor({
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-[10px] text-slate-500">{lineCount}L</span>
 
+          {/* XML Diff toggle — only show when originalValue is provided */}
+          {originalValue !== undefined && (
+            <button
+              onClick={() => setShowDiff((v) => !v)}
+              title={showDiff ? "Back to editor" : "Show diff from original XML"}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-semibold border transition-colors ${
+                showDiff
+                  ? "bg-white/10 border-white/25 text-slate-100"
+                  : "border-slate-600 text-slate-400 hover:text-white hover:border-slate-500"
+              }`}
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
+              {showDiff ? "Editor" : "Diff"}
+            </button>
+          )}
+
           {/* Undo / Redo buttons (Feature #3) */}
-          {!readOnly && (
+          {!readOnly && !showDiff && (
             <>
               <button
                 onClick={() => {
@@ -455,8 +594,13 @@ export default function XmlEditor({
         </div>
       </div>
 
-      {/* Editor body: gutter + overlay + textarea */}
-      <div className="flex flex-1 overflow-hidden" style={{ fontFamily: "monospace", fontSize: "12px", lineHeight: "1.6" }}>
+      {/* XML Diff panel (shown when diff toggle is active) */}
+      {showDiff && originalValue !== undefined && (
+        <XmlDiffPanel original={originalValue} current={localValue} />
+      )}
+
+      {/* Editor body: gutter + overlay + textarea (hidden in diff mode) */}
+      <div className="flex flex-1 overflow-hidden" style={{ fontFamily: "monospace", fontSize: "12px", lineHeight: "1.6", display: showDiff ? "none" : "flex" }}>
         {/* Line number gutter */}
         <div
           ref={gutterRef}
@@ -504,15 +648,15 @@ export default function XmlEditor({
                   lineHeight: "1.6",
                   background:
                     focusLine === i + 1
-                      ? "rgba(26,143,209,0.2)"
+                      ? "rgba(255,255,255,0.12)"
                       : (normHl && line.toLowerCase().includes(normHl))
-                        ? "rgba(34,211,238,0.14)"
+                        ? "rgba(255,255,255,0.08)"
                         : undefined,
                   outline:
                     focusLine === i + 1
-                      ? "1px solid rgba(26,143,209,0.4)"
+                      ? "1px solid rgba(255,255,255,0.28)"
                       : (normHl && line.toLowerCase().includes(normHl))
-                        ? "1px solid rgba(34,211,238,0.35)"
+                        ? "1px solid rgba(255,255,255,0.20)"
                         : undefined,
                 }}
               >
@@ -548,8 +692,8 @@ export default function XmlEditor({
       {/* Validation error bar */}
       {!validation.valid && validation.error && (
         <div
-          className="flex-shrink-0 px-3 py-1.5 text-[10px] text-red-300 border-t"
-          style={{ borderColor: "rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)" }}
+          className="flex-shrink-0 px-3 py-1.5 text-[10px] text-slate-200 border-t"
+          style={{ borderColor: "rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.04)" }}
         >
           {validation.error.slice(0, 200)}
         </div>

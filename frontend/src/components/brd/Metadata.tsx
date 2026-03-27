@@ -1,6 +1,7 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
+import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 type Format = "new" | "old";
 
@@ -106,6 +107,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
+  // ── FIX: only reset values when initialData or format genuinely changes ──
   useEffect(() => {
     const nextValues = buildMetadataValues(format, initialData);
     const signature = `${format}:${JSON.stringify(nextValues)}`;
@@ -130,7 +132,11 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     }
     // Map display values back to snake_case keys for upstream
     const out: Record<string, string> = format === "old" ? {
-      content_category_name: values.sourceName ?? "",
+      // FIX: send as source_name so _normalise_metadata recognises the old
+      // format correctly. Sending content_category_name was triggering
+      // auto_new_schema=True in Python and silently switching to the new
+      // format branch, discarding sourceType / payloadSubtype / status etc.
+      source_name:           values.sourceName ?? "",
       authoritative_source:  values.authoritativeSource ?? "",
       source_type:           values.sourceType ?? "",
       publication_date:      values.publicationDate ?? "",
@@ -210,9 +216,18 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     setSaved(false);
   }
 
-  function handleSave() {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  async function handleSave() {
+    if (!brdId) return;
+    try {
+      // Persist the current field values to the backend immediately.
+      // Previously this function only toggled a cosmetic "Saved!" state
+      // without making any API call — so clicking Save was a no-op.
+      await api.put(`/brd/${brdId}/sections/metadata`, { data: values });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      console.error("[Metadata] Save failed:", err);
+    }
   }
 
   return (
@@ -324,11 +339,13 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                 />
                 {/* DB-extracted images */}
                 {fieldImgs.map(img => (
-                  <img key={img.id} src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                 ))}
                 {/* Manually uploaded images */}
                 {getFieldImgsUploaded(field.key).map(img => (
-                  <img key={`m-${img.id}`} src={`${API_BASE}/brd/${brdId}/images/${img.id}/blob`} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                 ))}
               </div>
             );
@@ -355,7 +372,8 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function stripQuotes(value: string): string {
-  return value.trim().replace(/^["']+|["']+$/g, "").trim();
+  // ── FIX: only strip leading/trailing quote characters, do NOT trim internal whitespace ──
+  return value.replace(/^["']+|["']+$/g, "");
 }
 
 function buildMetadataValues(
@@ -366,35 +384,36 @@ function buildMetadataValues(
 
   const t = (key: string): string =>
     typeof initialData[key] === "string" ? stripQuotes(initialData[key] as string) : "";
+  const p = (...keys: string[]): string => keys.map(t).find(Boolean) ?? "";
 
   if (format === "old") {
     return {
       // "Source Name" in legacy doc → stored as content_category_name by extractor
-      sourceName:           t("content_category_name") || t("source_name") || t("document_title"),
+      sourceName:           p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
       // "Authoritative Source" → stored directly as authoritative_source
-      authoritativeSource:  t("authoritative_source") || t("issuing_agency"),
-      sourceType:           t("source_type"),
-      publicationDate:      t("publication_date"),
-      lastUpdatedDate:      t("last_updated_date"),
-      processingDate:       t("processing_date"),
-      issuingAgency:        t("issuing_agency"),
-      contentUrl:           t("content_uri"),
-      geography:            t("geography"),
-      language:             t("language"),
-      payloadSubtype:       t("payload_subtype"),
-      status:               t("status"),
+      authoritativeSource:  p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+      sourceType:           p("source_type", "sourceType", "Source Type"),
+      publicationDate:      p("publication_date", "publicationDate", "Publication Date"),
+      lastUpdatedDate:      p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+      processingDate:       p("processing_date", "processingDate", "Processing Date"),
+      issuingAgency:        p("issuing_agency", "issuingAgency", "Issuing Agency"),
+      contentUrl:           p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      geography:            p("geography", "Geography"),
+      language:             p("language", "Language"),
+      payloadSubtype:       p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+      status:               p("status", "Status"),
     };
   }
 
   return {
-    contentCategoryName:     t("content_category_name") || t("document_title"),
-    publicationDate:         t("publication_date"),
-    lastUpdatedDate:         t("last_updated_date"),
-    processingDate:          t("processing_date"),
-    issuingAgency:           t("issuing_agency"),
-    relatedGovernmentAgency: t("related_government_agency"),
-    contentUri:              t("content_uri"),
-    geography:               t("geography"),
-    language:                t("language"),
+    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
+    lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+    processingDate:          p("processing_date", "processingDate", "Processing Date"),
+    issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+    relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
+    contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    geography:               p("geography", "Geography"),
+    language:                p("language", "Language"),
   };
 }

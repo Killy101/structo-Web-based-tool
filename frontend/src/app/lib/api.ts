@@ -1,9 +1,12 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL,
+  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000",
   timeout: 10000, // 10 s — prevents requests from hanging when the DB is slow
 });
+
+const DEFAULT_MAINTENANCE_MESSAGE =
+  "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.";
 
 api.interceptors.request.use((config) => {
   if (typeof window !== "undefined") {
@@ -38,7 +41,7 @@ api.interceptors.response.use(
         serverMsg.toLowerCase().includes("maintenance") ||
         error.response.headers?.["x-maintenance-mode"] === "1";
       const msg = isMaintenance
-        ? "The system is currently in maintenance mode. Write operations are temporarily unavailable. Please try again later."
+        ? serverMsg || DEFAULT_MAINTENANCE_MESSAGE
         : "Service temporarily unavailable (503). Please try again in a moment.";
       return Promise.reject(new Error(msg));
     }

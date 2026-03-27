@@ -52,6 +52,22 @@ interface Props {
   onComplete?: (result: ExtractedResult) => void;
 }
 
+function deriveComplexity(contentProfile: Record<string, unknown> | undefined): string {
+  if (!contentProfile) return "—";
+
+  const direct =
+    contentProfile.complexity ??
+    contentProfile.complexity_level ??
+    contentProfile.complexityLevel;
+  if (typeof direct === "string" && direct.trim()) return direct;
+
+  const levels = Array.isArray(contentProfile.levels) ? contentProfile.levels.length : 0;
+  if (levels >= 7) return "high";
+  if (levels >= 4) return "medium";
+  if (levels > 0) return "low";
+  return "—";
+}
+
 const PIPELINE_STEPS = [
   { key: "upload",    label: "Uploading File",      icon: "⬡" },
   { key: "extract",   label: "Text Extraction",     icon: "◎" },
@@ -513,7 +529,7 @@ export default function Upload({ onComplete }: Props) {
                 { label: "BRD ID",     value: result.brdId },
                 { label: "Title",      value: result.title },
                 { label: "Format",     value: result.format === "old" ? "Legacy Format" : "New Format" },
-                { label: "Complexity", value: (result.contentProfile as Record<string,unknown>)?.complexity as string ?? "—" },
+                { label: "Complexity", value: deriveComplexity(result.contentProfile) },
               ].map(({ label, value }) => (
                 <div key={label} className="px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
                   <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 font-mono mb-1">{label}</p>

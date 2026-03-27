@@ -11,7 +11,9 @@
  * #7  Validate-All results reflected as per-chunk icons in ChunkList
  * #8  Download All button (ZIP or sequential fallback)
  * #9  Session persistence: session_id stored in localStorage, restored on load
- * #10 Batch auto-generate for all changed chunks (with progress modal)
+ * #10 Export status report (JSON/CSV) for all chunks
+ * #11 Unchanged chunks auto-flagged as reviewed on load
+ * #12 XML diff view (original vs current) in XmlEditor
  *
  * Layout (review stage)
  * ─────────────────────
@@ -22,13 +24,14 @@
  *  └──────────────┴──────────────┴──────────────┴─────────────┘
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useTheme } from "../../../context/ThemContext";
 
 import type {
   ChunkDetail,
   ChunkRow,
+  ChunkValidationResult,
   DiffLine,
   ReviewStatus,
   SessionSummary,
@@ -37,13 +40,11 @@ import type {
   ValidateResponse,
 } from "../../../components/autocompare/types";
 import {
-  autoGenerateAllChanged,
-  autoGenerateXml,
   downloadAllChunks,
   downloadChunkXml,
+  exportStatusReport,
   fetchChunkDetail,
   fetchChunks,
-  getPdfUrl,
   pollStatus,
   reuploadXmlFiles,
   saveChunkXml,
@@ -57,6 +58,7 @@ const FileUploadPanel = dynamic(() => import("../../../components/autocompare/Fi
 const PdfViewer       = dynamic(() => import("../../../components/autocompare/PdfViewer"),       { ssr: false });
 const XmlEditor       = dynamic(() => import("../../../components/autocompare/XmlEditor"),       { ssr: false });
 const DiffPanel       = dynamic(() => import("../../../components/autocompare/DiffPanel"),       { ssr: false });
+const ChunkList       = dynamic(() => import("../../../components/autocompare/ChunkList"),       { ssr: false });
 
 // ── Session persistence key ───────────────────────────────────────────────────
 const SESSION_STORAGE_KEY = "autocompare_session_id";
@@ -66,38 +68,97 @@ type Stage = "upload" | "processing" | "review";
 
 // ── Processing overlay ────────────────────────────────────────────────────────
 
+// ── Processing step definitions ───────────────────────────────────────────────
+
+const PROCESSING_STEPS = [
+  {
+    phase: "upload_files",
+    label: "Upload & verify files",
+    description: "Saving PDFs and XML chunks to session",
+    threshold: 1,
+  },
+  {
+    phase: "extracting_pdf",
+    label: "Extract PDF text",
+    description: "Reading pages from Old PDF and New PDF",
+    threshold: 30,
+  },
+  {
+    phase: "parsing_xml",
+    label: "Parse XML chunks",
+    description: "Building vocabulary profiles per chunk",
+    threshold: 32,
+  },
+  {
+    phase: "comparing_chunks",
+    label: "Compare & validate chunks",
+    description: "Diffing Old ↔ New PDF per chunk, validating XML",
+    threshold: 86,
+  },
+  {
+    phase: "validating_xml",
+    label: "Validate XML integrity",
+    description: "Checking XML syntax and change status",
+    threshold: 95,
+  },
+  {
+    phase: "building_index",
+    label: "Build chunk index",
+    description: "Finalising session and writing summary",
+    threshold: 100,
+  },
+];
+
 function ProcessingOverlay({
   progress,
   sourceName,
+  phase,
   summary,
+  chunkValidations,
+  chunksDone,
+  chunksTotal,
 }: {
   progress: number;
   sourceName: string;
+  phase?: string | null;
   summary: SessionSummary | null;
+  chunkValidations?: Record<string, ChunkValidationResult>;
+  chunksDone?: number;
+  chunksTotal?: number;
 }) {
   const pct = Math.min(100, Math.max(0, progress));
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-8 p-8">
-      <div className="w-full max-w-lg p-8 rounded-2xl border border-blue-500/20 space-y-6 bg-white shadow-xl dark:bg-[rgba(11,26,46,0.9)] dark:shadow-none">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin flex-shrink-0" />
-          <div>
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Processing Documents</p>
-            <p className="text-xs text-slate-400 mt-0.5 truncate max-w-xs">{sourceName}</p>
-          </div>
-        </div>
+  const phaseOrder = PROCESSING_STEPS.map((s) => s.phase);
+  const phaseIndex = phase ? phaseOrder.indexOf(phase) : -1;
 
-        <div className="space-y-2">
-          <div className="flex justify-between text-xs">
-            <span className="text-slate-400">
-              {pct < 30 ? "Extracting PDF text…"
-                : pct < 50 ? "Parsing XML files…"
-                : pct < 95 ? "Comparing chunks…"
-                : "Finalising…"}
-            </span>
-            <span className="font-semibold text-[#1a8fd1]">{pct}%</span>
+  const isStepDone = (stepIdx: number) =>
+    phaseIndex > stepIdx || (phaseIndex === stepIdx && pct >= PROCESSING_STEPS[stepIdx].threshold) || pct >= PROCESSING_STEPS[stepIdx].threshold;
+
+  const isStepActive = (stepIdx: number) => phaseIndex === stepIdx;
+
+  // Live per-chunk validation summary
+  const validations = Object.values(chunkValidations ?? {}) as ChunkValidationResult[];
+  const needsUpdateList  = validations.filter((v) => v.validation_status === "needs_update");
+  const noChangesList    = validations.filter((v) => v.validation_status === "no_changes");
+  const invalidXmlList   = validations.filter((v) => v.validation_status === "invalid_xml");
+  const showLiveResults  = phase === "comparing_chunks" || phase === "validating_xml" || phase === "building_index" || phase === "done";
+
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-6 p-8 overflow-y-auto">
+      <div className="w-full max-w-2xl space-y-4">
+
+        {/* ── Header card ─────────────────────────────────────────────────── */}
+        <div className="p-6 rounded-2xl border border-blue-500/20 bg-white dark:bg-[rgba(11,26,46,0.9)] shadow-xl">
+          <div className="flex items-center gap-4 mb-5">
+            <div className="w-10 h-10 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin flex-shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">Processing Documents</p>
+              <p className="text-xs text-slate-400 mt-0.5 truncate">{sourceName}</p>
+            </div>
+            <span className="ml-auto text-lg font-bold text-[#1a8fd1] flex-shrink-0">{pct}%</span>
           </div>
-          <div className="h-2.5 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
+
+          {/* Progress bar */}
+          <div className="h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden mb-5">
             <div
               className="h-full rounded-full transition-all duration-500 ease-out"
               style={{
@@ -107,41 +168,144 @@ function ProcessingOverlay({
               }}
             />
           </div>
+
+          {/* Step list */}
+          <div className="space-y-2.5">
+            {PROCESSING_STEPS.map((step, i) => {
+              const done   = isStepDone(i);
+              const active = isStepActive(i) && !done;
+              return (
+                <div key={step.phase} className="flex items-start gap-3">
+                  {/* Status icon */}
+                  {done ? (
+                    <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
+                  ) : active ? (
+                    <div className="w-5 h-5 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <div className="w-5 h-5 rounded-full border border-slate-600 dark:border-slate-700 flex-shrink-0 mt-0.5" />
+                  )}
+
+                  {/* Label + description */}
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-xs font-semibold leading-tight ${done ? "text-slate-200" : active ? "text-white" : "text-slate-500"}`}>
+                      {step.label}
+                      {/* Show chunk progress inline for comparing step */}
+                      {step.phase === "comparing_chunks" && (chunksDone ?? 0) > 0 && chunksTotal && (
+                        <span className="ml-2 text-[10px] font-normal text-slate-400">
+                          {chunksDone}/{chunksTotal} chunks
+                        </span>
+                      )}
+                    </p>
+                    {(active || done) && (
+                      <p className="text-[10px] text-slate-500 mt-0.5">{step.description}</p>
+                    )}
+                  </div>
+
+                  {/* Done checkmark count for comparing step */}
+                  {done && step.phase === "comparing_chunks" && chunksTotal && (
+                    <span className="flex-shrink-0 text-[10px] text-emerald-400 font-semibold">{chunksTotal} ✓</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        {[
-          { label: "Upload files",      done: pct >= 1  },
-          { label: "Extract PDF text",  done: pct >= 30 },
-          { label: "Parse XML chunks",  done: pct >= 50 },
-          { label: "Compare & diff",    done: pct >= 90 },
-          { label: "Build chunk index", done: pct >= 100 },
-        ].map((step, i) => (
-          <div key={i} className="flex items-center gap-2.5 text-xs">
-            {step.done ? (
-              <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0">
-                <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                </svg>
+        {/* ── Live validation results ──────────────────────────────────────── */}
+        {showLiveResults && validations.length > 0 && (
+          <div className="rounded-2xl border border-blue-500/15 bg-white dark:bg-[rgba(11,26,46,0.85)] shadow-lg overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-blue-500/10">
+              <p className="text-xs font-bold text-white">Validation Results</p>
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/25 font-semibold">
+                  {needsUpdateList.length} need update
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 font-semibold">
+                  {noChangesList.length} no changes
+                </span>
+                {invalidXmlList.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-red-500/15 text-red-300 border border-red-500/25 font-semibold">
+                    {invalidXmlList.length} invalid XML
+                  </span>
+                )}
               </div>
-            ) : (
-              <div className="w-4 h-4 rounded-full border border-slate-600 flex-shrink-0" />
-            )}
-            <span className={step.done ? "text-slate-300" : "text-slate-500"}>{step.label}</span>
-          </div>
-        ))}
+            </div>
 
-        {summary && pct === 100 && (
-          <div className="pt-2 border-t border-slate-700/50 grid grid-cols-3 gap-3">
-            {[
-              { label: "Total chunks", value: summary.total,     color: "text-white" },
-              { label: "Changed",      value: summary.changed,   color: "text-amber-300" },
-              { label: "Unchanged",    value: summary.unchanged, color: "text-emerald-300" },
-            ].map((s) => (
-              <div key={s.label} className="text-center">
-                <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
-                <p className="text-[10px] text-slate-500">{s.label}</p>
-              </div>
-            ))}
+            {/* Chunk rows — scrollable */}
+            <div className="max-h-64 overflow-y-auto divide-y divide-slate-800/60">
+              {validations.map((v) => (
+                <div key={v.index} className="flex items-center gap-3 px-5 py-2">
+                  {/* Status icon */}
+                  {v.validation_status === "no_changes" && (
+                    <div className="w-4 h-4 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center flex-shrink-0">
+                      <svg className="w-2.5 h-2.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
+                  )}
+                  {v.validation_status === "needs_update" && (
+                    <div className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center flex-shrink-0">
+                      <span className="text-[8px] font-bold text-amber-400">!</span>
+                    </div>
+                  )}
+                  {v.validation_status === "invalid_xml" && (
+                    <div className="w-4 h-4 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center flex-shrink-0">
+                      <span className="text-[8px] font-bold text-red-400">✗</span>
+                    </div>
+                  )}
+
+                  {/* Label */}
+                  <p className="flex-1 text-[11px] text-slate-300 truncate min-w-0">{v.label}</p>
+
+                  {/* Status badge + diff count */}
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {v.validation_status === "needs_update" && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300 font-semibold">
+                        {v.diff_count} change{v.diff_count !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {v.validation_status === "no_changes" && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 font-semibold">
+                        unchanged
+                      </span>
+                    )}
+                    {v.validation_status === "invalid_xml" && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded border border-red-500/30 bg-red-500/10 text-red-300 font-semibold">
+                        invalid XML
+                      </span>
+                    )}
+                    <span className="text-[9px] text-slate-600 font-mono">
+                      {Math.round(v.similarity * 100)}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Final summary (done) ─────────────────────────────────────────── */}
+        {summary && pct >= 100 && (
+          <div className="rounded-2xl border border-blue-500/15 bg-white dark:bg-[rgba(11,26,46,0.85)] shadow-lg p-5">
+            <p className="text-xs font-bold text-white mb-3">Processing Complete</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+              {[
+                { label: "Total",        value: summary.total,                                     color: "text-white" },
+                { label: "Need Update",  value: summary.needs_update  ?? summary.changed,   color: "text-amber-300" },
+                { label: "No Changes",   value: summary.no_changes   ?? summary.unchanged, color: "text-emerald-300" },
+                { label: "Invalid XML",  value: summary.invalid_xml  ?? 0,                 color: "text-red-300" },
+              ].map((s) => (
+                <div key={s.label} className="rounded-xl p-3 bg-slate-800/40 border border-slate-700/40">
+                  <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">{s.label}</p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -152,10 +316,18 @@ function ProcessingOverlay({
 // ── Toast ─────────────────────────────────────────────────────────────────────
 
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
+  // Stabilise onClose with a ref so the setTimeout doesn't restart if the
+  // parent re-renders (e.g. from the polling interval) before the 4s elapses.
+  const onCloseRef = React.useRef(onClose);
+
   useEffect(() => {
-    const t = setTimeout(onClose, 4000);
-    return () => clearTimeout(t);
+    onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    const t = setTimeout(() => onCloseRef.current(), 4000);
+    return () => clearTimeout(t);
+  }, []); // empty dep array — intentional, we use the ref above
 
   return (
     <div
@@ -180,6 +352,74 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
+    </div>
+  );
+}
+
+// ── No-Changes Modal (shown when selected chunk has no diff) ────────────────
+
+function NoChangesModal({
+  chunkLabel,
+  message,
+  onClose,
+  onNext,
+  hasNext,
+}: {
+  chunkLabel: string;
+  message: string;
+  onClose: () => void;
+  onNext?: () => void;
+  hasNext: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-2xl border p-7 space-y-5 shadow-2xl"
+        style={{ background: "rgba(11,26,46,0.97)", borderColor: "rgba(34,197,94,0.3)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Icon */}
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-full bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center flex-shrink-0">
+            <svg className="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-emerald-300">No Updates Required</h3>
+            <p className="text-xs text-slate-400 mt-0.5 truncate max-w-xs">{chunkLabel}</p>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[.06] p-4 text-xs text-emerald-200 leading-relaxed">
+          {message}
+        </div>
+
+        <p className="text-[11px] text-slate-400 text-center">
+          This XML chunk is already up to date with the New PDF.<br />
+          No edits are needed — you can skip to the next chunk.
+        </p>
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-400 border border-slate-700 hover:text-white hover:border-slate-500 transition-colors"
+          >
+            Review Anyway
+          </button>
+          {hasNext && (
+            <button
+              onClick={onNext}
+              className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white transition-all"
+              style={{ background: "linear-gradient(135deg, #059669, #047857)", boxShadow: "0 2px 8px rgba(5,150,105,0.35)" }}
+            >
+              Next Chunk →
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -266,7 +506,9 @@ function ValidateAllModal({
 
   const filteredResults = (result?.results ?? []).filter((r) => {
     if (filter === "all")         return true;
-    if (filter === "needs_review") return r.needs_further_changes;
+    // Match either the status field OR the needs_further_changes flag so the
+    // filter is consistent with the summary counter which uses status === "needs_review".
+    if (filter === "needs_review") return r.status === "needs_review" || r.needs_further_changes;
     if (filter === "invalid_xml") return !r.xml_valid;
     if (filter === "updated")     return r.status === "updated";
     if (filter === "no_changes")  return r.status === "no_changes";
@@ -482,95 +724,28 @@ function ReuploadModal({
   );
 }
 
-// ── Batch Auto-Generate Modal (Feature #10) ───────────────────────────────────
-
-function BatchGenerateModal({
-  total,
-  completed,
-  generated,
-  failed,
-  running,
-  onClose,
-}: {
-  total: number;
-  completed: number;
-  generated: number;
-  failed: number;
-  running: boolean;
-  onClose: () => void;
-}) {
-  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div
-        className="w-full max-w-sm rounded-2xl border border-violet-500/30 p-6 space-y-4 bg-white shadow-2xl dark:bg-[rgba(11,26,46,0.95)]"
-      >
-        <div className="flex items-center gap-3">
-          {running ? (
-            <div className="w-8 h-8 rounded-full border-2 border-t-transparent border-violet-400 animate-spin flex-shrink-0" />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-violet-500/20 flex items-center justify-center flex-shrink-0 text-violet-300">
-              ✓
-            </div>
-          )}
-          <div>
-            <p className="text-sm font-bold text-slate-900 dark:text-white">
-              {running ? "Generating XML for all changed chunks…" : "Batch Generation Complete"}
-            </p>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              {completed}/{total} processed · {generated} generated · {failed} failed
-            </p>
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="flex justify-between text-xs">
-            <span className="text-slate-400">Progress</span>
-            <span className="text-violet-300 font-semibold">{pct}%</span>
-          </div>
-          <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-300"
-              style={{
-                width: `${pct}%`,
-                background: "linear-gradient(90deg,#8b5cf6,#a78bfa)",
-              }}
-            />
-          </div>
-        </div>
-
-        {!running && (
-          <button
-            onClick={onClose}
-            className="w-full py-2 rounded-xl text-xs font-semibold text-white"
-            style={{ background: "linear-gradient(135deg,#8b5cf6,#6d28d9)" }}
-          >
-            Done
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function AutoComparePage() {
+  type HighlightKind = "added" | "removed" | "modified";
+
   // ── Theme ──
-  const { dark, toggle } = useTheme();
+  const { dark } = useTheme();
 
   // ── Global state ──
   const [stage,      setStage]      = useState<Stage>("upload");
   const [sessionId,  setSessionId]  = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
-  const [oldPdfFile, setOldPdfFile] = useState<File | null>(null);
-  const [newPdfFile, setNewPdfFile] = useState<File | null>(null);
-  const [oldPdfUrl, setOldPdfUrl] = useState<string | null>(null);
-  const [newPdfUrl, setNewPdfUrl] = useState<string | null>(null);
+  const [oldTotalPages, setOldTotalPages] = useState(0);
+  const [newTotalPages, setNewTotalPages] = useState(0);
 
   // Processing
-  const [progress,   setProgress]   = useState(0);
-  const [summary,    setSummary]    = useState<SessionSummary | null>(null);
+  const [progress,          setProgress]          = useState(0);
+  const [processingPhase,   setProcessingPhase]   = useState<string | null>(null);
+  const [summary,           setSummary]           = useState<SessionSummary | null>(null);
+  const [chunkValidations,  setChunkValidations]  = useState<Record<string, ChunkValidationResult>>({});
+  const [chunksDone,        setChunksDone]        = useState(0);
+  const [chunksTotal,       setChunksTotal]       = useState(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Chunks — extended with local reviewStatus (Feature #1)
@@ -580,19 +755,27 @@ export default function AutoComparePage() {
 
   // XML editor
   const [xmlDraft,        setXmlDraft]        = useState("");
+  const [xmlOriginal,     setXmlOriginal]     = useState("");  // original XML for diff view
   const [isSaving,        setIsSaving]        = useState(false);
-  const [isGenerating,    setIsGenerating]    = useState(false);
   const [isValidating,    setIsValidating]    = useState(false);
   const [xmlFocusLine,    setXmlFocusLine]    = useState<number | null>(null);
   const [xmlFocusRequestId, setXmlFocusRequestId] = useState(0);
+  const [xmlTargetLine,   setXmlTargetLine]   = useState<number | null>(null);
 
   // Diff → viewer navigation
   const [selectedDiffLineIndex, setSelectedDiffLineIndex] = useState<number | null>(null);
+  const [selectedDiffLine, setSelectedDiffLine] = useState<DiffLine | null>(null);
   const [oldPdfTargetPage,  setOldPdfTargetPage]  = useState<number | null>(null);
   const [newPdfTargetPage,  setNewPdfTargetPage]  = useState<number | null>(null);
   const [oldHighlightText,  setOldHighlightText]  = useState("");
   const [newHighlightText,  setNewHighlightText]  = useState("");
+  const [oldHighlightKind,  setOldHighlightKind]  = useState<HighlightKind | null>(null);
+  const [newHighlightKind,  setNewHighlightKind]  = useState<HighlightKind | null>(null);
   const [xmlHighlightText,  setXmlHighlightText]  = useState("");
+  const [textScrollRatio, setTextScrollRatio] = useState(0);
+
+  // No-changes modal
+  const [showNoChangesModal, setShowNoChangesModal] = useState(false);
 
   // Validate
   const [validateResult,     setValidateResult]     = useState<ValidateResponse | null>(null);
@@ -604,20 +787,29 @@ export default function AutoComparePage() {
   // Re-upload
   const [showReupload, setShowReupload] = useState(false);
 
-  // Feature #10: batch auto-generate
-  const [showBatchGenerate, setShowBatchGenerate] = useState(false);
-  const [batchGenRunning,   setBatchGenRunning]   = useState(false);
-  const [batchGenTotal,     setBatchGenTotal]     = useState(0);
-  const [batchGenCompleted, setBatchGenCompleted] = useState(0);
-  const [batchGenGenerated, setBatchGenGenerated] = useState(0);
-  const [batchGenFailed,    setBatchGenFailed]    = useState(0);
-
   // Session expiry
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [sessionWarning, setSessionWarning] = useState(false);
 
   // Toast
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  // Only one side writes at a time; we track which side initiated.
+  const scrollInitiatorRef = useRef<"old" | "new" | null>(null);
+
+  const handleOldScrollRatioChange = useCallback((ratio: number) => {
+    if (scrollInitiatorRef.current === "new") return; // new side is driving, ignore
+    scrollInitiatorRef.current = "old";
+    setTextScrollRatio(ratio);
+    // Release lock after a short debounce so the other side can write again
+    setTimeout(() => { scrollInitiatorRef.current = null; }, 120);
+  }, []);
+
+  const handleNewScrollRatioChange = useCallback((ratio: number) => {
+    if (scrollInitiatorRef.current === "old") return; // old side is driving, ignore
+    scrollInitiatorRef.current = "new";
+    setTextScrollRatio(ratio);
+    setTimeout(() => { scrollInitiatorRef.current = null; }, 120);
+  }, []);
 
   const showToast = useCallback((msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
@@ -627,15 +819,98 @@ export default function AutoComparePage() {
 
   const selectedChunkIdx   = selected ? chunks.findIndex((c) => c.index === selected.index) : -1;
 
-  // Similarity → heatmap color (0 = red, 1 = green)
-  const similarityColor = (sim: number): string => {
-    if (sim >= 0.95) return "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
-    if (sim >= 0.80) return "bg-amber-500/15 text-amber-300 border-amber-500/25";
-    if (sim >= 0.60) return "bg-orange-500/15 text-orange-300 border-orange-500/25";
-    return "bg-red-500/15 text-red-300 border-red-500/25";
-  };
   const selectedChunkRow   = selectedChunkIdx >= 0 ? chunks[selectedChunkIdx] : null;
   const selectedChunkTitle = selectedChunkRow ? `${selectedChunkRow.label} (#${selectedChunkRow.index})` : null;
+
+  const oldSideHighlights = useMemo(() => {
+    if (!selected) return { added: [] as string[], removed: [] as string[], modified: [] as string[] };
+    const removed: string[] = [];
+    const modified: string[] = [];
+    const seen = new Set<string>();
+    // E: cap at 4 terms per kind to keep URLs short and rendering fast
+    const MAX_PER_KIND = 4;
+
+    for (const line of selected.diff_lines ?? []) {
+      // Normalize both new-style (added/removed/modified) and legacy (addition/removal/modification)
+      const kind: "added" | "removed" | "modified" =
+        line.category === "added"    || line.category === "addition"     ? "added"   :
+        line.category === "removed"  || line.category === "removal"      ? "removed" :
+        line.category === "modified" || line.category === "modification" ? "modified" :
+        line.category === "mismatch"  ? "modified" :
+        line.type === "added"         ? "added"    :
+        line.type === "removed"       ? "removed"  :
+        "modified";
+
+      // B: Use old_text for OLD side; fall back to line.text only for removal-only lines
+      const oldText = (line.old_text ?? (kind === "removed" ? line.text : "")).trim();
+      if (!oldText) continue;
+      const key = `${kind}|${oldText.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      if (kind === "removed" && removed.length < MAX_PER_KIND) removed.push(oldText);
+      if (kind === "modified" && modified.length < MAX_PER_KIND) modified.push(oldText);
+    }
+
+    return { added: [] as string[], removed, modified };
+  }, [selected]);
+
+  const newSideHighlights = useMemo(() => {
+    if (!selected) return { added: [] as string[], removed: [] as string[], modified: [] as string[] };
+    const added: string[] = [];
+    const modified: string[] = [];
+    const seen = new Set<string>();
+    // E: cap at 4 terms per kind
+    const MAX_PER_KIND = 4;
+
+    for (const line of selected.diff_lines ?? []) {
+      // Normalize both new-style and legacy category values
+      const kind: "added" | "removed" | "modified" =
+        line.category === "added"    || line.category === "addition"     ? "added"   :
+        line.category === "removed"  || line.category === "removal"      ? "removed" :
+        line.category === "modified" || line.category === "modification" ? "modified" :
+        line.category === "mismatch"  ? "modified" :
+        line.type === "added"         ? "added"    :
+        line.type === "removed"       ? "removed"  :
+        "modified";
+
+      // B: Use new_text for NEW side; fall back to line.text only for addition-only lines
+      const newText = (line.new_text ?? (kind === "added" ? line.text : "")).trim();
+      if (!newText) continue;
+      const key = `${kind}|${newText.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      if (kind === "added" && added.length < MAX_PER_KIND) added.push(newText);
+      if (kind === "modified" && modified.length < MAX_PER_KIND) modified.push(newText);
+    }
+
+    return { added, removed: [] as string[], modified };
+  }, [selected]);
+
+  const findDiffLinePosition = useCallback((chunk: ChunkDetail, line: DiffLine): number => {
+    const pos = chunk.diff_lines.findIndex((l) =>
+      l.line === line.line &&
+      (l.category ?? l.type) === (line.category ?? line.type) &&
+      (l.sub_type ?? "") === (line.sub_type ?? "") &&
+      (l.text ?? "") === (line.text ?? "")
+    );
+    if (pos >= 0) return pos;
+    const fallback = Math.max(0, (line.line ?? 1) - 1);
+    return Math.min(fallback, Math.max(0, chunk.diff_lines.length - 1));
+  }, []);
+
+  // ── Pause polling when tab is hidden (saves server load & main thread) ───
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (!pollRef.current) return;
+      // We don't cancel the interval; the async callback itself will short-circuit
+      // while hidden. This is handled naturally because the browser throttles
+      // setInterval in hidden tabs, but we explicitly no-op slow polls below.
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   // ── Feature #9: Session persistence ──────────────────────────────────────
   // On mount, try to restore the last session from localStorage
@@ -651,11 +926,14 @@ export default function AutoComparePage() {
           const chunksResp = await fetchChunks(saved);
           setSessionId(saved);
           setSourceName(chunksResp.source_name);
-          setChunks(chunksResp.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
+          setChunks(chunksResp.chunks.map((c) => ({
+            ...c,
+            reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
+          })));
           setSummary(chunksResp.summary);
-          // Restore PDF URLs for viewer fallback (File objects are not persisted).
-          setOldPdfUrl(getPdfUrl(saved, "old"));
-          setNewPdfUrl(getPdfUrl(saved, "new"));
+          // Restore page counts from summary so PdfViewer can navigate.
+          setOldTotalPages(chunksResp.summary?.old_pages ?? 0);
+          setNewTotalPages(chunksResp.summary?.new_pages ?? 0);
           setStage("review");
           showToast(`Session restored: ${chunksResp.source_name}`);
         } else {
@@ -714,13 +992,18 @@ export default function AutoComparePage() {
 
   // ── Upload complete → kick off processing ──────────────────────────────────
 
-  const handleUploaded = useCallback(async (response: UploadResponse, oldPdf: File, newPdf: File) => {
+  const handleUploaded = useCallback(async (response: UploadResponse) => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+
     setSessionId(response.session_id);
     setSourceName(response.source_name);
-    setOldPdfFile(oldPdf);
-    setNewPdfFile(newPdf);
-    setOldPdfUrl(null);
-    setNewPdfUrl(null);
+    setOldTotalPages(response.old_pages);
+    setNewTotalPages(response.new_pages);
+    setProgress(1);
+    setProcessingPhase("upload_files");
     setStage("processing");
 
     try {
@@ -731,18 +1014,30 @@ export default function AutoComparePage() {
       return;
     }
 
+    let transientFailures = 0;
+
     pollRef.current = setInterval(async () => {
       try {
         const status = await pollStatus(response.session_id);
+        transientFailures = 0;
         setProgress(status.progress);
-        if ((status as { expires_at?: number }).expires_at) setExpiresAt((status as { expires_at?: number }).expires_at ?? null);
+        setProcessingPhase(status.phase ?? null);
+        if (status.chunk_validations) setChunkValidations(status.chunk_validations);
+        if (status.chunks_done != null) setChunksDone(status.chunks_done);
+        if (status.chunks_total != null) setChunksTotal(status.chunks_total);
+        if (status.expires_at) setExpiresAt(status.expires_at ?? null);
         if (status.status === "done") {
           clearInterval(pollRef.current!);
+          setProcessingPhase("done");
           setSummary(status.summary as SessionSummary);
           setTimeout(async () => {
             try {
               const cr = await fetchChunks(response.session_id);
-              setChunks(cr.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
+              // Auto-flag unchanged chunks as "reviewed" so users focus on changed ones.
+              setChunks(cr.chunks.map((c) => ({
+                ...c,
+                reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
+              })));
               setStage("review");
             } catch (err: unknown) {
               showToast(err instanceof Error ? err.message : "Failed to load chunks", "error");
@@ -751,11 +1046,20 @@ export default function AutoComparePage() {
           }, 800);
         } else if (status.status === "error") {
           clearInterval(pollRef.current!);
+          pollRef.current = null;
           showToast(status.error ?? "Processing failed", "error");
           setStage("upload");
         }
-      } catch { /* transient */ }
-    }, 1500);
+      } catch {
+        transientFailures += 1;
+        if (transientFailures >= 5) {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          showToast("Connection to processing service was lost. Please try again.", "error");
+          setStage("upload");
+        }
+      }
+    }, 2500); // 2500ms gives the main thread room to breathe between processing polls
   }, [showToast]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -781,11 +1085,17 @@ export default function AutoComparePage() {
       const resp = await fetchChunkDetail(sessionId, chunk.index);
       setSelected(resp.chunk);
       setXmlDraft(resp.chunk.xml_saved ?? resp.chunk.xml_content);
+      setXmlOriginal(resp.chunk.xml_content);  // always the unedited original for diff view
       setSelectedDiffLineIndex(null);
+      setSelectedDiffLine(null);
       setXmlFocusLine(null);
+      setXmlTargetLine(null);
       setOldHighlightText("");
       setNewHighlightText("");
+      setOldHighlightKind(null);
+      setNewHighlightKind(null);
       setXmlHighlightText("");
+      setProcessingPhase(null);
       const { startPage } = getChunkPageBounds(resp.chunk);
       setOldPdfTargetPage(startPage);
       setNewPdfTargetPage(startPage);
@@ -798,6 +1108,13 @@ export default function AutoComparePage() {
             : c,
         ),
       );
+
+      // Show no-changes modal when this chunk has no diff
+      if (!resp.chunk.has_changes) {
+        setShowNoChangesModal(true);
+      } else {
+        setShowNoChangesModal(false);
+      }
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : "Failed to load chunk", "error");
     } finally {
@@ -841,117 +1158,80 @@ export default function AutoComparePage() {
     if (chunk) void handleSelectChunk(chunk);
   }, [chunks, handleSelectChunk]);
 
-  // ── Auto-generate XML ──────────────────────────────────────────────────────
+  // ── Export status report ───────────────────────────────────────────────────
 
-  const handleAutoGenerate = useCallback(async (lineContext?: {
-    diff_index?: number;
-    diff_text?: string;
-    old_text?: string;
-    new_text?: string;
-    category?: string;
-  }) => {
-    if (!sessionId || !selected) return;
-    setIsGenerating(true);
-    try {
-      const resp = await autoGenerateXml(sessionId, selected.index, lineContext);
-      setXmlDraft(resp.suggested_xml);
-      showToast(resp.generation_scope === "line"
-        ? "Line-based XML generation applied. Review and save."
-        : "AI-generated XML applied. Review and save.");
-    } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Auto-generate failed", "error");
-    } finally {
-      setIsGenerating(false);
-    }
-  }, [sessionId, selected, showToast]);
-
-  // ── Feature #10: Batch auto-generate all changed chunks ───────────────────
-
-  const handleBatchGenerate = useCallback(async () => {
+  const handleExportReport = useCallback((fmt: "json" | "csv") => {
     if (!sessionId) return;
-    const changedIds = chunks.filter((c) => c.has_changes).map((c) => c.index);
-    if (changedIds.length === 0) {
-      showToast("No changed chunks to generate.", "error");
-      return;
-    }
-    setShowBatchGenerate(true);
-    setBatchGenRunning(true);
-    setBatchGenTotal(changedIds.length);
-    setBatchGenCompleted(0);
-    setBatchGenGenerated(0);
-    setBatchGenFailed(0);
-
-    const result = await autoGenerateAllChanged(
-      sessionId,
-      changedIds,
-      (completed, total) => {
-        setBatchGenCompleted(completed);
-        setBatchGenTotal(total);
-      },
-    );
-    setBatchGenGenerated(result.generated);
-    setBatchGenFailed(result.failed);
-    setBatchGenRunning(false);
-
-    showToast(
-      `Batch complete: ${result.generated} generated, ${result.failed} failed.`,
-      result.failed > 0 ? "error" : "success",
-    );
-  }, [sessionId, chunks, showToast]);
+    exportStatusReport(sessionId, sourceName, fmt);
+    showToast(`Downloading ${fmt.toUpperCase()} report…`);
+  }, [sessionId, sourceName, showToast]);
 
   // ── Diff line selection ────────────────────────────────────────────────────
 
   const handleDiffLineSelect = useCallback((line: DiffLine, index: number) => {
-    const rawText = line.text.trim();
-    setSelectedDiffLineIndex(index);
+    // rawText is the fallback string when old_text/new_text are absent
+    const rawText = (line.text ?? "").trim();
+    setSelectedDiffLineIndex(line.line ?? index);
+    setSelectedDiffLine(line);
+
+    // A: Normalize both new-style (added/removed/modified) and legacy (addition/removal/modification)
+    const normalizedKind: "added" | "removed" | "modified" =
+      line.category === "added"    || line.category === "addition"     ? "added"   :
+      line.category === "removed"  || line.category === "removal"      ? "removed" :
+      line.category === "modified" || line.category === "modification" ? "modified" :
+      line.category === "mismatch"  ? "modified" :
+      line.type === "added"         ? "added"    :
+      line.type === "removed"       ? "removed"  :
+      "modified";
+
+    // B: Always use old_text/new_text — never use line.text for highlighting
     let oldText = (line.old_text ?? "").trim();
     let newText = (line.new_text ?? "").trim();
 
-    // Backward compatibility for payloads that only include "text" with old -> new format.
-    if (!oldText && !newText) {
-      oldText = rawText;
-      newText = rawText;
-      if (line.type === "modified") {
+    // Legacy fallback: if old/new text are absent, try to parse "old -> new" from line.text
+    if (!oldText && !newText && rawText) {
+      if (normalizedKind === "modified") {
         const at = rawText.indexOf(" -> ");
         if (at > -1) {
           oldText = rawText.slice(0, at).trim();
           newText = rawText.slice(at + 4).trim();
+        } else {
+          oldText = rawText;
+          newText = rawText;
         }
-      } else if (line.type === "removed") {
-        newText = "";
-      } else if (line.type === "added") {
-        oldText = "";
+      } else if (normalizedKind === "removed") {
+        oldText = rawText;
+      } else {
+        newText = rawText;
       }
     }
 
     setOldHighlightText(oldText);
     setNewHighlightText(newText);
-    setXmlHighlightText(newText || oldText);
+    // Old PDF: highlight removed/modified text; not additions (they don't exist in old)
+    setOldHighlightKind(oldText && normalizedKind !== "added" ? (normalizedKind as HighlightKind) : null);
+    // New PDF: highlight added/modified text; not removals (they don't exist in new)
+    setNewHighlightKind(newText && normalizedKind !== "removed" ? (normalizedKind as HighlightKind) : null);
+    // For XML mapping, prefer old text for modified/removed lines because that
+    // is what currently exists in the XML and where edits should be applied.
+    const xmlNeedle = normalizedKind === "added" ? (newText || rawText) : (oldText || newText || rawText);
+    setXmlHighlightText(xmlNeedle);
     if (selected) {
-      const fallback = getTargetPageForDiffLine(selected, index);
+      const diffPos = findDiffLinePosition(selected, line);
+      const fallback = getTargetPageForDiffLine(selected, diffPos);
       setOldPdfTargetPage(line.old_page ?? fallback);
       setNewPdfTargetPage(line.new_page ?? fallback);
     }
-    const tLine = findXmlLineForDiffText(xmlDraft, newText || oldText);
+    const tLine =
+      findXmlLineForDiffText(xmlDraft, oldText) ??
+      findXmlLineForDiffText(xmlDraft, newText) ??
+      findXmlLineForDiffText(xmlDraft, rawText);
+    setXmlTargetLine(tLine);
     if (tLine != null) {
       setXmlFocusLine(tLine);
       setXmlFocusRequestId((v) => v + 1);
     }
-  }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine]);
-
-  const handleGenerateFromDiffLine = useCallback((line: DiffLine, index: number) => {
-    handleDiffLineSelect(line, index);
-    const fallbackText = line.text.trim();
-    const oldText = (line.old_text ?? "").trim();
-    const newText = (line.new_text ?? "").trim();
-    void handleAutoGenerate({
-      diff_index: index,
-      diff_text: fallbackText,
-      old_text: oldText || undefined,
-      new_text: newText || undefined,
-      category: line.category,
-    });
-  }, [handleDiffLineSelect, handleAutoGenerate]);
+  }, [findXmlLineForDiffText, xmlDraft, selected, getTargetPageForDiffLine, findDiffLinePosition]);
 
   // ── Save XML (Feature #1: marks chunk as saved) ───────────────────────────
 
@@ -960,10 +1240,12 @@ export default function AutoComparePage() {
     setIsSaving(true);
     try {
       await saveChunkXml(sessionId, selected.index, xmlContent);
-      // Feature #1: mark chunk as saved
+      // Feature #1: mark chunk as saved.
+      // Do NOT set has_changes: false — the chunk genuinely has changes from the PDF diff;
+      // we just addressed them. Clearing it would flip the ChunkList badge to "Unchanged".
       setChunks((prev) =>
         prev.map((c) =>
-          c.index === selected.index ? { ...c, has_changes: false, reviewStatus: "saved" } : c,
+          c.index === selected.index ? { ...c, reviewStatus: "saved" } : c,
         ),
       );
       showToast("XML saved successfully");
@@ -980,6 +1262,116 @@ export default function AutoComparePage() {
     // Silently persist draft to state so navigating away and back doesn't lose it
     setXmlDraft(xmlContent);
   }, []);
+
+  const applySelectedDiffToXml = useCallback(() => {
+    if (!selectedDiffLine) {
+      showToast("Select a diff line first.", "error");
+      return;
+    }
+
+    const oldText = (selectedDiffLine.old_text ?? "").trim();
+    const newText = (selectedDiffLine.new_text ?? "").trim();
+
+    if (!oldText && !newText) {
+      showToast("No structured old/new text available for this line.", "error");
+      return;
+    }
+
+    // Added lines need context-aware placement; avoid unsafe auto-inserts.
+    // Use category (DiffCategory) first, fall back to legacy type field.
+    // NOTE: both new-style ("added"/"removed") and legacy ("addition"/"removal") must be handled.
+    const isAdded =
+      selectedDiffLine.category === "added" ||
+      selectedDiffLine.category === "addition" ||
+      (!selectedDiffLine.category && selectedDiffLine.type === "added");
+    const isRemoved =
+      selectedDiffLine.category === "removed" ||
+      selectedDiffLine.category === "removal" ||
+      (!selectedDiffLine.category && selectedDiffLine.type === "removed");
+
+    if (isAdded) {
+      showToast("Added lines need placement context. Use Copy and paste into the correct XML node.", "error");
+      return;
+    }
+
+    const working = xmlDraft;
+    if (!working) {
+      showToast("XML editor is empty.", "error");
+      return;
+    }
+
+    const replaceNearTargetLine = (
+      content: string,
+      fromText: string,
+      toText: string,
+      removeOnly = false,
+    ): { next: string; replaced: boolean } => {
+      const lines = content.split("\n");
+      const targetIdx = xmlTargetLine ? xmlTargetLine - 1 : -1;
+
+      const applyOnLine = (idx: number): boolean => {
+        if (idx < 0 || idx >= lines.length) return false;
+        if (!lines[idx].includes(fromText)) return false;
+        lines[idx] = removeOnly
+          ? lines[idx].replace(fromText, "")
+          : lines[idx].replace(fromText, toText);
+        return true;
+      };
+
+      if (applyOnLine(targetIdx)) {
+        return { next: lines.join("\n"), replaced: true };
+      }
+
+      const nearby = [targetIdx - 1, targetIdx + 1, targetIdx - 2, targetIdx + 2];
+      for (const idx of nearby) {
+        if (applyOnLine(idx)) {
+          return { next: lines.join("\n"), replaced: true };
+        }
+      }
+
+      if (content.includes(fromText)) {
+        return {
+          next: removeOnly ? content.replace(fromText, "") : content.replace(fromText, toText),
+          replaced: true,
+        };
+      }
+
+      return { next: content, replaced: false };
+    };
+
+    if (isRemoved) {
+      if (!oldText) {
+        showToast("Old text not found in XML. Use manual edit for this change.", "error");
+        return;
+      }
+      const result = replaceNearTargetLine(working, oldText, "", true);
+      if (!result.replaced) {
+        showToast("Old text not found near target XML location. Use manual edit for this change.", "error");
+        return;
+      }
+      const updated = result.next;
+      setXmlDraft(updated);
+      handleAutoSave(updated);
+      showToast("Applied removal to XML draft.", "success");
+      return;
+    }
+
+    // modified
+    if (!oldText || !newText) {
+      showToast("This modified line is missing old/new text payload.", "error");
+      return;
+    }
+    const result = replaceNearTargetLine(working, oldText, newText, false);
+    if (!result.replaced) {
+      showToast("Old text not found near target XML location. Use manual edit for this change.", "error");
+      return;
+    }
+
+    const updated = result.next;
+    setXmlDraft(updated);
+    handleAutoSave(updated);
+    showToast("Applied replacement to XML draft.", "success");
+  }, [selectedDiffLine, xmlDraft, handleAutoSave, showToast, xmlTargetLine]);
 
   // ── Validate chunk XML ─────────────────────────────────────────────────────
 
@@ -1032,8 +1424,9 @@ export default function AutoComparePage() {
     if (!sessionId) return;
     showToast("Preparing ZIP download…");
     try {
-      // Prefer the server-side ZIP endpoint for reliability
-      const base = process.env.NEXT_PUBLIC_API_URL ?? "";
+      // Prefer the server-side ZIP endpoint for reliability.
+      // Must use NEXT_PUBLIC_PROCESSING_URL to match every other api call in api.ts.
+      const base = process.env.NEXT_PUBLIC_PROCESSING_URL ?? "http://localhost:8000";
       const url = `${base}/autocompare/download-all/${sessionId}`;
       const link = document.createElement("a");
       link.href = url;
@@ -1057,6 +1450,10 @@ export default function AutoComparePage() {
 
   const handleReuploadDone = useCallback(async () => {
     if (!sessionId) return;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     setShowReupload(false);
     setStage("processing");
     setProgress(0);
@@ -1070,17 +1467,30 @@ export default function AutoComparePage() {
       setStage("review");
       return;
     }
+    let transientFailures = 0;
+
     pollRef.current = setInterval(async () => {
       try {
         const status = await pollStatus(sessionId);
+        transientFailures = 0;
         setProgress(status.progress);
+        setProcessingPhase(status.phase ?? null);
+        if (status.chunk_validations) setChunkValidations(status.chunk_validations);
+        if (status.chunks_done != null) setChunksDone(status.chunks_done);
+        if (status.chunks_total != null) setChunksTotal(status.chunks_total);
+        if (status.expires_at) setExpiresAt(status.expires_at ?? null);
         if (status.status === "done") {
           clearInterval(pollRef.current!);
+          pollRef.current = null;
+          setProcessingPhase("done");
           setSummary(status.summary as SessionSummary);
           setTimeout(async () => {
             try {
               const cr = await fetchChunks(sessionId);
-              setChunks(cr.chunks.map((c) => ({ ...c, reviewStatus: "pending" as ReviewStatus })));
+              setChunks(cr.chunks.map((c) => ({
+                ...c,
+                reviewStatus: (c.auto_reviewed || !c.has_changes) ? "reviewed" as ReviewStatus : "pending" as ReviewStatus,
+              })));
               setStage("review");
             } catch (err: unknown) {
               showToast(err instanceof Error ? err.message : "Failed to load chunks", "error");
@@ -1089,11 +1499,20 @@ export default function AutoComparePage() {
           }, 800);
         } else if (status.status === "error") {
           clearInterval(pollRef.current!);
+          pollRef.current = null;
           showToast(status.error ?? "Processing failed", "error");
           setStage("review");
         }
-      } catch { /* transient */ }
-    }, 1500);
+      } catch {
+        transientFailures += 1;
+        if (transientFailures >= 5) {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          showToast("Connection to processing service was lost. Please try re-uploading.", "error");
+          setStage("review");
+        }
+      }
+    }, 2500);
   }, [sessionId, showToast]);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
@@ -1108,18 +1527,25 @@ export default function AutoComparePage() {
     setChunks([]);
     setSelected(null);
     setXmlDraft("");
+    setXmlOriginal("");
     setXmlFocusLine(null);
+    setXmlTargetLine(null);
     setXmlFocusRequestId(0);
+    setChunkValidations({});
+    setChunksDone(0);
+    setChunksTotal(0);
+    setShowNoChangesModal(false);
     setSelectedDiffLineIndex(null);
+    setSelectedDiffLine(null);
     setOldPdfTargetPage(null);
     setNewPdfTargetPage(null);
     setOldHighlightText("");
     setNewHighlightText("");
+    setOldHighlightKind(null);
+    setNewHighlightKind(null);
     setXmlHighlightText("");
-    setOldPdfFile(null);
-    setNewPdfFile(null);
-    setOldPdfUrl(null);
-    setNewPdfUrl(null);
+    setOldTotalPages(0);
+    setNewTotalPages(0);
     setExpiresAt(null);
     setSessionWarning(false);
     setValidateResult(null);
@@ -1231,19 +1657,35 @@ export default function AutoComparePage() {
                 </button>
               )}
 
-              {/* Feature #10: Batch Auto-Generate */}
-              {chunks.some((c) => c.has_changes) && (
-                <button
-                  onClick={handleBatchGenerate}
-                  disabled={batchGenRunning}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-violet-200 border border-violet-500/30 hover:bg-violet-500/10 transition-all"
-                  title="Auto-generate XML for all changed chunks"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  Generate All
-                </button>
+              {/* Export Report */}
+              {chunks.length > 0 && (
+                <div className="relative group">
+                  <button
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/10 transition-all"
+                    title="Export status report"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Report
+                  </button>
+                  {/* Dropdown */}
+                  <div className="absolute right-0 top-full mt-1 w-32 rounded-lg border border-cyan-500/25 shadow-xl z-20 overflow-hidden hidden group-hover:block"
+                    style={{ background: "rgba(11,26,46,0.97)" }}>
+                    <button
+                      onClick={() => handleExportReport("json")}
+                      className="w-full text-left px-3 py-2 text-[11px] text-cyan-200 hover:bg-cyan-500/10 transition-colors"
+                    >
+                      Download JSON
+                    </button>
+                    <button
+                      onClick={() => handleExportReport("csv")}
+                      className="w-full text-left px-3 py-2 text-[11px] text-cyan-200 hover:bg-cyan-500/10 transition-colors border-t border-cyan-500/15"
+                    >
+                      Download CSV
+                    </button>
+                  </div>
+                </div>
               )}
 
               {/* Download current chunk */}
@@ -1364,24 +1806,46 @@ export default function AutoComparePage() {
 
       {/* ── Processing stage ──────────────────────────────────────────────────── */}
       {stage === "processing" && (
-        <ProcessingOverlay progress={progress} sourceName={sourceName} summary={summary} />
+        <ProcessingOverlay
+          progress={progress}
+          sourceName={sourceName}
+          phase={processingPhase}
+          summary={summary}
+          chunkValidations={chunkValidations}
+          chunksDone={chunksDone}
+          chunksTotal={chunksTotal}
+        />
       )}
 
       {/* ── Review stage ──────────────────────────────────────────────────────── */}
       {stage === "review" && (
         <div className="flex-1 flex overflow-hidden">
 
-          {/* Main panels area */}
-          {selected ? (
-            loadingChunk ? (
-              <div className="flex-1 flex items-center justify-center gap-3 text-slate-500 dark:text-slate-400">
-                <div className="w-5 h-5 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin" />
-                <span className="text-sm">Loading chunk…</span>
-              </div>
-            ) : (
-              <div className="flex-1 flex overflow-hidden gap-1 p-1">
-                {/* Panel: Diff View */}
-                <div className="flex-shrink-0 overflow-hidden" style={{ width: "280px" }}>
+          {/* Left sidebar: Chunk List + Diff Panel */}
+          <div
+            className="flex-shrink-0 overflow-hidden border-r flex flex-col"
+            style={{ width: "360px", borderColor: "rgba(26,143,209,0.12)" }}
+          >
+            <div className="h-[45%] min-h-[220px] overflow-hidden border-b" style={{ borderColor: "rgba(26,143,209,0.12)" }}>
+              <ChunkList
+                chunks={chunks}
+                selectedIndex={selected?.index ?? null}
+                onSelect={handleSelectChunk}
+                validateResults={
+                  validateAllResult
+                    ? Object.fromEntries(validateAllResult.results.map((r) => [r.index, r]))
+                    : undefined
+                }
+              />
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {selected ? (
+                loadingChunk ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-500">
+                    Loading diff...
+                  </div>
+                ) : (
                   <DiffPanel
                     diffLines={selected.diff_lines}
                     chunkLabel={selected.label}
@@ -1389,97 +1853,175 @@ export default function AutoComparePage() {
                     similarity={selected.similarity}
                     selectedLineIndex={selectedDiffLineIndex}
                     onSelectLine={handleDiffLineSelect}
-                    onGenerateFromLine={handleGenerateFromDiffLine}
                   />
+                )
+              ) : (
+                <div className="h-full flex items-center justify-center text-xs text-slate-500 px-3 text-center">
+                  Select a chunk to view differences
                 </div>
+              )}
+            </div>
+          </div>
 
+          {/* Main panels area */}
+          <div className="flex-1 flex overflow-hidden">
+          {selected ? (
+            loadingChunk ? (
+              <div className="flex-1 flex items-center justify-center gap-3 text-slate-500 dark:text-slate-400">
+                <div className="w-5 h-5 rounded-full border-2 border-t-transparent border-[#1a8fd1] animate-spin" />
+                <span className="text-sm">Loading chunk…</span>
+              </div>
+            ) : (
+              <div className="flex-1 flex overflow-hidden p-1">
                 <div className="flex-1 min-w-0 flex flex-col gap-1 overflow-hidden">
                   <div className="flex-[1.05] min-h-0 flex gap-1 overflow-hidden">
                     {/* Panel: Old PDF */}
                     <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-                      {oldPdfFile || oldPdfUrl ? (
-                        <PdfViewer
-                          file={oldPdfFile}
-                          src={oldPdfUrl ?? undefined}
-                          label="Old PDF"
-                          color="blue"
-                          pageStart={selected.page_start}
-                          pageEnd={selected.page_end}
-                          targetPage={oldPdfTargetPage ?? undefined}
-                          highlightText={oldHighlightText || undefined}
-                        />
-                      ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-blue-500/15 bg-slate-50 dark:bg-[rgba(6,13,26,0.6)] text-slate-500 text-xs">
-                          <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
-                          <span className="text-[11px] text-slate-400 font-medium">Old PDF</span>
-                          <span className="text-[10px] text-slate-600 px-4 text-center">
-                            Upload a session to view. PDF loads automatically on upload.
-                          </span>
-                        </div>
-                      )}
+                      <PdfViewer
+                        sessionId={sessionId}
+                        which="old"
+                        totalPages={oldTotalPages}
+                        label="Old PDF"
+                        color="blue"
+                        mode="text"
+                        textContent={selected.old_text}
+                        syncScrollRatio={textScrollRatio}
+                        onTextScrollRatioChange={handleOldScrollRatioChange}
+                        showLineNumbers
+                        pageStart={selected.page_start}
+                        pageEnd={selected.page_end}
+                        targetPage={oldPdfTargetPage ?? undefined}
+                        highlightText={oldHighlightText || undefined}
+                        highlightKind={oldHighlightKind ?? undefined}
+                        highlightAddedTexts={oldSideHighlights.added}
+                        highlightRemovedTexts={oldSideHighlights.removed}
+                        highlightModifiedTexts={oldSideHighlights.modified}
+                      />
                     </div>
 
                     {/* Panel: New PDF */}
                     <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-                      {newPdfFile || newPdfUrl ? (
-                        <PdfViewer
-                          file={newPdfFile}
-                          src={newPdfUrl ?? undefined}
-                          label="New PDF"
-                          color="violet"
-                          pageStart={selected.page_start}
-                          pageEnd={selected.page_end}
-                          targetPage={newPdfTargetPage ?? undefined}
-                          highlightText={newHighlightText || undefined}
-                        />
-                      ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-violet-500/15 bg-slate-50 dark:bg-[rgba(6,13,26,0.6)] text-slate-500 text-xs">
-                          <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
-                          <span className="text-[11px] text-slate-400 font-medium">New PDF</span>
-                          <span className="text-[10px] text-slate-600 px-4 text-center">
-                            Upload a session to view. PDF loads automatically on upload.
-                          </span>
-                        </div>
-                      )}
+                      <PdfViewer
+                        sessionId={sessionId}
+                        which="new"
+                        totalPages={newTotalPages}
+                        label="New PDF"
+                        color="violet"
+                        mode="text"
+                        textContent={selected.new_text}
+                        syncScrollRatio={textScrollRatio}
+                        onTextScrollRatioChange={handleNewScrollRatioChange}
+                        showLineNumbers
+                        pageStart={selected.page_start}
+                        pageEnd={selected.page_end}
+                        targetPage={newPdfTargetPage ?? undefined}
+                        highlightText={newHighlightText || undefined}
+                        highlightKind={newHighlightKind ?? undefined}
+                        highlightAddedTexts={newSideHighlights.added}
+                        highlightRemovedTexts={newSideHighlights.removed}
+                        highlightModifiedTexts={newSideHighlights.modified}
+                      />
                     </div>
                   </div>
 
-                  {/* Panel: XML Editor with Generate bar */}
+                  {/* Panel: XML Editor */}
                   <div className="flex-[0.95] min-h-0 overflow-hidden flex flex-col gap-0.5">
-                    {/* Inline generate bar */}
+                    {/* Info bar */}
                     <div className="flex-shrink-0 flex items-center gap-1.5 px-1">
-                      <button
-                        onClick={() => void handleAutoGenerate()}
-                        disabled={isGenerating || !selected?.has_changes}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-semibold text-violet-200 border border-violet-500/30 hover:bg-violet-500/10 transition-all disabled:opacity-40"
-                        title="Auto-generate XML update from PDF diff"
-                      >
-                        {isGenerating ? (
-                          <div className="w-3 h-3 rounded-full border border-t-transparent border-violet-300 animate-spin" />
-                        ) : (
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                          </svg>
-                        )}
-                        {isGenerating ? "Generating…" : "Auto-Generate"}
-                      </button>
                       {selected && (
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${similarityColor(selected.similarity ?? 1)}`}>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded border font-medium bg-white/10 text-slate-200 border-white/20">
                           {Math.round((selected.similarity ?? 1) * 100)}% similar
                         </span>
                       )}
                       <span className="flex-1" />
                       <span className="text-[9px] text-slate-600 italic">
-                        Right-click diff line → Generate from line
+                        Ctrl+S to save · click Diff to compare with original
                       </span>
                     </div>
+                    {selectedDiffLineIndex !== null && (
+                      <div className="flex-shrink-0 px-2 py-1 text-[10px] rounded-md border border-white/20 bg-white/10 text-slate-200">
+                        Tip: selected diff line is synced to Old/New PDF and XML editor. Use this as your guide to update XML.
+                      </div>
+                    )}
+                    {selectedDiffLine && (
+                      <div className="flex-shrink-0 p-2 rounded-md border border-slate-700/60 bg-slate-900/50 text-[10px] space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="text-slate-400 font-semibold uppercase tracking-wider">Selected Change Guide</p>
+                          <button
+                            type="button"
+                            onClick={applySelectedDiffToXml}
+                            className="ml-auto text-[9px] px-2 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
+                            title="Apply this selected change to XML draft when old text is found"
+                          >
+                            Apply to XML
+                          </button>
+                        </div>
+                        {selectedDiffLine.old_text ? (
+                          <div className="rounded border border-white/20 bg-white/5 p-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-200 font-semibold">Old Text</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(selectedDiffLine.old_text ?? "");
+                                  showToast("Old text copied", "success");
+                                }}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <p className="mt-1 text-slate-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.old_text}</p>
+                          </div>
+                        ) : null}
+                        {selectedDiffLine.new_text ? (
+                          <div className="rounded border border-white/20 bg-white/5 p-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-200 font-semibold">New Text</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(selectedDiffLine.new_text ?? "");
+                                  showToast("New text copied", "success");
+                                }}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <p className="mt-1 text-slate-100 font-mono whitespace-pre-wrap break-words">{selectedDiffLine.new_text}</p>
+                          </div>
+                        ) : null}
+                        <div className="rounded border border-white/20 bg-white/5 p-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-slate-200 font-semibold">Target XML Location</span>
+                            {xmlTargetLine ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setXmlFocusLine(xmlTargetLine);
+                                  setXmlFocusRequestId((v) => v + 1);
+                                }}
+                                className="text-[9px] px-1.5 py-0.5 rounded border border-white/20 text-slate-200 hover:bg-white/10"
+                              >
+                                Jump
+                              </button>
+                            ) : null}
+                          </div>
+                          {xmlTargetLine ? (
+                            <p className="mt-1 text-slate-100 font-mono">Line {xmlTargetLine}</p>
+                          ) : (
+                            <p className="mt-1 text-slate-300 font-mono">
+                              No exact line match found. Use Old/New text and update the nearest matching XML node manually.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <XmlEditor
                         value={xmlDraft}
+                        originalValue={xmlOriginal}
                         onChange={setXmlDraft}
                         onSave={handleSave}
                         onAutoSave={handleAutoSave}
@@ -1499,6 +2041,7 @@ export default function AutoComparePage() {
               <span className="text-sm">Preparing first chunk…</span>
             </div>
           )}
+          </div>{/* end main panels wrapper */}
         </div>
       )}
 
@@ -1526,15 +2069,20 @@ export default function AutoComparePage() {
         />
       )}
 
-      {/* Feature #10: Batch generate modal */}
-      {showBatchGenerate && (
-        <BatchGenerateModal
-          total={batchGenTotal}
-          completed={batchGenCompleted}
-          generated={batchGenGenerated}
-          failed={batchGenFailed}
-          running={batchGenRunning}
-          onClose={() => setShowBatchGenerate(false)}
+      {/* No-changes modal — shown when selected chunk has no diff */}
+      {showNoChangesModal && selected && !selected.has_changes && (
+        <NoChangesModal
+          chunkLabel={selected.label}
+          message={
+            selected.validation_message ??
+            "No changes detected between the Old and New PDFs for this XML chunk. The XML is already up to date."
+          }
+          onClose={() => setShowNoChangesModal(false)}
+          hasNext={selectedChunkIdx >= 0 && selectedChunkIdx < chunks.length - 1}
+          onNext={() => {
+            setShowNoChangesModal(false);
+            handleNextChunk();
+          }}
         />
       )}
 

@@ -777,11 +777,6 @@ function SortableTable({
   onAssignTeam,
   onToggleStatus,
   actorRole,
-  selectedUserIds,
-  allPageSelected,
-  somePageSelected,
-  onToggleSelect,
-  onToggleSelectAllPage,
 }: {
   data: User[];
   isLoading: boolean;
@@ -796,32 +791,12 @@ function SortableTable({
   onAssignTeam: (u: User) => void;
   onToggleStatus: (u: User) => void;
   actorRole: Role;
-  selectedUserIds: Set<number>;
-  allPageSelected: boolean;
-  somePageSelected: boolean;
-  onToggleSelect: (userId: number) => void;
-  onToggleSelectAllPage: () => void;
 }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
-            <th className="px-4 py-3 text-left w-10">
-              <input
-                type="checkbox"
-                checked={allPageSelected}
-                ref={(el) => {
-                  if (el) {
-                    el.indeterminate = somePageSelected && !allPageSelected;
-                  }
-                }}
-                onChange={onToggleSelectAllPage}
-                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
-                aria-label="Select all users on this page"
-              />
-            </th>
-
             {SORT_COLS.map(({ label, key }) => {
               const active = sortKey === key;
               return (
@@ -857,7 +832,7 @@ function SortableTable({
           {isLoading ? (
             <tr>
               <td
-                colSpan={7}
+                colSpan={6}
                 className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
               >
                 <div className="flex items-center justify-center gap-2">
@@ -887,7 +862,7 @@ function SortableTable({
           ) : data.length === 0 ? (
             <tr>
               <td
-                colSpan={7}
+                colSpan={6}
                 className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
               >
                 <div className="text-2xl mb-2">Users</div>
@@ -905,16 +880,6 @@ function SortableTable({
                   key={u.id}
                   className={`group transition-colors hover:bg-blue-50/60 dark:hover:bg-slate-800/50 ${idx % 2 === 0 ? "bg-white dark:bg-transparent" : "bg-slate-50/60 dark:bg-slate-800/20"}`}
                 >
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedUserIds.has(u.id)}
-                      onChange={() => onToggleSelect(u.id)}
-                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
-                      aria-label={`Select ${getDisplayName(u)}`}
-                    />
-                  </td>
-
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <EnhancedAvatar user={u} />
@@ -1700,6 +1665,7 @@ function ChangePasswordModal({
     newPassword: string;
     targetUserId: string;
     emailSent?: boolean;
+    emailError?: string;
   }>;
 }) {
   const policy = usePasswordPolicy();
@@ -1708,7 +1674,7 @@ function ChangePasswordModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [resetResult, setResetResult] = useState<string | null>(null);
-  const [emailNotice, setEmailNotice] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<{ status: "success" | "error"; message: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Derive active requirements from policy (fall back to safe defaults while loading)
@@ -1776,11 +1742,18 @@ function ChangePasswordModal({
     try {
       const result = await onResetPassword(targetUser!.id);
       setResetResult(result.newPassword);
-      setEmailNotice(
-        result.emailSent === false
-          ? `Password email was not sent${targetUser?.email ? ` to ${targetUser.email}` : ""}. Check RESEND_API_KEY / sender domain.`
-          : `Password email sent${targetUser?.email ? ` to ${targetUser.email}` : ""}.`,
-      );
+      if (result.emailSent === false) {
+        const emailErrorMsg = result.emailError || "Email delivery failed";
+        setEmailNotice({
+          status: "error",
+          message: `⚠️ Password email could not be sent${targetUser?.email ? ` to ${targetUser.email}` : ""}. ${emailErrorMsg}. Share the password manually.`,
+        });
+      } else {
+        setEmailNotice({
+          status: "success",
+          message: `✓ Password email sent${targetUser?.email ? ` to ${targetUser.email}` : ""}.`,
+        });
+      }
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -1821,12 +1794,26 @@ function ChangePasswordModal({
         </div>
         {resetResult && (
           <div className="space-y-3">
-            <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl p-4 flex flex-col items-center gap-3">
-              <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+            <div className={`border rounded-xl p-4 flex flex-col items-center gap-3 ${
+              emailNotice?.status === "error"
+                ? "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/40"
+                : "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800/40"
+            }`}>
+              <p className={`text-sm font-semibold ${
+                emailNotice?.status === "error"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-emerald-600 dark:text-emerald-400"
+              }`}>
                 Password reset successfully!
               </p>
               {emailNotice && (
-                <p className="text-xs text-emerald-700 dark:text-emerald-300">{emailNotice}</p>
+                <p className={`text-xs text-center ${
+                  emailNotice.status === "error"
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-emerald-700 dark:text-emerald-300"
+                }`}>
+                  {emailNotice.message}
+                </p>
               )}
               <div className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 flex items-center justify-between">
                 <code className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tracking-[0.15em]">
@@ -3134,134 +3121,163 @@ export default function UsersPage() {
 
   return (
     <div className="h-full w-full min-h-0 flex flex-col text-xs">
-      {/* ── BRD-style flat toolbar ── */}
-      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
-        {/* Left: Refresh + Export */}
-        <button
-          onClick={refetch}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-        >
-          <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
-        </button>
-        <button
-          onClick={handleExportCSV}
-          disabled={filtered.length === 0}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          <DownloadIcon /> <span className="hidden sm:inline">Export CSV</span>
-        </button>
-
-        {/* Filters */}
-        {actorRole !== "ADMIN" && (
-          <div className="relative">
-            <select
-              value={roleFilter}
-              onChange={(e) => handleRoleChange(e.target.value)}
-              className={dropdownCls}
-            >
-              <option value="ALL">All Roles</option>
-              <option value="ADMIN">Admin</option>
-              <option value="USER">User</option>
-              {customRoles.map((r) => (
-                <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-            {chevronDown}
+      {/* ── Enhanced Header with Title ── */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800 border-b border-slate-200 dark:border-slate-700 px-6 py-4 shrink-0">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-1">
+              {headerTitle}
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              {actorTeamName ? `${actorTeamName} • ` : ""}
+              {users.length} total user{users.length !== 1 ? "s" : ""}
+              {isFiltering && ` • ${filtered.length} match your filters`}
+            </p>
           </div>
-        )}
-        {actorRole === "SUPER_ADMIN" && (
-          <div className="relative">
-            <select
-              value={teamFilter}
-              onChange={(e) => handleTeamChange(e.target.value)}
-              className={dropdownCls}
-            >
-              <option value="ALL">All Teams</option>
-              <option value="NONE">No Team</option>
-              {teams.map((t) => (
-                <option key={t.id} value={String(t.id)}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            {chevronDown}
-          </div>
-        )}
-        <div className="relative">
-          <select
-            value={statusFilter}
-            onChange={(e) => handleStatusChange(e.target.value as StatusFilterChip)}
-            className={dropdownCls}
-          >
-            <option value="ALL">All Status</option>
-            <option value="ACTIVE">Active</option>
-            <option value="INACTIVE">Inactive</option>
-          </select>
-          {chevronDown}
+          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
+            <Button onClick={() => setShowCreate(true)} className="shrink-0">
+              <PlusIcon /> Add New User
+            </Button>
+          )}
         </div>
-        <div className="relative">
-          <select
-            value={sortKey === "created" ? "created" : "name"}
-            onChange={(e) => handleToolbarSortChange(e.target.value as ToolbarSortKey)}
-            className={dropdownCls}
-          >
-            <option value="name">Sort by Name</option>
-            <option value="created">Sort by Date</option>
-          </select>
-          {chevronDown}
-        </div>
-        <div className="relative">
-          <select
-            value={sortDir}
-            onChange={(e) => handleSortDirectionChange(e.target.value as SortDir)}
-            className={dropdownCls}
-          >
-            <option value="asc">Ascending</option>
-            <option value="desc">Descending</option>
-          </select>
-          {chevronDown}
-        </div>
-        {isFiltering && (
-          <button
-            onClick={handleClearFilters}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-          >
-            <XIcon /> Clear
-          </button>
-        )}
+      </div>
 
-        {/* Right: search + add */}
-        <div className="ml-auto flex items-center gap-2">
-          <div className="relative flex items-center">
-            <span className="absolute left-2.5 text-slate-400 pointer-events-none">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
-              </svg>
+      {/* ── Advanced Toolbar with Better Organization ── */}
+      <div className="px-6 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        <div className="space-y-3">
+          {/* Row 1: Search and action buttons */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="relative flex items-center flex-1 min-w-[280px]">
+              <span className="absolute left-3 text-slate-400 pointer-events-none">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+                </svg>
+              </span>
+              <input
+                value={search}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Search by ID, name, or email…"
+                autoComplete="off"
+                name="user-search"
+                className="pl-9 pr-7 py-2 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-500 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-900/30 transition-all"
+              />
+              {search && (
+                <button
+                  onClick={() => handleSearchChange("")}
+                  className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                >
+                  <XIcon />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => {
+                void refetch();
+              }}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button
+              onClick={handleExportCSV}
+              disabled={filtered.length === 0}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-200 dark:border-emerald-800/40 text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <DownloadIcon /> <span className="hidden sm:inline">Export</span>
+            </button>
+          </div>
+
+          {/* Row 2: Filters and sorting */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+              Filter:
             </span>
-            <input
-              value={search}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              placeholder="Search by ID, name…"
-              autoComplete="off"
-              name="user-search"
-              className="pl-8 pr-7 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors"
-            />
-            {search && (
-              <button
-                onClick={() => handleSearchChange("")}
-                className="absolute right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+            
+            {actorRole !== "ADMIN" && (
+              <div className="relative">
+                <select
+                  value={roleFilter}
+                  onChange={(e) => handleRoleChange(e.target.value)}
+                  className={`${dropdownCls} text-xs`}
+                >
+                  <option value="ALL">All Roles</option>
+                  <option value="ADMIN">Admin</option>
+                  <option value="USER">User</option>
+                  {customRoles.map((r) => (
+                    <option key={`custom-${r.id}`} value={`CUSTOM_${r.id}`}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+                {chevronDown}
+              </div>
+            )}
+            {actorRole === "SUPER_ADMIN" && (
+              <div className="relative">
+                <select
+                  value={teamFilter}
+                  onChange={(e) => handleTeamChange(e.target.value)}
+                  className={`${dropdownCls} text-xs`}
+                >
+                  <option value="ALL">All Teams</option>
+                  <option value="NONE">No Team</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={String(t.id)}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                {chevronDown}
+              </div>
+            )}
+            <div className="relative">
+              <select
+                value={statusFilter}
+                onChange={(e) => handleStatusChange(e.target.value as StatusFilterChip)}
+                className={`${dropdownCls} text-xs`}
               >
-                <XIcon />
+                <option value="ALL">All Status</option>
+                <option value="ACTIVE">Active</option>
+                <option value="INACTIVE">Inactive</option>
+              </select>
+              {chevronDown}
+            </div>
+
+            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider ml-auto">
+              Sort:
+            </span>
+            <div className="relative">
+              <select
+                value={sortKey === "created" ? "created" : "name"}
+                onChange={(e) => handleToolbarSortChange(e.target.value as ToolbarSortKey)}
+                className={`${dropdownCls} text-xs`}
+              >
+                <option value="name">By Name</option>
+                <option value="created">By Date</option>
+              </select>
+              {chevronDown}
+            </div>
+            <div className="relative">
+              <select
+                value={sortDir}
+                onChange={(e) => handleSortDirectionChange(e.target.value as SortDir)}
+                className={`${dropdownCls} text-xs`}
+              >
+                <option value="asc">A-Z</option>
+                <option value="desc">Z-A</option>
+              </select>
+              {chevronDown}
+            </div>
+
+            {isFiltering && (
+              <button
+                onClick={handleClearFilters}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors ml-auto"
+              >
+                <XIcon /> Reset
               </button>
             )}
           </div>
-          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
-            <Button onClick={() => setShowCreate(true)}>
-              <PlusIcon /> Add User
-            </Button>
-          )}
         </div>
       </div>
 
@@ -3354,11 +3370,6 @@ export default function UsersPage() {
             onAssignTeam={handleOpenAssignTeam}
             onToggleStatus={handleToggle}
             actorRole={actorRole}
-            selectedUserIds={selectedUserIds}
-            allPageSelected={allPageSelected}
-            somePageSelected={somePageSelected}
-            onToggleSelect={toggleSelect}
-            onToggleSelectAllPage={toggleSelectAllPage}
           />
         </Card>
       )}

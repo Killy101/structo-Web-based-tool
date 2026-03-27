@@ -49,8 +49,11 @@ export function useUsers() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async () => {
-    setIsLoading(true);
+  const refetch = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) {
+      setIsLoading(true);
+    }
     setError(null);
     try {
       const { users } = await usersApi.getAll();
@@ -58,12 +61,24 @@ export function useUsers() {
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refetch({ silent: true });
+      }
+    }, 30000);
+
+    return () => window.clearInterval(id);
   }, [refetch]);
 
   const createUser = async (data: CreateUserPayload) => {
@@ -564,6 +579,29 @@ export function useNotifications() {
     if (notif && !notif.isRead) setUnreadCount((c) => Math.max(0, c - 1));
   };
 
+  const archive = async (id: number) => {
+    // Virtual notifications (negative id) are removed client-side only
+    if (id < 0) {
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      return;
+    }
+    await notificationsApi.archive(id);
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    // Also decrement unread if it was unread
+    const notif = notifications.find((n) => n.id === id);
+    if (notif && !notif.isRead) setUnreadCount((c) => Math.max(0, c - 1));
+  };
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refetch();
+      }
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [refetch]);
+
   return {
     notifications,
     unreadCount,
@@ -572,6 +610,7 @@ export function useNotifications() {
     refetch,
     markRead,
     markAllRead,
+    archive,
     remove,
   };
 }

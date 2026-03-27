@@ -1,176 +1,108 @@
 // routes/brd/sections.ts
-//
-// Replaces the old individual route files:
-//   scope.ts, metadata.ts, toc.ts, citation.ts, contentProfile.ts
-//
-// All sections are now JSON blobs on brd_sections.
-// GET  /brd/:brdId/sections        — returns all blobs at once
-// GET  /brd/:brdId/sections/:name  — returns one blob  (scope|metadata|toc|citations|contentProfile|brdConfig)
+// GET  /brd/:brdId/sections        — returns all section blobs at once
+// GET  /brd/:brdId/sections/:name  — returns one blob
 // PUT  /brd/:brdId/sections/:name  — replaces one blob
-//
-// Why a single generic endpoint instead of one file per section?
-//   • Adding a new section = zero new route files
-//   • The blob is opaque — the route doesn't care about its internal shape
-//   • Frontend can evolve the blob schema without touching the backend
 
-import { Router, Request, Response } from "express";
-import prisma from "../../lib/prisma";
-import {
-  downloadJsonObject,
-  extractStoragePath,
-  makeStoragePointer,
-  uploadJsonObject,
-} from "../../lib/supabase-storage";
+import { Router, Request, Response } from 'express'
+import pool from '../../lib/db'
+import { AuthRequest } from '../../middleware/authenticate'
+import { canReadBrdStatus, getBrdAccessPolicy, requireBrdEdit } from '../../middleware/brd-access'
 
-const router = Router();
+const router = Router()
 
-type SectionName = "scope" | "metadata" | "toc" | "citations" | "contentProfile" | "brdConfig" | "innodMetajson" | "simpleMetajson";
+type SectionName = 'scope' | 'metadata' | 'toc' | 'citations' | 'contentProfile' | 'brdConfig' | 'innodMetajson' | 'simpleMetajson'
 
-const VALID_SECTIONS: SectionName[] = [
-  "scope",
-  "metadata",
-  "toc",
-  "citations",
-  "contentProfile",
-  "brdConfig",
-  "innodMetajson",
-  "simpleMetajson",
-];
+const VALID_SECTIONS: SectionName[] = ['scope', 'metadata', 'toc', 'citations', 'contentProfile', 'brdConfig', 'innodMetajson', 'simpleMetajson']
+
+// Map camelCase section names to snake_case DB columns
+const COLUMN_MAP: Record<SectionName, string> = {
+  scope: 'scope', metadata: 'metadata', toc: 'toc', citations: 'citations',
+  contentProfile: 'content_profile', brdConfig: 'brd_config',
+  innodMetajson: 'innod_metajson', simpleMetajson: 'simple_metajson',
+}
 
 function isValidSection(name: string): name is SectionName {
-  return VALID_SECTIONS.includes(name as SectionName);
+  return VALID_SECTIONS.includes(name as SectionName)
 }
 
-function storagePathForSection(brdId: string, name: SectionName): string {
-  return `brd/${brdId}/sections/${name}.json`;
-}
-
-
-async function resolveSectionValue(raw: unknown): Promise<unknown> {
-  const storagePath = extractStoragePath(raw);
-  if (!storagePath) return raw ?? null;
-
-  // downloadJsonObject returns null (not throws) for missing files, so check
-  // the return value rather than relying on catch to trigger the fallback.
-  const primary = await downloadJsonObject(storagePath);
-  if (primary !== null) return primary;
-
-  // Fallback: try the alternate spelling of the historic sectionns/sections typo
-  const alternatePath = storagePath.includes("/sectionns/")
-    ? storagePath.replace("/sectionns/", "/sections/")
-    : storagePath.includes("/sections/")
-    ? storagePath.replace("/sections/", "/sectionns/")
-    : null;
-
-  if (alternatePath) {
-    const alternate = await downloadJsonObject(alternatePath);
-    if (alternate !== null) return alternate;
+async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT status, deleted_at FROM brds WHERE brd_id = $1`,
+    [String(req.params.brdId)],
+  )
+  if (!rows[0] || rows[0].deleted_at !== null) {
+    res.status(404).json({ error: 'BRD not found' })
+    return false
   }
-
-  console.warn(`⚠️ Missing file in storage: ${storagePath}`);
-  return null;
+  const accessPolicy = getBrdAccessPolicy(res)
+  if (!canReadBrdStatus(accessPolicy, rows[0].status)) {
+    res.status(403).json({ error: 'You can only view BRDs with APPROVED or ON_HOLD status.' })
+    return false
+  }
+  return true
 }
 
-// ── GET /brd/:brdId/sections — all blobs ──────────────────────────────────
-router.get("/:brdId/sections", async (req: Request, res: Response) => {
+router.get('/:brdId/sections', async (req: AuthRequest, res: Response) => {
   try {
-    const row = await prisma.brdSections.findUnique({
-      where: { brdId: String(req.params.brdId) },
-    });
-
-    if (!row) {
-      // No sections saved yet — return nulls so frontend can handle gracefully
-      return res.json({
-        scope: null, metadata: null, toc: null,
-        citations: null, contentProfile: null, brdConfig: null,
-        innodMetajson: null, simpleMetajson: null,
-      });
+    if (!(await ensureReadableBrd(req, res))) return
+    const { rows } = await pool.query(
+      `SELECT scope, metadata, toc, citations, content_profile as "contentProfile",
+              brd_config as "brdConfig", innod_metajson as "innodMetajson",
+              simple_metajson as "simpleMetajson"
+       FROM brd_sections WHERE brd_id = $1`,
+      [String(req.params.brdId)],
+    )
+    if (!rows[0]) {
+      return res.json({ scope: null, metadata: null, toc: null, citations: null, contentProfile: null, brdConfig: null, innodMetajson: null, simpleMetajson: null })
     }
-
-    const [scope, metadata, toc, citations, contentProfile, brdConfig, innodMetajson, simpleMetajson] = await Promise.all([
-      resolveSectionValue(row.scope),
-      resolveSectionValue(row.metadata),
-      resolveSectionValue(row.toc),
-      resolveSectionValue(row.citations),
-      resolveSectionValue(row.contentProfile),
-      resolveSectionValue(row.brdConfig),
-      resolveSectionValue(row.innodMetajson),
-      resolveSectionValue(row.simpleMetajson),
-    ]);
-
-    return res.json({
-      scope,
-      metadata,
-      toc,
-      citations,
-      contentProfile,
-      brdConfig,
-      innodMetajson,
-      simpleMetajson,
-    });
+    return res.json(rows[0])
   } catch (err) {
-    console.error("[GET /brd/:brdId/sections]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('[GET /brd/:brdId/sections]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
-// ── GET /brd/:brdId/sections/:name — single blob ──────────────────────────
-router.get("/:brdId/sections/:name", async (req: Request, res: Response) => {
-  const name = String(req.params.name);
-  if (!isValidSection(name)) {
-    return res.status(400).json({ error: `Unknown section: ${name}. Valid: ${VALID_SECTIONS.join(", ")}` });
+router.get('/:brdId/sections/:name', async (req: AuthRequest, res: Response) => {
+  const name = String(req.params.name)
+  if (!isValidSection(name)) return res.status(400).json({ error: `Unknown section: ${name}. Valid: ${VALID_SECTIONS.join(', ')}` })
+  try {
+    if (!(await ensureReadableBrd(req, res))) return
+    const col = COLUMN_MAP[name]
+    const { rows } = await pool.query(
+      `SELECT ${col} as value FROM brd_sections WHERE brd_id = $1`,
+      [String(req.params.brdId)],
+    )
+    return res.json({ [name]: rows[0]?.value ?? null })
+  } catch (err) {
+    console.error(`[GET /brd/:brdId/sections/${name}]`, err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
+})
+
+router.put('/:brdId/sections/:name', requireBrdEdit, async (req: Request, res: Response) => {
+  const name  = String(req.params.name)
+  const brdId = String(req.params.brdId)
+  if (!isValidSection(name)) return res.status(400).json({ error: `Unknown section: ${name}` })
+
+  const { data } = req.body
+  if (data === undefined) return res.status(400).json({ error: 'Request body must contain { data: ... }' })
 
   try {
-    const row = await prisma.brdSections.findUnique({
-      where: { brdId: String(req.params.brdId) },
-      select: { [name]: true },
-    });
+    const { rows } = await pool.query(`SELECT deleted_at FROM brds WHERE brd_id = $1`, [brdId])
+    if (!rows[0] || rows[0].deleted_at !== null) return res.status(404).json({ error: 'BRD not found' })
 
-    return res.json({ [name]: await resolveSectionValue(row?.[name] ?? null) });
+    const col = COLUMN_MAP[name]
+    await pool.query(
+      `INSERT INTO brd_sections (brd_id, ${col})
+       VALUES ($1, $2)
+       ON CONFLICT (brd_id) DO UPDATE SET ${col} = $2, updated_at = NOW()`,
+      [brdId, JSON.stringify(data)],
+    )
+    return res.json({ success: true, brdId, section: name })
   } catch (err) {
-    console.error(`[GET /brd/:brdId/sections/${name}]`, err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error(`[PUT /brd/:brdId/sections/${name}]`, err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
-});
+})
 
-// ── PUT /brd/:brdId/sections/:name — replace single blob ──────────────────
-// Body: { data: <any json> }
-// Upserts the brd_sections row if it doesn't exist yet.
-router.put("/:brdId/sections/:name", async (req: Request, res: Response) => {
-  const name   = String(req.params.name);
-  const brdId  = String(req.params.brdId);
-
-  if (!isValidSection(name)) {
-    return res.status(400).json({ error: `Unknown section: ${name}` });
-  }
-
-  const { data } = req.body;
-  if (data === undefined) {
-    return res.status(400).json({ error: "Request body must contain { data: ... }" });
-  }
-
-  try {
-    const brd = await prisma.brd.findUnique({ where: { brdId }, select: { deletedAt: true } });
-    if (!brd || brd.deletedAt !== null) {
-      return res.status(404).json({ error: "BRD not found" });
-    }
-
-    const storagePath = storagePathForSection(brdId, name);
-    await uploadJsonObject(storagePath, data);
-    const pointer = makeStoragePointer(storagePath);
-
-    await prisma.brdSections.upsert({
-      where:  { brdId },
-      create: { brdId, [name]: pointer },
-      update: { [name]: pointer },
-    });
-
-    return res.json({ success: true, brdId, section: name });
-  } catch (err) {
-    console.error(`[PUT /brd/:brdId/sections/${name}]`, err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-export default router;
+export default router

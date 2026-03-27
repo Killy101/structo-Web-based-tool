@@ -36,23 +36,36 @@ function buildHtml({ userId, fullName, password, action }: SendPasswordEmailInpu
   `;
 }
 
-export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<boolean> {
+export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<{ success: boolean; error?: string }> {
   const apiKey = process.env.RESEND_API_KEY?.trim();
-  if (!apiKey) return false;
+  if (!apiKey) {
+    const errorMsg = "RESEND_API_KEY not configured in environment";
+    console.error("[email]", errorMsg);
+    return { success: false, error: errorMsg };
+  }
 
   const from = process.env.RESEND_FROM_EMAIL?.trim() || "IDAF <onboarding@resend.dev>";
 
   try {
     const resend = new Resend(apiKey);
-    await resend.emails.send({
+    const result = await resend.emails.send({
       from,
       to: input.to,
       subject: buildSubject(input.action),
       html: buildHtml(input),
     });
-    return true;
+    
+    if (result.error) {
+      const errorMsg = `Resend error: ${result.error.message || JSON.stringify(result.error)}`;
+      console.error("[email] Failed to send password email:", errorMsg);
+      return { success: false, error: errorMsg };
+    }
+    
+    console.log(`[email] Successfully sent ${input.action} email to ${input.to}`);
+    return { success: true };
   } catch (error) {
-    console.error("[email] Failed to send password email:", error);
-    return false;
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error("[email] Exception while sending password email:", errorMsg);
+    return { success: false, error: errorMsg };
   }
 }

@@ -1,62 +1,60 @@
-import prisma from "./prisma";
-import bcrypt from "bcrypt";
+import pool from './db'
+import bcrypt from 'bcrypt'
 
 async function seed() {
-  console.log("🌱 Seeding database...");
+  console.log('🌱 Seeding database...')
 
   const defaultTeams = [
-    { name: "Pre-Production", slug: "pre-production" },
-    { name: "Production", slug: "production" },
-    { name: "Updating", slug: "updating" },
-    { name: "Post-Production", slug: "post-production" },
-  ];
+    { name: 'Pre-Production', slug: 'pre-production' },
+    { name: 'Production',     slug: 'production' },
+    { name: 'Updating',       slug: 'updating' },
+    { name: 'Post-Production', slug: 'post-production' },
+  ]
 
   for (const team of defaultTeams) {
-    await prisma.team.upsert({
-      where: { slug: team.slug },
-      update: {},
-      create: team,
-    });
-    console.log(`  ✓ Team "${team.name}"`);
+    await pool.query(
+      `INSERT INTO teams (name, slug)
+       VALUES ($1, $2)
+       ON CONFLICT (slug) DO NOTHING`,
+      [team.name, team.slug],
+    )
+    console.log(`  ✓ Team "${team.name}"`)
   }
 
-  const superAdminUserId = process.env.SUPERADMIN_USERID ?? "SADMIN";
-  const superAdminPassword =
-    process.env.SUPERADMIN_PASSWORD ?? "Innodata@2026!SA";
+  const superAdminUserId = process.env.SUPERADMIN_USERID ?? 'SADMIN'
+  const superAdminPassword = process.env.SUPERADMIN_PASSWORD ?? 'Innodata@2026!SA'
 
-  const existing = await prisma.user.findUnique({
-    where: { userId: superAdminUserId },
-  });
+  const { rows } = await pool.query(
+    `SELECT id FROM users WHERE user_id = $1`,
+    [superAdminUserId],
+  )
 
-  if (!existing) {
-    const hashedPassword = await bcrypt.hash(superAdminPassword, 10);
+  if (rows.length === 0) {
+    const hashedPassword = await bcrypt.hash(superAdminPassword, 10)
 
-    const created = await prisma.user.create({
-      data: {
-        userId: superAdminUserId,
-        firstName: "Super",
-        lastName: "Admin",
-        role: "SUPER_ADMIN",
-        password: hashedPassword,
-        passwordChangedAt: new Date(),
-      },
-    });
+    const { rows: created } = await pool.query(
+      `INSERT INTO users (user_id, first_name, last_name, role, password, password_changed_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       RETURNING id`,
+      [superAdminUserId, 'Super', 'Admin', 'SUPER_ADMIN', hashedPassword],
+    )
 
-    await prisma.passwordHistory.create({
-      data: { userId: created.id, hash: hashedPassword },
-    });
+    await pool.query(
+      `INSERT INTO password_history (user_id, hash) VALUES ($1, $2)`,
+      [created[0].id, hashedPassword],
+    )
 
-    console.log(`  ✓ Super Admin created (userId: ${superAdminUserId})`);
+    console.log(`  ✓ Super Admin created (userId: ${superAdminUserId})`)
   } else {
-    console.log(`  ⏭ Super Admin already exists`);
+    console.log(`  ⏭ Super Admin already exists`)
   }
 
-  console.log("✅ Seed complete");
+  console.log('✅ Seed complete')
 }
 
 seed()
   .catch((e) => {
-    console.error("Seed error:", e);
-    process.exit(1);
+    console.error('Seed error:', e)
+    process.exit(1)
   })
-  .finally(() => prisma.$disconnect());
+  .finally(() => pool.end())
