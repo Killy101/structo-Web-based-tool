@@ -1,7 +1,7 @@
 // routes/brd/save.ts
 import { Router, Request, Response } from 'express'
 import pool from '../../lib/db'
-import { requireBrdCreate } from '../../middleware/brd-access'
+import { requireBrdEdit } from '../../middleware/brd-access'
 
 const router = Router()
 
@@ -28,7 +28,7 @@ function sanitizeBrdConfig(config: unknown): unknown {
 }
 
 // ── POST /brd/save ─────────────────────────────────────────────────────────
-router.post('/save', requireBrdCreate, async (req: Request, res: Response) => {
+router.post('/save', requireBrdEdit, async (req: Request, res: Response) => {
   try {
     if (!req.body || typeof req.body !== 'object') {
       return res.status(400).json({

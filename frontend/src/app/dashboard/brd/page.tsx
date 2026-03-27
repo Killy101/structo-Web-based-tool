@@ -307,7 +307,6 @@ function VersionHistoryModal({
               brdConfig:      viewingVersion.brdConfig,
             }}
             canEdit={false}
-            showCellImages={false}
           />
         </div>
       </div>
@@ -353,7 +352,6 @@ function VersionHistoryModal({
               brdConfig:      editingVersion.brdConfig,
             }}
             canEdit={true}
-            showCellImages={false}
           />
         </div>
       </div>
