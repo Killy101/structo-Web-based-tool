@@ -9,6 +9,11 @@ venv/
 .venv/
 processing/venv/
 
+venv39/
+.venv39/
+processing/venv39/
+
+
 # Node / JS
 **/node_modules/
 
