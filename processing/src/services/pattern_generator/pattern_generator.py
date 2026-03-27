@@ -166,11 +166,17 @@ def _extract_titles_from_redjay_xml_tag(tag: str) -> list[str]:
     if not text or "hardcoded" in text.lower():
         return []
 
-    titles = [
-        re.sub(r"\s+", " ", m.group(1)).strip()
-        for m in re.finditer(r"<title>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
-        if m.group(1).strip()
-    ]
+    titles = []
+    for m in re.finditer(r"<title>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL):
+        raw = m.group(1)
+        # Strip any inner XML/HTML tags (e.g. <i>1</i> → 1) before using
+        # the value as a pattern-inference example. Without this, italic or
+        # bold markup around identifiers like (<i>1</i>) passes through as
+        # literal tag text and is later misread as a negative number (-1).
+        inner = _strip_inline_tags(raw)
+        inner = re.sub(r"\s+", " ", inner).strip()
+        if inner:
+            titles.append(inner)
 
     dedup: list[str] = []
     seen: set[str] = set()
@@ -405,7 +411,11 @@ def generate_level_patterns(language: str, levels: list[dict]) -> dict[str, list
         LevelDefinition(
             level=item["level"],
             definition=item.get("definition", ""),
-            examples=item.get("examples", []),
+            examples=[
+                _strip_inline_tags(str(e))  # Ensure this is called
+                for e in (item.get("examples") or [])
+                if str(e).strip()
+            ],
             required=item.get("required", False),
             name=item.get("name"),
         )
@@ -1046,11 +1056,37 @@ def _build_path_transform(
     return pt
 
 
-def _normalize_brd_example(example: str) -> str:
-    """Collapse editorial spaces BRDs insert within Korean structural identifiers.
-    e.g. "제 1 편" -> "제1편", "제 2 조" -> "제2조", "가 ." -> "가."
+def _strip_inline_tags(text: str) -> str:
     """
-    ex = example.strip()
+    Strip inline XML/HTML markup tags from a raw example string.
+
+    BRD and content-profile examples occasionally contain inline formatting
+    tags copied from the source document, e.g.:
+        (<i>1</i>)   →  (1)
+        <b>2</b>     →  2
+        <em>iii</em> →  iii
+
+    Without stripping, the tag text is fed into the pattern generators and
+    the '<' character is interpreted as a minus/negative sign, producing
+    erroneous patterns like -1 instead of (1).
+
+    Only inline formatting tags are targeted (<i>, <b>, <em>, <strong>,
+    <sup>, <sub>, <span>, and their closing variants). The regex matches
+    any tag of the form <tag> or </tag> where the tag name starts with an
+    ASCII letter — this safely excludes Korean/addenda artifact tokens like
+    <제2020-5호 which contain non-ASCII characters immediately after '<'.
+    """
+    return re.sub(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>", "", text).strip()
+
+
+def _normalize_brd_example(example: str) -> str:
+    """
+    Normalise a raw BRD example string:
+      1. Strip inline HTML/XML tags  (<i>, <b>, <em>, …)
+      2. Collapse editorial spaces inserted within Korean structural identifiers
+         e.g. "제 1 편" -> "제1편", "제 2 조" -> "제2조", "가 ." -> "가."
+    """
+    ex = _strip_inline_tags(example)
     ex = re.sub(r"(제)\s+(\d)",            r"\1\2", ex)
     ex = re.sub(r"(\d)\s+(편|장|절|관|조)", r"\1\2", ex)
     ex = re.sub(r"(조)\s*(의)\s*(\d)",      r"\1\2\3", ex)
@@ -1096,6 +1132,16 @@ def _infer_custom_toc_patterns(examples: list[str]) -> list[list]:
     ("제 1 편", "가 .") are collapsed and do not corrupt the inferred prefix.
     """
     patterns: list[list] = []
+
+    # Rule 0: strip inner inline formatting tags (<i>, <b>, <em>, <strong>, …)
+    # that appear INSIDE the structural identifier, e.g. (<i>1</i>) → (1).
+    # Must run BEFORE Rule 2, because Rule 2 strips everything from the first
+    # </ onward — for "(<i>1</i>)" that destroys the closing ")" leaving "(<i>1",
+    # and the remaining "<i>" is then converted to "-" by the ingestion engine,
+    # producing "-1" instead of "(1)".
+    # The pattern matches only tags whose name starts with an ASCII letter, so
+    # Korean addenda tokens like <제2020-5호 (non-ASCII after <) are left intact.
+    patterns.append([r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>", "", 0, ""])
 
     # Rule 1: strip leading opening XML tag (proper tag names only)
     patterns.append([r"^<[a-zA-Z][a-zA-Z0-9]*>", "", 0, ""])
@@ -1151,7 +1197,7 @@ def _build_custom_toc(language: str, levels: list[dict] | None = None) -> dict:
         num = lvl.get("level")
         if num is None:
             continue
-        exs = [str(e).strip() for e in (lvl.get("examples") or []) if str(e).strip()]
+        exs = [_strip_inline_tags(str(e)) for e in (lvl.get("examples") or []) if str(e).strip()]
         if exs:
             level_examples[str(num)] = exs
 

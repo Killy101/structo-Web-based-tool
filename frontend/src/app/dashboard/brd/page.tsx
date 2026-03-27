@@ -56,14 +56,14 @@ const STATUS_TRANSITIONS: Record<BrdStatus, BrdStatus[]> = {
 const STATUS_BADGE: Record<BrdStatus, string> = {
   DRAFT:     "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
   PAUSED:    "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-  COMPLETED: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+  COMPLETED: "bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300",
   APPROVED:  "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
   ON_HOLD:   "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
 };
 const STATUS_DOT: Record<BrdStatus, string> = {
   DRAFT:     "bg-sky-500 animate-pulse",
   PAUSED:    "bg-amber-500",
-  COMPLETED: "bg-emerald-500",
+  COMPLETED: "bg-teal-500",
   APPROVED:  "bg-violet-500",
   ON_HOLD:   "bg-slate-400",
 };
@@ -401,9 +401,10 @@ function VersionHistoryModal({
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-md z-10">
         <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="h-1 w-full bg-gradient-to-r from-blue-500 to-teal-500" />
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
             <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Version History</p>
+              <p className="text-sm font-bold text-slate-900 dark:text-white">Version History</p>
               <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 font-mono">
                 {brd.id} · {name.length > 34 ? name.slice(0, 34) + "…" : name}
               </p>
@@ -440,17 +441,17 @@ function VersionHistoryModal({
                     const isDeleting = deletingId === v.id;
                     return (
                       <div key={v.id} className="flex items-start gap-3">
-                        <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center border-2 z-10 ${isLatest ? "bg-emerald-50 dark:bg-emerald-900/30 border-emerald-400 dark:border-emerald-600" : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"}`}>
+                        <div className={`w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center border-2 z-10 ${isLatest ? "bg-teal-50 dark:bg-teal-900/30 border-teal-400 dark:border-teal-600" : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"}`}>
                           {isLatest
-                            ? <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/></svg>
+                            ? <svg className="w-4 h-4 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/></svg>
                             : <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                           }
                         </div>
-                        <div className={`flex-1 flex items-center justify-between p-3 rounded-xl border transition-colors ${isLatest ? "bg-emerald-50/80 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-900/40" : "bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700/60"}`}>
+                        <div className={`flex-1 flex items-center justify-between p-3 rounded-xl border transition-colors ${isLatest ? "bg-teal-50/80 dark:bg-teal-900/10 border-teal-200 dark:border-teal-900/40" : "bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700/60"}`}>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2 py-0.5 rounded-md">{v.label}</span>
-                              {isLatest && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">Current</span>}
+                              {isLatest && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400 border border-teal-200 dark:border-teal-800">Current</span>}
                             </div>
                             <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">{new Date(v.savedAt).toLocaleString()}</div>
                           </div>
@@ -485,7 +486,7 @@ function VersionHistoryModal({
                 </div>
               </div>
             )}
-            <button onClick={onClose} className="w-full mt-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            <button onClick={onClose} className="w-full mt-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
               Close
             </button>
           </div>
@@ -523,6 +524,9 @@ export default function BrdPage() {
   const [restoring,       setRestoring]       = useState<string | null>(null);
   const [permanentDeleting, setPermanentDeleting] = useState<string | null>(null);
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<(Brd & { deletedAt: string }) | null>(null);
+  const [trashSelected,     setTrashSelected]     = useState<Set<string>>(new Set());
+  const [bulkTrashDeleting, setBulkTrashDeleting] = useState(false);
+  const [bulkTrashDeleteOpen, setBulkTrashDeleteOpen] = useState(false);
   const [reuploadingId,   setReuploadingId]   = useState<string | null>(null);
   const [reuploadTargetId, setReuploadTargetId] = useState<string | null>(null);
   const [statusTarget,    setStatusTarget]    = useState<Brd | null>(null);
@@ -622,6 +626,23 @@ export default function BrdPage() {
   const confirmPermanentDelete = async () => {
     if (!permanentDeleteTarget) return;
     await permanentlyDeleteBrd(permanentDeleteTarget);
+  };
+
+  const confirmBulkTrashDelete = async () => {
+    if (trashSelected.size === 0) return;
+    setBulkTrashDeleting(true);
+    const ids = Array.from(trashSelected);
+    try {
+      await Promise.all(ids.map(id => api.delete(`/brd/${id}/permanent`)));
+      setDeletedBrds(prev => prev.filter(b => !trashSelected.has(b.id)));
+      setTrashSelected(new Set());
+      fetchBrds();
+    } catch (err) {
+      console.error("Failed to bulk permanently delete BRDs:", err);
+    } finally {
+      setBulkTrashDeleting(false);
+      setBulkTrashDeleteOpen(false);
+    }
   };
 
   const confirmDelete = async () => {
@@ -787,26 +808,26 @@ export default function BrdPage() {
   );
 
   return (
-    <div className="relative h-full w-full min-h-0 bg-slate-50 dark:bg-slate-950 flex flex-col">
+    <div className="h-full w-full min-h-0 bg-slate-50 dark:bg-[#0f172a] flex flex-col">
 
       {/* ── Page Header ── */}
       <div className="px-6 pt-5 pb-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-        <h1 className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">BRD Registry</h1>
+        <h1 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">BRD Registry</h1>
         <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">Business requirements document management</p>
       </div>
 
       {/* ── Stat Pills ── */}
-      <div className="flex flex-wrap gap-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <div className="flex flex-wrap gap-0 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
         {[
-          { label: "Received",  value: brds.length,                   icon: <ReceivedIcon />,   color: "text-blue-500 dark:text-blue-400",    bg: "bg-blue-50 dark:bg-blue-900/20",    border: "border-r border-slate-200 dark:border-slate-800" },
-          { label: "Draft",     value: statusCounts["DRAFT"] || 0,    icon: <ProcessingIcon />, color: "text-amber-500 dark:text-amber-400",  bg: "bg-amber-50 dark:bg-amber-900/20",  border: "border-r border-slate-200 dark:border-slate-800" },
-          { label: "Paused",    value: statusCounts["PAUSED"] || 0,   icon: <PausedIcon />,     color: "text-slate-500 dark:text-slate-400",  bg: "bg-slate-50 dark:bg-slate-800/60",  border: "border-r border-slate-200 dark:border-slate-800" },
-          { label: "Completed", value: statusCounts["COMPLETED"] || 0,icon: <CompletedIcon />,  color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-900/20", border: "" },
+          { label: "Received",  value: brds.length,                   icon: <ReceivedIcon />,   color: "text-blue-600 dark:text-blue-400",    bg: "bg-blue-100 dark:bg-blue-900/30",    border: "border-r border-slate-200 dark:border-slate-800" },
+          { label: "Draft",     value: statusCounts["DRAFT"] || 0,    icon: <ProcessingIcon />, color: "text-sky-600 dark:text-sky-400",      bg: "bg-sky-100 dark:bg-sky-900/30",      border: "border-r border-slate-200 dark:border-slate-800" },
+          { label: "Paused",    value: statusCounts["PAUSED"] || 0,   icon: <PausedIcon />,     color: "text-slate-500 dark:text-slate-400",  bg: "bg-slate-100 dark:bg-slate-800",     border: "border-r border-slate-200 dark:border-slate-800" },
+          { label: "Completed", value: statusCounts["COMPLETED"] || 0,icon: <CompletedIcon />,  color: "text-teal-600 dark:text-teal-400",    bg: "bg-teal-100 dark:bg-teal-900/30",    border: "" },
         ].map((s) => (
-          <div key={s.label} className={`flex items-center gap-3 px-6 py-4 flex-1 min-w-[140px] ${s.border}`}>
-            <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${s.bg}`}><span className={s.color}>{s.icon}</span></div>
+          <div key={s.label} className={`flex items-center gap-3 px-6 py-4 flex-1 min-w-[140px] bg-white dark:bg-slate-900 ${s.border}`}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm ${s.bg}`}><span className={s.color}>{s.icon}</span></div>
             <div>
-              <div className="text-[10px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider">{s.label}</div>
+              <div className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">{s.label}</div>
               <div className="text-xl font-bold text-slate-800 dark:text-slate-100 leading-tight tabular-nums">
                 {loading ? <span className="inline-block w-8 h-5 bg-slate-200 dark:bg-slate-700 rounded animate-pulse" /> : s.value.toLocaleString()}
               </div>
@@ -816,13 +837,13 @@ export default function BrdPage() {
       </div>
 
       {/* ── Toolbar ── */}
-      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm">
         <button onClick={fetchBrds} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
           <RefreshIcon /><span className="hidden sm:inline">Refresh</span>
         </button>
 
         {/* Export CSV */}
-        <button onClick={exportToCsv} disabled={brds.length === 0} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        <button onClick={exportToCsv} disabled={brds.length === 0} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
           <DownloadIcon /> <span className="hidden sm:inline">Export CSV</span>
         </button>
 
@@ -887,7 +908,7 @@ export default function BrdPage() {
               className="pl-8 pr-8 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors" />
             {search && <button onClick={() => setSearch("")} className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg></button>}
           </div>
-          <button onClick={startNewBrd} disabled={!canCreateBrd} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">
+          <button onClick={startNewBrd} disabled={!canCreateBrd} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">
             <PlusIcon /> New BRD
           </button>
         </div>
@@ -899,15 +920,15 @@ export default function BrdPage() {
         </div>
       )}
 
-      <div className="mx-4 mt-3 px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+      <div className="mx-4 mt-3 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-slate-900 shadow-sm">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-          <span className="font-semibold text-slate-600 dark:text-slate-300">Workflow:</span>
+          <span className="font-bold text-slate-600 dark:text-slate-300">Workflow:</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-sky-500" />Draft</span>
-          <span className="text-slate-300 dark:text-slate-600">-&gt;</span>
-          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500" />Complete</span>
-          <span className="text-slate-300 dark:text-slate-600">-&gt;</span>
+          <span className="text-slate-300 dark:text-slate-600">→</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-teal-500" />Complete</span>
+          <span className="text-slate-300 dark:text-slate-600">→</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-violet-500" />Approved</span>
-          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-slate-400" />On Hold (questions/comments)</span>
+          <span className="inline-flex items-center gap-1.5 ml-2"><span className="w-2 h-2 rounded-full bg-slate-400" />On Hold (questions/comments)</span>
         </div>
       </div>
 
@@ -923,18 +944,18 @@ export default function BrdPage() {
       <div className="flex-1 min-h-0 overflow-auto">
         <table className="w-full text-xs border-collapse">
           <thead className="sticky top-0 z-10">
-            <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-300 dark:border-[#1e3a5f]">
+            <tr className="bg-slate-50 dark:bg-slate-900 border-b-2 border-slate-200 dark:border-blue-900/60">
               <th className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={allPageSelected} disabled={!canDeleteBrd} onChange={toggleAll} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" /></th>
-              <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">BRD ID</th>
-              <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Source / Content Name</th>
-              <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Geography</th>
-              <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Status</th>
-              <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Version</th>
-              <th className="px-3 py-3 text-left font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Last Updated</th>
-              <th className="px-3 py-3 text-center font-semibold text-slate-600 dark:text-slate-200 text-[10px] uppercase tracking-wider whitespace-nowrap">Actions</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">BRD ID</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Source / Content Name</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Geography</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Status</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Version</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Last Updated</th>
+              <th className="px-3 py-3 text-center font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Actions</th>
             </tr>
           </thead>
-          <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-200 dark:divide-[#1e3a5f]">
+          <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-[#1e3a5f]">
             {loading ? (
               Array.from({length:8}).map((_,i) => <tr key={i}>{Array.from({length:8}).map((_,j) => <td key={j} className="px-3 py-3.5"><div className="h-3.5 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" style={{width:`${60+Math.random()*30}%`}}/></td>)}</tr>)
             ) : paginated.length === 0 ? (
@@ -952,10 +973,10 @@ export default function BrdPage() {
               const isSelected = selected.has(brd.id);
               const continent = detectContinent(brd.geography);
               return (
-                <tr key={brd.id} className={`transition-colors group ${isSelected ? "bg-blue-50/60 dark:bg-blue-900/10" : "hover:bg-slate-50/80 dark:hover:bg-slate-800/30"}`}>
+                <tr key={brd.id} className={`transition-colors group ${isSelected ? "bg-blue-50 dark:bg-blue-900/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}>
                   <td className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={isSelected} disabled={!canDeleteBrd} onChange={() => toggleOne(brd.id)} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" /></td>
                   <td className="px-3 py-3 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium hover:underline cursor-pointer"><TagIcon />{brd.id}</span>
+                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-blue-600 dark:text-blue-400 font-semibold hover:underline cursor-pointer bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded-md border border-blue-100 dark:border-blue-800/40"><TagIcon />{brd.id}</span>
                   </td>
                   <td className="px-3 py-3 max-w-[220px]">
                     <div className="font-medium text-slate-800 dark:text-slate-100 truncate text-[12px]" title={name}>{name}</div>
@@ -1021,7 +1042,7 @@ export default function BrdPage() {
                         onClick={() => promptReupload(brd.id)}
                         title="Re-upload final BRD (Draft only)"
                         disabled={!canReupload || reuploadingId === brd.id}
-                        className="p-1.5 rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 dark:hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        className="p-1.5 rounded-md text-slate-400 hover:text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-900/20 dark:hover:text-teal-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                       >
                         {reuploadingId === brd.id ? (
                           <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -1046,20 +1067,20 @@ export default function BrdPage() {
       </div>
 
       {/* ── Footer / Pagination ── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 shadow-sm">
         <div className="flex items-center gap-2">
           <span>Showing</span>
-          <select value={rowsPerPage} onChange={e => { setRowsPerPage(Number(e.target.value)); setPage(1); }} className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs focus:outline-none focus:border-blue-400">
+          <select value={rowsPerPage} onChange={e => { setRowsPerPage(Number(e.target.value)); setPage(1); }} className="px-1.5 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs focus:outline-none focus:border-blue-400">
             {ROWS_PER_PAGE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
           <span>out of <strong className="text-slate-700 dark:text-slate-200">{sorted.length}</strong></span>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => setPage(p => Math.max(1,p-1))} disabled={safePage===1} className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">← Prev</button>
+          <button onClick={() => setPage(p => Math.max(1,p-1))} disabled={safePage===1} className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">← Prev</button>
           {pageNums.map((n,i) => n==="..." ? <span key={`dots-${i}`} className="px-2 py-1 text-slate-400">…</span> : (
-            <button key={n} onClick={() => setPage(n as number)} className={`w-7 h-7 rounded-md text-xs font-medium transition-colors ${safePage===n?"bg-blue-600 text-white shadow-sm":"border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"}`}>{n}</button>
+            <button key={n} onClick={() => setPage(n as number)} className={`w-7 h-7 rounded-lg text-xs font-semibold transition-colors ${safePage===n?"bg-blue-600 text-white shadow-sm":"border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"}`}>{n}</button>
           ))}
-          <button onClick={() => setPage(p => Math.min(totalPages,p+1))} disabled={safePage===totalPages} className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">Next →</button>
+          <button onClick={() => setPage(p => Math.min(totalPages,p+1))} disabled={safePage===totalPages} className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-slate-600 dark:text-slate-300">Next →</button>
         </div>
       </div>
 
@@ -1161,11 +1182,11 @@ export default function BrdPage() {
       )}
       {/* ── Trash Bin Modal ── */}
       {trashOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setTrashOpen(false)} />
-          <div className="relative w-full max-w-2xl z-10">
-            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden max-h-[85vh] flex flex-col">
-              <div className="h-1 w-full bg-gradient-to-r from-slate-400 to-slate-500" />
+        <div style={{position:"fixed", top:0, left:0, width:"100vw", height:"100vh", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:"24px", boxSizing:"border-box"}}>
+          <div style={{position:"absolute", inset:0, background:"rgba(0,0,0,0.5)", backdropFilter:"blur(4px)"}} onClick={() => { setTrashOpen(false); setTrashSelected(new Set()); }} />
+          <div style={{position:"relative", width:"calc(100vw - 48px)", maxWidth:"1200px", zIndex:1}}>
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col" style={{maxHeight:"85vh"}}>
+              <div className="h-1 w-full bg-gradient-to-r from-slate-500 to-blue-600" />
               {/* Header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center gap-2.5">
@@ -1177,12 +1198,12 @@ export default function BrdPage() {
                     <p className="text-[11px] text-slate-400 dark:text-slate-500">Soft-deleted records — restore to bring them back</p>
                   </div>
                 </div>
-                <button onClick={() => setTrashOpen(false)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                <button onClick={() => { setTrashOpen(false); setTrashSelected(new Set()); }} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
                   <CloseIcon />
                 </button>
               </div>
               {/* Content */}
-              <div className="overflow-auto flex-1">
+              <div className="overflow-y-auto overflow-x-auto flex-1">
                 {trashLoading ? (
                   <div className="flex items-center justify-center py-16 text-slate-400 text-xs gap-2">
                     <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
@@ -1200,63 +1221,110 @@ export default function BrdPage() {
                   <table className="w-full text-xs border-collapse">
                     <thead className="sticky top-0 z-10">
                       <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">BRD ID</th>
-                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Title</th>
-                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</th>
-                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Deleted On</th>
-                        <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Action</th>
+                        <th className="px-4 py-2.5 w-8">
+                          <input
+                            type="checkbox"
+                            className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-red-600 focus:ring-red-500 cursor-pointer"
+                            checked={trashSelected.size === deletedBrds.length && deletedBrds.length > 0}
+                            ref={el => { if (el) el.indeterminate = trashSelected.size > 0 && trashSelected.size < deletedBrds.length; }}
+                            onChange={e => setTrashSelected(e.target.checked ? new Set(deletedBrds.map(b => b.id)) : new Set())}
+                          />
+                        </th>
+                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">BRD ID</th>
+                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider w-full">Title</th>
+                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">Status</th>
+                        <th className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">Deleted On</th>
+                        <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">Action</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
-                      {deletedBrds.map((b) => (
-                        <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                          <td className="px-4 py-3 whitespace-nowrap font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium">{b.id}</td>
-                          <td className="px-4 py-3 max-w-[220px]">
-                            <div className="truncate text-slate-800 dark:text-slate-100 font-medium" title={b.title}>{b.title}</div>
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${STATUS_BADGE[b.status as BrdStatus]}`}>
-                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[b.status as BrdStatus]}`} />
-                              {STATUS_LABEL[b.status as BrdStatus]}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-slate-500 dark:text-slate-400 text-[11px]">{b.deletedAt}</td>
-                          <td className="px-4 py-3 text-center">
-                            <div className="inline-flex items-center gap-1.5">
-                              <button
-                                onClick={() => restoreBrd(b.id)}
-                                disabled={restoring === b.id || permanentDeleting === b.id}
-                                title="Restore BRD"
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                                {restoring === b.id
-                                  ? <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                                  : <RestoreIcon />}
-                                Restore
-                              </button>
-                              <button
-                                onClick={() => setPermanentDeleteTarget(b)}
-                                disabled={restoring === b.id || permanentDeleting === b.id}
-                                title="Delete permanently"
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                                {permanentDeleting === b.id
-                                  ? <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                                  : <TrashIcon />}
-                                Delete Permanently
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                      {deletedBrds.map((b) => {
+                        const isChecked = trashSelected.has(b.id);
+                        return (
+                          <tr
+                            key={b.id}
+                            className={`transition-colors cursor-pointer ${isChecked ? "bg-red-50 dark:bg-red-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}
+                            onClick={() => setTrashSelected(prev => { const n = new Set(prev); isChecked ? n.delete(b.id) : n.add(b.id); return n; })}
+                          >
+                            <td className="px-4 py-3 w-8" onClick={e => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-red-600 focus:ring-red-500 cursor-pointer"
+                                checked={isChecked}
+                                onChange={e => { e.stopPropagation(); setTrashSelected(prev => { const n = new Set(prev); e.target.checked ? n.add(b.id) : n.delete(b.id); return n; }); }}
+                              />
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium">{b.id}</td>
+                            <td className="px-4 py-3">
+                              <div className="truncate text-slate-800 dark:text-slate-100 font-medium max-w-xs" title={b.title}>{b.title}</div>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${STATUS_BADGE[b.status as BrdStatus]}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[b.status as BrdStatus]}`} />
+                                {STATUS_LABEL[b.status as BrdStatus]}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-500 dark:text-slate-400 text-[11px]">{b.deletedAt}</td>
+                            <td className="px-4 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => restoreBrd(b.id)}
+                                  disabled={restoring === b.id || permanentDeleting === b.id}
+                                  title="Restore BRD"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/20 border border-teal-200 dark:border-teal-800/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                  {restoring === b.id
+                                    ? <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                                    : <RestoreIcon />}
+                                  Restore
+                                </button>
+                                <button
+                                  onClick={() => setPermanentDeleteTarget(b)}
+                                  disabled={restoring === b.id || permanentDeleting === b.id}
+                                  title="Delete permanently"
+                                  className="inline-flex items-center justify-center w-8 h-8 rounded-md text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 border border-red-200 dark:border-red-800/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-shrink-0">
+                                  {permanentDeleting === b.id
+                                    ? <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                                    : <TrashIcon />}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
               </div>
               {/* Footer */}
               <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500">
-                <span>{deletedBrds.length} deleted record{deletedBrds.length !== 1 ? "s" : ""}</span>
-                <button onClick={() => setTrashOpen(false)} className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                  Close
-                </button>
+                <span>
+                  {trashSelected.size > 0
+                    ? <span className="text-red-600 dark:text-red-400 font-semibold">{trashSelected.size} selected</span>
+                    : <span>{deletedBrds.length} deleted record{deletedBrds.length !== 1 ? "s" : ""}</span>
+                  }
+                </span>
+                <div className="flex items-center gap-2">
+                  {trashSelected.size > 0 && (
+                    <>
+                      <button
+                        onClick={() => setTrashSelected(new Set())}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+                      >
+                        Clear selection
+                      </button>
+                      <button
+                        onClick={() => setBulkTrashDeleteOpen(true)}
+                        className="px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs font-semibold hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors inline-flex items-center gap-1.5"
+                      >
+                        <TrashIcon />
+                        Delete {trashSelected.size} permanently
+                      </button>
+                    </>
+                  )}
+                  <button onClick={() => { setTrashOpen(false); setTrashSelected(new Set()); }} className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1313,6 +1381,60 @@ export default function BrdPage() {
         </div>
       )}
 
+      {/* ── Bulk Permanent Delete Confirmation Modal ── */}
+      {bulkTrashDeleteOpen && (
+        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 10000 }}>
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !bulkTrashDeleting && setBulkTrashDeleteOpen(false)} />
+          <div className="relative w-full max-w-md z-10">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="h-1 w-full bg-gradient-to-r from-red-600 to-rose-600" />
+              <div className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className="w-11 h-11 rounded-full bg-red-50 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0 border border-red-100 dark:border-red-800/40">
+                    <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Delete {trashSelected.size} Records Permanently?</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                      These <span className="font-semibold text-slate-700 dark:text-slate-200">{trashSelected.size} BRDs</span> will be permanently removed from the system and cannot be restored.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 px-3.5 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 max-h-36 overflow-y-auto space-y-1.5">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Selected BRDs</div>
+                  {deletedBrds.filter(b => trashSelected.has(b.id)).map(b => (
+                    <div key={b.id} className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] text-blue-600 dark:text-blue-400 font-semibold shrink-0">{b.id}</span>
+                      <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate">{displayTitle(b)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2.5 mt-5">
+                  <button
+                    onClick={() => setBulkTrashDeleteOpen(false)}
+                    disabled={bulkTrashDeleting}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmBulkTrashDelete}
+                    disabled={bulkTrashDeleting}
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-700 active:scale-[0.98] disabled:opacity-60 transition-all"
+                  >
+                    {bulkTrashDeleting
+                      ? <span className="flex items-center justify-center gap-1.5"><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Deleting…</span>
+                      : `Delete ${trashSelected.size} Permanently`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── History Modal ── */}
       {historyBrd && (
         <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} canEditVersions={canEditBrd} />
@@ -1324,7 +1446,7 @@ export default function BrdPage() {
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !statusUpdating && setStatusTarget(null)} />
           <div className="relative w-full max-w-md z-10">
             <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-              <div className="h-1 w-full bg-gradient-to-r from-indigo-500 to-violet-500" />
+              <div className="h-1 w-full bg-gradient-to-r from-blue-500 to-teal-500" />
               <div className="p-6 space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Change BRD Status</h3>
@@ -1370,7 +1492,7 @@ export default function BrdPage() {
                   <button
                     onClick={submitStatusChange}
                     disabled={statusUpdating}
-                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-60 transition-all"
+                    className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 active:scale-[0.98] disabled:opacity-60 transition-all"
                   >
                     {statusUpdating ? "Updating..." : `Change to ${STATUS_LABEL[nextStatus].toUpperCase()}`}
                   </button>
