@@ -38,6 +38,17 @@ Key improvements over previous version
     - L15 added: Appendix→App., "to Part"→"to Pt.", Supplement→Supp.
       (produces "App. B to Pt. 707" per CFR citation rules)
     - L16, L21, L22 added with generic paren-strip cleanup
+11. _split_primary_examples now also splits on semicolons (";") in addition to
+    pipe and newline.  Defensive for callers that pass raw BRD cells without
+    pre-splitting via process.py._split_examples (e.g. /patterns/level-patterns,
+    direct tests). No double-split risk: process.py already handles ";" upstream.
+12. _is_free_text_heading Step 1 structural override list extended:
+    - "^[A-Z]{1,3}\\.$" — catches AA. / AAA. (duplicate-letter appendix ids)
+    - "^[A-Z][0-9]" — catches B-1, B1 style alpha+digit identifiers
+    These prevent L17/L18-style examples from being misclassified as prose.
+13. _is_heterogeneous keyword classifier now includes "Subpart" in both
+    the type_checks lambda and _classify_het so Subpart entries in mixed
+    L16 sets count as structural, not prose_or_label.
 
 Abbreviation recognition sourced directly from BRD citation rules:
   Alabama    - ALA. ADMIN. CODE r. x-x-x.x
@@ -343,71 +354,150 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
     # "Additional tier 1 capital" → "(Additional tier 1 capital)"  (definition-of-terms)
     # "Notice," → "(Notice)"  (strip trailing comma)
     # "Low-income credit union (LICU )" → "(Low-income credit union (LICU))"  (strip space before ))
+    # "b" → "(b)"  (bare single letter — defensive, CFR source always emits "(b)" but wrap for safety)
     "9": [
+        # Strip inline HTML/XML formatting tags: (<i>b</i>) → (b), (<b>text</b>) → (text)
+        # Must run first so downstream paren-detection sees clean identifiers.
+        ["</?[a-zA-Z][a-zA-Z0-9]*(?:\\s[^>]*)?>", "", 0, ""],
         # Strip inline title after standard paren identifier
-        ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
+        ["^(\\([a-zA-Z0-9]+\\))[\\s\u2014].*$", "\\1", 0, ""],
         # Trailing em-dash with no text
-        ["[\\s—]+$",                "",       0, ""],
-        # Prose definition-of-terms: wrap entire text in parens
-        ["^([^(].+[^-])$",          "(\\1)",  0, ""],
+        ["[\\s\u2014]+$",            "",       0, ""],
+        # Prose/multi-char definition-of-terms or bare letter+text: wrap in parens
+        # ^([^(].+[^-])$ requires 2+ chars; single-char fallback handles bare 'b' etc.
+        # "Section N." appendix sub-label → "(Section N)" before keyword guard
+        ["^((?:SECTION|Section)\\s+[0-9]+)\\.$",  "(\\1)",  0, ""],
+        # "Section N." appendix sub-label → "(Section N)" before keyword guard
+        ["^((?:SECTION|Section)\\s+[0-9]+)\\.$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].+[^-])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         # Strip trailing comma inside parens: "(Notice,)" → "(Notice)"
         ["^(\\(.*),\\)$",           "\\1)",   0, ""],
         # Strip trailing space before closing paren: "(LICU )" → "(LICU)"
         ["\\s+\\)$",                ")",      0, ""],
         # Non-paren Article/Rule for other BRDs
-        ["ARTICLE|Article",         "Art.",   0, ""],
         ["RULE|Rule",               "Rule",   0, ""],
         ["Art\\.|ART\\.",           "Art.",   0, ""],
         ["^r\\.",                   "",       0, ""],
         ["^R\\.",                   "",       0, ""],
         ["\\([0-9]+\\) ",           "",       0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
-        ["\\.—$",                   "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
+        ["\\.\u2014$",              "",       0, ""],
     ],
     # ── L10: parenthetical number  →  (2)
     # levelPattern: ^\\([0-9]+\\)$
-    # Raw token: "(2) Title text" → "(2)", or bare "(2)" → "(2)"
+    # The citation rule builds: <L8> + "(" + <L10>* + ")" with a massage note to
+    # collapse double parens — so every output token MUST be wrapped in () so that
+    # the massage step can reliably strip the outer layer and leave "(2)".
+    #
+    # Transformation contract (aligned with BRD-074 redjay tags):
+    #   "(2)"               → "(2)"                already correct
+    #   "(2) Title text"    → "(2)"                strip trailing title
+    #   "(<i>2</i>)"        → "(2)"                strip HTML tags
+    #   "(1)-(3)"           → "(1)-(3)"            range: preserved as-is
+    #   "(1)-(3) Title"     → "(1)-(3)"            range: strip trailing title
+    #   "2"                 → "(2)"                bare number: WRAP
+    #   "2."                → "(2)"                bare number+dot: strip dot, WRAP
+    #   "<i>2</i>"          → "(2)"                HTML bare number: WRAP
+    #   "Seller's interest" → "(Seller's interest)" prose def-of-terms: WRAP
     "10": [
-        # Strip trailing title after paren identifier: "(2) Title" → "(2)"
-        ["^(\\([0-9]+\\))[\\s—].*$", "\\1",   0, ""],
-        ["[\\s—]+$",                "",       0, ""],
-        ["-$",                      "",       0, ""],
-        ["\\.—$",                   "",       0, ""],
+        # Strip inline HTML/XML formatting tags: (<i>2</i>) → (2), <i>2</i> → 2
+        ["</?[a-zA-Z][a-zA-Z0-9]*(?:\\s[^>]*)?>", "", 0, ""],
+        # Strip trailing prose title after paren identifier, preserve ranges:
+        # "(2) Title" → "(2)",  "(1)-(3)" stays "(1)-(3)"  [\\s required — hyphen not stripped]
+        ["^(\\([0-9]+\\)(?:-\\([0-9]+\\))?)\\s.*$", "\\1", 0, ""],
+        ["[\\s\u2014]+$",           "",       0, ""],
+        # Strip trailing hyphen only when NOT part of a range (not preceded by ')')
+        ["(?<!\\))-$",              "",       0, ""],
+        # Bare number + dot: "2." → "(2)"
+        ["^([0-9]+)\\.$",           "(\\1)",  0, ""],
+        # "N. Title text" → "(N)"
+        ["^([0-9]+)\\.\\s+.*$",     "(\\1)",  0, ""],
+        # Wrap bare non-paren token: "2" → "(2)", "Seller's interest" → "(Seller's interest)"
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
+        ["\\.\u2014$",              "",       0, ""],
     ],
     # ── L11: parenthetical lowercase roman  →  (ii)
     # levelPattern: ^\\([ivxlcdm]+\\)$
-    # Raw token: "(ii) Title text" → "(ii)", or bare "(ii)" → "(ii)"
+    # Same wrap contract as L10/L12/L13/L14.
+    #
+    #   "(ii)"            → "(ii)"   already correct
+    #   "(ii) Title text" → "(ii)"   strip trailing title
+    #   "ii"              → "(ii)"   bare roman: WRAP
+    #   "ii."             → "(ii)"   bare roman+dot: strip dot, WRAP
+    #   "<i>ii</i>"       → "(ii)"   HTML bare roman: WRAP
     "11": [
+        # Strip inline HTML/XML formatting tags: (<i>ii</i>) → (ii)
+        ["</?[a-zA-Z][a-zA-Z0-9]*(?:\\s[^>]*)?>", "", 0, ""],
         # Strip trailing title after paren identifier: "(ii) Title" → "(ii)"
-        ["^(\\([ivxlcdm]+\\))[\\s—].*$", "\\1", 0, ""],
-        ["[\\s—]+$",                "",       0, ""],
+        ["^(\\([ivxlcdm]+\\))[\\s\u2014].*$", "\\1", 0, ""],
+        ["[\\s\u2014]+$",           "",       0, ""],
+        # Bare roman + dot: "ii." → "(ii)"
+        ["^([ivxlcdm]+)\\.$",       "(\\1)",  0, ""],
+        # "N. Title text" → "(N)"
+        ["^([ivxlcdm]+)\\.\\s+.*$", "(\\1)",  0, ""],
+        # Wrap bare non-paren token: "ii" → "(ii)"
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
     # ── L12: parenthetical uppercase letter  →  (A)
     "12": [
+        # Strip inline HTML/XML formatting tags: (<i>A</i>) → (A)
+        ["</?[a-zA-Z][a-zA-Z0-9]*(?:\\s[^>]*)?>", "", 0, ""],
+        # Paren identifier + trailing title: strip title
         ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
         ["[\\s—]+$",                "",       0, ""],
-        ["\\([0-9]+\\) ",           "",       0, ""],
+        # "N. Title" → "(N)"
+        ["^([A-Za-z0-9]+)\\.\\s+.*$", "(\\1)", 0, ""],
+        # Wrap bare (non-paren) token so "A" → "(A)"
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
-    # ── L13: parenthetical number  →  (5)
+    # ── L13: parenthetical number  →  (1) / (2)
+    # CFR uses italic formatting: <title>(<i>1</i>)</title> → must strip to (1)
+    # BRD redjay: (5)
     "13": [
+        # Strip inline HTML/XML formatting tags: (<i>1</i>) → (1)
+        ["</?[a-zA-Z][a-zA-Z0-9]*(?:\\s[^>]*)?>", "", 0, ""],
+        # Paren identifier + trailing title: strip title
         ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
         ["[\\s—]+$",                "",       0, ""],
-        ["\\([0-9]+\\) ",           "",       0, ""],
+        # "N. Title" → "(N)"
+        ["^([A-Za-z0-9]+)\\.\\s+.*$", "(\\1)", 0, ""],
+        # Wrap bare (non-paren) token so "5" → "(5)"
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
     # ── L14: parenthetical lowercase roman  →  (i)
+    # BRD redjay: (i)
     "14": [
+        # Strip inline HTML/XML formatting tags: (<i>i</i>) → (i)
+        ["</?[a-zA-Z][a-zA-Z0-9]*(?:\\s[^>]*)?>", "", 0, ""],
+        # Paren identifier + trailing title: strip title
         ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
         ["[\\s—]+$",                "",       0, ""],
-        ["\\([0-9]+\\) ",           "",       0, ""],
+        # "N. Title" → "(N)"
+        ["^([A-Za-z0-9]+)\\.\\s+.*$", "(\\1)", 0, ""],
+        # Wrap bare (non-paren) token so "i" → "(i)"
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
     # ── L15: Appendix/Supplement to Part  →  App. A to Subpart C of Pt. 4
     "15": [
@@ -427,7 +517,8 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
         ["\\([0-9]+\\) ",           "",       0, ""],
         ["\\([0-9]+\\)",            "",       0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
     # ── L16: appendix sub-heading  →  (I) / (Appendix A) / (Statement...)
     # "I. Model Stipulation"       → "(I)"
@@ -479,7 +570,8 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
         ["^([^(].*)$",              "(\\1)",  0, ""],
         ["\\([0-9]+\\) ",           "",       0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
     # ── L18: (1)  — bare/titled token → wrapped identifier
     # "1" → "(1)",  "(a) Appearance..." → "(a)",  "3. Banks..." → "(3)"
@@ -492,9 +584,13 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
         ["[\\s—]+$",                "",       0, ""],
         # "N. Title text" (space after dot) → "(N)"
         ["^([A-Za-z0-9]+)\\.\\s+.*$", "(\\1)", 0, ""],
-        # Wrap bare token (catches "Section 1.", "1.", bare words, etc.)
-        ["^([^(].*[^)])$",          "(\\1)",  0, ""],
-        ["^([^()])$",               "(\\1)",  0, ""],
+        # CFR appendix sub-label "Section N." (trailing dot, no title text) → "(Section N)"
+        # This must fire BEFORE the keyword guard, which would otherwise block wrapping.
+        # "Section 202.2" (decimal, no trailing dot) is NOT matched and stays unwrapped.
+        ["^((?:SECTION|Section)\\s+[0-9]+)\\.$", "(\\1)", 0, ""],
+        # Wrap bare token (catches "1.", bare words, etc.)
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         # Strip trailing dot inside parens: "(Section 1.)" → "(Section 1)"
         ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
         ["\\.-$",                   "",       0, ""],
@@ -506,26 +602,32 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
         ["[\\s—]+$",                "",       0, ""],
         # "N. Title" → "(N)"
         ["^([A-Za-z0-9]+)\\.\\s+.*$", "(\\1)", 0, ""],
+        # CFR appendix sub-label "Section N." (trailing dot, no title text) → "(Section N)"
+        # Must fire BEFORE the keyword guard. "Section 202.2" (no trailing dot) is unaffected.
+        ["^((?:SECTION|Section)\\s+[0-9]+)\\.$", "(\\1)", 0, ""],
         # Wrap bare token
-        ["^([^(].*[^)])$",          "(\\1)",  0, ""],
-        ["^([^()])$",               "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         # Strip trailing dot inside parens
         ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
     # ── L20: (a)/(1)  — bare token → wrapped; paren+title → strip title
     # "i. Examples" → "(i)"  (strip dot-title)
     # "—a" → "(a)"  (strip leading em-dash)
+    # "1." → "1."   (bare dot-suffix token: preserve as-is for heterogeneous BRDs)
     "20": [
         # Strip leading em-dash artifact: "—a" → "a"
         ["^[—–]",                   "",       0, ""],
         # Paren identifier + trailing title: strip title
         ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
         ["[\\s—]+$",                "",       0, ""],
-        # "i. Title" / "6. Title" → extract identifier, wrap
-        ["^([a-zA-Z0-9]+)\\.\\s+.*$", "(\\1)", 0, ""],
-        # Wrap bare (non-paren) token
-        ["^([^(].*[^)])$",          "(\\1)",  0, ""],
-        ["^([^()])$",               "(\\1)",  0, ""],
+        # "i. Title text" / "6. Title text" → strip title, keep "i." / "6."
+        # Must run BEFORE wrap-bare so bare "1." is not consumed by wrap rules
+        ["^([a-zA-Z0-9]+\\.?)\\s+\\S.*$",  "\\1", 0, ""],
+        # Wrap bare non-paren tokens that are NOT dot-suffixed identifiers
+        # "a" → "(a)",  "I" → "(I)" — but "1." / "i." / "B." stay as-is
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^.)])$", "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(.)])$",      "(\\1)",  0, ""],
     ],
     # ── L21: (1)  — bare token → wrapped; curly quotes normalised
     # Trailing dot inside quoted string stripped: ("text.") → ("text")
@@ -537,8 +639,8 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
         ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
         ["[\\s—]+$",                "",       0, ""],
         # Wrap bare token
-        ["^([^(].*[^)])$",          "(\\1)",  0, ""],
-        ["^([^()])$",               "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         # Strip trailing dot inside parens before closing quote:
         # '("text.")' → '("text")'
         ["^(\\(\".*)\\.\"\\)$",     "\\1\")", 0, ""],
@@ -549,10 +651,11 @@ ENGLISH_PATH_TRANSFORM_CLEANUP: dict[str, list[list]] = {
     "22": [
         ["^(\\([a-zA-Z0-9]+\\))[\\s—].*$", "\\1", 0, ""],
         ["[\\s—]+$",                "",       0, ""],
-        ["^([^(].*[^)])$",          "(\\1)",  0, ""],
-        ["^([^()])$",               "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^(].*[^)])$",  "(\\1)",  0, ""],
+        ["^(?!(?:APPENDIX TO SUBPART|Appendix to Subpart|APPENDIX TO PART|Appendix to Part|SUPPLEMENT TO PART|Supplement to Part|SUPERVISORY POLICY|Supervisory Policy|SUB_PART|Sub_part|SUBCHAPTER|Subchapter|SubChapter|SUBDIVISION|Subdivision|SUBARTICLE|Subarticle|SUBGROUP|Subgroup|SUBPART|Subpart|SUBTITLE|Subtitle|CHAPTER|Chapter|PART|Part|ARTICLE|Article|RULE|Rule|SECTION|Section|DIVISION|Division|TITLE|Title|VOLUME|Volume|APPENDIX|Appendix|SCHEDULE|Schedule|EXHIBIT|Exhibit|FORM|Form|ATTACHMENT|Attachment|GROUP|Group|SUPPLEMENT|Supplement|TABLE|Table|BYLAWS|Bylaws)\\b)([^()])$",       "(\\1)",  0, ""],
         ["-$",                      "",       0, ""],
-        ["(?<![0-9]\\.[0-9])\\.$",  "",       0, ""],
+        # Strip trailing dot inside parens: "(Word.)" → "(Word)"
+        ["^(\\(.*)\\.\\)$",         "\\1)",   0, ""],
     ],
 }
 
@@ -584,17 +687,25 @@ def _normalize_section_sign(text: str) -> str:
 def _split_primary_examples(examples: list[str]) -> list[str]:
     """
     Many BRDs (especially CFR) put multiple example types in one field,
-    separated by newlines or pipe characters:
+    separated by newlines, pipe characters, or semicolons:
 
         "(b) | \"Financial end user\""   — structural id + definition term
         "(2) | \"Seller's interest\""
+        "(b); Financial end user"        — semicolon variant (raw BRD cell)
 
     Only the FIRST token per example entry is the structural identifier.
     The rest are definition-of-terms labels that should never drive
     pattern inference (they look like prose and trigger keyword heuristics).
 
     This function returns only the first structural token from each entry,
-    with mojibake section-sign artifacts normalised (Â§ → §, \\xa7 → §).
+    with mojibake section-sign artifacts normalised (Â§ → §, \xa7 → §).
+
+    Note on semicolons:
+      process.py._split_examples already splits raw BRD cells on ";" before
+      passing to the pattern generator, so each item in `examples` is usually
+      already a single token.  The semicolon split here is a defensive measure
+      for callers that pass the raw unsplit cell directly (e.g. the
+      /patterns/level-patterns endpoint, tests, or future callers).
     """
     result: list[str] = []
     for ex in examples:
@@ -602,8 +713,15 @@ def _split_primary_examples(examples: list[str]) -> list[str]:
             continue
         # Normalise encoding artifacts before any splitting or matching
         ex = _normalize_section_sign(ex)
-        # Split on pipe or newline, take only the first non-empty part
-        parts = re.split(r'\s*[\|\n]\s*', ex.strip())
+
+        # CRITICAL: Strip HTML/XML tags BEFORE any pattern detection
+        # This prevents <title>(1)</title> from being misinterpreted
+        ex = re.sub(r"<[^>]+>", "", ex)
+
+        # Split on pipe, newline, or semicolon — take only the first non-empty part.
+        # Semicolon handles raw BRD cells like "(b); Financial end user" where the
+        # first token is the structural identifier and the rest is a definition label.
+        parts = re.split(r'\s*[;\|\n]\s*', ex.strip())
         first = parts[0].strip().strip('"')
         if first:
             result.append(first)
@@ -642,8 +760,10 @@ def _is_free_text_heading(definition: str, examples: list[str]) -> bool:
         r"^\.[0-9]+$",                # dot-prefixed: .0100
         r"^[A-Z]\.$",                 # single cap + dot: A.
         r"^[0-9]+\.$",                # number + dot: 1.
-        r"^[a-z]\.$",                 # lowercase + dot: a.
+        r"^[a-z]\.$",                 # lowercase letter + dot: a.
         r"^[ivxlcdm]+\.$",            # roman + dot: ii.
+        r"^[A-Z]{1,3}\.$",            # one-to-three uppercase letters + dot: AA. AAA.
+        r"^[A-Z][0-9]",               # uppercase letter + digit: B-1, B1
     ]
     if first:
         for pat in structural_patterns:
@@ -668,6 +788,12 @@ def _is_free_text_heading(definition: str, examples: list[str]) -> bool:
         return True
 
     # ── Step 4: multi-word prose example with no structural markers ───────────
+    # Exception: "Incrementing number / letter / …" definitions describe a
+    # numbering scheme — they are structural levels, not free-text headings.
+    defn_lower_step4 = definition.lower()
+    if re.search(r"\bincrement", defn_lower_step4):
+        return False
+
     if first and " " in first:
         # Allow known appendix / supplement / table keyword prefixes
         if not re.search(
@@ -880,7 +1006,7 @@ def _is_heterogeneous(examples: list[str]) -> bool:
         ("number_dot",      lambda s: bool(re.fullmatch(r"[0-9]+\.", s))),
         ("paren_any",       lambda s: bool(re.fullmatch(r"\([a-zA-Z0-9]+\)", s))),
         ("keyword",         lambda s: bool(re.match(
-            r"(Chapter|Part|Appendix|Table|Bylaws|Section|Supplement|Article)",
+            r"(Chapter|Part|Subpart|Appendix|Table|Bylaws|Section|Supplement|Article)",
             s, re.IGNORECASE))),
         ("alpha_dot",       lambda s: bool(re.fullmatch(r"[A-Z]{1,3}\.", s))),
         ("alpha_hyphen",    lambda s: bool(re.search(r"^[A-Z]-[0-9]|^[0-9]+-[A-Z]", s))),
@@ -901,7 +1027,7 @@ def _is_heterogeneous(examples: list[str]) -> bool:
         if re.fullmatch(r"[0-9]+", s): return "bare_number"
         if re.match(r"^§", s): return "section"
         if re.match(
-            r"(Chapter|Part|Appendix|Table|Bylaws|Section|Supplement|Article)",
+            r"(Chapter|Part|Subpart|Appendix|Table|Bylaws|Section|Supplement|Article)",
             s, re.IGNORECASE
         ): return "keyword"
         if re.fullmatch(r"[A-Z]{1,3}\.", s): return "alpha_dot"
@@ -1144,17 +1270,20 @@ def _build_keyword_pattern(prefix: str, stripped: list[str]) -> list[str]:
 def _infer_pattern(definition: str, examples: list[str]) -> list[str]:
     """
     Infer one or more regex patterns from the definition string and examples.
-
-    Priority order:
-      0. Free-text heading detection  — returns ^.*$ immediately
-      1. § (section sign) identifiers — tight §N.N pattern
-      2. Parenthetical identifiers    — (a) (1) (ii) (A) from PRIMARY examples
-      3. Full-word keyword prefix     — CHAPTER, TITLE, SUBCHAPTER, etc.
-      4. Abbreviated prefix           — tit., Subch., Ch., r., Subp., etc.
-      5. Specialised structural formats (NCAC, CSR, colon-separated, etc.)
-      6. Pure numbering heuristics    — bare numbers, roman, dotted chains
-      7. Catch-all fallback           — ^.*$
     """
+    # CRITICAL: Strip HTML/XML tags from examples FIRST
+    # This must happen before any detection to prevent tags like
+    # <title>(1)</title> from being interpreted as negative numbers.
+    cleaned_examples = []
+    for ex in examples:
+        # Strip all HTML/XML tags (opening, closing, self-closing)
+        cleaned = re.sub(r"<[^>]+>", "", ex)
+        cleaned = cleaned.strip()
+        if cleaned:
+            cleaned_examples.append(cleaned)
+    
+    # Use cleaned examples for all subsequent detection
+    examples = cleaned_examples
     # ── 0. Free-text heading / definition-of-terms level ─────────────────────
     if _is_free_text_heading(definition, examples):
         return [r"^.*$"]

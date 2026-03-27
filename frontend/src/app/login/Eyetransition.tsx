@@ -40,10 +40,10 @@ export default function EyeTransition({ onComplete }: EyeTransitionProps) {
       <div className={styles.scanlines} />
 
       {/* Brand name */}
-      <div className={`${styles.brandMark} ${phase !== "idle" ? styles.brandMarkFade : ""}`}>
-        <span className={styles.brandI}>I</span>DAF
-        <span className={styles.brandTagline}>InnoStream Document Architecture Framework</span>
-      </div>
+    <div className={`${styles.brandMark} ${phase !== "idle" ? styles.brandMarkFade : ""}`}>
+      <span><span className={styles.brandI}>I</span>DAF</span>
+      <span className={styles.brandTagline}>InnoStream Document Architecture Framework</span>
+    </div>
 
       {/* THE EYE */}
       <div className={`${styles.eyeWrapper} ${phase === "blinking" || phase === "iris-expand" ? styles.eyeBlinking : ""}`}>

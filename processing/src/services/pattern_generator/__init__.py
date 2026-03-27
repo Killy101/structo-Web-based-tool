@@ -75,7 +75,7 @@ def _infer_patterns(
                         "integer", r"\bdigit"]) or (
         re.search(r"\bnumber(s)?\b", text) and not re.search(r"roman|letter", text)
     ):
-        patterns.append("[0-9]+$")
+        patterns.append("^[0-9]+$")
 
     # ── Dotted-decimal (1.2, 1.2.3, …) ────────────────────────────────────
     dot_depth = _detect_dot_depth(text, examples, level)
@@ -86,29 +86,29 @@ def _infer_patterns(
     if re.search(r"\d+\s*[a-z]", text) or any(
         re.fullmatch(r"\d+[a-z]+", ex.strip()) for ex in examples
     ):
-        patterns.append("[0-9]+[a-z]+$")
+        patterns.append("^[0-9]+[a-z]+$")
 
     # ── Roman numerals ────────────────────────────────────────────────────
     if re.search(r"roman\s*(numeral|number)", text, re.IGNORECASE):
         upper = re.search(r"upper|capital|majuscul", text, re.IGNORECASE)
         lower = re.search(r"lower|small|minuscul", text, re.IGNORECASE)
         if upper and not lower:
-            patterns.append("[IVXLCDM]+$")
+            patterns.append("^[IVXLCDM]+$")
         elif lower and not upper:
-            patterns.append("[ivxlcdm]+$")
+            patterns.append("^[ivxlcdm]+$")
         else:
-            patterns.extend(["[IVXLCDM]+$", "[ivxlcdm]+$"])
+            patterns.extend(["^[IVXLCDM]+$", "^[ivxlcdm]+$"])
 
     # ── Alphabetic letters ────────────────────────────────────────────────
     if re.search(r"\b(letter|alphabetic|alpha)\b", text):
         upper = re.search(r"upper|capital", text, re.IGNORECASE)
         lower = re.search(r"lower|small", text, re.IGNORECASE)
         if upper and not lower:
-            patterns.append("[A-Z]+$")
+            patterns.append("^[A-Z]+$")
         elif lower and not upper:
-            patterns.append("[a-z]+$")
+            patterns.append("^[a-z]+$")
         else:
-            patterns.extend(["[a-z]+$", "[A-Z]+$"])
+            patterns.extend(["^[a-z]+$", "^[A-Z]+$"])
 
     # ── Parenthesised identifiers: (a), (A), (1) ─────────────────────────
     # Only trigger on explicit keywords or when examples show paren format.
@@ -119,9 +119,9 @@ def _infer_patterns(
         if re.search(r"\d", text) or any(
             re.fullmatch(r"\(\d+\)", ex.strip()) for ex in examples
         ):
-            patterns.append("\\(\\d+\\)$")
+            patterns.append("^\\(\\d+\\)$")
         else:
-            patterns.extend(["\\([a-z]+\\)$", "\\([A-Z]+\\)$"])
+            patterns.extend(["^\\([a-z]+\\)$", "^\\([A-Z]+\\)$"])
 
     # ── Language-specific Chinese patterns ────────────────────────────────
     lang_norm = language.strip().lower()
@@ -199,7 +199,7 @@ def _depth_from_level(level: int) -> int:
 
 def _dot_pattern(depth: int) -> str:
     segment = "[0-9]+"
-    return (segment + ("\\." + segment) * (depth - 1)) + "$"
+    return "^" + (segment + ("\\." + segment) * (depth - 1)) + "$"
 
 
 def _pattern_from_example(example: str) -> str | None:
@@ -208,28 +208,28 @@ def _pattern_from_example(example: str) -> str | None:
         return None
 
     if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", example):
-        return "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"
+        return "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"
     if re.fullmatch(r"\d+\.\d+\.\d+", example):
-        return "[0-9]+\\.[0-9]+\\.[0-9]+$"
+        return "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     if re.fullmatch(r"\d+\.\d+", example):
-        return "[0-9]+\\.[0-9]+$"
+        return "^[0-9]+\\.[0-9]+$"
     if re.fullmatch(r"\d+[a-z]+", example):
-        return "[0-9]+[a-z]+$"
+        return "^[0-9]+[a-z]+$"
     if re.fullmatch(r"\d+", example):
-        return "[0-9]+$"
+        return "^[0-9]+$"
     if re.fullmatch(r"[IVXLCDM]+", example):
-        return "[IVXLCDM]+$"
+        return "^[IVXLCDM]+$"
     if re.fullmatch(r"[ivxlcdm]+", example):
-        return "[ivxlcdm]+$"
+        return "^[ivxlcdm]+$"
     if re.fullmatch(r"[A-Z]+", example):
-        return "[A-Z]+$"
+        return "^[A-Z]+$"
     if re.fullmatch(r"[a-z]+", example):
-        return "[a-z]+$"
+        return "^[a-z]+$"
     if re.fullmatch(r"\([a-z]+\)", example):
-        return "\\([a-z]+\\)$"
+        return "^\\([a-z]+\\)$"
     if re.fullmatch(r"\([A-Z]+\)", example):
-        return "\\([A-Z]+\\)$"
+        return "^\\([A-Z]+\\)$"
     if re.fullmatch(r"\(\d+\)", example):
-        return "\\(\\d+\\)$"
+        return "^\\(\\d+\\)$"
 
     return None
