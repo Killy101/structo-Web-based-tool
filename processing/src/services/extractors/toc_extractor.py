@@ -22,7 +22,12 @@ import re
 #   "Hardcoded – /us"          → "/us"
 #   "Hardcoded –/aladmincode"  → "/aladmincode"
 #   "Hardcoded - /de"          → "/de"
-_HARDCODED_PATH_RE = re.compile(r"hardcoded\s*[–\-—]?\s*(/\S+)", re.IGNORECASE)
+#   "Hardcoded: /kr"           → "/kr"   (colon separator)
+_HARDCODED_PATH_RE = re.compile(r"hardcoded\s*[–\-—:]?\s*(/\S+)", re.IGNORECASE)
+
+# Matches a definition that is *just* a path, e.g. "/kr" or "/KRNARKActs"
+# Used as a fallback for Level 0/1 when there is no "Hardcoded" keyword.
+_BARE_PATH_RE = re.compile(r"^\s*(/[A-Za-z][A-Za-z0-9_/-]*)\s*$")
 
 
 def _extract_path_from_definition(definition: str) -> str:
@@ -30,10 +35,16 @@ def _extract_path_from_definition(definition: str) -> str:
     Pull the path segment out of a Level 0 / Level 1 definition, e.g.:
       "Hardcoded – /us"         → "/us"
       "Hardcoded –/aladmincode" → "/aladmincode"
+      "Hardcoded: /kr"          → "/kr"
+      "/KRNARKActs"             → "/KRNARKActs"  (bare path, no keyword)
     Returns "" if no path is found.
     """
     m = _HARDCODED_PATH_RE.search(definition)
-    return m.group(1).rstrip(".,;") if m else ""
+    if m:
+        return m.group(1).rstrip(".,;")
+    # Fallback: definition is itself a bare path segment (e.g. KR.NARK Level 0/1)
+    m2 = _BARE_PATH_RE.match(definition)
+    return m2.group(1).rstrip(".,;") if m2 else ""
 
 def _clean(text: str) -> str:
     """Normalise whitespace while preserving meaningful line breaks."""
