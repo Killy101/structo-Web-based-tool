@@ -796,20 +796,20 @@ function SortableTable({
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
-          <tr className="bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
+          <tr className="bg-gradient-to-r from-slate-50 to-slate-100/80 dark:from-slate-800 dark:to-slate-800/60 border-b-2 border-slate-200 dark:border-slate-700">
             {SORT_COLS.map(({ label, key }) => {
               const active = sortKey === key;
               return (
                 <th
                   key={key}
-                  className="px-4 py-3 text-left font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest text-[10px]"
+                  className="px-4 py-3.5 text-left"
                 >
                   <button
                     onClick={() => onSort(key)}
-                    className={`inline-flex items-center gap-1.5 font-semibold text-xs uppercase tracking-wider transition-colors ${
+                    className={`inline-flex items-center gap-1.5 font-bold text-[10px] uppercase tracking-widest transition-colors ${
                       active
                         ? "text-blue-600 dark:text-blue-400"
-                        : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                        : "text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
                     }`}
                   >
                     {label}
@@ -819,54 +819,40 @@ function SortableTable({
               );
             })}
 
-            <th
-              className="px-4 py-3 text-center font-bold text-slate-500 dark:text-slat
-            e-400 uppercase tracking-widest text-[10px]"
-            >
+            <th className="px-4 py-3.5 text-center font-bold text-[10px] uppercase tracking-widest text-slate-500 dark:text-slate-400">
               Actions
             </th>
           </tr>
         </thead>
 
-        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
           {isLoading ? (
             <tr>
               <td
                 colSpan={6}
-                className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
+                className="px-4 py-14 text-center text-slate-400 dark:text-slate-500"
               >
-                <div className="flex items-center justify-center gap-2">
-                  <svg
-                    className="animate-spin w-4 h-4 text-blue-500"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      opacity="0.2"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                      opacity="0.8"
-                    />
+                <div className="flex flex-col items-center justify-center gap-3">
+                  <svg className="animate-spin w-6 h-6 text-blue-500" fill="none" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
+                    <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
                   </svg>
-                  <span className="text-xs font-medium">Loading users...</span>
+                  <span className="text-xs font-medium text-slate-500">Loading users…</span>
                 </div>
               </td>
             </tr>
           ) : data.length === 0 ? (
             <tr>
-              <td
-                colSpan={6}
-                className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
-              >
-                <div className="text-2xl mb-2">Users</div>
-                <div className="font-medium">No users match your search</div>
+              <td colSpan={6} className="px-4 py-16 text-center">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                    <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128H5.228A2 2 0 013 17.208V17.13a4.002 4.002 0 013.01-3.878 6.018 6.018 0 013.99.515M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+                    </svg>
+                  </div>
+                  <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">No users match your search</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">Try adjusting your filters</p>
+                </div>
               </td>
             </tr>
           ) : (
@@ -878,9 +864,9 @@ function SortableTable({
               return (
                 <tr
                   key={u.id}
-                  className={`group transition-colors hover:bg-blue-50/60 dark:hover:bg-slate-800/50 ${idx % 2 === 0 ? "bg-white dark:bg-transparent" : "bg-slate-50/60 dark:bg-slate-800/20"}`}
+                  className={`group transition-all hover:bg-blue-50/70 dark:hover:bg-blue-950/20 ${idx % 2 === 0 ? "bg-white dark:bg-transparent" : "bg-slate-50/50 dark:bg-slate-800/10"} ${isSelf ? "ring-1 ring-inset ring-blue-100 dark:ring-blue-900/30" : ""}`}
                 >
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <div className="flex items-center gap-3">
                       <EnhancedAvatar user={u} />
                       <div className="min-w-0">
@@ -889,23 +875,23 @@ function SortableTable({
                             {hasName ? getDisplayName(u) : u.userId}
                           </p>
                           {isSelf && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/50">
                               You
                             </span>
                           )}
                           {isNewUser(u.createdAt) && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-800/50">
                               New
                             </span>
                           )}
                         </div>
                         {hasName && u.userId && (
-                          <p className="text-[11px] font-medium text-slate-400 mt-0.5 tracking-wide">
+                          <p className="text-[11px] font-mono font-medium text-slate-400 dark:text-slate-500 mt-0.5 tracking-wide">
                             {u.userId}
                           </p>
                         )}
                         {u.email && (
-                          <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                          <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 truncate">
                             {u.email}
                           </p>
                         )}
@@ -913,43 +899,43 @@ function SortableTable({
                     </div>
                   </td>
 
-                  <td className="px-4 py-3">
-                    <span className="text-xs text-slate-600 dark:text-slate-300">
-                      {u.team?.name ?? (
-                        <span className="text-slate-400 italic">No team</span>
-                      )}
-                    </span>
+                  <td className="px-4 py-3.5">
+                    {u.team?.name ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                        {u.team.name}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">No team</span>
+                    )}
                   </td>
 
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <Badge className={getUserRoleBadgeColor(u)}>
                       {getUserRoleLabel(u)}
                     </Badge>
                   </td>
 
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
+                  <td className="px-4 py-3.5">
+                    <div className="flex items-center gap-1.5">
                       <StatusDot active={isActive} />
-                      <span
-                        className={`text-xs font-medium ${isActive ? "text-slate-700 dark:text-slate-300" : "text-slate-400"}`}
-                      >
+                      <span className={`text-xs font-semibold ${isActive ? "text-emerald-700 dark:text-emerald-400" : "text-slate-400 dark:text-slate-500"}`}>
                         {isActive ? "Active" : "Inactive"}
                       </span>
                     </div>
                   </td>
 
-                  <td className="px-4 py-3">
-                    <span className="text-xs font-medium text-slate-400">
+                  <td className="px-4 py-3.5">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
                       {formatDate(u.createdAt)}
                     </span>
                   </td>
 
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3.5">
                     <div className="flex items-center justify-end gap-1">
                       <button
                         onClick={() => onViewDetails(u)}
                         title="View profile"
-                        className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all"
+                        className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all"
                       >
                         <EyeIcon />
                       </button>
@@ -3121,28 +3107,41 @@ export default function UsersPage() {
 
   return (
     <div className="h-full w-full min-h-0 flex flex-col text-xs">
-      {/* ── Enhanced Header with Title ── */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-900 dark:to-slate-800 border-b border-slate-200 dark:border-slate-700 px-6 py-4 shrink-0">
-        <div className="flex items-center justify-between gap-4">
+      {/* ── Header ── */}
+      <div className="relative bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-700 dark:from-blue-800 dark:via-indigo-800 dark:to-violet-900 border-b border-blue-700/30 px-6 py-5 shrink-0 overflow-hidden">
+        {/* Decorative circles */}
+        <div className="absolute -right-8 -top-8 w-48 h-48 rounded-full bg-white/5 pointer-events-none" />
+        <div className="absolute right-32 bottom-0 w-24 h-24 rounded-full bg-white/5 pointer-events-none translate-y-1/2" />
+        <div className="absolute right-4 top-2 w-10 h-10 rounded-full bg-white/10 pointer-events-none" />
+        <div className="relative flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-1">
+            <p className="text-blue-200 text-xs font-semibold uppercase tracking-widest mb-0.5">
+              {actorTeamName ? actorTeamName : "Administration"}
+            </p>
+            <h1 className="text-2xl font-bold text-white leading-tight">
               {headerTitle}
             </h1>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              {actorTeamName ? `${actorTeamName} • ` : ""}
+            <p className="text-sm text-blue-100/75 mt-0.5">
               {users.length} total user{users.length !== 1 ? "s" : ""}
-              {isFiltering && ` • ${filtered.length} match your filters`}
+              {isFiltering && (
+                <span className="ml-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/10 text-white/80 text-xs">
+                  {filtered.length} matching
+                </span>
+              )}
             </p>
           </div>
           {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
-            <Button onClick={() => setShowCreate(true)} className="shrink-0">
+            <button
+              onClick={() => setShowCreate(true)}
+              className="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white text-blue-700 font-semibold text-sm shadow-lg hover:bg-blue-50 transition-all active:scale-95"
+            >
               <PlusIcon /> Add New User
-            </Button>
+            </button>
           )}
         </div>
       </div>
 
-      {/* ── Advanced Toolbar with Better Organization ── */}
+      {/* ── Toolbar ── */}
       <div className="px-6 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
         <div className="space-y-3">
           {/* Row 1: Search and action buttons */}
@@ -3159,7 +3158,7 @@ export default function UsersPage() {
                 placeholder="Search by ID, name, or email…"
                 autoComplete="off"
                 name="user-search"
-                className="pl-9 pr-7 py-2 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-500 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-200 dark:focus:ring-blue-900/30 transition-all"
+                className="pl-9 pr-7 py-2 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900/30 shadow-sm transition-all"
               />
               {search && (
                 <button
@@ -3171,17 +3170,15 @@ export default function UsersPage() {
               )}
             </div>
             <button
-              onClick={() => {
-                void refetch();
-              }}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              onClick={() => { void refetch(); }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:border-slate-300 shadow-sm transition-all"
             >
               <RefreshIcon /> <span className="hidden sm:inline">Refresh</span>
             </button>
             <button
               onClick={handleExportCSV}
               disabled={filtered.length === 0}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-200 dark:border-emerald-800/40 text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-900/10 text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/20 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-all"
             >
               <DownloadIcon /> <span className="hidden sm:inline">Export</span>
             </button>
@@ -3189,7 +3186,7 @@ export default function UsersPage() {
 
           {/* Row 2: Filters and sorting */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
               Filter:
             </span>
             
@@ -3243,7 +3240,7 @@ export default function UsersPage() {
               {chevronDown}
             </div>
 
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider ml-auto">
+            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-auto">
               Sort:
             </span>
             <div className="relative">
@@ -3320,23 +3317,23 @@ export default function UsersPage() {
         </Card>
       )}
 
-      {/* ── Stat Cards (with icons) ── */}
+      {/* ── Stat Cards ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         {statCards.map((s) => (
           <div
             key={s.label}
-            className={`rounded-2xl p-4 flex items-center gap-3.5 bg-gradient-to-br ${s.gradient} border ${s.border} hover:shadow-md transition-shadow`}
+            className={`rounded-2xl p-4 flex items-center gap-4 bg-gradient-to-br ${s.gradient} border ${s.border} hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 cursor-default`}
           >
             <div
-              className={`w-10 h-10 rounded-xl ${s.iconBg} flex items-center justify-center flex-shrink-0`}
+              className={`w-11 h-11 rounded-xl ${s.iconBg} flex items-center justify-center flex-shrink-0 shadow-sm`}
             >
-              <div className={`${s.iconClass} opacity-80`}>{s.icon}</div>
+              <div className={`${s.iconClass}`}>{s.icon}</div>
             </div>
             <div>
-              <div className={`text-2xl font-bold leading-none ${s.numClass}`}>
+              <div className={`text-3xl font-extrabold leading-none tabular-nums ${s.numClass}`}>
                 {s.value}
               </div>
-              <div className={`text-xs mt-1 font-semibold ${s.lblClass}`}>
+              <div className={`text-xs mt-1 font-semibold tracking-wide ${s.lblClass}`}>
                 {s.label}
               </div>
             </div>
@@ -3376,48 +3373,42 @@ export default function UsersPage() {
 
       {/* ── Pagination ── */}
       {!error && !isLoading && filtered.length > 0 && totalPages > 1 && (
-        <Card className="p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-xs text-slate-600 dark:text-slate-400">
-              Showing {startIdx + 1} to {Math.min(endIdx, filtered.length)} of{" "}
-              {filtered.length} results
+        <Card className="p-3 border-slate-100 dark:border-slate-800">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              Showing <span className="font-semibold text-slate-700 dark:text-slate-300">{startIdx + 1}–{Math.min(endIdx, filtered.length)}</span> of{" "}
+              <span className="font-semibold text-slate-700 dark:text-slate-300">{filtered.length}</span> users
             </div>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                 disabled={effectiveCurrentPage === 1}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:border-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
-                Previous
+                ← Prev
               </button>
               {getPageNumbers().map((page, idx) => (
                 <button
                   key={idx}
-                  onClick={() =>
-                    typeof page === "number" && setCurrentPage(page)
-                  }
+                  onClick={() => typeof page === "number" && setCurrentPage(page)}
                   disabled={page === "..."}
-                  className={`min-w-[2rem] px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`min-w-[2rem] px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
                     page === effectiveCurrentPage
-                      ? "bg-blue-600 dark:bg-blue-500 text-white shadow-sm"
+                      ? "bg-blue-600 dark:bg-blue-500 text-white shadow-md shadow-blue-200 dark:shadow-blue-900/40"
                       : page === "..."
                         ? "text-slate-400 dark:text-slate-600 cursor-default"
-                        : "border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                        : "border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
                   }`}
                 >
                   {page}
                 </button>
               ))}
               <button
-                onClick={() =>
-                  setCurrentPage((p) =>
-                    Math.min(Math.max(totalPages, 1), p + 1),
-                  )
-                }
+                onClick={() => setCurrentPage((p) => Math.min(Math.max(totalPages, 1), p + 1))}
                 disabled={effectiveCurrentPage === totalPages}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:border-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
-                Next
+                Next →
               </button>
             </div>
           </div>

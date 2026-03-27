@@ -8,6 +8,7 @@ import {
   Input,
   Modal,
   Table,
+  Textarea,
   ToastContainer,
 } from "../../../components/ui";
 import Unauthorized from "../../../components/layout/Unauthorized";
@@ -1504,7 +1505,7 @@ export default function SettingsPage() {
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 pt-2">
-                    <Input
+                    <Textarea
                       label="Maintenance Banner Message"
                       value={operationsPolicy.maintenanceBannerMessage}
                       onChange={(e) =>
@@ -1514,29 +1515,42 @@ export default function SettingsPage() {
                         }))
                       }
                       placeholder="Message shown in maintenance banner and API responses"
+                      rows={3}
                     />
-                    <Input
-                      label="Maintenance Window Start (UTC)"
-                      value={operationsPolicy.maintenanceWindowStartUtc}
-                      onChange={(e) =>
-                        setOperationsPolicy((prev) => ({
-                          ...prev,
-                          maintenanceWindowStartUtc: e.target.value,
-                        }))
-                      }
-                      placeholder="e.g. 2:00AM UTC - March 19th, 2026"
-                    />
-                    <Input
-                      label="Maintenance Window End (UTC)"
-                      value={operationsPolicy.maintenanceWindowEndUtc}
-                      onChange={(e) =>
-                        setOperationsPolicy((prev) => ({
-                          ...prev,
-                          maintenanceWindowEndUtc: e.target.value,
-                        }))
-                      }
-                      placeholder="e.g. 3:00AM UTC - March 19th, 2026"
-                    />
+                    <div className="space-y-1.5">
+                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Maintenance Window Start (UTC)
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={operationsPolicy.maintenanceWindowStartUtc}
+                        onChange={(e) =>
+                          setOperationsPolicy((prev) => ({
+                            ...prev,
+                            maintenanceWindowStartUtc: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0] focus:border-transparent transition-all"
+                      />
+                      <p className="text-[11px] text-slate-400">Enter date and time in UTC</p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        Maintenance Window End (UTC)
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={operationsPolicy.maintenanceWindowEndUtc}
+                        onChange={(e) =>
+                          setOperationsPolicy((prev) => ({
+                            ...prev,
+                            maintenanceWindowEndUtc: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1a56f0] focus:border-transparent transition-all"
+                      />
+                      <p className="text-[11px] text-slate-400">Enter date and time in UTC</p>
+                    </div>
                     <Input
                       label="Maintenance Learn More URL"
                       value={operationsPolicy.maintenanceLearnMoreUrl}
