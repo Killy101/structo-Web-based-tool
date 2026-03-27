@@ -36,16 +36,42 @@ router.get('/:brdId/images', async (req: AuthRequest, res: Response) => {
   try {
     if (!(await ensureReadableBrd(req, res))) return
 
-    const { rows: images } = await pool.query(
-      `SELECT id, table_index as "tableIndex", row_index as "rowIndex",
-              col_index as "colIndex", rid, media_name as "mediaName",
-              mime_type as "mimeType", cell_text as "cellText",
-              section, field_label as "fieldLabel"
-       FROM brd_cell_images
-       WHERE brd_id = $1
-       ORDER BY table_index ASC, row_index ASC, col_index ASC`,
-      [String(req.params.brdId)],
-    )
+    const section = String(req.query.section ?? '').trim().toLowerCase()
+    const legacyFallbackTableIndex: Record<string, number> = {
+      toc: 2,
+      scope: 3,
+      citations: 4,
+      metadata: 5,
+      contentprofile: 6,
+    }
+
+    const brdId = String(req.params.brdId)
+    const fallbackIndex = legacyFallbackTableIndex[section]
+    const { rows: images } = section && Number.isFinite(fallbackIndex)
+      ? await pool.query(
+          `SELECT id, table_index as "tableIndex", row_index as "rowIndex",
+                  col_index as "colIndex", rid, media_name as "mediaName",
+                  mime_type as "mimeType", cell_text as "cellText",
+                  section, field_label as "fieldLabel"
+           FROM brd_cell_images
+           WHERE brd_id = $1
+             AND (
+               LOWER(COALESCE(section, '')) = $2
+               OR ((section IS NULL OR section = 'unknown') AND table_index = $3)
+             )
+           ORDER BY table_index ASC, row_index ASC, col_index ASC`,
+          [brdId, section, fallbackIndex],
+        )
+      : await pool.query(
+          `SELECT id, table_index as "tableIndex", row_index as "rowIndex",
+                  col_index as "colIndex", rid, media_name as "mediaName",
+                  mime_type as "mimeType", cell_text as "cellText",
+                  section, field_label as "fieldLabel"
+           FROM brd_cell_images
+           WHERE brd_id = $1
+           ORDER BY table_index ASC, row_index ASC, col_index ASC`,
+          [brdId],
+        )
 
     return res.json({ images })
   } catch (err) {

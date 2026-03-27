@@ -389,8 +389,12 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     
     const fetchImages = async () => {
       try {
-        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`);
-        const all: CellImageMeta[] = response.data.images ?? [];
+        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images?section=contentProfile`, { timeout: 30000 });
+        let all: CellImageMeta[] = response.data.images ?? [];
+        if (all.length === 0) {
+          const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
+          all = fallback.data.images ?? [];
+        }
         const cpImgs = all.filter(img => { const t = normCP(img.cellText || ""); return CP_KW.some(kw => t.includes(kw)); });
         setContentImages(cpImgs.length > 0 ? cpImgs : all);
         // Restore manually uploaded images into cellImages

@@ -668,11 +668,39 @@ export default function BrdPage() {
     if (!canDeleteBrd) return;
 
     setDeleteLoading(true);
+    setFetchError(null);
     try {
-      await Promise.all([...selected].map(id => api.delete(`/brd/${id}`)));
-      setBrds(prev => prev.filter(b => !selected.has(b.id)));
-      setSelected(new Set()); setBulkDeleteOpen(false);
-    } catch (err) { console.error("Failed to bulk delete:", err); }
+      const ids = [...selected];
+      const deletedIds = new Set<string>();
+      const failedIds: string[] = [];
+
+      // Delete one-by-one to avoid request bursts timing out on slower environments.
+      for (const id of ids) {
+        try {
+          await api.delete(`/brd/${id}`, { timeout: 30000 });
+          deletedIds.add(id);
+        } catch (err) {
+          console.error(`Failed to delete BRD ${id}:`, err);
+          failedIds.push(id);
+        }
+      }
+
+      if (deletedIds.size > 0) {
+        setBrds(prev => prev.filter(b => !deletedIds.has(b.id)));
+      }
+
+      if (failedIds.length > 0) {
+        setSelected(new Set(failedIds));
+        setFetchError(`Deleted ${deletedIds.size} of ${ids.length}. Timed out/failed: ${failedIds.join(", ")}. Please retry.`);
+      } else {
+        setSelected(new Set());
+        setBulkDeleteOpen(false);
+      }
+    } catch (err) {
+      console.error("Failed to bulk delete:", err);
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setFetchError(error?.response?.data?.error ?? error?.message ?? "Failed to bulk delete");
+    }
     finally { setDeleteLoading(false); }
   };
 

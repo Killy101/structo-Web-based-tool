@@ -221,8 +221,12 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     if (!brdId) return;
     const fetchImages = async () => {
       try {
-        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`);
-        const all: CellImageMeta[] = response.data.images ?? [];
+        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images?section=citations`, { timeout: 30000 });
+        let all: CellImageMeta[] = response.data.images ?? [];
+        if (all.length === 0) {
+          const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
+          all = fallback.data.images ?? [];
+        }
         // Keep citation images: by section tag (new records) or tableIndex=4 (old/stale records)
         setImages(all.filter(img =>
           img.section === "citations" ||

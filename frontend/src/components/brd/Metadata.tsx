@@ -167,8 +167,12 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     if (!brdId) return;
     const fetchImages = async () => {
       try {
-        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`);
-        const all: CellImageMeta[] = response.data.images ?? [];
+        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images?section=metadata`, { timeout: 30000 });
+        let all: CellImageMeta[] = response.data.images ?? [];
+        if (all.length === 0) {
+          const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
+          all = fallback.data.images ?? [];
+        }
         // section="metadata" for new records; tableIndex=5 fallback for stale DB records
         setImages(all.filter(img =>
           img.section === "metadata" ||

@@ -902,9 +902,14 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
 
   useEffect(() => {
     if (!brdId) return;
-    api.get<{ images: Array<{ id: number; mediaName: string; mimeType: string; cellText: string; section: string; fieldLabel: string; rid: string }> }>(`/brd/${brdId}/images`)
+    api.get<{ images: Array<{ id: number; mediaName: string; mimeType: string; cellText: string; section: string; fieldLabel: string; rid: string }> }>(`/brd/${brdId}/images?section=scope`, { timeout: 30000 })
       .then(res => {
-        const manualImgs = (res.data.images ?? []).filter(img => img.section === "scope" && img.rid?.startsWith("manual-"));
+        const scoped = res.data.images ?? [];
+        if (scoped.length > 0) return scoped;
+        return api.get<{ images: Array<{ id: number; mediaName: string; mimeType: string; cellText: string; section: string; fieldLabel: string; rid: string }> }>(`/brd/${brdId}/images`, { timeout: 30000 }).then(fallback => fallback.data.images ?? []);
+      })
+      .then(allImages => {
+        const manualImgs = (allImages ?? []).filter(img => img.section === "scope" && img.rid?.startsWith("manual-"));
         const restored: Record<string, UploadedCellImage[]> = {};
         manualImgs.forEach(img => {
           const key = img.fieldLabel ?? "";

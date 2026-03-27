@@ -26,7 +26,7 @@ function useCellImages(brdId?: string, enabled = true) {
   useEffect(() => {
     if (!enabled || !brdId) return;
     api
-      .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`)
+      .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 })
       .then(r => {
         console.log(`[useCellImages] Fetched ${r.data.images?.length || 0} images for BRD ${brdId}`);
         setImages(r.data.images ?? []);

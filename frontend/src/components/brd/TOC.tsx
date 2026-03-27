@@ -396,8 +396,12 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     if (!brdId) return;
     const fetchImages = async () => {
       try {
-        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`);
-        const all: CellImageMeta[] = response.data.images ?? [];
+        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images?section=toc`, { timeout: 30000 });
+        let all: CellImageMeta[] = response.data.images ?? [];
+        if (all.length === 0) {
+          const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
+          all = fallback.data.images ?? [];
+        }
         // Use section tag if present (new records), fall back to tableIndex=2 (old records)
         const tocImages = all.filter(img =>
           img.section === "toc" || ((!img.section || img.section === "unknown") && img.tableIndex === 2)
