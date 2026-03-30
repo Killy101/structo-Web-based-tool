@@ -434,26 +434,16 @@ export default function DashboardPage() {
   type Act = { id: string; at: string; action: string; user: string; source: string; tag: string };
 
   const acts: Act[] = useMemo(() => {
-    const fromLogs: Act[] = logs.map(l => ({
+    return logs.map(l => ({
       id:     `l${l.id}`,
       at:     l.createdAt,
       action: l.action.replace(/_/g, " "),
       user:   `${l.user?.firstName ?? ""} ${l.user?.lastName ?? ""}`.trim() || "—",
       source: l.details?.slice(0, 14) ?? "—",
       tag:    "SYSTEM",
-    }));
-    const fromFiles: Act[] = (stats?.recentActivity ?? []).map(f => ({
-      id:     `f${f.id}`,
-      at:     f.uploadedAt,
-      action: f.originalName?.slice(0, 20) ?? "File",
-      user:   `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""}`.trim() || "—",
-      source: (() => { const b = brds.find(x => x.id === String(f.brdId)); return b ? brdDisplayTitle(b).slice(0, 16) : "—"; })(),
-      tag:    f.status,
-    }));
-    return [...fromLogs, ...fromFiles]
-      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
-      .slice(0, 100);
-  }, [logs, stats?.recentActivity, brds]);
+    })).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+       .slice(0, 100);
+  }, [logs]);
 
   const totalTxp = Math.max(1, Math.ceil(acts.length / TXN_SIZE));
   useEffect(() => { if (txp > totalTxp) setTxp(totalTxp); }, [txp, totalTxp]);
@@ -462,10 +452,6 @@ export default function DashboardPage() {
 
 
   const totalUsers  = stats?.usersByRole?.reduce((a, b) => a + b.count, 0) ?? 0;
-  const totalTasks  = (stats?.tasksByStatus ?? []).reduce((a, b) => a + b.count, 0);
-  const totalDocs   = stats?.totalFiles ?? 0;
-  const pending     = stats?.pendingValidation ?? 0;
-  const uploads7d   = stats?.recentUploads7d ?? 0;
 
   // Derive BRD stats directly from the real Brd[] — no approximations
   const totalBrds = brds.length;
@@ -514,12 +500,10 @@ export default function DashboardPage() {
   /* Donut rings */
   const RING_C = [
     { l:"BRDs",  v:totalBrds,  color:"#1a6bff", trackL:"#dbeafe", trackD:"rgba(26,107,255,.14)" },
-    { l:"Docs",  v:totalDocs,  color:"#00c2ff", trackL:"#cffafe", trackD:"rgba(0,194,255,.12)"  },
-    { l:"Tasks", v:totalTasks, color:"#7c3aed", trackL:"#ede9fe", trackD:"rgba(124,58,237,.13)" },
     { l:"Users", v:totalUsers, color:"#16a34a", trackL:"#dcfce7", trackD:"rgba(22,163,74,.13)"  },
   ];
   // Ring fill = that metric as % of the combined total (visual proportion)
-  const sumOf4 = Math.max(totalBrds + totalDocs + totalTasks + totalUsers, 1);
+  const sumOf4 = Math.max(totalBrds + totalUsers, 1);
   const ringSegs = RING_C.map(r => ({
     pct:   r.v === 0 ? 0 : Math.max(5, Math.round((r.v / sumOf4) * 90)),
     color: r.color,
@@ -574,9 +558,7 @@ export default function DashboardPage() {
           <div className="db-kpi grid grid-cols-2 gap-3">
             {[
               { label:"BRD Sources", val:totalBrds,  sub:"total registered" },
-              { label:"Documents",   val:totalDocs,   sub:uploads7d > 0 ? `${uploads7d} uploaded this week` : "no uploads this week" },
-              { label:"Pending",     val:pending,     sub:pending > 0 ? "awaiting review" : "none pending" },
-              { label:"Users",       val:totalUsers,  sub:totalTasks > 0 ? `${totalTasks} active tasks` : "no active tasks" },
+              { label:"Users",       val:totalUsers,  sub:"registered accounts" },
             ].map((k, i) => (
               <div key={k.label} className={`${C} u d${i+1}`} style={{ padding: "16px 18px 14px", minHeight: 100 }}>
                 <p className="text-[11px] font-medium mb-2.5" style={{ color:"var(--c-sub)" }}>{k.label}</p>
@@ -770,18 +752,14 @@ export default function DashboardPage() {
             </div>
             {(() => {
               const features = [
-                { label: "BRD",              short: "BRD",     count: totalBrds, color: "#1a6bff" },
-                { label: "Metajson Creation", short: "Meta",   count: (stats?.filesByStatus ?? []).find(s => (s.status as string) === "COMPLETED")?.count ?? 0, color: "#00c2ff" },
-                { label: "Content Profile",   short: "Profile", count: (stats?.filesByStatus ?? []).find(s => (s.status as string) === "IN_PROGRESS" || (s.status as string) === "PENDING")?.count ?? 0, color: "#7c3aed" },
-                { label: "Compare Tool",      short: "Compare", count: pending,  color: "#16a34a" },
+                { label: "BRD Sources", short: "BRD",     count: totalBrds,  color: "#1a6bff" },
+                { label: "Users",       short: "Users",   count: totalUsers, color: "#16a34a" },
               ];
               const maxVal = Math.max(...features.map(f => f.count), 1);
               const W = 340, H = 200;
               const positions = [
-                { cx: 72,  cy: 95  },
-                { cx: 195, cy: 70  },
-                { cx: 278, cy: 115 },
-                { cx: 155, cy: 155 },
+                { cx: 110, cy: 100 },
+                { cx: 240, cy: 100 },
               ];
               return (
                 <div className="flex-1 flex flex-col">
@@ -833,10 +811,8 @@ export default function DashboardPage() {
                   {/* Legend row */}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
                     {[
-                      { label: "BRD",               color: "#1a6bff" },
-                      { label: "Metajson Creation",  color: "#00c2ff" },
-                      { label: "Content Profile",    color: "#7c3aed" },
-                      { label: "Compare Tool",       color: "#16a34a" },
+                      { label: "BRD Sources", color: "#1a6bff" },
+                      { label: "Users",       color: "#16a34a" },
                     ].map(f => (
                       <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
                         <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
@@ -853,33 +829,6 @@ export default function DashboardPage() {
 
         {/* ╔══════════ COL 3 — sidebar ══════════╗ */}
         <div className="db-col3 flex flex-col gap-4 min-w-0">
-
-          {/* Tasks breakdown — real data */}
-          <div className={`${C} u d1 p-4`}>
-            <div className="flex justify-between items-center mb-3">
-              <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Tasks</p>
-              <span className="jb text-[11px]" style={{color:"var(--c-sub)"}}>{totalTasks} total</span>
-            </div>
-            {(stats?.tasksByStatus ?? []).length === 0
-              ? <p className="text-[11px] text-center py-3" style={{color:"var(--c-dim)"}}>No tasks yet</p>
-              : (stats?.tasksByStatus ?? []).map((t, i) => {
-                  const pct   = totalTasks > 0 ? Math.round((t.count / totalTasks) * 100) : 0;
-                  const cols  = ["#1a6bff","#22c55e","#f59e0b","#ef4444","#a855f7"];
-                  const color = cols[i % cols.length];
-                  return (
-                    <div key={t.status} className="mb-2.5 last:mb-0">
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span style={{color:"var(--c-sub)"}}>{t.status.replace(/_/g," ")}</span>
-                        <span className="jb" style={{color:"var(--c-txt)"}}>{t.count}</span>
-                      </div>
-                      <div className="pb" style={{height:5}}>
-                        <div className="pf" style={{ width:`${pct}%`, background:color, animationDelay:`${.1+i*.06}s` }} />
-                      </div>
-                    </div>
-                  );
-                })
-            }
-          </div>
 
           {/* Balance */}
           <div className={`${C} u d2 p-4`}>

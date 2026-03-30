@@ -969,15 +969,6 @@ export default function SettingsPage() {
       ),
     },
     {
-      key: "tasks",
-      header: "Tasks",
-      render: (row: Team) => (
-        <span className="text-sm text-slate-600 dark:text-slate-400">
-          {row._count?.taskAssignments ?? 0}
-        </span>
-      ),
-    },
-    {
       key: "created",
       header: "Created",
       render: (row: Team) => (
