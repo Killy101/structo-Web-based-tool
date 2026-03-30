@@ -1,11 +1,11 @@
 """
-pdf_chunk.py — LangChain-powered PDF chunking & XML change-detection service.
+pdf_chunk.py — PDF chunking & XML change-detection service.
 
 Pipeline per request
 ────────────────────
 1. Extract text from OLD PDF  (PyMuPDF / fitz)
 2. Extract text from NEW PDF  (PyMuPDF / fitz)
-3. Chunk BOTH with LangChain RecursiveCharacterTextSplitter
+3. Chunk BOTH with RecursiveCharacterTextSplitter (native implementation)
 4. Chunk the XML file with the existing xml_compare.chunk_xml helper
 5. Align NEW-PDF chunks ↔ XML chunks by position index
 6. Detect changes: compare each NEW-PDF chunk against its OLD-PDF counterpart
@@ -13,7 +13,7 @@ Pipeline per request
 
 Dependencies
 ────────────
-    pip install pymupdf langchain langchain-text-splitters
+    pip install pymupdf
 
 The XML chunking still relies on src.services.xml_compare so the existing
 tag/attribute filtering is preserved.
@@ -28,8 +28,6 @@ from collections import Counter
 from typing import Optional, Any
 
 import fitz  # PyMuPDF
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.services.xml_compare import chunk_xml, chunk_xml_smart
 from src.services.word_compare import compare_words, chunk_has_real_changes
@@ -617,16 +615,46 @@ def _langchain_chunks(
     chunk_overlap: int = 150,
 ) -> list[str]:
     """
-    Split plain text into chunks using LangChain's
-    RecursiveCharacterTextSplitter (avoids mid-sentence splits).
+    Split plain text into chunks using a recursive character splitter
+    (avoids mid-sentence splits). Native replacement for LangChain's
+    RecursiveCharacterTextSplitter.
     """
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-    return splitter.split_text(text)
+    separators = ["\n\n", "\n", ". ", " ", ""]
+
+    def _split(t: str, seps: list[str]) -> list[str]:
+        if not seps:
+            return [t] if t else []
+        sep = seps[0]
+        parts = t.split(sep) if sep else list(t)
+        chunks: list[str] = []
+        current = ""
+        for part in parts:
+            segment = part + (sep if sep else "")
+            if len(current) + len(segment) <= chunk_size:
+                current += segment
+            else:
+                if current:
+                    chunks.append(current.rstrip())
+                if len(segment) > chunk_size:
+                    chunks.extend(_split(segment, seps[1:]))
+                    current = ""
+                else:
+                    current = segment
+        if current.strip():
+            chunks.append(current.rstrip())
+        return chunks
+
+    raw = _split(text, separators)
+
+    # Apply overlap: each chunk starts with the tail of the previous one
+    if chunk_overlap <= 0 or len(raw) < 2:
+        return raw
+
+    result: list[str] = [raw[0]]
+    for chunk in raw[1:]:
+        overlap_text = result[-1][-chunk_overlap:]
+        result.append(overlap_text + chunk)
+    return result
 
 
 # ── Change detection ───────────────────────────────────────────────────────────
