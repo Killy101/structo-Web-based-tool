@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import CountUp from 'react-countup';
 import {
@@ -97,17 +97,12 @@ function buildChartData(days: number): ChartNestedDataShape[] {
 
 const CompareUsageChart: React.FC = () => {
   const [selectedPeriod, setSelectedPeriod] = useState(TIME_PERIOD_OPTIONS[0].value);
-  const [chartData, setChartData] = useState<ChartNestedDataShape[]>(() =>
-    buildChartData(TIME_PERIOD_OPTIONS[0].days)
+  const selectedOption = useMemo(
+    () => TIME_PERIOD_OPTIONS.find((o) => o.value === selectedPeriod) ?? TIME_PERIOD_OPTIONS[0],
+    [selectedPeriod]
   );
-  const [totals, setTotals] = useState(() => getCompareUsageTotals());
-
-  // Re-read localStorage whenever the period changes or the component mounts
-  useEffect(() => {
-    const option = TIME_PERIOD_OPTIONS.find(o => o.value === selectedPeriod)!;
-    setChartData(buildChartData(option.days));
-    setTotals(getCompareUsageTotals());
-  }, [selectedPeriod]);
+  const chartData = useMemo(() => buildChartData(selectedOption.days), [selectedOption.days]);
+  const totals = getCompareUsageTotals();
 
   const directPct = totals.total > 0 ? Math.round((totals.direct / totals.total) * 100) : 0;
   const chunkPct  = totals.total > 0 ? Math.round((totals.chunk  / totals.total) * 100) : 0;

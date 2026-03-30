@@ -32,37 +32,37 @@ const CSS = `
 
 /* tokens — light */
 .db {
-  --c-bg:    #f0f4fb;
+  --c-bg:    #f6f8fc;
   --c-card:  #ffffff;
-  --c-b:     #e4eaf4;
-  --c-txt:   #0d1b3e;
-  --c-sub:   #5a6e96;
-  --c-dim:   #96a8c8;
-  --c-a:     #1a6bff;
-  --c-ahi:   #3d8bff;
-  --c-alo:   rgba(26,107,255,.08);
-  --c-sh:    0 1px 2px rgba(13,27,62,.06),0 4px 14px rgba(13,27,62,.06);
-  --c-shl:   0 6px 24px rgba(13,27,62,.11);
+  --c-b:     #e6ebf3;
+  --c-txt:   #0f172a;
+  --c-sub:   #5b667a;
+  --c-dim:   #9aa4b8;
+  --c-a:     #2563eb;
+  --c-ahi:   #3b82f6;
+  --c-alo:   rgba(37,99,235,.08);
+  --c-sh:    0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.05);
+  --c-shl:   0 14px 36px rgba(15,23,42,.10);
 }
 /* tokens — dark */
 .dark .db {
-  --c-bg:    #07101f;
-  --c-card:  #0c1829;
-  --c-b:     #17253f;
-  --c-txt:   #d8e4ff;
-  --c-sub:   #637898;
-  --c-dim:   #374d6a;
-  --c-a:     #3d8bff;
-  --c-ahi:   #6aabff;
-  --c-alo:   rgba(61,139,255,.09);
-  --c-sh:    0 1px 2px rgba(0,0,0,.25),0 4px 14px rgba(0,0,0,.22);
-  --c-shl:   0 6px 24px rgba(0,0,0,.45);
+  --c-bg:    #0a1222;
+  --c-card:  #0f1a2f;
+  --c-b:     #1e2b45;
+  --c-txt:   #e2e8f0;
+  --c-sub:   #8c98ae;
+  --c-dim:   #51607a;
+  --c-a:     #60a5fa;
+  --c-ahi:   #93c5fd;
+  --c-alo:   rgba(96,165,250,.11);
+  --c-sh:    0 2px 8px rgba(0,0,0,.24),0 10px 30px rgba(0,0,0,.24);
+  --c-shl:   0 18px 40px rgba(0,0,0,.48);
 }
 
 .db .card {
   background:var(--c-card);
   border:1px solid var(--c-b);
-  border-radius:16px;
+  border-radius:14px;
   box-shadow:var(--c-sh);
 }
 
@@ -121,7 +121,7 @@ const CSS = `
 /* ── Responsive layout ── */
 .db .db-grid {
   display: grid;
-  gap: 20px;
+  gap: 16px;
   grid-template-columns: minmax(0,1fr) minmax(0,1fr) 270px;
 }
 @media (max-width: 1100px) {
@@ -188,8 +188,6 @@ const DARK: Record<string, SC> = {
 };
 
 /* ─── Accent palette for bars / rings ─────────────────────────────────────── */
-const ACCENTS = ["#1a6bff","#00c2ff","#7c3aed","#16a34a","#e85d04","#db2777"];
-
 /* ─── Helpers ─────────────────────────────────────────────────────────────── */
 function useDark() {
   const [dark, setDark] = useState(false);
@@ -502,8 +500,8 @@ export default function DashboardPage() {
 
   /* Donut rings */
   const RING_C = [
-    { l:"BRDs",  v:totalBrds,  color:"#1a6bff", trackL:"#dbeafe", trackD:"rgba(26,107,255,.14)" },
-    { l:"Users", v:totalUsers, color:"#16a34a", trackL:"#dcfce7", trackD:"rgba(22,163,74,.13)"  },
+    { l:"BRDs",  v:totalBrds,  color:"#2563eb", trackL:"#dbeafe", trackD:"rgba(37,99,235,.22)" },
+    { l:"Users", v:totalUsers, color:"#0f766e", trackL:"#ccfbf1", trackD:"rgba(15,118,110,.22)"  },
   ];
   // Ring fill = that metric as % of the combined total (visual proportion)
   const sumOf4 = Math.max(totalBrds + totalUsers, 1);
@@ -517,7 +515,6 @@ export default function DashboardPage() {
 
   /* BRD status bars — real data from /brd */
   const brdStatuses = brdsByStatus;
-  const brdTotal    = totalBrds || 1;
 
   if (isLoading || brdLoad || logLoad) {
     return (
@@ -535,14 +532,14 @@ export default function DashboardPage() {
   const C = "card";
 
   return (
-    <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 36px" }}>
+    <div className="db" style={{ background: "radial-gradient(circle at 0% 0%, var(--c-alo), transparent 28%), var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 28px", maxWidth: 1700, margin: "0 auto" }}>
       <style>{CSS}</style>
 
       {/* ── Page heading ── */}
-      <div className="db-header u mb-5" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+      <div className="db-header u mb-4" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
         <div>
-          <h1 className="text-[22px] font-extrabold tracking-tight" style={{ color: "var(--c-txt)" }}>Dashboard</h1>
-          <p className="text-[12px] mt-0.5" style={{ color: "var(--c-sub)" }}>
+          <h1 className="text-[20px] font-bold tracking-tight" style={{ color: "var(--c-txt)" }}>Dashboard</h1>
+          <p className="text-[11px] mt-0.5" style={{ color: "var(--c-sub)" }}>
             {user?.firstName ? `Welcome back, ${user.firstName}` : "Document processing overview"}
           </p>
         </div>
@@ -791,8 +788,8 @@ export default function DashboardPage() {
             </div>
             {(() => {
               const features = [
-                { label: "BRD Sources", short: "BRD",     count: totalBrds,  color: "#1a6bff" },
-                { label: "Users",       short: "Users",   count: totalUsers, color: "#16a34a" },
+                { label: "BRD Sources", short: "BRD",     count: totalBrds,  color: "#2563eb" },
+                { label: "Users",       short: "Users",   count: totalUsers, color: "#0f766e" },
               ];
               const maxVal = Math.max(...features.map(f => f.count), 1);
               const W = 340, H = 200;
@@ -850,8 +847,8 @@ export default function DashboardPage() {
                   {/* Legend row */}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
                     {[
-                      { label: "BRD Sources", color: "#1a6bff" },
-                      { label: "Users",       color: "#16a34a" },
+                      { label: "BRD Sources", color: "#2563eb" },
+                      { label: "Users",       color: "#0f766e" },
                     ].map(f => (
                       <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
                         <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
@@ -904,34 +901,38 @@ export default function DashboardPage() {
                   : <>
                       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                         {pagedBrds.map((b, i) => {
-                          const globalIdx = (safeBalancePage - 1) * BALANCE_PAGE_SIZE + i;
-                          const bg = globalIdx % 2 === 0
-                            ? "linear-gradient(135deg, #1a6bff 0%, #0d50d4 100%)"
-                            : "linear-gradient(135deg, #0d2d6b 0%, #081a44 100%)";
+                          const rank = (safeBalancePage - 1) * BALANCE_PAGE_SIZE + i + 1;
                           return (
                             <div key={b.id} className="u rounded-[13px] p-3.5 flex-shrink-0"
-                              style={{ background: bg, animationDelay:`${.08+i*.04}s` }}>
+                              style={{
+                                background: dark ? "#101d34" : "#f8fafc",
+                                border: `1px solid ${dark ? "#24344f" : "#e2e8f0"}`,
+                                animationDelay:`${.08+i*.04}s`
+                              }}>
                               {/* Top row: BRD badge + geography */}
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-[8px] font-black tracking-[.12em] px-1.5 py-0.5 rounded-[4px]"
-                                  style={{ background:"rgba(255,255,255,.18)", color:"#fff" }}>
-                                  BRD
+                                  style={{ background: dark ? "rgba(96,165,250,.14)" : "rgba(37,99,235,.08)", color: "var(--c-a)" }}>
+                                  #{rank}
                                 </span>
-                                <span className="text-[10px]" style={{ color:"rgba(255,255,255,.6)" }}>
+                                <span className="text-[10px]" style={{ color:"var(--c-sub)" }}>
                                   {b.geography || "—"}
                                 </span>
                               </div>
                               {/* Real display title */}
-                              <p className="text-[13px] font-bold leading-snug truncate" style={{ color:"#fff" }}>
+                              <p className="text-[13px] font-bold leading-snug truncate" style={{ color:"var(--c-txt)" }}>
                                 {brdDisplayTitle(b)}
                               </p>
                               {/* ID · real status (colored) */}
                               <div className="flex items-center justify-between mt-1.5">
-                                <span className="jb text-[9px]" style={{ color:"rgba(255,255,255,.42)" }}>
+                                <span className="jb text-[9px]" style={{ color:"var(--c-dim)" }}>
                                   {b.id} · {b.format?.toUpperCase()}
                                 </span>
                                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                                  style={{ background:"rgba(0,0,0,.25)", color: STATUS_COLOR[b.status] ?? "#fff" }}>
+                                  style={{
+                                    background: dark ? "rgba(15,23,42,.52)" : "rgba(15,23,42,.07)",
+                                    color: STATUS_COLOR[b.status] ?? "var(--c-txt)"
+                                  }}>
                                   {b.status}
                                 </span>
                               </div>

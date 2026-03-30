@@ -140,17 +140,23 @@ export default function InnodMetajson({
 
   useEffect(() => {
     if (!open) return;
-    if (!metajson) {
-      setRaw("{}");
-      setLiveJson(null);
+    let cancelled = false;
+
+    const nextRaw = metajson ? formatJson(metajson) : "{}";
+    const nextLiveJson = metajson ?? null;
+
+    // Defer local state sync so the effect does not synchronously trigger cascading renders.
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setRaw(nextRaw);
+      setLiveJson(nextLiveJson);
       setParseError(null);
       setSavedJson(null);
-      return;
-    }
-    setRaw(formatJson(metajson));
-    setLiveJson(metajson);
-    setParseError(null);
-    setSavedJson(null);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [open, metajson]);
 
   // Focus textarea when switching to edit tab
