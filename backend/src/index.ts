@@ -12,6 +12,7 @@ import tasksRoutes from './routes/task'
 import userLogsRoutes from './routes/user-logs'
 import brdRouter from './routes/brd'
 import notificationsRoutes from './routes/notifications'
+import inboundEmailsRoutes from './routes/inbound-emails'
 import { governanceControlsMiddleware } from './middleware/governanceControls'
 import {
   generalLimiter,
@@ -54,6 +55,7 @@ app.use('/tasks',         tasksRoutes)
 app.use('/user-logs',     userLogsRoutes)
 app.use('/brd',           brdRouter)
 app.use('/notifications', notificationsRoutes)
+app.use('/emails',        inboundEmailsRoutes)
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'Server is running', timestamp: new Date().toISOString() })
@@ -64,6 +66,35 @@ async function runStartupMigrations() {
   try {
     await pool.query(`ALTER TABLE brd_versions ADD COLUMN IF NOT EXISTS image_ids JSONB`)
     console.log('[migrations] brd_versions.image_ids OK')
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inbound_emails (
+        id               SERIAL PRIMARY KEY,
+        provider         TEXT        NOT NULL DEFAULT 'resend',
+        message_id       TEXT,
+        from_email       TEXT,
+        to_email         TEXT,
+        subject          TEXT,
+        text_body        TEXT,
+        html_body        TEXT,
+        headers          JSONB,
+        raw_payload      JSONB       NOT NULL,
+        processed        BOOLEAN     NOT NULL DEFAULT FALSE,
+        processed_at     TIMESTAMPTZ,
+        processing_error TEXT,
+        received_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inbound_emails_received_at ON inbound_emails (received_at DESC)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inbound_emails_processed ON inbound_emails (processed)`)
+    console.log('[migrations] inbound_emails table OK')
+
+    // Fix SERIAL sequences that may be out of sync with existing data
+    await pool.query(`
+      SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 0) + 1)
+      WHERE EXISTS (SELECT 1 FROM pg_sequences WHERE sequencename='users_id_seq')
+    `)
+    console.log('[migrations] users_id_seq reset OK')
   } catch (err) {
     console.error('[migrations] startup migration failed:', err)
   }

@@ -6,6 +6,7 @@ import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
 import TetrisLoading from "../../components/ui/tetris-loader";
 import dynamic from "next/dynamic";
+import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Cell } from "recharts";
 const CompareUsageChart = dynamic(
   () => import("../../components/ui/compare-usage-chart"),
   { ssr: false }

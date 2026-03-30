@@ -1,5 +1,6 @@
 import { Router, Response } from 'express'
 import bcrypt from 'bcrypt'
+import { PoolClient } from 'pg'
 import pool from '../lib/db'
 import { withTransaction } from '../lib/db'
 import { authenticate, AuthRequest } from '../middleware/authenticate'
@@ -14,7 +15,50 @@ const CAN_CREATE:      Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER
 const CAN_DEACTIVATE:  Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
 const CAN_CHANGE_ROLE: Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
 const CAN_EDIT_PROFILE:Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
+const CAN_HARD_DELETE: Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'] }
 const ALLOWED_TARGET_ROLES: Record<string, string[]> = { SUPER_ADMIN: ['ADMIN', 'USER'], ADMIN: ['USER'] }
+
+async function hardDeleteUserWithDependencies(
+  client: PoolClient,
+  targetId: number,
+  reassignedToUserId: number,
+): Promise<void> {
+  await client.query(`DELETE FROM task_assignees WHERE user_id = $1`, [targetId])
+  await client.query(`DELETE FROM task_comments WHERE author_id = $1`, [targetId])
+
+  await client.query(
+    `UPDATE task_assignments
+     SET created_by_id = $1, updated_at = NOW()
+     WHERE created_by_id = $2`,
+    [reassignedToUserId, targetId],
+  )
+
+  await client.query(
+    `UPDATE file_uploads
+     SET uploaded_by_id = $1
+     WHERE uploaded_by_id = $2`,
+    [reassignedToUserId, targetId],
+  )
+
+  await client.query(
+    `UPDATE validations
+     SET validated_by_id = $1
+     WHERE validated_by_id = $2`,
+    [reassignedToUserId, targetId],
+  )
+
+  await client.query(
+    `UPDATE users
+     SET created_by_id = $1, updated_at = NOW()
+     WHERE created_by_id = $2`,
+    [reassignedToUserId, targetId],
+  )
+
+  await client.query(`DELETE FROM notifications WHERE user_id = $1`, [targetId])
+  await client.query(`DELETE FROM user_logs WHERE user_id = $1`, [targetId])
+  await client.query(`DELETE FROM password_history WHERE user_id = $1`, [targetId])
+  await client.query(`DELETE FROM users WHERE id = $1`, [targetId])
+}
 
 router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
@@ -269,6 +313,80 @@ router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']),
     res.json({ message: 'User activated' })
   } catch (error) {
     console.error('Activate user error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.delete('/:id/hard', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const targetId = parseInt(req.params.id as string)
+    if (!Number.isFinite(targetId)) return res.status(400).json({ error: 'Invalid user ID' })
+
+    if (targetId === req.user!.userId) {
+      return res.status(400).json({ error: 'You cannot hard-delete your own account' })
+    }
+
+    const { rows: targetRows } = await pool.query(`SELECT id, user_id, role FROM users WHERE id = $1`, [targetId])
+    const target = targetRows[0]
+    if (!target) return res.status(404).json({ error: 'User not found' })
+
+    const allowed = CAN_HARD_DELETE[req.user!.role] ?? []
+    if (!allowed.includes(target.role)) {
+      return res.status(403).json({ error: 'You cannot hard-delete this user' })
+    }
+
+    await withTransaction(async (client) => {
+      await hardDeleteUserWithDependencies(client, targetId, req.user!.userId)
+      await client.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_HARD_DELETED', $2)`,
+        [req.user!.userId, `Hard-deleted user ${target.user_id} (id=${targetId})`],
+      )
+    })
+
+    res.json({ message: 'User hard-deleted successfully', deletedUserId: targetId })
+  } catch (error) {
+    console.error('Hard delete user error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.delete('/hard/purge-non-superadmin', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { rows: rowsToDelete } = await pool.query(
+      `SELECT id, user_id, role
+       FROM users
+       WHERE role <> 'SUPER_ADMIN'
+       ORDER BY id ASC`,
+    )
+
+    if (rowsToDelete.length === 0) {
+      return res.json({ message: 'No non-superadmin users found', deletedCount: 0 })
+    }
+
+    const deletedUserIds: number[] = []
+    const deletedUserKeys: string[] = []
+
+    await withTransaction(async (client) => {
+      for (const row of rowsToDelete as Array<{ id: number; user_id: string; role: string }>) {
+        if (row.id === req.user!.userId) continue
+        await hardDeleteUserWithDependencies(client, row.id, req.user!.userId)
+        deletedUserIds.push(row.id)
+        deletedUserKeys.push(`${row.user_id}:${row.role}`)
+      }
+
+      await client.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_HARD_PURGE', $2)`,
+        [req.user!.userId, `Hard-purged users: ${deletedUserKeys.join(', ') || 'none'}`],
+      )
+    })
+
+    res.json({
+      message: 'Non-superadmin users hard-deleted successfully',
+      deletedCount: deletedUserIds.length,
+      deletedUserIds,
+    })
+  } catch (error) {
+    console.error('Hard purge users error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

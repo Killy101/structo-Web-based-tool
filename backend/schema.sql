@@ -88,6 +88,28 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications (user_id);
 
+-- ── inbound_emails ───────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS inbound_emails (
+  id               SERIAL      PRIMARY KEY,
+  provider         TEXT        NOT NULL DEFAULT 'resend',
+  message_id       TEXT,
+  from_email       TEXT,
+  to_email         TEXT,
+  subject          TEXT,
+  text_body        TEXT,
+  html_body        TEXT,
+  headers          JSONB,
+  raw_payload      JSONB       NOT NULL,
+  processed        BOOLEAN     NOT NULL DEFAULT FALSE,
+  processed_at     TIMESTAMPTZ,
+  processing_error TEXT,
+  received_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbound_emails_received_at ON inbound_emails (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inbound_emails_processed   ON inbound_emails (processed);
+
 -- ── file_uploads ─────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS file_uploads (
