@@ -8,11 +8,9 @@ __pycache__/
 venv/
 .venv/
 processing/venv/
-
 venv39/
 .venv39/
 processing/venv39/
-
 
 # Node / JS
 **/node_modules/
@@ -20,11 +18,25 @@ processing/venv39/
 # Build artifacts
 frontend/.next/
 backend/dist/
+*.egg-info/
+dist/
+build/
+.eggs/
 
 # Temporary files
 *.tmp
 tmp/
 .env
 
-__pycache__/
-*.pyc
+# Testing / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
