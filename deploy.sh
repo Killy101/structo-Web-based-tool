@@ -1,9 +1,14 @@
-
 #!/bin/bash
-echo "🔨 Building..."
-docker compose up -d --build
+set -euo pipefail
 
-echo "📤 Pushing to Docker Hub..."
-docker compose push
+TAG="${TAG:-$(git rev-parse --short HEAD)}"
+export TAG
 
-echo "✅ Deployed!"
+echo "Building production images (tag: ${TAG})..."
+docker compose -f docker-compose.prod.yml build
+
+echo "Pushing to Docker Hub..."
+docker compose -f docker-compose.prod.yml push
+
+echo "Done. Deploy with:"
+echo "  TAG=${TAG} docker compose -f docker-compose.prod.yml up -d"
