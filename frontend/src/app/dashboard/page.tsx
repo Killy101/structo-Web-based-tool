@@ -5,6 +5,11 @@ import { useDashboard, useUserLogs } from "../../hooks";
 import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
 import TetrisLoading from "../../components/ui/tetris-loader";
+import dynamic from "next/dynamic";
+const CompareUsageChart = dynamic(
+  () => import("../../components/ui/compare-usage-chart"),
+  { ssr: false }
+);
 
 /* ─── Injected styles ──────────────────────────────────────────────────────── */
 // ── Brd type (mirrors BRD page) ─────────────────────────────────────────────
@@ -748,6 +753,11 @@ export default function DashboardPage() {
                   );
                 })
             }
+          </div>
+
+          {/* Compare Analytics */}
+          <div className="u d3">
+            <CompareUsageChart />
           </div>
 
           {/* Pipeline — Bubble chart */}
