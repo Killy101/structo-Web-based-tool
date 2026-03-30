@@ -2,19 +2,18 @@ services:
 
   # ── Frontend (Next.js) ────────────────────────────────────────────────────────
   frontend:
-    image: killy101/structo-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      target: development
+      target: development        # uses the hot-reload stage
     volumes:
-      - ./frontend:/app
-      - frontend_nm:/app/node_modules
-      - frontend_next:/app/.next
+      - ./frontend:/app          # bind-mount source for hot reload
+      - frontend_nm:/app/node_modules   # keep container node_modules isolated
+      - frontend_next:/app/.next        # persist Next.js build cache
     ports:
       - "3000:3000"
     env_file:
-      - ./frontend/.env.local
+      - ./frontend/.env.local    # copy from frontend/.env.example
     environment:
       - NODE_ENV=development
     depends_on:
@@ -23,34 +22,34 @@ services:
 
   # ── Backend (Express + pg) ────────────────────────────────────────────────────
   backend:
-    image: killy101/structo-backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
-      target: development
+      target: development        # uses the hot-reload stage
     volumes:
-      - ./backend:/app
-      - backend_nm:/app/node_modules
+      - ./backend:/app           # bind-mount source for hot reload
+      - backend_nm:/app/node_modules    # keep container node_modules isolated
     ports:
       - "4000:4000"
     env_file:
-      - ./backend/.env
+      - ./backend/.env           # copy from backend/.env.example
+    environment:
+      - NODE_ENV=development
 
   # ── Processing (FastAPI + Python) ─────────────────────────────────────────────
   processing:
-    image: killy101/structo-processing:latest
     build:
       context: ./processing
       dockerfile: Dockerfile
-      target: development
+      target: development        # uses the hot-reload stage
     volumes:
-      - ./processing:/app
+      - ./processing:/app        # bind-mount source for hot reload
     ports:
       - "8000:8000"
     env_file:
-      - ./processing/.env
+      - ./processing/.env        # copy from processing/.env.example
 
-# Named volumes
+# Named volumes prevent node_modules / Python cache from being overwritten by host mounts
 volumes:
   frontend_nm:
   frontend_next:
