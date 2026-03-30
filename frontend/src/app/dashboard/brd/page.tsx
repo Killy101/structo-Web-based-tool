@@ -1257,7 +1257,11 @@ export default function BrdPage() {
                             type="checkbox"
                             className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-red-600 focus:ring-red-500 cursor-pointer"
                             checked={trashSelected.size === deletedBrds.length && deletedBrds.length > 0}
-                            ref={el => { if (el) el.indeterminate = trashSelected.size > 0 && trashSelected.size < deletedBrds.length; }}
+                            ref={el => {
+                              if (el) {
+                                el.indeterminate = trashSelected.size > 0 && trashSelected.size < deletedBrds.length;
+                              }
+                            }}
                             onChange={e => setTrashSelected(e.target.checked ? new Set(deletedBrds.map(b => b.id)) : new Set())}
                           />
                         </th>
@@ -1275,14 +1279,33 @@ export default function BrdPage() {
                           <tr
                             key={b.id}
                             className={`transition-colors cursor-pointer ${isChecked ? "bg-red-50 dark:bg-red-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}
-                            onClick={() => setTrashSelected(prev => { const n = new Set(prev); isChecked ? n.delete(b.id) : n.add(b.id); return n; })}
+                            onClick={() => setTrashSelected(prev => {
+                              const n = new Set(prev);
+                              if (isChecked) {
+                                n.delete(b.id);
+                              } else {
+                                n.add(b.id);
+                              }
+                              return n;
+                            })}
                           >
                             <td className="px-4 py-3 w-8" onClick={e => e.stopPropagation()}>
                               <input
                                 type="checkbox"
                                 className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-red-600 focus:ring-red-500 cursor-pointer"
                                 checked={isChecked}
-                                onChange={e => { e.stopPropagation(); setTrashSelected(prev => { const n = new Set(prev); e.target.checked ? n.add(b.id) : n.delete(b.id); return n; }); }}
+                                onChange={e => {
+                                  e.stopPropagation();
+                                  setTrashSelected(prev => {
+                                    const n = new Set(prev);
+                                    if (e.target.checked) {
+                                      n.add(b.id);
+                                    } else {
+                                      n.delete(b.id);
+                                    }
+                                    return n;
+                                  });
+                                }}
                               />
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap font-mono text-[11px] text-blue-600 dark:text-blue-400 font-medium">{b.id}</td>

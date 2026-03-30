@@ -26,7 +26,8 @@ export default function EyeTransition({ onComplete }: EyeTransitionProps) {
       onComplete();                                   // router.push("/login") fires
     }, 1900);
 
-    return () => timeoutsRef.current.forEach(clearTimeout);
+    const scheduledTimeouts = [...timeoutsRef.current];
+    return () => scheduledTimeouts.forEach(clearTimeout);
   }, [onComplete]);
 
   if (phase === "done") return null;

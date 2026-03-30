@@ -78,64 +78,6 @@ const PIPELINE_STEPS = [
   { key: "profile",   label: "Content Profiling",   icon: "✦" },
 ];
 
-// ── Filename duplicate blocked modal ─────────────────────────────────────────
-function DuplicateBlockedModal({
-  fileName,
-  dupInfo,
-  onClose,
-}: {
-  fileName: string;
-  dupInfo: DuplicateCheckResponse;
-  onClose: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
-        <div className="bg-red-500 px-5 py-4 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-bold text-white">Duplicate File Detected</p>
-            <p className="text-xs text-red-100 mt-0.5">This file has already been processed</p>
-          </div>
-        </div>
-        <div className="px-5 py-4 space-y-4">
-          <p className="text-sm text-slate-700 dark:text-slate-300">
-            <span className="font-semibold text-slate-900 dark:text-white">{fileName}</span> already
-            exists in the BRD registry. You cannot re-upload a file that has already been ingested.
-          </p>
-          {dupInfo.brdId && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 divide-y divide-slate-200 dark:divide-slate-700 overflow-hidden">
-              {[
-                { label: "BRD ID", value: dupInfo.brdId },
-                { label: "Title",  value: dupInfo.title  ?? "—" },
-                { label: "Status", value: dupInfo.status ?? "—" },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 w-14 flex-shrink-0 font-mono">{label}</span>
-                  <span className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">{value}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="px-5 pb-5 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-xs font-medium bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-700 transition-all"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Title duplicate warning modal ─────────────────────────────────────────────
 // Shown after extraction when the resolved title closely matches an existing BRD.
 // The user can choose to discard (go back) or proceed anyway.

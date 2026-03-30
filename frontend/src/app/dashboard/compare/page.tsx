@@ -836,8 +836,6 @@ export default function ComparePage() {
 
   // Cross-module state: chunk selected in ChunkPanel → passed to ComparePanel
   const [selectedChunk, setSelectedChunk] = useState<PdfChunk | null>(null);
-  const [selectedChunkSourceName, setSelectedChunkSourceName] =
-    useState<string>("");
   const [allChunks, setAllChunks] = useState<PdfChunk[]>([]);
   const [jobOldPdf, setJobOldPdf] = useState<File | null>(null);
   const [jobNewPdf, setJobNewPdf] = useState<File | null>(null);
@@ -853,12 +851,6 @@ export default function ComparePage() {
     setAllChunks(prev =>
       prev.map(c => c.index === updatedChunk.index ? { ...c, ...updatedChunk } : c)
     );
-  }
-
-  function handleNavigateToCompare(chunk: PdfChunk, sourceName: string) {
-    setSelectedChunk(chunk);
-    setSelectedChunkSourceName(sourceName);
-    setWorkflow("compare");
   }
 
   function handleBack() {
@@ -901,9 +893,8 @@ export default function ComparePage() {
       {workflow === "chunk" && (
         <div className="flex-1 overflow-hidden p-4 min-h-0">
           <ChunkPanel
-            onNavigateToCompare={(chunk, sourceName) => {
+            onNavigateToCompare={(chunk) => {
               setSelectedChunk(chunk);
-              setSelectedChunkSourceName(sourceName);
               setWorkflow("compare");
             }}
             onAllChunksReady={(chunks) => setAllChunks(chunks)}
@@ -924,7 +915,6 @@ export default function ComparePage() {
         <div className="flex-1 overflow-hidden p-4 min-h-0">
           <ComparePanel
             initialChunk={selectedChunk}
-            initialSourceName={selectedChunkSourceName}
             initialOldPdf={jobOldPdf}
             initialNewPdf={jobNewPdf}
             initialXmlFile={jobXmlFile}

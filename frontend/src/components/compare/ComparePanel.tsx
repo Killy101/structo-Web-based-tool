@@ -89,6 +89,56 @@ interface DetectResponse {
   new_full_text?: string;
 }
 
+type DetectPayload = Partial<DetectResponse> & {
+  changes?: Change[];
+  xml_content?: string;
+  old_full_text?: string;
+  new_full_text?: string;
+};
+
+type ApiErrorDetail = { msg?: string };
+
+function incrementSummary(summary: DetectSummary, changeType: ChangeType) {
+  switch (changeType) {
+    case "addition":
+      summary.addition += 1;
+      break;
+    case "removal":
+      summary.removal += 1;
+      break;
+    case "modification":
+      summary.modification += 1;
+      break;
+    case "emphasis":
+      summary.emphasis += 1;
+      break;
+    case "mismatch":
+      summary.mismatch += 1;
+      break;
+  }
+}
+
+function countChunkChanges(changeSummary: unknown): number | string {
+  if (!changeSummary || typeof changeSummary !== "object") return "?";
+  const values = Object.values(changeSummary as Record<string, unknown>);
+  return values.reduce((total, value) => total + (typeof value === "number" ? value : 0), 0);
+}
+
+function formatApiErrorDetail(detail: unknown): string | undefined {
+  if (Array.isArray(detail)) {
+    return detail
+      .map((entry) => {
+        if (typeof entry === "object" && entry !== null && "msg" in entry) {
+          const message = (entry as ApiErrorDetail).msg;
+          return typeof message === "string" ? message : JSON.stringify(entry);
+        }
+        return JSON.stringify(entry);
+      })
+      .join("; ");
+  }
+  return typeof detail === "string" ? detail : undefined;
+}
+
 interface ValidationResult {
   valid: boolean;
   errors: string[];
@@ -97,7 +147,6 @@ interface ValidationResult {
 
 interface ComparePanelProps {
   initialChunk?:       PdfChunk | null;
-  initialSourceName?:  string;
   initialOldPdf?:      File | null;
   initialNewPdf?:      File | null;
   initialXmlFile?:     File | null;
@@ -613,21 +662,88 @@ interface PdfViewerPaneProps {
   onChangeSelect: (id: string) => void;
 }
 
-function PdfViewerPane({ file, label, side, changes, selectedId, onChangeSelect }: PdfViewerPaneProps) {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-  const [numPages, setNumPages]   = useState(0);
+function PdfDocumentBody({
+  file,
+  objectUrl,
+  side,
+  changes,
+  selectedId,
+  onChangeSelect,
+  containerRef,
+  containerW,
+  onMounted,
+}: {
+  file: File | null;
+  objectUrl: string | null;
+  side: "old" | "new";
+  changes: Change[];
+  selectedId: string | null;
+  onChangeSelect: (id: string) => void;
+  containerRef: React.RefObject<HTMLDivElement>;
+  containerW: number;
+  onMounted: (pageNumber: number, el: HTMLDivElement | null) => void;
+}) {
+  const [numPages, setNumPages] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  return (
+    <div ref={containerRef} className="flex flex-col items-center py-4 px-3 min-h-full">
+      {!file ? (
+        <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-500">
+          <svg className="w-10 h-10 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <p className="text-xs font-mono">No PDF loaded</p>
+        </div>
+      ) : loadError ? (
+        <div className="text-red-400 text-xs p-6">Failed to load PDF: {loadError}</div>
+      ) : (
+        <>
+          {numPages > 0 && (
+            <div className="mb-3 self-end text-[10px] text-slate-500 flex-shrink-0">{numPages}p</div>
+          )}
+          <Document
+            file={objectUrl}
+            onLoadSuccess={({ numPages: pageCount }) => {
+              setNumPages(pageCount);
+              setLoadError(null);
+            }}
+            onLoadError={err => setLoadError(err.message)}
+            loading={<div className="text-slate-500 text-xs p-6 font-mono">Loading PDF…</div>}
+          >
+            {Array.from({ length: numPages }, (_, i) => i + 1).map(pageNumber => (
+              <PdfPageItem
+                key={`${side}-${pageNumber}`}
+                pageNumber={pageNumber}
+                containerWidth={containerW}
+                changes={changes}
+                side={side}
+                selectedId={selectedId}
+                onSelect={onChangeSelect}
+                onMounted={onMounted}
+              />
+            ))}
+          </Document>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PdfViewerPane({ file, label, side, changes, selectedId, onChangeSelect }: PdfViewerPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const scrollRef    = useRef<HTMLDivElement>(null);
   const [containerW, setContainerW] = useState(0);
   const pageEls = useRef<Map<number, HTMLDivElement>>(new Map());
+  const objectUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
 
   useEffect(() => {
-    if (!file) { setObjectUrl(null); setNumPages(0); return; }
-    const url = URL.createObjectURL(file);
-    setObjectUrl(url); setLoadError(null);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+    return () => {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [objectUrl]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -689,6 +805,7 @@ function PdfViewerPane({ file, label, side, changes, selectedId, onChangeSelect 
 
   // Unique change types present for legend
   const typesPresent = useMemo(() => [...new Set(bboxChanges.map(c => c.type))], [bboxChanges]);
+  const documentKey = objectUrl ?? `empty-${side}`;
 
   return (
     <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden"
@@ -701,7 +818,6 @@ function PdfViewerPane({ file, label, side, changes, selectedId, onChangeSelect 
           {sideLabel}
         </span>
         <span className="text-[11px] text-slate-400 truncate flex-1 font-mono">{file ? file.name : label}</span>
-        {numPages > 0 && <span className="text-[10px] text-slate-500 flex-shrink-0">{numPages}p</span>}
 
         {/* Jump prev/next */}
         {bboxChanges.length > 0 && (
@@ -732,41 +848,20 @@ function PdfViewerPane({ file, label, side, changes, selectedId, onChangeSelect 
       </div>
 
       {/* PDF Body */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-slate-800"
+      <div className="flex-1 min-h-0 overflow-auto bg-slate-800"
         style={{ scrollbarWidth: "thin", scrollbarColor: "#334155 transparent" }}>
-        <div ref={containerRef} className="flex flex-col items-center py-4 px-3 min-h-full">
-          {!file ? (
-            <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-500">
-              <svg className="w-10 h-10 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-              </svg>
-              <p className="text-xs font-mono">No PDF loaded</p>
-            </div>
-          ) : loadError ? (
-            <div className="text-red-400 text-xs p-6">Failed to load PDF: {loadError}</div>
-          ) : (
-            <Document
-              file={objectUrl}
-              onLoadSuccess={({ numPages }) => setNumPages(numPages)}
-              onLoadError={err => setLoadError(err.message)}
-              loading={<div className="text-slate-500 text-xs p-6 font-mono">Loading PDF…</div>}
-            >
-              {Array.from({ length: numPages }, (_, i) => i + 1).map(pageNumber => (
-                <PdfPageItem
-                  key={pageNumber}
-                  pageNumber={pageNumber}
-                  containerWidth={containerW}
-                  changes={changes}
-                  side={side}
-                  selectedId={selectedId}
-                  onSelect={onChangeSelect}
-                  onMounted={onMounted}
-                />
-              ))}
-            </Document>
-          )}
-        </div>
+        <PdfDocumentBody
+          key={documentKey}
+          file={file}
+          objectUrl={objectUrl}
+          side={side}
+          changes={changes}
+          selectedId={selectedId}
+          onChangeSelect={onChangeSelect}
+          containerRef={containerRef}
+          containerW={containerW}
+          onMounted={onMounted}
+        />
       </div>
     </div>
   );
@@ -984,19 +1079,19 @@ function IdeTextDiff({ changes, oldText, newText, oldLabel, newLabel, selectedId
 // ── XML Editor ────────────────────────────────────────────────────────────────
 
 function XmlEditor({
-  content, onChange, canEdit, highlightText, editorRef, changes, selectedId,
+  content, onChange, canEdit, editorRef, changes, selectedId,
 }: {
   content: string; onChange?: (v: string) => void; canEdit: boolean;
-  highlightText?: string | null; editorRef?: React.RefObject<HTMLTextAreaElement | null>;
+  editorRef?: React.RefObject<HTMLTextAreaElement | null>;
   changes: Change[]; selectedId: string | null;
 }) {
   const preRef = useRef<HTMLPreElement>(null);
   const localRef = useRef<HTMLTextAreaElement>(null);
   const ref = (editorRef ?? localRef) as React.RefObject<HTMLTextAreaElement>;
   const highlightedHtml = useMemo(() => { if (!content) return ""; return buildHighlightedXml(content, changes, selectedId); }, [content, changes, selectedId]);
-  const syncScroll = useCallback(() => {
+  const syncScroll = () => {
     if (ref.current && preRef.current) { preRef.current.scrollTop = ref.current.scrollTop; preRef.current.scrollLeft = ref.current.scrollLeft; }
-  }, [ref]);
+  };
   const sharedStyle: React.CSSProperties = {
     fontFamily: "'JetBrains Mono','Fira Code','Consolas',monospace", fontSize: "12px", lineHeight: "1.65",
     padding: "12px 16px", margin: 0, border: 0, whiteSpace: "pre-wrap", wordWrap: "break-word", overflowWrap: "break-word", tabSize: 2,
@@ -1087,7 +1182,7 @@ function ValidationModal({ result, onClose, onConfirmSave }: { result: Validatio
 // ── Main ComparePanel ─────────────────────────────────────────────────────────
 
 export default function ComparePanel({
-  initialChunk, initialSourceName, initialOldPdf, initialNewPdf, initialXmlFile,
+  initialChunk, initialOldPdf, initialNewPdf, initialXmlFile,
   allChunks = [], onChunkDone, onNavigateToChunk, activeJob,
 }: ComparePanelProps) {
   const { user } = useAuth();
@@ -1211,12 +1306,12 @@ export default function ComparePanel({
       return out;
     };
 
-    const applyResult = (data: Record<string, any>) => {
+    const applyResult = (data: DetectPayload) => {
       if (isCancelled()) return;
       const filtered = denoiseChanges(data.changes || []);
       setChanges(filtered);
       const s: DetectSummary = { addition: 0, removal: 0, modification: 0, emphasis: 0, mismatch: 0 };
-      filtered.forEach((c: Change) => { if (c.type in s) (s as any)[c.type]++; });
+      filtered.forEach((c: Change) => incrementSummary(s, c.type));
       setSummary(s);
       if (data.baseline) setBaseline(data.baseline === "xml" ? "xml" : "old_pdf");
       setOldFullText(data.old_full_text || chunk.old_text || "");
@@ -1286,8 +1381,8 @@ export default function ComparePanel({
       if (chunkPageEnd   != null) form.append("page_end",   String(chunkPageEnd));
       const res = await fetch(`${PROCESSING_URL}/compare/detect`, { method: "POST", body: form });
       if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        const detail = Array.isArray(e.detail) ? e.detail.map((d: any) => d.msg ?? JSON.stringify(d)).join("; ") : e.detail;
+        const responseError = await res.json().catch(() => null) as { detail?: unknown } | null;
+        const detail = formatApiErrorDetail(responseError?.detail);
         throw new Error(detail ?? `HTTP ${res.status}`);
       }
       const data: DetectResponse = await res.json();
@@ -1300,7 +1395,7 @@ export default function ComparePanel({
     } catch (e) {
       setError(e instanceof Error ? e.message : "Detection failed");
     } finally { setLoading(false); }
-  }, [isReady, oldPdf, newPdf, xmlFile, initialChunk, chunkPageStart, chunkPageEnd, hasXml]);
+  }, [isReady, oldPdf, newPdf, xmlFile, initialChunk, chunkPageStart, chunkPageEnd, hasXml, xmlContent]);
 
   const handleSelect = useCallback((change: Change) => {
     setSelectedId(change.id);
@@ -1430,7 +1525,6 @@ export default function ComparePanel({
   }, [changes, filterType]);
 
   const selectedChange   = useMemo(() => changes.find(c => c.id === selectedId) ?? null, [changes, selectedId]);
-  const highlightText    = selectedChange ? (selectedChange.old_text || selectedChange.text || selectedChange.new_text) : null;
 
   useEffect(() => {
     if (!chunkDropdownOpen) return;
@@ -1490,7 +1584,7 @@ export default function ComparePanel({
                             <span className="text-xs text-slate-700 truncate flex-1">{heading}</span>
                             {chunk.has_changes && !isDone && (
                               <span className="text-[10px] text-amber-600 font-semibold flex-shrink-0">
-                                {((): React.ReactNode => { const cs = chunk.change_summary as any; return cs ? (Object.values(cs) as number[]).reduce((a, b) => a + b, 0) : "?"; })()}Δ
+                                {countChunkChanges(chunk.change_summary)}Δ
                               </span>
                             )}
                           </div>
@@ -1525,7 +1619,7 @@ export default function ComparePanel({
           )}
 
           {isChunkMode && (
-            <button onClick={() => { if (!initialChunk) return; setChanges([]); setSummary(null); setError(null); setSelectedId(null); let _done = false; runChunkDetect(initialChunk, () => _done); }}
+            <button onClick={() => { if (!initialChunk) return; setChanges([]); setSummary(null); setError(null); setSelectedId(null); runChunkDetect(initialChunk, () => false); }}
               disabled={loading}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold transition-colors disabled:opacity-40">
               {loading
@@ -1746,7 +1840,7 @@ export default function ComparePanel({
                 </div>
               ) : (
                 <XmlEditor content={xmlContent} onChange={setXmlContent} canEdit={canEdit}
-                  highlightText={highlightText} editorRef={editorRef} changes={changes} selectedId={selectedId} />
+                  editorRef={editorRef} changes={changes} selectedId={selectedId} />
               )}
             </div>
           )}

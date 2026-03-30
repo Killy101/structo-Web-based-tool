@@ -128,12 +128,10 @@ function LogRow({
   log,
   expanded,
   onToggle,
-  isSuperAdmin,
 }: {
   log: LogEntry;
   expanded: boolean;
   onToggle: () => void;
-  isSuperAdmin: boolean;
 }) {
   const formattedTime = new Date(log.timestamp).toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -386,7 +384,7 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
     try {
       const data = await userLogsApi.getAll();
       setLogs(data.logs.map(mapUserLogToEntry));
-    } catch (err) {
+    } catch {
       setError("Failed to load logs. Please try again.");
     } finally {
       setLoading(false);
@@ -563,7 +561,6 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
                         onToggle={() =>
                           setExpandedId((cur) => (cur === log.id ? null : log.id))
                         }
-                        isSuperAdmin={isSuperAdmin}
                       />
                     </motion.div>
                   ))

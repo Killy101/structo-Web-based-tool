@@ -319,7 +319,7 @@ export default function MergePanel({ activeJob }: MergePanelProps = {}) {
   const [mergeResult, setMergeResult] = useState<MergeResult | null>(null);
   const [merging, setMerging] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
-  const [loadingChunks, setLoadingChunks] = useState(false);
+  const [, setLoadingChunks] = useState(false);
 
   const chunkFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -371,7 +371,7 @@ export default function MergePanel({ activeJob }: MergePanelProps = {}) {
     }
 
     loadChunks();
-  }, [activeJob?.job_id, activeJob?.status]);
+  }, [activeJob]);
 
   // ── Chunk upload handling
   function handleChunkFilesAdded(files: FileList | null) {

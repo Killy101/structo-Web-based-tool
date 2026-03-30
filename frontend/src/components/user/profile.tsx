@@ -149,7 +149,7 @@ export default function ProfileModal({
     );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch justify-center sm:items-center sm:p-4">
+    <div data-theme={dark ? "dark" : "light"} className="fixed inset-0 z-50 flex items-stretch justify-center sm:items-center sm:p-4">
       <div
         className="absolute inset-0 backdrop-blur-sm bg-black/70"
         onClick={onClose}

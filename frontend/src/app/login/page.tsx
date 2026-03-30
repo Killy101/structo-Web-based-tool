@@ -2,7 +2,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { IdafLogo } from "@/components/icons/IdafLogo";
 import styles from "./page.module.css";
 import api from "@/app/lib/api";
 import axios from "axios";

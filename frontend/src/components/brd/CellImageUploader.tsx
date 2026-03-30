@@ -2,6 +2,7 @@
 // CellImageUploader.tsx
 import React, { useEffect, useRef, useState } from "react";
 import api from "@/app/lib/api";
+import BrdImage from "./BrdImage";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
@@ -62,13 +63,14 @@ export default function CellImageUploader({
     }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, pending]);
 
   // Cleanup object URL on unmount
   useEffect(() => {
-    return () => { if (preview) URL.revokeObjectURL(preview); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!preview) return;
+    return () => {
+      URL.revokeObjectURL(preview);
+    };
   }, [preview]);
 
   function openPopover(e: React.MouseEvent) {
@@ -217,7 +219,7 @@ export default function CellImageUploader({
 
           {preview && pending && (
             <div className="p-2 space-y-2 border-b border-slate-100 dark:border-[#2a3147]">
-              <img src={preview} alt="preview" className="w-full max-h-28 object-contain rounded bg-slate-50 dark:bg-[#161b2e]" />
+              <BrdImage src={preview} alt="preview" className="w-full max-h-28 object-contain rounded bg-slate-50 dark:bg-[#161b2e]" width={224} height={112} />
               <div className="flex items-center gap-1.5">
                 <button onClick={dismiss} disabled={uploading}
                   className="flex-1 py-1 rounded text-[10px] font-medium text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45] disabled:opacity-50 transition-all">
@@ -235,11 +237,12 @@ export default function CellImageUploader({
             <div className="p-2 space-y-2 max-h-56 overflow-y-auto">
               {existingImages.map(img => (
                 <div key={img.id} className="rounded-lg overflow-hidden border border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#161b2e]">
-                  <img
+                  <BrdImage
                     src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
                     alt={img.cellText || img.mediaName}
                     className="w-full max-h-32 object-contain"
-                    loading="lazy"
+                    width={224}
+                    height={128}
                     onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                   />
                   <div className="flex items-center justify-between px-2 py-1 border-t border-slate-100 dark:border-[#2a3147]">

@@ -1,6 +1,7 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
+import BrdImage from "./BrdImage";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 interface CitationRow {
@@ -125,55 +126,6 @@ function renderCitationRulesDisplay(value: string) {
   });
 }
 
-
-function CellEditor({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    function onMD(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener("mousedown", onMD);
-    return () => document.removeEventListener("mousedown", onMD);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return <div ref={ref}>{children}</div>;
-}
-
-// Buffered textarea — only calls onChange on commit, not every keystroke.
-// Prevents parent re-renders from unmounting the editor mid-edit.
-function BufferedTextarea({ initialValue, rows, onCommit, onCancel, className }: {
-  initialValue: string; rows: number;
-  onCommit: (v: string) => void; onCancel: () => void; className: string;
-}) {
-  const [draft, setDraft] = useState(initialValue);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
-  return (
-    <textarea ref={ref} value={draft} rows={rows}
-      onChange={e => setDraft(e.target.value)}
-      onKeyDown={e => { if (e.key === "Escape") { onCancel(); } }}
-      onBlur={() => onCommit(draft)}
-      className={className}
-    />
-  );
-}
-
-function BufferedSelect({ initialValue, options, onCommit, className }: {
-  initialValue: string;
-  options: { value: string; label: string }[];
-  onCommit: (v: string) => void; className: string;
-}) {
-  const [draft, setDraft] = useState(initialValue);
-  return (
-    <select autoFocus value={draft}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={() => onCommit(draft)}
-      className={className}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  );
-}
-
 export default function Citation({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows]               = useState<CitationRow[]>(INITIAL_ROWS);
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
@@ -291,7 +243,6 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
 
   function renderCell(row: CitationRow, col: string, rowIdx: number) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
-    const closeEdit = () => setEditingCell(null);
     const rawValue  = row[col as keyof CitationRow] as string;
     const shouldFmt = col === "citationRules" || col === "smeComments";
     const value     = shouldFmt ? formatCitationRulesForDisplay(rawValue) : rawValue;
@@ -325,10 +276,12 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
         title={rawValue}>
         {value ? (shouldFmt ? renderCitationRulesDisplay(value) : value) : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
         {cellImgs.map(img => (
-          <img key={img.id}
+          <BrdImage key={img.id}
             src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
             alt={img.cellText || img.mediaName}
             className="mt-1 max-w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#1a1f35]"
+            width={320}
+            height={180}
             onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
         ))}
       </div>
@@ -379,7 +332,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
                       <div className="group">
                         {renderCell(row, col.key, idx)}
                         {getCellImgs(row.level, col.key).map(img => (
-                          <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" width={320} height={180} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                         {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                       </div>
