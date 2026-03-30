@@ -2,7 +2,6 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   User,
-  FileUpload,
   DashboardStats,
   Toast,
   ToastType,
@@ -14,24 +13,19 @@ import {
   TeamRoleFeaturePolicyItem,
   TeamFeatureOption,
   BrdSourceItem,
-  TaskAssignment,
   UserLog,
   Notification,
-  TaskComment,
 } from "../types";
 import {
   usersApi,
-  filesApi,
   dashboardApi,
   teamsApi,
   rolesApi,
   settingsApi,
-  tasksApi,
   userLogsApi,
   brdApi,
   authApi,
   notificationsApi,
-  taskCommentsApi,
 } from "../services/api";
 
 function getErrorMessage(e: unknown): string {
@@ -367,68 +361,6 @@ export function useGovernanceSettings() {
   };
 }
 
-// ─── useTasks ──────────────────────────────────────────────
-export function useTasks() {
-  const [tasks, setTasks] = useState<TaskAssignment[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refetch = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const { tasks } = await tasksApi.getAll();
-      setTasks(tasks);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    refetch();
-  }, [refetch]);
-
-  const createTask = async (data: {
-    title: string;
-    description?: string;
-    assigneeIds: number[];
-    brdFileId?: number;
-    dueDate?: string;
-  }) => {
-    const result = await tasksApi.create(data);
-    await refetch();
-    return result;
-  };
-
-  const updateProgress = async (
-    id: number,
-    percentage: number,
-    status?: string,
-  ) => {
-    const result = await tasksApi.updateProgress(id, percentage, status);
-    await refetch();
-    return result;
-  };
-
-  const deleteTask = async (id: number) => {
-    const result = await tasksApi.delete(id);
-    await refetch();
-    return result;
-  };
-
-  return {
-    tasks,
-    isLoading,
-    error,
-    refetch,
-    createTask,
-    updateProgress,
-    deleteTask,
-  };
-}
-
 // ─── useUserLogs ───────────────────────────────────────────
 export function useUserLogs(scope: "all" | "mine" = "all") {
   const [logs, setLogs] = useState<UserLog[]>([]);
@@ -481,31 +413,6 @@ export function useBrds() {
   }, [refetch]);
 
   return { brds, isLoading, error, refetch };
-}
-
-// ─── useFiles ──────────────────────────────────────────────
-export function useFiles() {
-  const [files, setFiles] = useState<FileUpload[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refetch = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const { files } = await filesApi.getAll();
-      setFiles(files);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    refetch();
-  }, [refetch]);
-  return { files, isLoading, error, refetch };
 }
 
 // ─── useDashboard ──────────────────────────────────────────
@@ -613,43 +520,6 @@ export function useNotifications() {
     archive,
     remove,
   };
-}
-
-// ─── useTaskComments ───────────────────────────────────────
-export function useTaskComments(taskId: number) {
-  const [comments, setComments] = useState<TaskComment[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refetch = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await taskCommentsApi.getAll(taskId);
-      setComments(data.comments);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [taskId]);
-
-  useEffect(() => {
-    refetch();
-  }, [refetch]);
-
-  const addComment = async (body: string) => {
-    const { comment } = await taskCommentsApi.create(taskId, body);
-    setComments((prev) => [...prev, comment]);
-    return comment;
-  };
-
-  const deleteComment = async (commentId: number) => {
-    await taskCommentsApi.delete(taskId, commentId);
-    setComments((prev) => prev.filter((c) => c.id !== commentId));
-  };
-
-  return { comments, isLoading, error, refetch, addComment, deleteComment };
 }
 
 // ─── useGovernanceHistory ────────────────────────────────

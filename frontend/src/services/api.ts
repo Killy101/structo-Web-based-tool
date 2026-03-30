@@ -2,7 +2,6 @@ import api from "@/app/lib/api";
 import {
   AuthResponse,
   User,
-  FileUpload,
   DashboardStats,
   CreateUserPayload,
   CreateUserResponse,
@@ -14,10 +13,8 @@ import {
   TeamRoleFeaturePolicyItem,
   TeamFeatureOption,
   BrdSourceItem,
-  TaskAssignment,
   UserLog,
   Notification,
-  TaskComment,
   UpdateUserProfilePayload,
   UpdateUserProfileResponse,
 } from "../types";
@@ -168,30 +165,6 @@ export const settingsApi = {
       .then((r) => r.data),
 };
 
-export const tasksApi = {
-  getAll: () =>
-    api.get<{ tasks: TaskAssignment[] }>("/tasks").then((r) => r.data),
-  create: (data: {
-    title: string;
-    description?: string;
-    assigneeIds: number[];
-    brdFileId?: number;
-    dueDate?: string;
-  }) =>
-    api
-      .post<{ message: string; task: TaskAssignment }>("/tasks", data)
-      .then((r) => r.data),
-  updateProgress: (id: number, percentage: number, status?: string) =>
-    api
-      .patch<{
-        message: string;
-        task: TaskAssignment;
-      }>(`/tasks/${id}/progress`, { percentage, status })
-      .then((r) => r.data),
-  delete: (id: number) =>
-    api.delete<{ message: string }>(`/tasks/${id}`).then((r) => r.data),
-};
-
 export const userLogsApi = {
   getAll: () => api.get<{ logs: UserLog[] }>("/user-logs").then((r) => r.data),
   getMine: () =>
@@ -204,32 +177,6 @@ export const brdApi = {
     api
       .post<{ message: string; recipients: number }>(`/brd/${brdId}/query`, { body })
       .then((r) => r.data),
-};
-
-export const filesApi = {
-  getAll: () => api.get<{ files: FileUpload[] }>("/files").then((r) => r.data),
-  upload: (formData: FormData) =>
-    api
-      .post<{
-        message: string;
-        file: FileUpload;
-      }>("/files/upload", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      })
-      .then((r) => r.data),
-  process: (id: number) =>
-    api.post<{ message: string }>(`/files/${id}/process`).then((r) => r.data),
-  submit: (id: number) =>
-    api.post<{ message: string }>(`/files/${id}/submit`).then((r) => r.data),
-  download: (id: number) => {
-    const token = getToken();
-    window.open(
-      `${process.env.NEXT_PUBLIC_API_URL}/files/${id}/download?token=${token}`,
-      "_blank",
-    );
-  },
-  delete: (id: number) =>
-    api.delete<{ message: string }>(`/files/${id}`).then((r) => r.data),
 };
 
 export const dashboardApi = {
@@ -262,17 +209,3 @@ export const notificationsApi = {
     api.delete<{ message: string }>(`/notifications/${id}`).then((r) => r.data),
 };
 
-export const taskCommentsApi = {
-  getAll: (taskId: number) =>
-    api
-      .get<{ comments: TaskComment[] }>(`/tasks/${taskId}/comments`)
-      .then((r) => r.data),
-  create: (taskId: number, body: string) =>
-    api
-      .post<{ comment: TaskComment }>(`/tasks/${taskId}/comments`, { body })
-      .then((r) => r.data),
-  delete: (taskId: number, commentId: number) =>
-    api
-      .delete<{ message: string }>(`/tasks/${taskId}/comments/${commentId}`)
-      .then((r) => r.data),
-};
