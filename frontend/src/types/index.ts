@@ -3,14 +3,6 @@ export type Role =
   | "ADMIN"
   | "USER";
 export type Status = "ACTIVE" | "INACTIVE";
-export type TaskStatus =
-  | "PENDING"
-  | "PROCESSING"
-  | "PROCESSED"
-  | "SUBMITTED"
-  | "APPROVED"
-  | "REJECTED";
-export type AssignmentStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED";
 
 export interface UserRole {
   id: number;
@@ -83,7 +75,7 @@ export interface Team {
   slug: string;
   createdAt: string;
   updatedAt: string;
-  _count?: { members: number; taskAssignments: number };
+  _count?: { members: number };
   members?: Pick<
     User,
     "id" | "userId" | "firstName" | "lastName" | "role" | "status"
@@ -114,27 +106,6 @@ export interface User {
   } | null;
 }
 
-export interface TaskAssignment {
-  id: number;
-  title: string;
-  description?: string | null;
-  status: AssignmentStatus;
-  percentage: number;
-  createdAt: string;
-  updatedAt: string;
-  dueDate?: string | null;
-  teamId: number;
-  team?: { id: number; name: string };
-  createdById: number;
-  createdBy?: Pick<User, "id" | "userId" | "firstName" | "lastName">;
-  assignees?: {
-    id: number;
-    userId: number;
-    user: Pick<User, "id" | "userId" | "firstName" | "lastName">;
-  }[];
-  brdFileId?: number | null;
-  brdFile?: { id: number; originalName: string; status: TaskStatus } | null;
-}
 
 export interface UserLog {
   id: number;
@@ -145,41 +116,6 @@ export interface UserLog {
   user?: Pick<User, "id" | "userId" | "firstName" | "lastName" | "role">;
 }
 
-export interface FileUpload {
-  id: number;
-  originalName: string;
-  fileType: string;
-  fileSize: number;
-  storagePath: string;
-  status: TaskStatus;
-  uploadedAt: string;
-  processedAt: string | null;
-  submittedAt: string | null;
-  uploadedById: number;
-  brdId?: number;
-  uploadedBy?: Pick<User, "id" | "userId" | "firstName" | "lastName" | "role">;
-  output?: FileOutput | null;
-  validation?: Validation | null;
-}
-
-export interface FileOutput {
-  id: number;
-  filename: string;
-  storagePath: string;
-  fileSize: number;
-  createdAt: string;
-  uploadId: number;
-}
-
-export interface Validation {
-  id: number;
-  status: string;
-  remarks: string | null;
-  validatedAt: string;
-  uploadId: number;
-  validatedById: number;
-  validatedBy?: Pick<User, "id" | "userId" | "firstName" | "lastName">;
-}
 
 export interface AuthResponse {
   token: string;
@@ -198,21 +134,13 @@ export interface DashboardStats {
     team: { id: number; name: string } | null;
   };
   totalUsers: number;
-  totalFiles: number;
-  pendingValidation: number;
-  approvedTasks: number;
   totalTeams: number;
-  totalTasks: number;
   totalBrds: number;
-  recentUploads7d: number;
   usersByRole: { role: Role; count: number }[];
-  filesByStatus: { status: TaskStatus; count: number }[];
-  tasksByStatus: { status: AssignmentStatus; count: number }[];
   brdsByStatus: { status: string; count: number }[];
-  recentActivity: FileUpload[];
 }
 
-export type NotificationType = "TASK_ASSIGNED" | "TASK_UPDATED" | "BRD_STATUS" | "SYSTEM";
+export type NotificationType = "BRD_STATUS" | "SYSTEM";
 
 export interface Notification {
   id: number;
@@ -225,15 +153,6 @@ export interface Notification {
   createdAt: string;
 }
 
-export interface TaskComment {
-  id: number;
-  assignmentId: number;
-  authorId: number;
-  body: string;
-  createdAt: string;
-  updatedAt: string;
-  author?: Pick<User, "id" | "userId" | "firstName" | "lastName">;
-}
 
 export interface BrdSourceItem {
   id: string;

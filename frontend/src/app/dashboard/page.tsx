@@ -5,6 +5,12 @@ import { useDashboard, useUserLogs } from "../../hooks";
 import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
 import TetrisLoading from "../../components/ui/tetris-loader";
+import dynamic from "next/dynamic";
+import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Cell } from "recharts";
+const CompareUsageChart = dynamic(
+  () => import("../../components/ui/compare-usage-chart"),
+  { ssr: false }
+);
 
 /* ─── Injected styles ──────────────────────────────────────────────────────── */
 // ── Brd type (mirrors BRD page) ─────────────────────────────────────────────
@@ -415,6 +421,8 @@ export default function DashboardPage() {
   const [brds,    setBrds]    = useState<Brd[]>([]);
   const [brdLoad, setBrdLoad] = useState(true);
   const [txp, setTxp] = useState(1);
+  const [balancePage, setBalancePage] = useState(1);
+  const BALANCE_PAGE_SIZE = 8;
   const dark = useDark();
 
   // Fetch full BRD list directly — same call as BRD page, gives real status/geography/title
@@ -429,26 +437,16 @@ export default function DashboardPage() {
   type Act = { id: string; at: string; action: string; user: string; source: string; tag: string };
 
   const acts: Act[] = useMemo(() => {
-    const fromLogs: Act[] = logs.map(l => ({
+    return logs.map(l => ({
       id:     `l${l.id}`,
       at:     l.createdAt,
       action: l.action.replace(/_/g, " "),
       user:   `${l.user?.firstName ?? ""} ${l.user?.lastName ?? ""}`.trim() || "—",
       source: l.details?.slice(0, 14) ?? "—",
       tag:    "SYSTEM",
-    }));
-    const fromFiles: Act[] = (stats?.recentActivity ?? []).map(f => ({
-      id:     `f${f.id}`,
-      at:     f.uploadedAt,
-      action: f.originalName?.slice(0, 20) ?? "File",
-      user:   `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""}`.trim() || "—",
-      source: (() => { const b = brds.find(x => x.id === String(f.brdId)); return b ? brdDisplayTitle(b).slice(0, 16) : "—"; })(),
-      tag:    f.status,
-    }));
-    return [...fromLogs, ...fromFiles]
-      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
-      .slice(0, 100);
-  }, [logs, stats?.recentActivity, brds]);
+    })).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+       .slice(0, 100);
+  }, [logs]);
 
   const totalTxp = Math.max(1, Math.ceil(acts.length / TXN_SIZE));
   useEffect(() => { if (txp > totalTxp) setTxp(totalTxp); }, [txp, totalTxp]);
@@ -457,10 +455,6 @@ export default function DashboardPage() {
 
 
   const totalUsers  = stats?.usersByRole?.reduce((a, b) => a + b.count, 0) ?? 0;
-  const totalTasks  = (stats?.tasksByStatus ?? []).reduce((a, b) => a + b.count, 0);
-  const totalDocs   = stats?.totalFiles ?? 0;
-  const pending     = stats?.pendingValidation ?? 0;
-  const uploads7d   = stats?.recentUploads7d ?? 0;
 
   // Derive BRD stats directly from the real Brd[] — no approximations
   const totalBrds = brds.length;
@@ -509,12 +503,10 @@ export default function DashboardPage() {
   /* Donut rings */
   const RING_C = [
     { l:"BRDs",  v:totalBrds,  color:"#1a6bff", trackL:"#dbeafe", trackD:"rgba(26,107,255,.14)" },
-    { l:"Docs",  v:totalDocs,  color:"#00c2ff", trackL:"#cffafe", trackD:"rgba(0,194,255,.12)"  },
-    { l:"Tasks", v:totalTasks, color:"#7c3aed", trackL:"#ede9fe", trackD:"rgba(124,58,237,.13)" },
     { l:"Users", v:totalUsers, color:"#16a34a", trackL:"#dcfce7", trackD:"rgba(22,163,74,.13)"  },
   ];
   // Ring fill = that metric as % of the combined total (visual proportion)
-  const sumOf4 = Math.max(totalBrds + totalDocs + totalTasks + totalUsers, 1);
+  const sumOf4 = Math.max(totalBrds + totalUsers, 1);
   const ringSegs = RING_C.map(r => ({
     pct:   r.v === 0 ? 0 : Math.max(5, Math.round((r.v / sumOf4) * 90)),
     color: r.color,
@@ -569,9 +561,7 @@ export default function DashboardPage() {
           <div className="db-kpi grid grid-cols-2 gap-3">
             {[
               { label:"BRD Sources", val:totalBrds,  sub:"total registered" },
-              { label:"Documents",   val:totalDocs,   sub:uploads7d > 0 ? `${uploads7d} uploaded this week` : "no uploads this week" },
-              { label:"Pending",     val:pending,     sub:pending > 0 ? "awaiting review" : "none pending" },
-              { label:"Users",       val:totalUsers,  sub:totalTasks > 0 ? `${totalTasks} active tasks` : "no active tasks" },
+              { label:"Users",       val:totalUsers,  sub:"registered accounts" },
             ].map((k, i) => (
               <div key={k.label} className={`${C} u d${i+1}`} style={{ padding: "16px 18px 14px", minHeight: 100 }}>
                 <p className="text-[11px] font-medium mb-2.5" style={{ color:"var(--c-sub)" }}>{k.label}</p>
@@ -714,12 +704,12 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* BRD Status Plans */}
+          {/* BRD Processing Chart */}
           <div className={`${C} u d3 p-4`}>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <div>
-                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>BRD Status Plans</p>
-                
+                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>BRD Processing</p>
+                <p className="text-[11px] mt-0.5" style={{color:"var(--c-sub)"}}>BRD count by status</p>
               </div>
               <button
                 onClick={() => { refetch(); refetchBrds(); refetchLogs(); }}
@@ -729,25 +719,66 @@ export default function DashboardPage() {
             </div>
             {brdStatuses.length === 0
               ? <p className="text-center text-[12px] py-4" style={{color:"var(--c-dim)"}}>No BRD data</p>
-              : brdStatuses.map((s, i) => {
-                  const pct = Math.round((s.count / brdTotal) * 100);
-                  const col = ACCENTS[i % ACCENTS.length];
-                  return (
-                    <div key={s.status} className="mb-4 last:mb-0">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] font-semibold tracking-wide" style={{color:"var(--c-txt)"}}>{s.status}</span>
-                        <span className="jb text-[10px]" style={{color:"var(--c-sub)"}}>
-                          {s.count} / {brdTotal}
-                        </span>
-                      </div>
-                      <div className="pb">
-                        <div className="pf" style={{ width:`${pct}%`, background:col, animationDelay:`${.15+i*.07}s` }} />
-                      </div>
-                      <p className="text-right jb text-[10px] mt-0.5 font-semibold" style={{color:col}}>{pct}%</p>
-                    </div>
-                  );
-                })
+              : <div style={{ height: 160 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={[
+                        { status: "Draft",     count: brdStatuses.find(s => s.status === "DRAFT")?.count     || 0, fill: "#38bdf8" },
+                        { status: "Paused",    count: brdStatuses.find(s => s.status === "PAUSED")?.count    || 0, fill: "#fbbf24" },
+                        { status: "Completed", count: brdStatuses.find(s => s.status === "COMPLETED")?.count || 0, fill: "#34d399" },
+                        { status: "Approved",  count: brdStatuses.find(s => s.status === "APPROVED")?.count  || 0, fill: "#a78bfa" },
+                        { status: "On Hold",   count: brdStatuses.find(s => s.status === "ON_HOLD")?.count   || 0, fill: "#f87171" },
+                      ]}
+                      margin={{ top: 4, right: 4, left: -22, bottom: 0 }}
+                      barSize={22}
+                    >
+                      <CartesianGrid vertical={false} stroke={dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)"} />
+                      <XAxis
+                        dataKey="status"
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 9, fill: dark ? "#637898" : "#96a8c8" }}
+                        tickMargin={5}
+                      />
+                      <YAxis
+                        allowDecimals={false}
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 9, fill: dark ? "#637898" : "#96a8c8" }}
+                        width={26}
+                      />
+                      <Tooltip
+                        cursor={{ fill: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)" }}
+                        contentStyle={{
+                          fontSize: 11,
+                          borderRadius: 8,
+                          background: dark ? "#0c1829" : "#fff",
+                          border: `1px solid ${dark ? "#17253f" : "#e4eaf4"}`,
+                          color: dark ? "#d8e4ff" : "#0d1b3e",
+                          padding: "4px 10px",
+                        }}
+                        formatter={(value: number) => [value, "BRDs"]}
+                      />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                        {[
+                          { status: "Draft",     fill: "#38bdf8" },
+                          { status: "Paused",    fill: "#fbbf24" },
+                          { status: "Completed", fill: "#34d399" },
+                          { status: "Approved",  fill: "#a78bfa" },
+                          { status: "On Hold",   fill: "#f87171" },
+                        ].map((entry) => (
+                          <Cell key={entry.status} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
             }
+          </div>
+
+          {/* Compare Analytics */}
+          <div className="u d3">
+            <CompareUsageChart />
           </div>
 
           {/* Pipeline — Bubble chart */}
@@ -760,18 +791,14 @@ export default function DashboardPage() {
             </div>
             {(() => {
               const features = [
-                { label: "BRD",              short: "BRD",     count: totalBrds, color: "#1a6bff" },
-                { label: "Metajson Creation", short: "Meta",   count: (stats?.filesByStatus ?? []).find(s => (s.status as string) === "COMPLETED")?.count ?? 0, color: "#00c2ff" },
-                { label: "Content Profile",   short: "Profile", count: (stats?.filesByStatus ?? []).find(s => (s.status as string) === "IN_PROGRESS" || (s.status as string) === "PENDING")?.count ?? 0, color: "#7c3aed" },
-                { label: "Compare Tool",      short: "Compare", count: pending,  color: "#16a34a" },
+                { label: "BRD Sources", short: "BRD",     count: totalBrds,  color: "#1a6bff" },
+                { label: "Users",       short: "Users",   count: totalUsers, color: "#16a34a" },
               ];
               const maxVal = Math.max(...features.map(f => f.count), 1);
               const W = 340, H = 200;
               const positions = [
-                { cx: 72,  cy: 95  },
-                { cx: 195, cy: 70  },
-                { cx: 278, cy: 115 },
-                { cx: 155, cy: 155 },
+                { cx: 110, cy: 100 },
+                { cx: 240, cy: 100 },
               ];
               return (
                 <div className="flex-1 flex flex-col">
@@ -823,10 +850,8 @@ export default function DashboardPage() {
                   {/* Legend row */}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
                     {[
-                      { label: "BRD",               color: "#1a6bff" },
-                      { label: "Metajson Creation",  color: "#00c2ff" },
-                      { label: "Content Profile",    color: "#7c3aed" },
-                      { label: "Compare Tool",       color: "#16a34a" },
+                      { label: "BRD Sources", color: "#1a6bff" },
+                      { label: "Users",       color: "#16a34a" },
                     ].map(f => (
                       <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
                         <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
@@ -844,98 +869,111 @@ export default function DashboardPage() {
         {/* ╔══════════ COL 3 — sidebar ══════════╗ */}
         <div className="db-col3 flex flex-col gap-4 min-w-0">
 
-          {/* Tasks breakdown — real data */}
-          <div className={`${C} u d1 p-4`}>
-            <div className="flex justify-between items-center mb-3">
-              <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Tasks</p>
-              <span className="jb text-[11px]" style={{color:"var(--c-sub)"}}>{totalTasks} total</span>
-            </div>
-            {(stats?.tasksByStatus ?? []).length === 0
-              ? <p className="text-[11px] text-center py-3" style={{color:"var(--c-dim)"}}>No tasks yet</p>
-              : (stats?.tasksByStatus ?? []).map((t, i) => {
-                  const pct   = totalTasks > 0 ? Math.round((t.count / totalTasks) * 100) : 0;
-                  const cols  = ["#1a6bff","#22c55e","#f59e0b","#ef4444","#a855f7"];
-                  const color = cols[i % cols.length];
-                  return (
-                    <div key={t.status} className="mb-2.5 last:mb-0">
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span style={{color:"var(--c-sub)"}}>{t.status.replace(/_/g," ")}</span>
-                        <span className="jb" style={{color:"var(--c-txt)"}}>{t.count}</span>
-                      </div>
-                      <div className="pb" style={{height:5}}>
-                        <div className="pf" style={{ width:`${pct}%`, background:color, animationDelay:`${.1+i*.06}s` }} />
-                      </div>
-                    </div>
-                  );
-                })
-            }
-          </div>
-
           {/* Balance */}
-          <div className={`${C} u d2 p-4`}>
-            <div className="flex justify-between items-center mb-3">
-              <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Balance</p>
-              <span style={{color:"var(--c-dim)"}}>···</span>
-            </div>
-            <p className="text-[9.5px] font-bold uppercase tracking-widest mb-1" style={{color:"var(--c-sub)"}}>Total BRD Sources</p>
-            <p className="jb text-[24px] font-bold mb-3" style={{color:"var(--c-txt)"}}>
-              <CountUp to={totalBrds} />
-            </p>
-            {/* Continent mini-breakdown */}
-            {brdByContinent.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-3">
-                {brdByContinent.map(r => (
-                  <span key={r.region} className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full jb"
-                    style={{ background:"var(--c-acc-lo)", color:"var(--c-acc)" }}>
-                    {r.region} · {r.count}
-                  </span>
-                ))}
-              </div>
-            )}
-            {brds.length === 0
-              ? <p className="text-[11px] text-center py-3" style={{color:"var(--c-dim)"}}>No sources yet</p>
-              : <div style={{ maxHeight: 620, overflowY: "auto", marginRight: -4, paddingRight: 4, display: "flex", flexDirection: "column", gap: 8 }}>
-                  {brds.map((b, i) => {
-                    const bg = i % 2 === 0
-                      ? "linear-gradient(135deg, #1a6bff 0%, #0d50d4 100%)"
-                      : "linear-gradient(135deg, #0d2d6b 0%, #081a44 100%)";
-                    const STATUS_COLOR: Record<string,string> = {
-                      COMPLETED:"#4ade80", APPROVED:"#818cf8", DRAFT:"#93c5fd",
-                      PAUSED:"#fbbf24", ON_HOLD:"#f87171",
-                    };
-                    return (
-                      <div key={b.id} className="u rounded-[13px] p-3.5 flex-shrink-0"
-                        style={{ background: bg, animationDelay:`${.08+i*.04}s` }}>
-                        {/* Top row: BRD badge + geography */}
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[8px] font-black tracking-[.12em] px-1.5 py-0.5 rounded-[4px]"
-                            style={{ background:"rgba(255,255,255,.18)", color:"#fff" }}>
-                            BRD
-                          </span>
-                          <span className="text-[10px]" style={{ color:"rgba(255,255,255,.6)" }}>
-                            {b.geography || "—"}
-                          </span>
-                        </div>
-                        {/* Real display title */}
-                        <p className="text-[13px] font-bold leading-snug truncate" style={{ color:"#fff" }}>
-                          {brdDisplayTitle(b)}
-                        </p>
-                        {/* ID · real status (colored) */}
-                        <div className="flex items-center justify-between mt-1.5">
-                          <span className="jb text-[9px]" style={{ color:"rgba(255,255,255,.42)" }}>
-                            {b.id} · {b.format?.toUpperCase()}
-                          </span>
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                            style={{ background:"rgba(0,0,0,.25)", color: STATUS_COLOR[b.status] ?? "#fff" }}>
-                            {b.status}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
+          {(() => {
+            const balanceTotalPages = Math.max(1, Math.ceil(brds.length / BALANCE_PAGE_SIZE));
+            const safeBalancePage = Math.min(balancePage, balanceTotalPages);
+            const pagedBrds = brds.slice((safeBalancePage - 1) * BALANCE_PAGE_SIZE, safeBalancePage * BALANCE_PAGE_SIZE);
+            const STATUS_COLOR: Record<string,string> = {
+              COMPLETED:"#4ade80", APPROVED:"#818cf8", DRAFT:"#93c5fd",
+              PAUSED:"#fbbf24", ON_HOLD:"#f87171",
+            };
+            return (
+              <div className={`${C} u d2 p-4`}>
+                <div className="flex justify-between items-center mb-3">
+                  <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Balance</p>
+                  <span style={{color:"var(--c-dim)"}}>···</span>
                 </div>
-            }
-          </div>
+                <p className="text-[9.5px] font-bold uppercase tracking-widest mb-1" style={{color:"var(--c-sub)"}}>Total BRD Sources</p>
+                <p className="jb text-[24px] font-bold mb-3" style={{color:"var(--c-txt)"}}>
+                  <CountUp to={totalBrds} />
+                </p>
+                {/* Continent mini-breakdown */}
+                {brdByContinent.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {brdByContinent.map(r => (
+                      <span key={r.region} className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full jb"
+                        style={{ background:"var(--c-acc-lo)", color:"var(--c-acc)" }}>
+                        {r.region} · {r.count}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {brds.length === 0
+                  ? <p className="text-[11px] text-center py-3" style={{color:"var(--c-dim)"}}>No sources yet</p>
+                  : <>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {pagedBrds.map((b, i) => {
+                          const globalIdx = (safeBalancePage - 1) * BALANCE_PAGE_SIZE + i;
+                          const bg = globalIdx % 2 === 0
+                            ? "linear-gradient(135deg, #1a6bff 0%, #0d50d4 100%)"
+                            : "linear-gradient(135deg, #0d2d6b 0%, #081a44 100%)";
+                          return (
+                            <div key={b.id} className="u rounded-[13px] p-3.5 flex-shrink-0"
+                              style={{ background: bg, animationDelay:`${.08+i*.04}s` }}>
+                              {/* Top row: BRD badge + geography */}
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[8px] font-black tracking-[.12em] px-1.5 py-0.5 rounded-[4px]"
+                                  style={{ background:"rgba(255,255,255,.18)", color:"#fff" }}>
+                                  BRD
+                                </span>
+                                <span className="text-[10px]" style={{ color:"rgba(255,255,255,.6)" }}>
+                                  {b.geography || "—"}
+                                </span>
+                              </div>
+                              {/* Real display title */}
+                              <p className="text-[13px] font-bold leading-snug truncate" style={{ color:"#fff" }}>
+                                {brdDisplayTitle(b)}
+                              </p>
+                              {/* ID · real status (colored) */}
+                              <div className="flex items-center justify-between mt-1.5">
+                                <span className="jb text-[9px]" style={{ color:"rgba(255,255,255,.42)" }}>
+                                  {b.id} · {b.format?.toUpperCase()}
+                                </span>
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                  style={{ background:"rgba(0,0,0,.25)", color: STATUS_COLOR[b.status] ?? "#fff" }}>
+                                  {b.status}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* Pagination controls */}
+                      {balanceTotalPages > 1 && (
+                        <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop:"1px solid var(--c-b)" }}>
+                          <span className="jb text-[10px]" style={{ color:"var(--c-dim)" }}>
+                            {(safeBalancePage - 1) * BALANCE_PAGE_SIZE + 1}–{Math.min(safeBalancePage * BALANCE_PAGE_SIZE, brds.length)} / {brds.length}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => setBalancePage(p => Math.max(1, p - 1))}
+                              disabled={safeBalancePage === 1}
+                              className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                              style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                                color: safeBalancePage === 1 ? "var(--c-dim)" : "var(--c-sub)",
+                                cursor: safeBalancePage === 1 ? "not-allowed" : "pointer" }}
+                            >←</button>
+                            <span className="jb text-[10px]" style={{ color:"var(--c-sub)" }}>
+                              {safeBalancePage} / {balanceTotalPages}
+                            </span>
+                            <button
+                              onClick={() => setBalancePage(p => Math.min(balanceTotalPages, p + 1))}
+                              disabled={safeBalancePage >= balanceTotalPages}
+                              className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                              style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                                color: safeBalancePage >= balanceTotalPages ? "var(--c-dim)" : "var(--c-sub)",
+                                cursor: safeBalancePage >= balanceTotalPages ? "not-allowed" : "pointer" }}
+                            >→</button>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                }
+              </div>
+            );
+          })()}
+
 
 
         </div>
