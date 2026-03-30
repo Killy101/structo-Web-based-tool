@@ -2,18 +2,19 @@ services:
 
   # ── Frontend (Next.js) ────────────────────────────────────────────────────────
   frontend:
+    image: killy101/structo-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      target: development        # uses the hot-reload stage
+      target: development
     volumes:
-      - ./frontend:/app          # bind-mount source for hot reload
-      - frontend_nm:/app/node_modules   # keep container node_modules isolated
-      - frontend_next:/app/.next        # persist Next.js build cache
+      - ./frontend:/app
+      - frontend_nm:/app/node_modules
+      - frontend_next:/app/.next
     ports:
       - "3000:3000"
     env_file:
-      - ./frontend/.env.local    # create from frontend/.env.example
+      - ./frontend/.env.local
     environment:
       - NODE_ENV=development
     depends_on:
@@ -22,38 +23,35 @@ services:
 
   # ── Backend (Express + pg) ────────────────────────────────────────────────────
   backend:
+    image: killy101/structo-backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
-      target: development        # uses the hot-reload stage
+      target: development
     volumes:
-      - ./backend:/app           # bind-mount source for hot reload
-      - backend_nm:/app/node_modules    # keep container node_modules isolated
+      - ./backend:/app
+      - backend_nm:/app/node_modules
     ports:
       - "4000:4000"
     env_file:
-      - ./backend/.env           # create from backend/.env.example
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://postgres:Admin123@host.docker.internal:5432/mydb?sslmode=disable
+      - ./backend/.env
 
   # ── Processing (FastAPI + Python) ─────────────────────────────────────────────
   processing:
+    image: killy101/structo-processing:latest
     build:
       context: ./processing
       dockerfile: Dockerfile
-      target: development        # uses the hot-reload stage
+      target: development
     volumes:
-      - ./processing:/app        # bind-mount source for hot reload
+      - ./processing:/app
     ports:
       - "8000:8000"
     env_file:
-      - ./processing/.env        # create from processing/.env.example
+      - ./processing/.env
 
-# Named volumes prevent node_modules / Python cache from being overwritten by host mounts
+# Named volumes
 volumes:
   frontend_nm:
   frontend_next:
   backend_nm:
-
-

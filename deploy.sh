@@ -1,9 +1,8 @@
-
 #!/bin/bash
 echo "🔨 Building..."
-docker compose up -d --build
+docker compose build
 
 echo "📤 Pushing to Docker Hub..."
 docker compose push
 
-echo "✅ Deployed!"
+echo "✅ Pushed to Docker Hub!"
