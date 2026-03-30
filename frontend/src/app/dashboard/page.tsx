@@ -4,7 +4,6 @@ import { useAuth } from "../../context/AuthContext";
 import { useDashboard, useUserLogs } from "../../hooks";
 import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
-import { Role, TaskStatus } from "../../types";
 import TetrisLoading from "../../components/ui/tetris-loader";
 
 /* ─── Injected styles ──────────────────────────────────────────────────────── */
@@ -228,7 +227,6 @@ function LiveClock() {
     return () => clearInterval(id);
   }, []);
 
-  const hh   = now.getHours().toString().padStart(2, "0");
   const mm   = now.getMinutes().toString().padStart(2, "0");
   const ss   = now.getSeconds().toString().padStart(2, "0");
   const ampm = now.getHours() >= 12 ? "PM" : "AM";
@@ -236,9 +234,6 @@ function LiveClock() {
 
   const dayName = now.toLocaleDateString("en-US", { weekday: "long" });
   const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-
-  // Progress through the day as percentage
-  const dayPct = Math.round(((now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()) / 86400) * 100);
 
   return (
     <div style={{

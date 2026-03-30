@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+npm --prefix frontend run precommit:check

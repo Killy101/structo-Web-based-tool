@@ -213,6 +213,26 @@ const DZC: Record<DZColor, Record<string, string>> = {
   },
 };
 
+function IconSvgRenderer({ icon }: { icon: "pdf" | "xml" | "html" }) {
+  if (icon === "pdf") return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+    </svg>
+  );
+  if (icon === "html") return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+    </svg>
+  );
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
+
 function DropZone({
   label, sublabel, accept, file, onFile, color, icon,
 }: {
@@ -222,26 +242,6 @@ function DropZone({
   const ref = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const c = DZC[color];
-
-  const IconSvg = () => {
-    if (icon === "pdf") return (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-          d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-      </svg>
-    );
-    if (icon === "html") return (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-      </svg>
-    );
-    return (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
-    );
-  };
 
   return (
     <div
@@ -259,7 +259,7 @@ function DropZone({
       <div className="flex flex-col items-center gap-2 text-center">
         <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0
           ${file ? c.bg : "bg-slate-100 dark:bg-slate-800/60"} ${c.icon}`}>
-          <IconSvg />
+          <IconSvgRenderer icon={icon} />
         </div>
         <div className="min-w-0 w-full">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-0.5">{label}</p>
@@ -645,11 +645,9 @@ function ChunkDetailModal({
 // ── Compare Modal ─────────────────────────────────────────────────────────────
 
 function CompareModal({
-  result, fromExt, toExt, onClose, onOpenChunk,
+  result, onClose, onOpenChunk,
 }: {
   result: ChunkResponse;
-  fromExt: string;
-  toExt: string;
   onClose: () => void;
   onOpenChunk?: (chunk: PdfChunk) => void;
 }) {
@@ -883,7 +881,6 @@ export default function ChunkPanel({
   onAllChunksReady,
   onFilesReady,
   onJobCreated,
-  activeJob,
   fileCount = 2,
   conversionPair = "pdf-to-pdf",
 }: ChunkPanelProps) {
@@ -1022,7 +1019,7 @@ export default function ChunkPanel({
       setLoadingStage("complete");
 
       const data: ChunkResponse = await res.json();
-      const job_id: string = (data as any).job_id ?? "";
+      const job_id: string = (data as ChunkResponse & { job_id?: string }).job_id ?? "";
 
       onJobCreated?.({ job_id, source_name: sourceName.trim(), status: "done" });
       onAllChunksReady?.(data.pdf_chunks);
@@ -1038,7 +1035,19 @@ export default function ChunkPanel({
       setLoading(false);
       setLoadingStep(null);
     }
-  }, [isReady, oldFile, newFile, xmlFile, fileCount, sourceName, tagName, chunkSize, onJobCreated]);
+  }, [
+    isReady,
+    oldFile,
+    newFile,
+    xmlFile,
+    fileCount,
+    sourceName,
+    tagName,
+    chunkSize,
+    onJobCreated,
+    onAllChunksReady,
+    onFilesReady,
+  ]);
 
   function handleOpenChunkInCompare(chunk: PdfChunk) {
     if (!onNavigateToCompare || !result) return;
@@ -1580,8 +1589,6 @@ export default function ChunkPanel({
       {showCompareModal && result && (
         <CompareModal
           result={result}
-          fromExt={fromExt}
-          toExt={toExt}
           onClose={() => setShowCompareModal(false)}
           onOpenChunk={(chunk) => {
             setShowCompareModal(false);

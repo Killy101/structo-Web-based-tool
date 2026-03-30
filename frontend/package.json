@@ -6,7 +6,10 @@
     "dev": "set NEXT_EXPERIMENTAL_TURBOPACK=false && next dev",
     "build": "next build",
     "start": "next start",
+    "prepare": "husky ../.husky",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "precommit:check": "node ./scripts/precommit-check.mjs",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
@@ -33,10 +36,13 @@
     "autoprefixer": "^10.4.27",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "husky": "^9.1.7",
     "jest": "^30.3.0",
     "jest-environment-jsdom": "^30.3.0",
+    "lint-staged": "^15.5.2",
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19",
+    "tsc-files": "^1.1.4",
     "ts-jest": "^29.4.6",
     "typescript": "^5"
   }

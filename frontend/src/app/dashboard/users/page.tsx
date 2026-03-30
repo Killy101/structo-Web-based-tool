@@ -713,27 +713,7 @@ function EnhancedAvatar({
   );
 }
 
-const STATUS_FILTER_CHIPS = ["ALL", "ACTIVE", "INACTIVE"] as const;
-type StatusFilterChip = (typeof STATUS_FILTER_CHIPS)[number];
-
-const STATUS_FILTER_STYLES: Record<
-  StatusFilterChip,
-  { base: string; active: string }
-> = {
-  ALL: {
-    base: "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800",
-    active:
-      "bg-slate-700 dark:bg-slate-200 text-white dark:text-slate-900 border-slate-700 dark:border-slate-200",
-  },
-  ACTIVE: {
-    base: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20",
-    active: "bg-emerald-500 text-white border-emerald-500",
-  },
-  INACTIVE: {
-    base: "border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20",
-    active: "bg-rose-500 text-white border-rose-500",
-  },
-};
+type StatusFilterChip = "ALL" | "ACTIVE" | "INACTIVE";
 
 function StatusDot({
   active,
@@ -983,24 +963,14 @@ function UserDetailModal({
   isOpen,
   onClose,
   user,
-  actorRole,
   currentUserId,
   onEditUser,
-  onChangePassword,
-  onChangeRole,
-  onAssignTeam,
-  onToggleStatus,
 }: {
   isOpen: boolean;
   onClose: () => void;
   user: User | null;
-  actorRole: Role;
   currentUserId: number | undefined;
   onEditUser: (u: User) => void;
-  onChangePassword: (u: User) => void;
-  onChangeRole: (u: User) => void;
-  onAssignTeam: (u: User) => void;
-  onToggleStatus: (u: User) => void;
 }) {
   if (!user) return null;
 
@@ -1328,7 +1298,6 @@ function CreateUserModal({
   actorRole,
   teams,
   actorTeamId,
-  customRoles,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -1336,7 +1305,6 @@ function CreateUserModal({
   actorRole: Role;
   teams: { id: number; name: string }[];
   actorTeamId: number | null;
-  customRoles: UserRole[];
 }) {
   const { createUser } = useUsers();
   const [form, setForm] = useState({
@@ -2556,7 +2524,7 @@ export default function UsersPage() {
   // NEW: sort state
   const [sortKey, setSortKey] = useState<SortKey>(initialSort);
   const [sortDir, setSortDir] = useState<SortDir>(initialDir);
-  const [activePreset, setActivePreset] = useState<UserPresetKey>("default");
+  const [, setActivePreset] = useState<UserPresetKey>("default");
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(
     new Set(),
   );
@@ -2628,35 +2596,6 @@ export default function UsersPage() {
   const handleSortDirectionChange = (value: SortDir) => {
     setSortDir(value);
     setActivePreset("default");
-    setCurrentPage(1);
-  };
-
-  const applyPreset = (preset: UserPresetKey) => {
-    setActivePreset(preset);
-    if (preset === "newest") {
-      setStatus("ALL");
-      setSortKey("created");
-      setSortDir("desc");
-      setCurrentPage(1);
-      return;
-    }
-    if (preset === "active") {
-      setStatus("ACTIVE");
-      setSortKey("name");
-      setSortDir("asc");
-      setCurrentPage(1);
-      return;
-    }
-    if (preset === "inactive") {
-      setStatus("INACTIVE");
-      setSortKey("created");
-      setSortDir("desc");
-      setCurrentPage(1);
-      return;
-    }
-    setStatus("ALL");
-    setSortKey("name");
-    setSortDir("asc");
     setCurrentPage(1);
   };
 
@@ -2742,15 +2681,6 @@ export default function UsersPage() {
   const startIdx = (effectiveCurrentPage - 1) * itemsPerPage;
   const endIdx = startIdx + itemsPerPage;
   const paginatedData = filtered.slice(startIdx, endIdx);
-  const paginatedIds = useMemo(
-    () => paginatedData.map((u) => u.id),
-    [paginatedData],
-  );
-
-  const allPageSelected =
-    paginatedIds.length > 0 &&
-    paginatedIds.every((id) => selectedUserIds.has(id));
-  const somePageSelected = paginatedIds.some((id) => selectedUserIds.has(id));
 
   const selectedUsers = useMemo(
     () => users.filter((u) => selectedUserIds.has(u.id)),
@@ -2786,30 +2716,6 @@ export default function UsersPage() {
     statusFilter,
     teamFilter,
   ]);
-
-  const toggleSelect = (userId: number) => {
-    setSelectedUserIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(userId)) {
-        next.delete(userId);
-      } else {
-        next.add(userId);
-      }
-      return next;
-    });
-  };
-
-  const toggleSelectAllPage = () => {
-    setSelectedUserIds((prev) => {
-      const next = new Set(prev);
-      if (allPageSelected) {
-        paginatedIds.forEach((id) => next.delete(id));
-      } else {
-        paginatedIds.forEach((id) => next.add(id));
-      }
-      return next;
-    });
-  };
 
   const clearSelection = () => setSelectedUserIds(new Set());
 
@@ -2985,11 +2891,6 @@ export default function UsersPage() {
     setTargetUser(u);
     setShowAssignTeam(true);
   };
-  const handleOpenAssignCustomRole = (u: User) => {
-    setTargetUser(u);
-    setShowAssignCustomRole(true);
-  };
-
   const handleChangePassword = async (userId: number, newPassword: string) => {
     await changePassword(userId, newPassword);
     show("Password changed successfully", "success");
@@ -3434,7 +3335,6 @@ export default function UsersPage() {
         actorRole={actorRole}
         teams={teams}
         actorTeamId={actorTeamId}
-        customRoles={customRoles}
       />
       <PasswordModal
         isOpen={showPwd}
@@ -3451,13 +3351,8 @@ export default function UsersPage() {
           setTargetUser(null);
         }}
         user={targetUser}
-        actorRole={actorRole}
         currentUserId={currentUser?.id}
         onEditUser={handleOpenEditUser}
-        onChangePassword={handleOpenChangePassword}
-        onChangeRole={handleOpenChangeRole}
-        onAssignTeam={handleOpenAssignTeam}
-        onToggleStatus={handleToggle}
       />
       <EditUserModal
         isOpen={showEditUser}

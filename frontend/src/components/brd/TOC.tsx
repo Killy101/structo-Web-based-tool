@@ -1,5 +1,6 @@
 // ── TOC.tsx ──────────────────────────────────────────────────────────────────
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import BrdImage from "./BrdImage";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -171,7 +172,7 @@ function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
       typeof section === "object" && section !== null
     )
     .map((section, index) => {
-      let rawLevel = String(section.level ?? section.id ?? index + 1);
+      const rawLevel = String(section.level ?? section.id ?? index + 1);
       const levelMatch = rawLevel.match(/\*{1,2}(\d+)\*{1,2}|\b(\d+)\b/);
       const level = levelMatch
         ? (levelMatch[1] ?? levelMatch[2] ?? rawLevel)
@@ -292,61 +293,11 @@ function formatTocCellForDisplay(value: string, col: string) {
   return formatted;
 }
 
-
-function CellEditor({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    function onMD(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener("mousedown", onMD);
-    return () => document.removeEventListener("mousedown", onMD);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return <div ref={ref}>{children}</div>;
-}
-
-// Buffered textarea — only calls onChange on commit, not every keystroke.
-// Prevents parent re-renders from unmounting the editor mid-edit.
-function BufferedTextarea({ initialValue, rows, onCommit, onCancel, className }: {
-  initialValue: string; rows: number;
-  onCommit: (v: string) => void; onCancel: () => void; className: string;
-}) {
-  const [draft, setDraft] = useState(initialValue);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
-  return (
-    <textarea ref={ref} value={draft} rows={rows}
-      onChange={e => setDraft(e.target.value)}
-      onKeyDown={e => { if (e.key === "Escape") { onCancel(); } }}
-      onBlur={() => onCommit(draft)}
-      className={className}
-    />
-  );
-}
-
-function BufferedSelect({ initialValue, options, onCommit, className }: {
-  initialValue: string;
-  options: { value: string; label: string }[];
-  onCommit: (v: string) => void; className: string;
-}) {
-  const [draft, setDraft] = useState(initialValue);
-  return (
-    <select autoFocus value={draft}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={() => onCommit(draft)}
-      className={className}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  );
-}
-
 export default function TOC({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows] = useState<TocRow[]>(INITIAL_ROWS);
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
   const [saved, setSaved] = useState(false);
   const [images, setImages] = useState<CellImageMeta[]>([]);
-  const [imageMap, setImageMap] = useState<Map<number, CellImageMeta[]>>(new Map());
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   const API_BASE_TOC = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
@@ -502,9 +453,8 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     return byCol;
   }
 
-  function renderCell(row: TocRow, col: string, rowIndex: number) {
+  function renderCell(row: TocRow, col: string) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
-    const closeEdit = () => setEditingCell(null);
     const rawValue = row[col as keyof TocRow] as string;
     const value = formatTocCellForDisplay(rawValue, col);
 
@@ -669,12 +619,12 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
                       {COLUMNS.map((col) => (
                         <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                           <div className="group">
-                          {renderCell(row, col.key, idx)}
+                          {renderCell(row, col.key)}
                           {rowImgsByCol[col.key]?.map(img => (
-                            <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {getCellImgs(row.level, col.key).map(img => (
-                            <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                            <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
                           {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                         </div>

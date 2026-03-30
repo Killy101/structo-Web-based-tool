@@ -1,4 +1,5 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import BrdImage from "./BrdImage";
 import React, { useEffect, useState, useMemo, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -465,7 +466,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
 
 
-  function renderLevelCell(row: LevelRow, col: string, rowIndex: number) {
+  function renderLevelCell(row: LevelRow, col: string) {
     const isEditing = levelEditing?.rowId === row.id && levelEditing?.col === col;
     const value     = row[col as keyof LevelRow] as string;
     if (col === "redjayXmlTag") {
@@ -585,9 +586,9 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                         {LEVEL_COLUMNS.map((col) => (
                           <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                             <div className="group">
-                            {renderLevelCell(row, col.key, idx)}
+                            {renderLevelCell(row, col.key)}
                             {getCellImgs(row.id, col.key).map(img => (
-                              <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                              <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                             ))}
                             {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
                           </div>
@@ -603,7 +604,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                               {rowImgs.map(img => (
                                 <div key={img.id} className="group/img inline-flex items-center gap-2 cursor-pointer" onClick={() => setExpandedImage(img)}>
                                   <div className="relative rounded overflow-hidden border border-amber-200 dark:border-amber-700/40 bg-white dark:bg-[#1a1f35]" style={{width:72,height:52}}>
-                                    <img
+                                    <BrdImage
                                       src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP)}
                                       alt={img.cellText || img.mediaName}
                                       className="w-full h-full object-contain group-hover/img:scale-105 transition-transform"
@@ -647,7 +648,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
             {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel="headingAnnotation" existingImages={getCellImgs("headingAnnotation", "value")} onUploaded={img => onCellUploaded("headingAnnotation", "value", img)} onDeleted={id => onCellDeleted("headingAnnotation", "value", id)}/>}
           </div>
           {getCellImgs("headingAnnotation", "value").map(img => (
-            <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-2 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+            <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-2 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
           ))}
         </div>
       </div>
@@ -690,7 +691,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                         <div className="group">
                         {renderWsCell(row, col.key)}
                         {getCellImgs(row.id, col.key).map(img => (
-                          <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                         {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
                       </div>
@@ -728,7 +729,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
               </button>
             </div>
             <div className="p-4 flex items-center justify-center bg-slate-50 dark:bg-[#161b2e] max-h-[70vh]">
-              <img src={buildBrdImageBlobUrl(brdId, expandedImage.id, API_BASE_CP)} alt={expandedImage.mediaName} className="max-w-full max-h-[65vh] object-contain rounded"/>
+              <BrdImage src={buildBrdImageBlobUrl(brdId, expandedImage.id, API_BASE_CP)} alt={expandedImage.mediaName} className="max-w-full max-h-[65vh] object-contain rounded"/>
             </div>
           </div>
         </div>
