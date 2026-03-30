@@ -156,6 +156,7 @@ export interface FileUpload {
   processedAt: string | null;
   submittedAt: string | null;
   uploadedById: number;
+  brdId?: number;
   uploadedBy?: Pick<User, "id" | "userId" | "firstName" | "lastName" | "role">;
   output?: FileOutput | null;
   validation?: Validation | null;

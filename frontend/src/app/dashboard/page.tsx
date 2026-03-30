@@ -447,7 +447,7 @@ export default function DashboardPage() {
       at:     f.uploadedAt,
       action: f.originalName?.slice(0, 20) ?? "File",
       user:   `${f.uploadedBy?.firstName ?? ""} ${f.uploadedBy?.lastName ?? ""}`.trim() || "—",
-      source: (() => { const b = brds.find(x => x.id === (f as any).brdId); return b ? brdDisplayTitle(b).slice(0, 16) : "—"; })(),
+      source: (() => { const b = brds.find(x => x.id === f.brdId); return b ? brdDisplayTitle(b).slice(0, 16) : "—"; })(),
       tag:    f.status,
     }));
     return [...fromLogs, ...fromFiles]

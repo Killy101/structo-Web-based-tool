@@ -27,6 +27,8 @@ interface CellImageMeta {
   mediaName: string;
   mimeType: string;
   cellText: string;
+  section?: string;
+  fieldLabel?: string;
 }
 
 interface Props {
@@ -398,9 +400,9 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
         const cpImgs = all.filter(img => { const t = normCP(img.cellText || ""); return CP_KW.some(kw => t.includes(kw)); });
         setContentImages(cpImgs.length > 0 ? cpImgs : all);
         // Restore manually uploaded images into cellImages
-        const manualImgs = all.filter((img: any) => img.section === "contentProfile" && img.rid?.startsWith("manual-"));
+        const manualImgs = all.filter((img: CellImageMeta) => img.section === "contentProfile" && img.rid?.startsWith("manual-"));
         const restored: Record<string, UploadedCellImage[]> = {};
-        manualImgs.forEach((img: any) => {
+        manualImgs.forEach((img: CellImageMeta) => {
           const key = img.fieldLabel ?? "";
           if (!key) return;
           if (!restored[key]) restored[key] = [];
