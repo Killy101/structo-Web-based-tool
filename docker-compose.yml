@@ -48,6 +48,10 @@ services:
       - "8000:8000"
     env_file:
       - ./processing/.env        # copy from processing/.env.example
+    environment:
+      - NODE_API_URL=http://backend:4000
+    depends_on:
+      - backend
 
 # Named volumes prevent node_modules / Python cache from being overwritten by host mounts
 volumes:
