@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "reac
 import BrdFlow from "@/components/brd/BrdFlow";
 import Generate from "@/components/brd/Generate";
 import api from "@/app/lib/api";
+import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { useAuth } from "../../../context/AuthContext";
 
 type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
@@ -865,6 +866,81 @@ export default function BrdPage() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* ── BRD Processing Chart ── */}
+      <div className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Processing Overview</p>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">BRD count by status</p>
+          </div>
+          <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 tabular-nums">
+            {brds.length} total
+          </span>
+        </div>
+        {loading ? (
+          <div className="h-[120px] flex items-center justify-center">
+            <div className="w-full h-16 bg-slate-100 dark:bg-slate-800 rounded-lg animate-pulse" />
+          </div>
+        ) : brds.length === 0 ? (
+          <div className="h-[120px] flex items-center justify-center text-[12px] text-slate-400 dark:text-slate-500">
+            No BRD data yet
+          </div>
+        ) : (
+          <div className="h-[120px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={[
+                  { status: "Draft",     count: statusCounts["DRAFT"] || 0,     fill: "#38bdf8" },
+                  { status: "Paused",    count: statusCounts["PAUSED"] || 0,    fill: "#fbbf24" },
+                  { status: "Completed", count: statusCounts["COMPLETED"] || 0, fill: "#34d399" },
+                  { status: "Approved",  count: statusCounts["APPROVED"] || 0,  fill: "#a78bfa" },
+                  { status: "On Hold",   count: statusCounts["ON_HOLD"] || 0,   fill: "#f87171" },
+                ]}
+                margin={{ top: 4, right: 8, left: -20, bottom: 0 }}
+                barSize={28}
+              >
+                <CartesianGrid vertical={false} stroke="currentColor" strokeOpacity={0.07} />
+                <XAxis
+                  dataKey="status"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 10, fill: "currentColor", opacity: 0.55 }}
+                  tickMargin={6}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 10, fill: "currentColor", opacity: 0.45 }}
+                  width={28}
+                />
+                <Tooltip
+                  cursor={{ fill: "currentColor", opacity: 0.04 }}
+                  contentStyle={{
+                    fontSize: 11,
+                    borderRadius: 8,
+                    border: "1px solid rgba(100,116,139,0.18)",
+                    padding: "4px 10px",
+                  }}
+                  formatter={(value: number) => [value, "BRDs"]}
+                />
+                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                  {[
+                    { status: "Draft",     fill: "#38bdf8" },
+                    { status: "Paused",    fill: "#fbbf24" },
+                    { status: "Completed", fill: "#34d399" },
+                    { status: "Approved",  fill: "#a78bfa" },
+                    { status: "On Hold",   fill: "#f87171" },
+                  ].map((entry) => (
+                    <Cell key={entry.status} fill={entry.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
 
       {/* ── Toolbar ── */}
