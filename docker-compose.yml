@@ -13,7 +13,7 @@ services:
     ports:
       - "3000:3000"
     env_file:
-      - ./frontend/.env.local    # create from frontend/.env.example
+      - ./frontend/.env.local    # copy from frontend/.env.example
     environment:
       - NODE_ENV=development
     depends_on:
@@ -32,10 +32,9 @@ services:
     ports:
       - "4000:4000"
     env_file:
-      - ./backend/.env           # create from backend/.env.example
+      - ./backend/.env           # copy from backend/.env.example
     environment:
       - NODE_ENV=development
-      - DATABASE_URL=postgresql://postgres:Admin123@host.docker.internal:5432/mydb?sslmode=disable
 
   # ── Processing (FastAPI + Python) ─────────────────────────────────────────────
   processing:
@@ -48,12 +47,10 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - ./processing/.env        # create from processing/.env.example
+      - ./processing/.env        # copy from processing/.env.example
 
 # Named volumes prevent node_modules / Python cache from being overwritten by host mounts
 volumes:
   frontend_nm:
   frontend_next:
   backend_nm:
-
-
