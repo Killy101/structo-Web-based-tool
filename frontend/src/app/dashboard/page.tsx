@@ -703,12 +703,12 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* BRD Status Plans */}
+          {/* BRD Processing Chart */}
           <div className={`${C} u d3 p-4`}>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <div>
-                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>BRD Status Plans</p>
-                
+                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>BRD Processing</p>
+                <p className="text-[11px] mt-0.5" style={{color:"var(--c-sub)"}}>BRD count by status</p>
               </div>
               <button
                 onClick={() => { refetch(); refetchBrds(); refetchLogs(); }}
@@ -718,24 +718,60 @@ export default function DashboardPage() {
             </div>
             {brdStatuses.length === 0
               ? <p className="text-center text-[12px] py-4" style={{color:"var(--c-dim)"}}>No BRD data</p>
-              : brdStatuses.map((s, i) => {
-                  const pct = Math.round((s.count / brdTotal) * 100);
-                  const col = ACCENTS[i % ACCENTS.length];
-                  return (
-                    <div key={s.status} className="mb-4 last:mb-0">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] font-semibold tracking-wide" style={{color:"var(--c-txt)"}}>{s.status}</span>
-                        <span className="jb text-[10px]" style={{color:"var(--c-sub)"}}>
-                          {s.count} / {brdTotal}
-                        </span>
-                      </div>
-                      <div className="pb">
-                        <div className="pf" style={{ width:`${pct}%`, background:col, animationDelay:`${.15+i*.07}s` }} />
-                      </div>
-                      <p className="text-right jb text-[10px] mt-0.5 font-semibold" style={{color:col}}>{pct}%</p>
-                    </div>
-                  );
-                })
+              : <div style={{ height: 160 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={[
+                        { status: "Draft",     count: brdStatuses.find(s => s.status === "DRAFT")?.count     || 0, fill: "#38bdf8" },
+                        { status: "Paused",    count: brdStatuses.find(s => s.status === "PAUSED")?.count    || 0, fill: "#fbbf24" },
+                        { status: "Completed", count: brdStatuses.find(s => s.status === "COMPLETED")?.count || 0, fill: "#34d399" },
+                        { status: "Approved",  count: brdStatuses.find(s => s.status === "APPROVED")?.count  || 0, fill: "#a78bfa" },
+                        { status: "On Hold",   count: brdStatuses.find(s => s.status === "ON_HOLD")?.count   || 0, fill: "#f87171" },
+                      ]}
+                      margin={{ top: 4, right: 4, left: -22, bottom: 0 }}
+                      barSize={22}
+                    >
+                      <CartesianGrid vertical={false} stroke={dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)"} />
+                      <XAxis
+                        dataKey="status"
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 9, fill: dark ? "#637898" : "#96a8c8" }}
+                        tickMargin={5}
+                      />
+                      <YAxis
+                        allowDecimals={false}
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 9, fill: dark ? "#637898" : "#96a8c8" }}
+                        width={26}
+                      />
+                      <Tooltip
+                        cursor={{ fill: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)" }}
+                        contentStyle={{
+                          fontSize: 11,
+                          borderRadius: 8,
+                          background: dark ? "#0c1829" : "#fff",
+                          border: `1px solid ${dark ? "#17253f" : "#e4eaf4"}`,
+                          color: dark ? "#d8e4ff" : "#0d1b3e",
+                          padding: "4px 10px",
+                        }}
+                        formatter={(value: number) => [value, "BRDs"]}
+                      />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                        {[
+                          { status: "Draft",     fill: "#38bdf8" },
+                          { status: "Paused",    fill: "#fbbf24" },
+                          { status: "Completed", fill: "#34d399" },
+                          { status: "Approved",  fill: "#a78bfa" },
+                          { status: "On Hold",   fill: "#f87171" },
+                        ].map((entry) => (
+                          <Cell key={entry.status} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
             }
           </div>
 
