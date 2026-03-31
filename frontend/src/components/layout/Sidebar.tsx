@@ -249,7 +249,7 @@ function LogoutModal({
           <h2
             className={`font-semibold text-base text-center leading-snug ${dark ? "text-white" : "text-slate-900"}`}
           >
-            Signing out of IDAF?
+            Signing out of Structo?
           </h2>
         </div>
         <div className="px-6 pb-5 flex gap-3">
@@ -356,10 +356,10 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           >
             <div>
               <p className={`font-bold text-sm leading-none tracking-wide ${dark ? "text-white" : "text-slate-900"}`}>
-                IDAF
+                Structo
               </p>
               <p className="text-[11px] mt-0.5 text-slate-500">
-                Legal Regulatory Delivery Unit
+                Document Intelligence Platform
               </p>
             </div>
           </div>

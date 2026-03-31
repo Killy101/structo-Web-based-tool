@@ -259,11 +259,11 @@
 
 .heroTitle {
   font-family: "Syne", sans-serif;
-  font-size: clamp(22px, 2.9vw, 50px);
-  font-weight: 800;
-  color: #ffffff;
-  line-height: 1.13;
-  letter-spacing: -1.5px;
+  font-size: clamp(18px, 2vw, 34px);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.25;
+  letter-spacing: -0.5px;
 }
 
 .heroDesc {
@@ -838,10 +838,106 @@
   justify-content: space-between;
 }
 
+/* ── HERO BRAND SPAN (gradient "Structo" name) ── */
+.heroBrandSpan {
+  display: block;
+  font-size: clamp(52px, 6.5vw, 96px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -3px;
+  background: linear-gradient(135deg, #ffffff 10%, #42b4f5 55%, #1a8fd1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: clamp(8px, 1vh, 14px);
+}
+
+/* ── STATS SECTION ── */
+.statsSection {
+  background: linear-gradient(180deg, rgba(6,13,26,0) 0%, rgba(11,26,46,0.6) 30%, rgba(11,26,46,0.6) 70%, rgba(6,13,26,0) 100%);
+  border-top: 1px solid rgba(26, 143, 209, 0.08);
+  border-bottom: 1px solid rgba(26, 143, 209, 0.08);
+  padding: clamp(28px, 4vh, 52px) clamp(24px, 5vw, 96px);
+}
+
+.statsGrid {
+  max-width: 1600px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+}
+
+.statItem {
+  text-align: center;
+  padding: clamp(16px, 2vh, 28px) clamp(16px, 2vw, 32px);
+  position: relative;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.statItem:hover {
+  transform: translateY(-4px);
+}
+
+.statItem:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 20%;
+  height: 60%;
+  width: 1px;
+  background: rgba(26, 143, 209, 0.12);
+}
+
+.statNumber {
+  font-family: "Syne", sans-serif;
+  font-size: clamp(26px, 2.8vw, 46px);
+  font-weight: 800;
+  background: linear-gradient(135deg, #42b4f5 0%, #1a8fd1 60%, #d4862e 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
+  margin-bottom: clamp(6px, 0.8vh, 10px);
+}
+
+.statLabel {
+  font-size: clamp(9px, 0.72vw, 12px);
+  color: #64748b;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ── FEATURE CARD TOP ACCENT BORDER ── */
+.featureCard::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: clamp(12px, 1.2vw, 20px) clamp(12px, 1.2vw, 20px) 0 0;
+  background: linear-gradient(90deg, #1a8fd1, #d4862e);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.featureCard:hover::after {
+  opacity: 1;
+}
+
+/* ── FOOTER BRAND ── */
+.footerBrand {
+  display: flex;
+  flex-direction: column;
+}
+
 /* ── RESPONSIVE BREAKPOINTS ── */
 
 @media (min-width: 1600px) {
-  .heroTitle   { font-size: clamp(44px, 3.2vw, 58px); }
+  .heroTitle   { font-size: clamp(22px, 2vw, 36px); }
+  .heroBrandSpan { font-size: clamp(80px, 7vw, 110px); }
   .heroDesc    { font-size: clamp(16px, 1.15vw, 20px); }
   .aboutHeading{ font-size: clamp(36px, 2.7vw, 48px); }
   .aboutText   { font-size: clamp(15px, 1.1vw, 18px); }
@@ -864,7 +960,11 @@
   .heroWrapper { padding: 0 20px; }
   .hero { grid-template-columns: 1fr; min-height: calc(100vh - 62px); gap: 32px; }
   .heroContent { text-align: center; align-items: center; }
+  .heroDesc { max-width: 560px; }
   .heroVisual { max-width: 360px; width: 100%; margin: 0 auto; }
+  .statsSection { padding: 24px 20px; }
+  .statsGrid { grid-template-columns: repeat(2, 1fr); }
+  .statItem:nth-child(2)::after { display: none; }
   .about { padding: 60px 20px; }
   .aboutLayout { grid-template-columns: 1fr; gap: 40px; }
   .aboutDecorPanel { min-height: 280px; }
@@ -877,7 +977,9 @@
 }
 
 @media (max-width: 480px) {
+  .heroBrandSpan { font-size: clamp(40px, 12vw, 60px); letter-spacing: -2px; }
   .heroVisual { display: none; }
+  .statsGrid { grid-template-columns: repeat(2, 1fr); }
   .featureGrid { grid-template-columns: 1fr; }
   .heroCtas { flex-direction: column; width: 100%; }
   .ctaPrimary, .ctaSecondary { width: 100%; justify-content: center; text-align: center; }

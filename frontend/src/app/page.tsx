@@ -183,8 +183,8 @@ export default function HomePage() {
                 data-reveal
                 data-delay="80"
               >
-                IDAF: A Web-Based Platform for Intelligent Document Comparison,
-                Change Detection, and Structuring
+                <span className={styles.heroBrandSpan}>Structo</span>
+                Intelligent Document Comparison, Change Detection &amp; Structuring
               </h1>
               <p
                 className={`${styles.heroDesc} ${styles.revealItem}`}
@@ -312,6 +312,23 @@ export default function HomePage() {
           </section>
         </div>
 
+        {/* Stats */}
+        <section className={styles.statsSection}>
+          <div className={styles.statsGrid}>
+            {[
+              { number: "10K+", label: "Documents Processed" },
+              { number: "99.9%", label: "Structural Accuracy" },
+              { number: "5+", label: "Supported Formats" },
+              { number: "Real-time", label: "Change Detection" },
+            ].map((stat, i) => (
+              <div key={i} className={`${styles.statItem} ${styles.revealItem}`} data-reveal data-delay={`${i * 60}`}>
+                <div className={styles.statNumber}>{stat.number}</div>
+                <div className={styles.statLabel}>{stat.label}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* About Us */}
         <section className={styles.about} id="about">
           <div className={styles.aboutInner}>
@@ -346,7 +363,7 @@ export default function HomePage() {
                   At Innodata&apos;s Legal Regulatory Delivery Unit, we empower
                   organizations to manage complex documents with clarity, accuracy, and
                   speed. Through our platform{" "}
-                  <strong style={{ color: "#e8963a" }}>IDAF</strong>, we transform
+                  <strong style={{ color: "#e8963a" }}>Structo</strong>, we transform
                   traditional document workflows into intelligent, automated processes
                   that reduce manual effort and improve compliance confidence.
                 </p>
@@ -545,8 +562,8 @@ export default function HomePage() {
               data-reveal
               data-delay="80"
             >
-              Join the Innodata platform and bring intelligence to your regulatory
-              process.
+              Join Structo and bring intelligence to your legal &amp; regulatory
+              document workflows.
             </p>
             {/* button instead of <a> */}
             <button
@@ -565,16 +582,16 @@ export default function HomePage() {
           <div className={styles.footerInner}>
             <div className={styles.footerBrand}>
               <div className={styles.brandName} style={{ color: "white" }}>
-                Innodata
+                Structo
               </div>
               <div
                 style={{ color: "#64748b", fontSize: "13px", marginTop: "4px" }}
               >
-                Legal Regulatory Delivery Unit
+                Innodata · Legal Regulatory Delivery Unit
               </div>
             </div>
             <div style={{ color: "#475569", fontSize: "13px" }}>
-              © 2026 Innodata. All rights reserved. A&M
+              © 2026 Innodata. All rights reserved.
             </div>
           </div>
         </footer>
