@@ -119,6 +119,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    href: "/dashboard/history",
+    label: "History",
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    ),
+  },
+  {
     href: "/dashboard/logs",
     label: "Logs",
     roles: ["SUPER_ADMIN", "ADMIN"],
@@ -197,6 +207,7 @@ const TYPE_DOT: Record<string, string> = {
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  onMobileClose?: () => void;
 }
 
 function LogoutModal({
@@ -280,7 +291,7 @@ function LogoutModal({
   );
 }
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { dark, toggle } = useTheme();
@@ -374,6 +385,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={onMobileClose}
                 title={
                   collapsed
                     ? `${item.label}${allowed ? "" : " (No access)"}`

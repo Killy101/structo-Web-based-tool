@@ -11,7 +11,13 @@ import TetrisLoading from "../../components/ui/tetris-loader";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 import { getToken, settingsApi } from "../../services/api";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
+import { useTheme } from "../../context/ThemContext";
 import type { Role } from "../../types";
+import dynamic from "next/dynamic";
+
+const ActivityFeed = dynamic(() => import("../../components/ui/ActivityFeed"), { ssr: false });
+const OnboardingWizard = dynamic(() => import("../../components/ui/OnboardingWizard"), { ssr: false });
+const KeyboardShortcuts = dynamic(() => import("../../components/ui/KeyboardShortcuts"), { ssr: false });
 
 const DEFAULT_MAINTENANCE_BANNER =
   "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.";
@@ -38,7 +44,7 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
   "/dashboard/settings": ["SUPER_ADMIN"],
   "/dashboard/logs": ["SUPER_ADMIN", "ADMIN"],
   "/dashboard/validate": [],
-  "/dashboard/history": [],
+  "/dashboard/history": ["SUPER_ADMIN", "ADMIN", "USER"],
   "/dashboard/tasks": [
     "SUPER_ADMIN",
     "ADMIN",
@@ -110,9 +116,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
+  const { dark } = useTheme();
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(15);
   useAutoLogout(sessionTimeoutMinutes);
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [visible, setVisible] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
@@ -120,8 +128,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     DEFAULT_MAINTENANCE_BANNER,
   );
   const [strictRateLimitMode, setStrictRateLimitMode] = useState(false);
+  const [showActivityFeed, setShowActivityFeed] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const splashCheckedRef = useRef(false);
   const redirectedRef = useRef(false);
+  const onboardingCheckedRef = useRef(false);
+
+  // Listen for keyboard shortcut toggle event from KeyboardShortcuts component
+  useEffect(() => {
+    const handler = () => setShowActivityFeed(v => !v);
+    window.addEventListener("structo:toggle-activity-feed", handler);
+    return () => window.removeEventListener("structo:toggle-activity-feed", handler);
+  }, []);
 
   // ── Auth redirects (no setState, only router calls) ──
   useEffect(() => {
@@ -156,6 +174,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       setTimeout(() => setShowSplash(true), 0);
     }
   }, [user, isLoading]);
+
+  // ── Onboarding check (runs once after user loads, not during splash) ──
+  useEffect(() => {
+    if (onboardingCheckedRef.current || !user || isLoading || showSplash) return;
+    onboardingCheckedRef.current = true;
+    const userIdentity = user.id ?? user.userId;
+    if (!userIdentity) return;
+    const onboardingKey = `onboardingDone:${userIdentity}`;
+    if (localStorage.getItem(onboardingKey) !== "1") {
+      setTimeout(() => setShowOnboarding(true), 800);
+    }
+  }, [user, isLoading, showSplash]);
 
   // ── Fade-in animation (only when not showing splash and authenticated) ──
   useEffect(() => {
@@ -299,8 +329,51 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           : "opacity-0 translate-y-1 pointer-events-none"
       }`}
     >
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
-      <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Mobile overlay backdrop */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — hidden on mobile unless mobileOpen */}
+      <div className={`
+        fixed md:relative z-40 md:z-auto h-full
+        transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
+        ${mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
+      `}>
+        <Sidebar
+          collapsed={collapsed}
+          onToggle={() => setCollapsed((v) => !v)}
+          onMobileClose={() => setMobileOpen(false)}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Mobile top bar */}
+        <div className="flex md:hidden flex-shrink-0 items-center justify-between px-4 h-14 border-b border-slate-200 dark:border-[#21262d] bg-white dark:bg-[#0d1117]">
+          <button
+            onClick={() => setMobileOpen(v => !v)}
+            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            aria-label="Open menu"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16"/>
+            </svg>
+          </button>
+          <span className="text-sm font-bold text-slate-900 dark:text-white">Structo</span>
+          <button
+            onClick={() => setShowActivityFeed(v => !v)}
+            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors relative"
+            aria-label="Activity feed"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </button>
+        </div>
+
         {maintenanceMode && (
           <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
             {maintenanceBannerMessage}
@@ -312,7 +385,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
         {!isBrdRoute && pathname !== "/dashboard" && (
-          <header className="flex-shrink-0 flex items-center px-6 h-14 border-b border-slate-200 dark:border-[#21262d] bg-white dark:bg-[#0d1117]">
+          <header className="flex-shrink-0 hidden md:flex items-center justify-between px-6 h-14 border-b border-slate-200 dark:border-[#21262d] bg-white dark:bg-[#0d1117]">
             <div>
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-slate-400 dark:text-[#7d8590]">
                 {PAGE_META[pathname]?.subtitle ?? ""}
@@ -320,6 +393,20 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               <h1 className="text-sm font-semibold text-slate-900 dark:text-[#e6edf3] leading-tight mt-0.5">
                 {PAGE_META[pathname]?.title ?? "Dashboard"}
               </h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowActivityFeed(v => !v)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all"
+                style={{
+                  background: showActivityFeed ? "rgba(26,143,209,0.1)" : "transparent",
+                  borderColor: showActivityFeed ? "rgba(26,143,209,0.3)" : "rgba(100,116,139,0.2)",
+                  color: showActivityFeed ? "#42b4f5" : "#64748b",
+                }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                Live Activity
+              </button>
             </div>
           </header>
         )}
@@ -333,6 +420,27 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           {isUnauthorized ? <Unauthorized /> : children}
         </main>
       </div>
+
+      {/* Activity Feed panel */}
+      <ActivityFeed
+        open={showActivityFeed}
+        onClose={() => setShowActivityFeed(false)}
+        dark={dark}
+      />
+
+      {/* Onboarding Wizard */}
+      {showOnboarding && user && (
+        <OnboardingWizard
+          onDone={() => {
+            const userIdentity = user.id ?? user.userId;
+            localStorage.setItem(`onboardingDone:${userIdentity}`, "1");
+            setShowOnboarding(false);
+          }}
+        />
+      )}
+
+      {/* Keyboard Shortcuts */}
+      <KeyboardShortcuts />
     </div>
   );
 }
