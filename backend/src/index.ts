@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import pool from './lib/db'
+import { seedDevUserIfNeeded } from './lib/seed-dev-user'
 import authRoutes from './routes/auth'
 import usersRoutes from './routes/users'
 import dashboardRoutes from './routes/dashboard'
@@ -64,7 +65,11 @@ async function runStartupMigrations() {
   try {
     await pool.query(`ALTER TABLE brd_versions ADD COLUMN IF NOT EXISTS image_ids JSONB`)
     console.log('[migrations] brd_versions.image_ids OK')
-  } catch (err) {
+    // Seed development user in dev environment
+
+    if (process.env.NODE_ENV === 'development') {
+      await seedDevUserIfNeeded()
+    }  } catch (err) {
     console.error('[migrations] startup migration failed:', err)
   }
 }

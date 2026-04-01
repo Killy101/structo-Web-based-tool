@@ -51,10 +51,12 @@ export default function ChangePasswordPage() {
     setShowForcedChangeNotice(true);
   }, []);
 
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '') || '';
+
   useEffect(() => {
     const fetchPolicy = async () => {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/password-policy`);
+        const res = await fetch(`${apiBaseUrl || ''}/auth/password-policy`);
         if (!res.ok) return;
         const data = await res.json();
         setPolicy({
@@ -69,7 +71,7 @@ export default function ChangePasswordPage() {
     };
 
     void fetchPolicy();
-  }, []);
+  }, [apiBaseUrl]);
 
   function validate(): boolean {
     const e: FormErrors = {};
@@ -140,7 +142,7 @@ export default function ChangePasswordPage() {
       const token = localStorage.getItem("token");
 
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/auth/change-password`,
+        `${apiBaseUrl || ''}/auth/change-password`,
         {
           method: "POST",
           headers: {
