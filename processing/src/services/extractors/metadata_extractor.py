@@ -180,8 +180,10 @@ def _extract_metadata_new(doc) -> dict:
             if len(value) > 300:
                 value = ""
 
+            matched = False
             for pattern, field in sorted_key_map:
                 if pattern in label:
+                    matched = True
                     if field == "contributors":
                         parts = re.split(r"[\n,]+", value)
                         metadata["contributors"] = [p.strip() for p in parts if p.strip()]
@@ -192,6 +194,8 @@ def _extract_metadata_new(doc) -> dict:
                         if not metadata[field]:
                             metadata[field] = value
                     break
+            if label and not matched:
+                print(f"[DEBUG metadata_extractor] unmatched label: {repr(label[:60])}")
 
     # ── Post-processing ───────────────────────────────────────────────────
     for field in (
