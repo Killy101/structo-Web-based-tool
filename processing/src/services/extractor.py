@@ -74,6 +74,30 @@ def _extract_doc(path: str) -> str:
             pass
 
 
+def convert_doc_to_docx(src_path: str) -> str | None:
+    """
+    Convert a legacy .doc file to a temporary .docx file.
+
+    Returns the path of the converted .docx file on success (the caller is
+    responsible for deleting it), or None if conversion is not available
+    (neither Word/COM nor LibreOffice is installed).
+    """
+    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
+    os.close(temp_fd)
+    temp_docx = Path(temp_docx_path)
+    try:
+        if _convert_doc_to_docx_with_word(src_path, str(temp_docx)):
+            print(f"[DEBUG convert_doc_to_docx] Converted via Word COM: {temp_docx_path}")
+            return temp_docx_path
+        if _convert_doc_to_docx_with_soffice(src_path, str(temp_docx)):
+            print(f"[DEBUG convert_doc_to_docx] Converted via LibreOffice: {temp_docx_path}")
+            return temp_docx_path
+    except Exception as exc:
+        print(f"[WARN convert_doc_to_docx] Conversion error: {exc}")
+    temp_docx.unlink(missing_ok=True)
+    return None
+
+
 def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
     try:
         import pythoncom

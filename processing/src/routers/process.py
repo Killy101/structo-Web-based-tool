@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from pydantic import BaseModel
 from typing import Any, Optional
-from src.services.extractor import extract_all_sections, extract_text
+from src.services.extractor import extract_all_sections, extract_text, convert_doc_to_docx
 from src.services.pattern_generator import generate_level_patterns
 import tempfile, os, shutil, httpx
 import re
@@ -435,10 +435,28 @@ async def process_document(
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
+    converted_docx_path: str | None = None
+
     try:
         if suffix == ".docx":
             print(f"[DEBUG] Calling extract_all_sections for DOCX with brd_id={brd_id}...")
             result = await extract_all_sections(tmp_path, format, brd_id=brd_id)
+        elif suffix == ".doc":
+            print(f"[DEBUG] .doc file detected — attempting conversion to .docx for brd_id={brd_id}...")
+            converted_docx_path = convert_doc_to_docx(tmp_path)
+            if converted_docx_path:
+                print(f"[DEBUG] Conversion successful — processing converted DOCX with brd_id={brd_id}...")
+                result = await extract_all_sections(converted_docx_path, format, brd_id=brd_id)
+                suffix = ".docx"  # treat as .docx from here on (enables image persistence)
+            else:
+                print(f"[DEBUG] Conversion unavailable — falling back to text extraction for .doc...")
+                try:
+                    raw_text = extract_text(tmp_path, ".doc")
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                if not raw_text or len(raw_text.strip()) < 50:
+                    raise HTTPException(status_code=422, detail="Could not extract text from document")
+                result = await extract_all_sections(raw_text, format, brd_id=brd_id)
         else:
             try:
                 raw_text = extract_text(tmp_path, suffix)
@@ -484,6 +502,11 @@ async def process_document(
 
     finally:
         os.unlink(tmp_path)
+        if converted_docx_path:
+            try:
+                os.unlink(converted_docx_path)
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
