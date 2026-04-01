@@ -423,9 +423,10 @@ async def process_document(
     Delegates to brd_data.extract_brd() via extractor.extract_all().
     Images are returned as base64-encoded strings to be saved by Node.js.
     """
-    suffix = os.path.splitext(file.filename)[1].lower()
+    filename = file.filename or ""
+    suffix = os.path.splitext(filename)[1].lower()
 
-    print(f"[DEBUG] Processing file: {file.filename}, format: {format}, brd_id: {brd_id}, suffix: {suffix}")
+    print(f"[DEBUG] Processing file: {filename}, format: {format}, brd_id: {brd_id}, suffix: {suffix}")
 
     if brd_id and brd_id.lower() == "none":
         brd_id = None
@@ -468,7 +469,7 @@ async def process_document(
 
             result = await extract_all_sections(raw_text, format, brd_id=brd_id)
 
-        result["filename"] = file.filename
+        result["filename"] = filename
 
         # Hoist _format from metadata blob to top-level so Node.js can read it
         meta_blob = result.get("metadata") or {}
@@ -670,11 +671,12 @@ async def test_brd_id(
     """Simple test endpoint to debug parameter passing."""
     print("\n" + "=" * 50)
     print("TEST ENDPOINT CALLED")
-    print("=" * 50)
+    print("=" * 50) 
     print(f"  brd_id: {brd_id}")
     print(f"  document_id: {document_id}")
     print(f"  format: {format}")
-    print(f"  file: {file.filename}")
+    filename = file.filename or ""
+    print(f"  file: {filename}")
     print("=" * 50 + "\n")
 
     return {
@@ -682,6 +684,6 @@ async def test_brd_id(
             "brd_id":      brd_id,
             "document_id": document_id,
             "format":      format,
-            "filename":    file.filename,
+            "filename":    filename,
         }
     }
