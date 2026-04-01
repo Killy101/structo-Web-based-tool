@@ -1,5 +1,6 @@
 "use client";
 import React, { useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { IdafLogo } from "../icons/IdafLogo";
 import { usePathname } from "next/navigation";
@@ -219,7 +220,7 @@ function LogoutModal({
   onCancel: () => void;
   dark: boolean;
 }) {
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
         className="absolute inset-0 backdrop-blur-sm bg-black/70"
@@ -287,7 +288,8 @@ function LogoutModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
