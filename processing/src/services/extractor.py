@@ -41,9 +41,13 @@ def extract_text(file_path: str, suffix: str) -> str:
 
 def _extract_pdf(path: str) -> str:
     doc = fitz.open(path)
-    pages = [page.get_text("text") for page in doc]
-    doc.close()
-    return "\n\n".join(pages)
+    try:
+        pages: list[str] = []
+        for page in doc:
+            pages.append(str(page.get_text("text")))
+        return "\n\n".join(pages)
+    finally:
+        doc.close()
 
 
 def _extract_docx(path: str) -> str:
