@@ -420,7 +420,7 @@ export default function DashboardPage() {
   const [brdLoad, setBrdLoad] = useState(true);
   const [txp, setTxp] = useState(1);
   const [balancePage, setBalancePage] = useState(1);
-  const BALANCE_PAGE_SIZE = 8;
+  const BALANCE_PAGE_SIZE = 5;
   const dark = useDark();
 
   // Fetch full BRD list directly — same call as BRD page, gives real status/geography/title
@@ -909,34 +909,32 @@ export default function DashboardPage() {
                         })}
                       </div>
                       {/* Pagination controls */}
-                      {balanceTotalPages > 1 && (
-                        <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop:"1px solid var(--c-b)" }}>
-                          <span className="jb text-[10px]" style={{ color:"var(--c-dim)" }}>
-                            {(safeBalancePage - 1) * BALANCE_PAGE_SIZE + 1}–{Math.min(safeBalancePage * BALANCE_PAGE_SIZE, brds.length)} / {brds.length}
+                      <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop:"1px solid var(--c-b)" }}>
+                        <span className="jb text-[10px]" style={{ color:"var(--c-dim)" }}>
+                          {(safeBalancePage - 1) * BALANCE_PAGE_SIZE + 1}–{Math.min(safeBalancePage * BALANCE_PAGE_SIZE, brds.length)} / {brds.length}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setBalancePage(p => Math.max(1, p - 1))}
+                            disabled={safeBalancePage === 1}
+                            className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                            style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                              color: safeBalancePage === 1 ? "var(--c-dim)" : "var(--c-sub)",
+                              cursor: safeBalancePage === 1 ? "not-allowed" : "pointer" }}
+                          >←</button>
+                          <span className="jb text-[10px]" style={{ color:"var(--c-sub)" }}>
+                            {safeBalancePage} / {balanceTotalPages}
                           </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => setBalancePage(p => Math.max(1, p - 1))}
-                              disabled={safeBalancePage === 1}
-                              className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
-                              style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
-                                color: safeBalancePage === 1 ? "var(--c-dim)" : "var(--c-sub)",
-                                cursor: safeBalancePage === 1 ? "not-allowed" : "pointer" }}
-                            >←</button>
-                            <span className="jb text-[10px]" style={{ color:"var(--c-sub)" }}>
-                              {safeBalancePage} / {balanceTotalPages}
-                            </span>
-                            <button
-                              onClick={() => setBalancePage(p => Math.min(balanceTotalPages, p + 1))}
-                              disabled={safeBalancePage >= balanceTotalPages}
-                              className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
-                              style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
-                                color: safeBalancePage >= balanceTotalPages ? "var(--c-dim)" : "var(--c-sub)",
-                                cursor: safeBalancePage >= balanceTotalPages ? "not-allowed" : "pointer" }}
-                            >→</button>
-                          </div>
+                          <button
+                            onClick={() => setBalancePage(p => Math.min(balanceTotalPages, p + 1))}
+                            disabled={safeBalancePage >= balanceTotalPages}
+                            className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                            style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                              color: safeBalancePage >= balanceTotalPages ? "var(--c-dim)" : "var(--c-sub)",
+                              cursor: safeBalancePage >= balanceTotalPages ? "not-allowed" : "pointer" }}
+                          >→</button>
                         </div>
-                      )}
+                      </div>
                     </>
                 }
               </div>
