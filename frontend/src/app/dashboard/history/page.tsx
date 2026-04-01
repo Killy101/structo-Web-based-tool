@@ -1,7 +1,6 @@
 "use client";
 import { useState, useMemo, useCallback } from "react";
 import { useUserLogs } from "../../../hooks";
-import { useAuth } from "../../../context/AuthContext";
 import { useTheme } from "../../../context/ThemContext";
 import { formatTimeAgo } from "../../../utils";
 import { UserLog } from "../../../types";
@@ -66,10 +65,8 @@ function filterByDate(log: UserLog, range: DateFilter): boolean {
 }
 
 export default function HistoryPage() {
-  const { user } = useAuth();
   const { dark } = useTheme();
-  const scope = user?.role === "USER" ? "mine" : "all";
-  const { logs, isLoading, error, refetch } = useUserLogs(scope);
+  const { logs, isLoading, error, refetch } = useUserLogs("mine");
 
   const [search, setSearch] = useState("");
   const [actionFilter, setActionFilter] = useState<string>("All");
@@ -130,7 +127,7 @@ export default function HistoryPage() {
             Audit Trail
           </h2>
           <p style={{ fontSize: 13, color: sub, marginTop: 2 }}>
-            {scope === "all" ? "All user activity" : "Your activity"} · {filtered.length} records
+            Your activity · {filtered.length} records
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
