@@ -48,7 +48,7 @@ export default function ActivityFeed({ open, onClose, dark }: ActivityFeedProps)
     } catch {
       // fallback: try own logs
       try {
-        const { logs } = await userLogsApi.getMy();
+        const { logs } = await userLogsApi.getMine();
         setLogs(logs.slice(0, 30));
         setLastUpdated(new Date());
       } catch {}
