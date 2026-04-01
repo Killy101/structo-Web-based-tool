@@ -727,6 +727,23 @@ def extract_scope(doc) -> dict:
       3. Legacy paragraph extractor (formats 4–7)
       4. Standard scored multi-column scope table
     """
+    # ── Diagnostic logging ────────────────────────────────────────────────────
+    heading_styles = [
+        (p.style.name if p.style else "?", p.text.strip()[:80])
+        for p in doc.paragraphs
+        if (p.style and p.style.name.startswith("Heading")) or "scope" in p.text.lower()
+    ]
+    table_summaries = []
+    for i, t in enumerate(doc.tables):
+        row0_text = " | ".join(c.text.strip()[:30] for c in t.rows[0].cells) if t.rows else "(empty)"
+        score = _score_table(t)
+        table_summaries.append(f"  table[{i}] cols={len(t.columns)} rows={len(t.rows)} score={score} row0=[{row0_text}]")
+    print(f"[DEBUG scope_extractor] headings/scope paragraphs: {heading_styles}")
+    print(f"[DEBUG scope_extractor] {len(doc.tables)} tables in document:")
+    for s in table_summaries:
+        print(s)
+    # ──────────────────────────────────────────────────────────────────────────
+
     section_table = _find_scope_section_table(doc)
     if section_table is not None:
         ref_url = _get_source_url(doc)
@@ -735,10 +752,12 @@ def extract_scope(doc) -> dict:
         return _extract_scope_single_col_table(section_table, ref_url)
 
     if _is_legacy_format(doc):
+        print("[DEBUG scope_extractor] Using legacy format extractor")
         return extract_scope_legacy(doc)
 
     scope_table = _find_scope_table(doc)
     if scope_table is None:
+        print("[DEBUG scope_extractor] No scope table found — returning empty scope")
         return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}
 
     pre_ctx     = _detect_pre_header_context(doc, scope_table)
