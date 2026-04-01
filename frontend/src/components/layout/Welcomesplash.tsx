@@ -213,7 +213,7 @@ export default function WelcomeSplash({
             animation: "greetIn 0.6s ease 0.4s both",
           }}
         >
-          IDAF · InnoStream Document Architecture Framework
+          Structo · Document Intelligence Platform
         </p>
 
         {/* Greeting line */}

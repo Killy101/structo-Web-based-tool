@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import type { PdfChunk } from "../../../components/compare/ChunkPanel";
 import type { User } from "../../../types";
+import { trackCompareUsage } from "../../../utils/compareAnalytics";
 
 const ChunkPanel = dynamic(
   () => import("../../../components/compare/ChunkPanel"),
@@ -876,6 +877,7 @@ export default function ComparePage() {
         onConfirm={(opts) => {
           setChunkOpts(opts);
           setWorkflow("chunk");
+          trackCompareUsage('chunk', user?.userId ?? 'anonymous');
         }}
       />
 
@@ -885,7 +887,10 @@ export default function ComparePage() {
           canChunk={canChunk}
           canCompare={canCompare}
           canMerge={canMerge}
-          onSelect={setWorkflow}
+          onSelect={(w) => {
+            setWorkflow(w);
+            if (w === "compare") trackCompareUsage('direct', user?.userId ?? 'anonymous');
+          }}
           onChunkClick={() => setChunkModalOpen(true)}
         />
       )}

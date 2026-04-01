@@ -337,15 +337,19 @@ export default function XmlEditor({
     // Only sync if the parent injected a genuinely different value
     if (value === savedValueRef.current) return;
     savedValueRef.current = value;
-    setLocalValue(value);
-    setIsDirty(false);
     resetHistory(value);
+
+    // Defer state sync to avoid synchronous setState within effect body.
+    queueMicrotask(() => {
+      setLocalValue(value);
+      setIsDirty(false);
+    });
   }, [value, resetHistory]);
 
   // ── Auto-save (Feature #6) ────────────────────────────────────────────────
 
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  
   useEffect(() => {
     if (!isDirty || readOnly || !onAutoSave) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);

@@ -299,6 +299,7 @@ function VersionHistoryModal({
             brdId={brd.id}
             title={name}
             format={brd.format}
+            status={brd.status}
             initialData={{
               scope:          viewingVersion.scope,
               metadata:       viewingVersion.metadata,
@@ -345,6 +346,7 @@ function VersionHistoryModal({
             brdId={brd.id}
             title={name}
             format={brd.format}
+            status={brd.status}
             initialData={{
               scope:          editingVersion.scope,
               metadata:       editingVersion.metadata,
@@ -1052,7 +1054,7 @@ export default function BrdPage() {
                         <EyeIcon />
                       </button>
                       <button disabled={!canEdit}
-                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name }); setShowBrdFlow(true); }}
+                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
                         title="Edit BRD (Draft, Paused, Complete, Approved, On Hold)"
                         className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EditIcon />

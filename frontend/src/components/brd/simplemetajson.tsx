@@ -175,26 +175,45 @@ export default function SimpleMetajson({
 
   // Sync incoming metajson → local state
   useEffect(() => {
-    if (metajson) {
-      const sanitized = sanitizeSimpleMetajson(metajson);
-      const formatted = formatJson(sanitized);
+    if (!metajson) return;
+
+    let cancelled = false;
+    const sanitized = sanitizeSimpleMetajson(metajson);
+    const formatted = formatJson(sanitized);
+
+    queueMicrotask(() => {
+      if (cancelled) return;
       setRaw(formatted);
       setLiveJson(sanitized);
       setParseError(null);
       setValidated(null);
       setScrollTop(0);
       setSavedJson(null);
-    }
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [metajson]);
 
   // Focus textarea when entering edit mode
   useEffect(() => {
+    let cancelled = false;
+
     if (editMode && textareaRef.current) {
       textareaRef.current.focus();
       textareaRef.current.setSelectionRange(0, 0);
     }
-    setValidated(null);
-    setScrollTop(0);
+
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setValidated(null);
+      setScrollTop(0);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [editMode]);
 
   // Escape to close
@@ -215,11 +234,20 @@ export default function SimpleMetajson({
 
   // Auto-scroll to error line
   useEffect(() => {
+    let rafId: number | null = null;
+
     if (validated === false && parseError?.line && textareaRef.current) {
       const targetScrollTop = Math.max(0, (parseError.line - 4) * LINE_HEIGHT);
       textareaRef.current.scrollTop = targetScrollTop;
-      setScrollTop(targetScrollTop);
+
+      rafId = requestAnimationFrame(() => {
+        setScrollTop(targetScrollTop);
+      });
     }
+
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
   }, [validated, parseError]);
 
   const handleRawChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {

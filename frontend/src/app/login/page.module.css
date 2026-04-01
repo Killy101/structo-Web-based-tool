@@ -293,16 +293,22 @@
 
 .brandTitle {
   font-family: "Syne", sans-serif;
-  font-size: clamp(56px, 6vw, 88px); /* was clamp(38px, 4vw, 62px) */
+  font-size: clamp(56px, 6vw, 88px);
   font-weight: 800;
-  color: #ffffff;
   letter-spacing: -2.5px;
   margin-bottom: 8px;
   line-height: 1;
+  background: linear-gradient(135deg, #ffffff 30%, rgba(255,255,255,0.85) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .brandO {
-  color: #d4862e;
+  background: linear-gradient(135deg, #e8963a, #d4862e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .brandSubtitle {
@@ -310,7 +316,8 @@
   font-weight: 600;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(26, 143, 209, 0.6);
+  color: rgba(66, 180, 245, 0.75);
+  text-shadow: 0 0 20px rgba(26, 143, 209, 0.3);
 }
 
 /* ─── DIVIDER ────────────────────────────────────────────────────── */
@@ -506,15 +513,17 @@
   z-index: 1;
   animation: fadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
   padding: clamp(28px, 3.5vw, 48px);
-  background: rgba(11, 26, 46, 0.5);
+  background: rgba(11, 26, 46, 0.55);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(26, 143, 209, 0.1);
+  border: 1px solid rgba(26, 143, 209, 0.12);
+  border-top: 2px solid rgba(66, 180, 245, 0.25);
   border-radius: clamp(16px, 1.6vw, 24px);
   box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.35),
+    0 24px 64px rgba(0, 0, 0, 0.4),
     0 8px 24px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    0 0 0 1px rgba(26, 143, 209, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 @keyframes fadeUp {

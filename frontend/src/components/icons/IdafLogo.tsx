@@ -1,23 +1,22 @@
 /**
- * IDAF brand eye icon — InnoStream Document Architecture Framework
- * Pronounced "Eye-Dah". The eye is the literal visual anchor for the name.
+ * Structo brand eye icon — Document Intelligence Platform
  *
- * Design: clean 21st.dev-inspired minimal geometry
+ * Design: clean minimal geometry
  *   • Blue gradient background square (brand blue #1a8fd1 → #0d5f8f)
  *   • White almond eye shape with subtle fill
  *   • White iris ring
- *   • Orange pupil accent (#d4862e) — the "Eye" in "Eye-Dah"
+ *   • Orange pupil accent (#d4862e)
  */
 
-interface IdafLogoProps {
+interface StructoLogoProps {
   size?: number;
   className?: string;
 }
 
-export function IdafLogo({ size = 32, className }: IdafLogoProps) {
+export function StructoLogo({ size = 32, className }: StructoLogoProps) {
   // Use a per-instance ID prefix to avoid SVG gradient ID collisions
   // when this component is rendered multiple times on the same page.
-  const gradId = `idaf-bg-${size}`;
+  const gradId = `structo-bg-${size}`;
 
   return (
     <svg
@@ -27,7 +26,7 @@ export function IdafLogo({ size = 32, className }: IdafLogoProps) {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
-      aria-label="IDAF"
+      aria-label="Structo"
       role="img"
     >
       <defs>
@@ -53,7 +52,7 @@ export function IdafLogo({ size = 32, className }: IdafLogoProps) {
       {/* Iris ring */}
       <circle cx="16" cy="16" r="4" stroke="white" strokeWidth="1.5" />
 
-      {/* Pupil — orange accent, the "Eye" of IDAF */}
+      {/* Pupil — orange accent */}
       <circle cx="16" cy="16" r="2" fill="#d4862e" />
 
       {/* Specular highlight */}
@@ -61,3 +60,6 @@ export function IdafLogo({ size = 32, className }: IdafLogoProps) {
     </svg>
   );
 }
+
+// Backward-compatible alias
+export { StructoLogo as IdafLogo };

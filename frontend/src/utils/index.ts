@@ -1,4 +1,4 @@
-import { Role, Status, TaskStatus, AssignmentStatus, User } from "../types";
+import { Role, Status, User } from "../types";
 
 // ─── ROLE CONFIG ───────────────────────────────────────────
 export const ROLE_LABELS: Record<Role, string> = {
@@ -22,42 +22,11 @@ export const ROLE_CHART_COLORS: Record<Role, string> = {
 };
 
 // ─── STATUS CONFIG ─────────────────────────────────────────
-export const TASK_STATUS_COLORS: Record<TaskStatus, string> = {
-  PENDING:
-    "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-  PROCESSING:
-    "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
-  PROCESSED: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-  SUBMITTED:
-    "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-  APPROVED:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
-  REJECTED: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-};
-
-export const ASSIGNMENT_STATUS_COLORS: Record<AssignmentStatus, string> = {
-  PENDING:
-    "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-  IN_PROGRESS:
-    "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-  COMPLETED:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
-};
-
 export const USER_STATUS_COLORS: Record<Status, string> = {
   ACTIVE:
     "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
   INACTIVE:
     "bg-slate-100 text-slate-500 dark:bg-slate-700/50 dark:text-slate-400",
-};
-
-export const FILE_STATUS_HEX: Record<TaskStatus, string> = {
-  PENDING: "#f59e0b",
-  PROCESSING: "#6366f1",
-  PROCESSED: "#3b82f6",
-  SUBMITTED: "#8b5cf6",
-  APPROVED: "#10b981",
-  REJECTED: "#ef4444",
 };
 
 // ─── TEAM PERMISSIONS ──────────────────────────────────────

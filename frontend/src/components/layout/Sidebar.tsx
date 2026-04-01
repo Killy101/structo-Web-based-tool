@@ -1,5 +1,6 @@
 "use client";
 import React, { useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { IdafLogo } from "../icons/IdafLogo";
 import { usePathname } from "next/navigation";
@@ -119,6 +120,16 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    href: "/dashboard/history",
+    label: "History",
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    ),
+  },
+  {
     href: "/dashboard/logs",
     label: "Logs",
     roles: ["SUPER_ADMIN", "ADMIN"],
@@ -155,26 +166,6 @@ const NAV_ITEMS: NavItem[] = [
           strokeLinejoin="round"
           strokeWidth={1.8}
           d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "/dashboard/tasks",
-    label: "My Tasks",
-    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
-    icon: (
-      <svg
-        className="w-5 h-5"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={1.8}
-          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
         />
       </svg>
     ),
@@ -217,6 +208,7 @@ const TYPE_DOT: Record<string, string> = {
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  onMobileClose?: () => void;
 }
 
 function LogoutModal({
@@ -228,7 +220,7 @@ function LogoutModal({
   onCancel: () => void;
   dark: boolean;
 }) {
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
         className="absolute inset-0 backdrop-blur-sm bg-black/70"
@@ -269,7 +261,7 @@ function LogoutModal({
           <h2
             className={`font-semibold text-base text-center leading-snug ${dark ? "text-white" : "text-slate-900"}`}
           >
-            Signing out of IDAF?
+            Signing out of Structo?
           </h2>
         </div>
         <div className="px-6 pb-5 flex gap-3">
@@ -296,11 +288,12 @@ function LogoutModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { dark, toggle } = useTheme();
@@ -376,10 +369,10 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           >
             <div>
               <p className={`font-bold text-sm leading-none tracking-wide ${dark ? "text-white" : "text-slate-900"}`}>
-                IDAF
+                Structo
               </p>
               <p className="text-[11px] mt-0.5 text-slate-500">
-                Legal Regulatory Delivery Unit
+                Document Intelligence Platform
               </p>
             </div>
           </div>
@@ -394,6 +387,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={onMobileClose}
                 title={
                   collapsed
                     ? `${item.label}${allowed ? "" : " (No access)"}`

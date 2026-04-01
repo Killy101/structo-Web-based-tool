@@ -8,6 +8,21 @@ type SendPasswordEmailInput = {
   action: "created" | "reset";
 };
 
+const SIMPLE_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NAMED_EMAIL_RE = /^.+<[^\s@]+@[^\s@]+\.[^\s@]+>$/;
+
+function normalizeRecipients(rawTo: string): string[] {
+  return rawTo
+    .replace(/\s+and\s+/gi, ",")
+    .split(/[;,]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function isValidRecipient(recipient: string): boolean {
+  return SIMPLE_EMAIL_RE.test(recipient) || NAMED_EMAIL_RE.test(recipient);
+}
+
 function buildSubject(action: "created" | "reset"): string {
   return action === "created"
     ? "Your IDAF account has been created"
@@ -45,15 +60,38 @@ export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<
   }
 
   const from = process.env.RESEND_FROM_EMAIL?.trim() || "IDAF <onboarding@resend.dev>";
+  const fallbackFrom = "IDAF <onboarding@resend.dev>";
+  const recipients = normalizeRecipients(String(input.to || ""));
+
+  if (recipients.length === 0) {
+    const errorMsg = "No recipient email provided";
+    console.error("[email]", errorMsg);
+    return { success: false, error: errorMsg };
+  }
+
+  const invalidRecipient = recipients.find((r) => !isValidRecipient(r));
+  if (invalidRecipient) {
+    const errorMsg = `Invalid recipient email format: ${invalidRecipient}`;
+    console.error("[email]", errorMsg);
+    return { success: false, error: errorMsg };
+  }
 
   try {
     const resend = new Resend(apiKey);
-    const result = await resend.emails.send({
-      from,
-      to: input.to,
-      subject: buildSubject(input.action),
-      html: buildHtml(input),
-    });
+    const sendWithFrom = async (sender: string) =>
+      resend.emails.send({
+        from: sender,
+        to: recipients,
+        subject: buildSubject(input.action),
+        html: buildHtml(input),
+      });
+
+    let result = await sendWithFrom(from);
+
+    if (result.error && /domain is not verified/i.test(result.error.message || "") && from !== fallbackFrom) {
+      console.warn("[email] Sender domain is not verified yet. Retrying with Resend fallback sender.");
+      result = await sendWithFrom(fallbackFrom);
+    }
     
     if (result.error) {
       const errorMsg = `Resend error: ${result.error.message || JSON.stringify(result.error)}`;
