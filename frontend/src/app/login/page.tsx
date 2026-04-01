@@ -163,10 +163,10 @@ export default function LoginPage() {
 
             <div className={styles.brandBlock}>
               <h1 className={styles.brandTitle}>
-                <span className={styles.brandO}>I</span>DAF
+                <span className={styles.brandO}>S</span>tructo
               </h1>
               <p className={styles.brandSubtitle}>
-                Legal Regulatory Delivery Unit
+                Document Intelligence Platform
               </p>
             </div>
 
@@ -261,7 +261,7 @@ export default function LoginPage() {
               <h2 className={styles.formTitle}>Welcome back!</h2>
               <div className={styles.accentBar} />
               <p className={styles.formSubtitle}>
-                Sign in to your IDAF account to continue.
+                Sign in to your Structo account to continue.
               </p>
             </div>
 
@@ -470,7 +470,7 @@ export default function LoginPage() {
             </form>
 
             <p className={styles.footerNote}>
-              © 2026 Innodata — Legal Regulatory Delivery Unit
+              © 2026 Structo · Innodata Legal Regulatory Delivery Unit
             </p>
           </div>
         </div>

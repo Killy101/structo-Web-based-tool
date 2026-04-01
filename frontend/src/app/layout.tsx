@@ -3,7 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "../context/AuthContext"; // adjust path if needed
 
 export const metadata: Metadata = {
-  title: "IDAF | InnoStream Document Architecture Framework",
+  title: "Structo | Document Intelligence Platform",
   description:
     "A Web-Based Platform for Intelligent Document Comparison, Change Detection, and Structuring",
   icons: {
