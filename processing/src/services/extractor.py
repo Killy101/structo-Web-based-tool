@@ -55,23 +55,40 @@ def _extract_docx(path: str) -> str:
 
 def _extract_doc(path: str) -> str:
     """Extract text from legacy .doc by converting to a temporary .docx."""
-    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
-    os.close(temp_fd)
+    temp_docx_path = convert_legacy_doc_to_docx(path)
     temp_docx = Path(temp_docx_path)
     try:
-        if _convert_doc_to_docx_with_word(path, str(temp_docx)):
-            return _extract_docx(str(temp_docx))
-        if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
-            return _extract_docx(str(temp_docx))
-        raise ValueError(
-            "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
-            "or LibreOffice ('soffice' in PATH)."
-        )
+        return _extract_docx(str(temp_docx))
     finally:
         try:
             temp_docx.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def convert_legacy_doc_to_docx(path: str) -> str:
+    """
+    Convert a legacy .doc file to a temporary .docx path and return that path.
+    Caller is responsible for deleting the returned temp file.
+    """
+    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
+    os.close(temp_fd)
+    temp_docx = Path(temp_docx_path)
+
+    if _convert_doc_to_docx_with_word(path, str(temp_docx)):
+        return str(temp_docx)
+    if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
+        return str(temp_docx)
+
+    try:
+        temp_docx.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    raise ValueError(
+        "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
+        "or LibreOffice ('soffice' in PATH)."
+    )
 
 
 def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:

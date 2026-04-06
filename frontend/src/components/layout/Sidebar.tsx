@@ -197,6 +197,7 @@ const TYPE_DOT: Record<string, string> = {
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  hoverMode?: boolean;
 }
 
 function LogoutModal({
@@ -280,7 +281,8 @@ function LogoutModal({
   );
 }
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, hoverMode }: SidebarProps) {
+  const [hovered, setHovered] = useState(false);
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { dark, toggle } = useTheme();
@@ -329,17 +331,28 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         />
       )}
 
+      {/* Hover trigger strip when in hover mode */}
+      {hoverMode && !hovered && (
+        <div
+          className="flex-shrink-0 w-1.5 h-screen relative z-30 cursor-pointer"
+          onMouseEnter={() => setHovered(true)}
+          style={{ background: dark ? "rgba(26, 143, 209, 0.08)" : "rgba(100, 116, 139, 0.06)" }}
+        />
+      )}
+
       <aside
         className={`
           ${collapsed ? "w-[68px]" : "w-60"} flex-shrink-0 h-screen
           flex flex-col border-r
-          transition-all duration-300 ease-in-out relative z-20
+          transition-all duration-300 ease-in-out
+          ${hoverMode ? `absolute left-0 top-0 z-40 shadow-2xl ${hovered ? "translate-x-0 opacity-100" : "-translate-x-full opacity-0 pointer-events-none"}` : "relative z-20"}
         `}
         style={{
-          background: dark ? "rgba(6, 13, 26, 0.92)" : "rgba(248, 250, 252, 0.97)",
+          background: dark ? "rgba(6, 13, 26, 0.98)" : "rgba(248, 250, 252, 0.99)",
           backdropFilter: "blur(16px)",
           borderColor: dark ? "rgba(26, 143, 209, 0.1)" : "rgba(100, 116, 139, 0.15)",
         }}
+        onMouseLeave={() => { if (hoverMode) setHovered(false); }}
       >
         {/* logo */}
         <div

@@ -191,13 +191,35 @@ def chunk_xml_smart(
 
     # For innodLevel, filter by last-path prefix matching the preferred tag
     if real_tag == "innodLevel" and real_tag != tag_name:
-        return chunk_xml(
-            xml_content=xml_content,
-            tag_name="innodLevel",
-            attribute="last-path" if not attribute else attribute,
-            value=None,    # we'll filter by prefix below
-            max_file_size=max_file_size,
-        )
+        # Actually filter innodLevel elements whose last-path starts with
+        # the user's chosen prefix (e.g. "art" → "art. L1", "art. L2")
+        pref_upper = tag_name.upper()
+        root = _parse_xml(xml_content)
+        chunks: list[dict[str, Any]] = []
+        for elem in root.iter("innodLevel"):
+            lp = (elem.get("last-path") or "").upper()
+            if not lp.startswith(pref_upper):
+                continue
+            chunk_str = _elem_to_str(elem)
+            size_bytes = len(chunk_str.encode("utf-8"))
+            if max_file_size and size_bytes > max_file_size:
+                for child in elem:
+                    child_str = _elem_to_str(child)
+                    child_size = len(child_str.encode("utf-8"))
+                    chunks.append({
+                        "tag": child.tag,
+                        "attributes": dict(child.attrib),
+                        "content": child_str,
+                        "size": child_size,
+                    })
+                continue
+            chunks.append({
+                "tag": elem.tag,
+                "attributes": dict(elem.attrib),
+                "content": chunk_str,
+                "size": size_bytes,
+            })
+        return chunks
 
     return chunk_xml(
         xml_content=xml_content,

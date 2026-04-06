@@ -1,4 +1,4 @@
-export type CompareType = 'direct' | 'chunk';
+export type CompareType = 'direct' | 'chunk' | 'diff' | 'direct-diff';
 
 export interface CompareEvent {
   type: CompareType;
