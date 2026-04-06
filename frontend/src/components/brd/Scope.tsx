@@ -6,15 +6,16 @@ import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 
 /* ─────────────── types ─────────────── */
 interface ScopeRow {
-  id: string; stableKey: string; title: string; referenceLink: string; contentUrl: string;
+  id: string; stableKey: string; title: string; referenceLink: string; contentUrl: string; contentNote: string;
   issuingAuth: string; asrbId: string; smeComments: string;
   initialEvergreen: string; dateOfIngestion: string; isOutOfScope: boolean;
 }
 interface ScopeEntry {
-  document_title?: string; regulator_url?: string; content_url?: string;
+  document_title?: string; regulator_url?: string; content_url?: string; content_note?: string;
   issuing_authority?: string; issuing_authority_code?: string;
   geography?: string; asrb_id?: string; sme_comments?: string;
   initial_evergreen?: string; date_of_ingestion?: string; strikethrough?: boolean;
+  stable_key?: string; stableKey?: string;
 }
 
 interface Props { initialData?: Record<string, unknown>; brdId?: string; onDataChange?: (data: Record<string, unknown>) => void; }
@@ -45,26 +46,46 @@ function asScopeEntryArray(v: unknown): ScopeEntry[] {
   if (!Array.isArray(v)) return [];
   return v.filter((i) => i !== null && typeof i === "object") as ScopeEntry[];
 }
+
+function normalizeAsrbAndSme(asrbRaw?: string, smeRaw?: string) {
+  const pattern = /\bASRB[- ]?\d+\b/gi;
+  const normalizeId = (value: string) => value.toUpperCase().replace(/[-\s]+/g, "");
+  const unique = (values: string[]) => Array.from(new Set(values.map(normalizeId).filter(Boolean))).join(", ");
+
+  let asrbId = unique(asrbRaw?.match(pattern) ?? []);
+  let smeComments = (smeRaw ?? "").trim();
+
+  const embedded = unique(smeComments.match(pattern) ?? []);
+  if (embedded) {
+    asrbId = asrbId || embedded;
+    smeComments = smeComments.replace(pattern, "");
+    smeComments = smeComments.replace(/^[\s,;:/-]+|[\s,;:/-]+$/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+
+  return { asrbId, smeComments };
+}
+
 function toRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string): ScopeRow {
   const authLabel = e.issuing_authority
     ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
+  const { asrbId, smeComments } = normalizeAsrbAndSme(e.asrb_id, e.sme_comments);
   return {
     id, stableKey, isOutOfScope: oos || !!e.strikethrough,
     title: e.document_title ?? "", referenceLink: e.regulator_url ?? "",
-    contentUrl: e.content_url ?? "", issuingAuth: authLabel,
-    asrbId: e.asrb_id ?? "", smeComments: e.sme_comments ?? "",
+    contentUrl: e.content_url ?? "", contentNote: e.content_note ?? "", issuingAuth: authLabel,
+    asrbId, smeComments,
     initialEvergreen: e.initial_evergreen ?? "", dateOfIngestion: e.date_of_ingestion ?? "",
   };
 }
 function rowsToScopeData(rows: ScopeRow[]): Record<string, unknown> {
   const inScope  = rows.filter(r => !r.isOutOfScope).map(r => ({
-    document_title: r.title, regulator_url: r.referenceLink, content_url: r.contentUrl,
-    issuing_authority: r.issuingAuth, asrb_id: r.asrbId, sme_comments: r.smeComments,
+    document_title: r.title, regulator_url: r.referenceLink, content_url: r.contentUrl, content_note: r.contentNote,
+    issuing_authority: r.issuingAuth, asrb_id: r.asrbId, sme_comments: r.smeComments, stable_key: r.stableKey,
     initial_evergreen: r.initialEvergreen, date_of_ingestion: r.dateOfIngestion,
   }));
   const outOfScope = rows.filter(r => r.isOutOfScope).map(r => ({
-    document_title: r.title, regulator_url: r.referenceLink, content_url: r.contentUrl,
-    issuing_authority: r.issuingAuth, asrb_id: r.asrbId, sme_comments: r.smeComments,
+    document_title: r.title, regulator_url: r.referenceLink, content_url: r.contentUrl, content_note: r.contentNote,
+    issuing_authority: r.issuingAuth, asrb_id: r.asrbId, sme_comments: r.smeComments, stable_key: r.stableKey,
     initial_evergreen: r.initialEvergreen, date_of_ingestion: r.dateOfIngestion, strikethrough: true,
   }));
   return { in_scope: inScope, out_of_scope: outOfScope };
@@ -73,8 +94,8 @@ function rowsToScopeData(rows: ScopeRow[]): Record<string, unknown> {
 function buildRows(d?: Record<string, unknown>): ScopeRow[] {
   if (!d) return [];
   const now = Date.now().toString(); const rows: ScopeRow[] = [];
-  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toRow(e, `${now}-in-${i}`, false, `in-${i}`)));
-  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toRow(e, `${now}-out-${i}`, true, `out-${i}`)));
+  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toRow(e, `${now}-in-${i}`, false, e.stable_key ?? e.stableKey ?? `in-${i}`)));
+  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toRow(e, `${now}-out-${i}`, true, e.stable_key ?? e.stableKey ?? `out-${i}`)));
   return rows;
 }
 
@@ -84,6 +105,7 @@ function normalizeScopeRow(row: ScopeRow) {
     title: row.title,
     referenceLink: row.referenceLink,
     contentUrl: row.contentUrl,
+    contentNote: row.contentNote,
     issuingAuth: row.issuingAuth,
     asrbId: row.asrbId,
     smeComments: row.smeComments,
@@ -944,7 +966,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
 
   function addRow() {
     const r: ScopeRow = {
-      id: Date.now().toString(), stableKey: `new-${Date.now()}`, title: "", referenceLink: "", contentUrl: "",
+      id: Date.now().toString(), stableKey: `new-${Date.now()}`, title: "", referenceLink: "", contentUrl: "", contentNote: "",
       issuingAuth: "", asrbId: "", smeComments: "", initialEvergreen: "",
       dateOfIngestion: "", isOutOfScope: false,
     };
@@ -973,7 +995,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
         ...prev, phase: "done", progress: 100, currentStep: "Error",
         issues: [{
           rowId: "", rowTitle: "System", rowNumber: 0,
-          rowData: { id:"", stableKey:"", title:"", referenceLink:"", contentUrl:"", issuingAuth:"", asrbId:"", smeComments:"", initialEvergreen:"", dateOfIngestion:"", isOutOfScope:false },
+          rowData: { id:"", stableKey:"", title:"", referenceLink:"", contentUrl:"", contentNote:"", issuingAuth:"", asrbId:"", smeComments:"", initialEvergreen:"", dateOfIngestion:"", isOutOfScope:false },
           affectedValue: "", field: "title", kind: "broken_link", severity: "error",
           message: String(err),
         }],
@@ -1106,6 +1128,11 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                       <td className={CELL} style={{ maxWidth: 180, width: 180 }}>
                         <div className="group">
                           <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "contentUrl", val)}/>
+                          {row.contentNote && (
+                            <div className={`mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap ${oos ? "line-through" : ""}`}>
+                              {row.contentNote}
+                            </div>
+                          )}
                           {getCellImgs(row.stableKey, "contentUrl").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}

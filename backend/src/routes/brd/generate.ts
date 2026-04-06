@@ -85,22 +85,18 @@ function toIsoDate(val: string): string {
   return !isNaN(d.getTime()) ? d.toISOString().split("T")[0] : val;
 }
 function isLegacyBrd(metadata: Record<string, unknown>): boolean {
+  const sourceName = asString(
+    metadata.source_name || metadata.sourceName || metadata["Source Name"]
+  ).trim();
   const sourceType = asString(
-    metadata.source_type || metadata.version || metadata["Source Type"]
-  )
-    .toLowerCase()
-    .trim();
+    metadata.source_type || metadata.sourceType || metadata.version || metadata["Source Type"]
+  ).trim();
+  const contentCategory = asString(
+    metadata["Content Category Name"] || metadata["Content Category"] || metadata.content_category_name || metadata.contentCategoryName
+  ).trim();
 
-  const hasLegacyName = !!asString(metadata.source_name || metadata["Source Name"]);
-  const hasNewName = !!asString(
-    metadata["Content Category Name"] || metadata.content_category_name
-  );
-
-  if (sourceType.includes("legacy") || sourceType.includes("pre-2024") || sourceType.includes("free")) {
-    return true;
-  }
-
-  return hasLegacyName && !hasNewName;
+  if (contentCategory) return false;
+  return !!(sourceName && sourceType);
 }
 function generateUniqueFileId(sourceName: string): string {
   const slug = sourceName

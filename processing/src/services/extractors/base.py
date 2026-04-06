@@ -51,8 +51,50 @@ def section_content(doc, heading_text: str) -> list[str]:
     return texts
 
 
-def extract_url_from_cell(cell) -> str:
-    """Extract the most complete URL from a cell using hyperlink targets + text URLs."""
+_URL_RE = re.compile(r"https?://[^\s\)\]」）]+")
+
+
+def _rank_url(url: str) -> tuple[int, int, int]:
+    path_depth = url.count("/")
+    has_query_or_fragment = int("?" in url or "#" in url)
+    return (path_depth, has_query_or_fragment, len(url))
+
+
+def extract_url_and_note_from_text(text: str, extra_candidates: list[str] | None = None) -> tuple[str, str]:
+    """Return the primary URL plus any remaining descriptive text from a cell-like string."""
+    raw_text = (text or "").replace("\xa0", " ").strip()
+    candidates: list[str] = []
+    if extra_candidates:
+        candidates.extend(url.strip() for url in extra_candidates if isinstance(url, str) and url.strip())
+    for match in _URL_RE.finditer(raw_text):
+        candidates.append(match.group(0).rstrip(".,;"))
+
+    if not candidates:
+        return raw_text, ""
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+
+    primary_url = max(deduped, key=_rank_url)
+
+    note_lines: list[str] = []
+    seen_lines: set[str] = set()
+    for raw_line in raw_text.splitlines():
+        cleaned = _URL_RE.sub("", raw_line).replace("\xa0", " ")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned and cleaned not in seen_lines:
+            seen_lines.add(cleaned)
+            note_lines.append(cleaned)
+
+    return primary_url, "\n".join(note_lines)
+
+
+def extract_url_and_note_from_cell(cell) -> tuple[str, str]:
+    """Extract the most complete URL plus any plain descriptive text from a table cell."""
     candidates: list[str] = []
 
     rel_id_attr = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
@@ -67,20 +109,13 @@ def extract_url_from_cell(cell) -> str:
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             candidates.append(url.strip())
 
-    url_re = re.compile(r"https?://[^\s\)\]」）]+")
-    text = cell.text.strip()
-    for match in url_re.finditer(text):
-        candidates.append(match.group(0).rstrip(".,;"))
+    return extract_url_and_note_from_text(cell.text, candidates)
 
-    if candidates:
-        def rank(url: str) -> tuple[int, int, int]:
-            path_depth = url.count("/")
-            has_query_or_fragment = int("?" in url or "#" in url)
-            return (path_depth, has_query_or_fragment, len(url))
 
-        return max(candidates, key=rank)
-
-    return text.strip()
+def extract_url_from_cell(cell) -> str:
+    """Extract the primary URL from a cell using hyperlink targets + text URLs."""
+    url, _ = extract_url_and_note_from_cell(cell)
+    return url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
