@@ -158,7 +158,12 @@ def _extract_html_from_mhtml_doc(path: str) -> str:
             for part in message.walk():
                 if part.get_content_type() != "text/html":
                     continue
-                payload = part.get_payload(decode=True)
+                raw_payload = part.get_payload(decode=True)
+                payload: bytes | bytearray | str | None
+                if isinstance(raw_payload, (bytes, bytearray, str)) or raw_payload is None:
+                    payload = raw_payload
+                else:
+                    payload = str(raw_payload)
                 html_text = _decode_mhtml_payload(payload, part.get_content_charset())
                 if html_text.strip():
                     html_parts.append(html_text)
