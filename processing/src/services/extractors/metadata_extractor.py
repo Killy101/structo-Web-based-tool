@@ -47,6 +47,28 @@ def _infer_language(geography: str, existing_language: str) -> str:
     return existing_language
 
 
+def _extract_comment_cell(cells) -> str:
+    """Pull the SME comments cell text (typically column 3+) from a metadata row."""
+    if len(cells) < 3:
+        return ""
+    for cell in cells[2:]:
+        value = _clean(cell.text.replace("\xa0", " "))
+        lowered = value.lower()
+        if value and not ("sme comments" in lowered and "checkpoint" in lowered):
+            return value
+    return ""
+
+
+def _append_named_comment(target: list[str], label: str, comment: str) -> None:
+    label = _clean(label.strip("*: \xa0"))
+    comment = _clean(comment)
+    if not comment:
+        return
+    entry = f"{label}: {comment}" if label else comment
+    if entry not in target:
+        target.append(entry)
+
+
 def _is_legacy_format(doc) -> bool:
     """
     Returns True when the document uses the legacy BRD metadata format.
@@ -107,20 +129,29 @@ def _extract_metadata_new(doc) -> dict:
     New format uses labels like 'Content Category Name', 'Issuing Agency', etc.
     """
     metadata = {
-        # ── Core BRD fields ──────────────────────────────────────────
         "content_category_name":     "",
+        "authoritative_source":      "",
+        "source_type":               "",
+        "content_type":              "",
         "publication_date":          "",
         "last_updated_date":         "",
+        "effective_date":            "",
+        "comment_due_date":          "",
+        "compliance_date":           "",
         "processing_date":           "",
         "issuing_agency":            "",
-        "authoritative_source":      "",   # alias for issuing_agency (populated below)
         "related_government_agency": "",
         "content_uri":               "",
         "geography":                 "",
         "language":                  "",
-        # ── Extra / footer fields ─────────────────────────────────────
         "document_title":            "",
+        "name":                      "",
+        "impacted_citation":         "",
+        "payload_type":              "",
+        "payload_subtype":           "",
+        "summary":                   "",
         "status":                    "",
+        "sme_comments":              "",
         "product_owner":             "",
         "sme":                       "",
         "contributors":              [],
@@ -130,7 +161,6 @@ def _extract_metadata_new(doc) -> dict:
         "author":                    "",
     }
 
-    # Document title = first H1
     for para in doc.paragraphs:
         if heading_level(para) == 1 and para_text(para):
             metadata["document_title"] = para_text(para)
@@ -139,27 +169,38 @@ def _extract_metadata_new(doc) -> dict:
     key_map = {
         "content category name":     "content_category_name",
         "content category":          "content_category_name",
+        "authoritative source":      "authoritative_source",
+        "source type":               "source_type",
+        "content type":              "content_type",
         "publication date":          "publication_date",
         "last updated date":         "last_updated_date",
+        "effective date":            "effective_date",
+        "comment due date":          "comment_due_date",
+        "compliance date":           "compliance_date",
         "processing date":           "processing_date",
         "issuing agency":            "issuing_agency",
-        "authoritative source":      "issuing_agency",   # treat as alias
         "related government agency": "related_government_agency",
         "content uri":               "content_uri",
         "content url":               "content_uri",
+        "impacted citation":         "impacted_citation",
+        "payload subtype":           "payload_subtype",
+        "payload type":              "payload_type",
+        "sme comments":              "sme_comments",
         "geography":                 "geography",
         "language":                  "language",
         "product owner":             "product_owner",
-        "sme":                       "sme",
         "status":                    "status",
+        "summary":                   "summary",
         "region":                    "region",
         "country":                   "country",
         "contributors":              "contributors",
         "version":                   "version",
         "author":                    "author",
+        "name":                      "name",
+        "sme":                       "sme",
     }
-    # Longer/more-specific keys match first
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
+    sme_comment_lines: list[str] = []
 
     for table in doc.tables:
         for row in table.rows:
@@ -167,7 +208,8 @@ def _extract_metadata_new(doc) -> dict:
             if len(cells) < 2:
                 continue
 
-            label = cells[0].text.strip().lower().strip("*: \xa0").replace("\n", " ")
+            raw_label = cells[0].text.strip().replace("\n", " ")
+            label = raw_label.lower().strip("*: \xa0")
 
             value = cells[1].text.strip()
             if not value:
@@ -180,8 +222,12 @@ def _extract_metadata_new(doc) -> dict:
             if len(value) > 300:
                 value = ""
 
+            comment_value = _extract_comment_cell(cells)
+
+            matched = False
             for pattern, field in sorted_key_map:
                 if pattern in label:
+                    matched = True
                     if field == "contributors":
                         parts = re.split(r"[\n,]+", value)
                         metadata["contributors"] = [p.strip() for p in parts if p.strip()]
@@ -191,20 +237,32 @@ def _extract_metadata_new(doc) -> dict:
                     else:
                         if not metadata[field]:
                             metadata[field] = value
+                    if comment_value:
+                        _append_named_comment(sme_comment_lines, raw_label, comment_value)
                     break
+            if label and not matched:
+                print(f"[DEBUG metadata_extractor] unmatched label: {ascii(label[:60])}")
 
-    # ── Post-processing ───────────────────────────────────────────────────
     for field in (
-        "content_category_name", "publication_date", "last_updated_date",
-        "processing_date", "issuing_agency", "related_government_agency",
-        "content_uri", "geography", "language", "status",
-        "region", "country", "version", "author",
+        "content_category_name", "authoritative_source", "source_type", "content_type",
+        "publication_date", "last_updated_date", "effective_date", "comment_due_date",
+        "compliance_date", "processing_date", "issuing_agency", "related_government_agency",
+        "content_uri", "geography", "language", "name", "impacted_citation",
+        "payload_type", "payload_subtype", "summary", "status", "sme_comments",
+        "product_owner", "region", "country", "version", "author",
     ):
         if isinstance(metadata.get(field), str):
             metadata[field] = _clean(metadata[field])
 
-    # Mirror issuing_agency → authoritative_source for consistency
-    metadata["authoritative_source"] = metadata["issuing_agency"]
+    if sme_comment_lines:
+        metadata["sme_comments"] = "\n".join(sme_comment_lines)
+
+    if not metadata["authoritative_source"] and metadata["issuing_agency"]:
+        metadata["authoritative_source"] = metadata["issuing_agency"]
+    if not metadata["issuing_agency"] and metadata["authoritative_source"]:
+        metadata["issuing_agency"] = metadata["authoritative_source"]
+    if not metadata["name"]:
+        metadata["name"] = metadata["document_title"]
 
     metadata["language"] = _infer_language(
         metadata.get("geography", ""),
@@ -224,34 +282,42 @@ def extract_metadata_legacy(doc) -> dict:
     'Metadata Element' | 'Document Location'
     and different label names:
       'Source Name'         → content_category_name
-      'Authoritative Source'→ issuing_agency  (also stored as authoritative_source)
+      'Authoritative Source'→ authoritative_source
     Output shape is identical to _extract_metadata_new().
     """
     metadata = {
         "content_category_name":     "",
+        "authoritative_source":      "",
+        "source_type":               "",
+        "content_type":              "",
         "publication_date":          "",
         "last_updated_date":         "",
+        "effective_date":            "",
+        "comment_due_date":          "",
+        "compliance_date":           "",
         "processing_date":           "",
         "issuing_agency":            "",
-        "authoritative_source":      "",   # populated directly from label
         "related_government_agency": "",
         "content_uri":               "",
         "geography":                 "",
         "language":                  "",
         "document_title":            "",
+        "name":                      "",
+        "impacted_citation":         "",
+        "payload_type":              "",
+        "payload_subtype":           "",
+        "summary":                   "",
         "status":                    "",
+        "sme_comments":              "",
         "product_owner":             "",
         "sme":                       "",
         "contributors":              [],
         "region":                    "",
         "country":                   "",
-        "source_type":               "",   # separate field — not shared with payload_subtype
-        "payload_subtype":           "",   # separate field — not shared with source_type
         "version":                   "",
         "author":                    "",
     }
 
-    # Document title: first Heading 1 that is not a boilerplate section
     _skip = {
         "document history", "glossary", "file delivery", "system display",
         "citation visualization", "legal", "copyright",
@@ -264,39 +330,49 @@ def extract_metadata_legacy(doc) -> dict:
                 break
 
     key_map = {
-        "authoritative source":      "authoritative_source",   # stored directly
+        "authoritative source":      "authoritative_source",
         "source name":               "content_category_name",
+        "source type":               "source_type",
+        "content type":              "content_type",
         "publication date":          "publication_date",
         "last updated date":         "last_updated_date",
+        "effective date":            "effective_date",
+        "comment due date":          "comment_due_date",
+        "compliance date":           "compliance_date",
         "processing date":           "processing_date",
         "issuing agency":            "issuing_agency",
         "related government agency": "related_government_agency",
         "content uri":               "content_uri",
         "content url":               "content_uri",
+        "impacted citation":         "impacted_citation",
+        "payload subtype":           "payload_subtype",
+        "payload type":              "payload_type",
+        "sme comments":              "sme_comments",
         "geography":                 "geography",
         "language":                  "language",
         "product owner":             "product_owner",
-        "sme":                       "sme",
         "status":                    "status",
+        "summary":                   "summary",
         "region":                    "region",
         "country":                   "country",
         "contributors":              "contributors",
-        "payload subtype":           "payload_subtype",
-        "source type":               "source_type",
         "version":                   "version",
         "author":                    "author",
+        "name":                      "name",
+        "sme":                       "sme",
     }
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     url_re = re.compile(r"https?://[^\s\)\]」）,]+")
+    sme_comment_lines: list[str] = []
 
     for table in doc.tables:
         for row in table.rows:
             cells = row.cells
             if len(cells) < 2:
                 continue
-            label = cells[0].text.strip().lower().strip("*: \xa0").replace("\n", " ")
+            raw_label = cells[0].text.strip().replace("\n", " ")
+            label = raw_label.lower().strip("*: \xa0")
 
-            # Deduplicate merged cells
             seen_ids: set = set()
             unique_cells = []
             for c in cells[1:]:
@@ -312,6 +388,8 @@ def extract_metadata_legacy(doc) -> dict:
                     value = v
                     break
 
+            comment_value = _extract_comment_cell(cells)
+
             for pattern, field in sorted_key_map:
                 if pattern in label:
                     if field == "contributors":
@@ -323,22 +401,30 @@ def extract_metadata_legacy(doc) -> dict:
                     else:
                         if not metadata[field]:
                             metadata[field] = value
+                    if comment_value:
+                        _append_named_comment(sme_comment_lines, raw_label, comment_value)
                     break
 
-    # ── Post-processing ───────────────────────────────────────────────────
     for field in (
-        "content_category_name", "publication_date", "last_updated_date",
-        "processing_date", "issuing_agency", "authoritative_source",
-        "related_government_agency", "content_uri", "geography", "language",
-        "status", "source_type", "payload_subtype", "region", "country",
-        "version", "author",
+        "content_category_name", "authoritative_source", "source_type", "content_type",
+        "publication_date", "last_updated_date", "effective_date", "comment_due_date",
+        "compliance_date", "processing_date", "issuing_agency", "related_government_agency",
+        "content_uri", "geography", "language", "name", "impacted_citation",
+        "payload_type", "payload_subtype", "summary", "status", "sme_comments",
+        "product_owner", "region", "country", "version", "author",
     ):
         if isinstance(metadata.get(field), str):
             metadata[field] = _clean(metadata[field])
 
-    # Mirror authoritative_source → issuing_agency if issuing_agency is blank
+    if sme_comment_lines:
+        metadata["sme_comments"] = "\n".join(sme_comment_lines)
+
     if not metadata["issuing_agency"] and metadata["authoritative_source"]:
         metadata["issuing_agency"] = metadata["authoritative_source"]
+    if not metadata["authoritative_source"] and metadata["issuing_agency"]:
+        metadata["authoritative_source"] = metadata["issuing_agency"]
+    if not metadata["name"]:
+        metadata["name"] = metadata["document_title"]
 
     metadata["language"] = _infer_language(
         metadata.get("geography", ""),

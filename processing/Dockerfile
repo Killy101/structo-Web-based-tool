@@ -4,10 +4,11 @@ FROM python:3.11-slim AS development
 WORKDIR /app
 
 # System deps for PDF/image processing libraries (PyMuPDF, lxml, etc.)
+# libreoffice provides the `soffice` binary used to convert .doc → .docx
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
-    libreoffice-writer \
+    libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -23,10 +24,11 @@ FROM python:3.11-slim AS production
 
 WORKDIR /app
 
+# libreoffice provides the `soffice` binary used to convert .doc → .docx
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
-    libreoffice-writer \
+    libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

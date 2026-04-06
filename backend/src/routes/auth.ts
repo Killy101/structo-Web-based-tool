@@ -79,7 +79,8 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       const { rows } = await pool.query(
         `SELECT u.*, t.name as "teamName", t.slug as "teamSlug", t.id as "teamIdVal"
          FROM users u LEFT JOIN teams t ON u.team_id = t.id
-         WHERE u.role = 'SUPER_ADMIN' ORDER BY u.id ASC LIMIT 1`,
+         WHERE LOWER(u.user_id) = LOWER($1) AND u.role = 'SUPER_ADMIN' LIMIT 1`,
+        [trimmedUserId],
       )
       userRow = rows[0]
     }

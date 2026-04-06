@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import Upload from "./Upload";
 import Scope from "./Scope";
 import Metadata from "./Metadata";
@@ -72,33 +72,39 @@ function SaveAndExitModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl w-[min(420px,90vw)] overflow-hidden">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-slate-100 dark:border-white/10 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+        <div className="px-5 py-4 border-b border-slate-100 dark:border-white/10 flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Discard & Exit</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Close the editor without pausing this BRD</p>
+            </div>
+          </div>
+          <button
+            onClick={onCancel}
+            disabled={isSaving}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+            aria-label="Close dialog"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
-          </div>
-          <div>
-            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Save & Exit</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Your progress will be saved</p>
-          </div>
+          </button>
         </div>
 
-        {/* Body */}
         <div className="px-5 py-4 space-y-3">
           <p className="text-sm text-slate-700 dark:text-slate-300">
-            Your edits will be <span className="font-semibold text-slate-900 dark:text-white">saved automatically</span> and this BRD will be marked as{" "}
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-500/15 text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-amber-600/30">
-              ⏸ Paused
-            </span>
+            If you exit now, any <span className="font-semibold text-slate-900 dark:text-white">unsaved edits in this session</span> will be discarded.
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            You can resume editing at any time from the BRD Registry.
+            Saved BRD data in the registry will remain available.
           </p>
         </div>
 
-        {/* Footer */}
         <div className="px-5 pb-5 flex justify-end gap-2">
           <button
             onClick={onCancel}
@@ -110,7 +116,7 @@ function SaveAndExitModal({
           <button
             onClick={onConfirm}
             disabled={isSaving}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-60 transition-all"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-600 disabled:opacity-60 transition-all"
           >
             {isSaving ? (
               <>
@@ -118,14 +124,14 @@ function SaveAndExitModal({
                   <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.2" />
                   <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.8" />
                 </svg>
-                Saving…
+                Exiting…
               </>
             ) : (
               <>
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
-                Save & Exit
+                Discard & Exit
               </>
             )}
           </button>
@@ -133,6 +139,24 @@ function SaveAndExitModal({
       </div>
     </div>
   );
+}
+
+function sortSnapshotValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortSnapshotValue(item));
+  if (value && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        const next = sortSnapshotValue((value as Record<string, unknown>)[key]);
+        if (next !== undefined) acc[key] = next;
+        return acc;
+      }, {});
+  }
+  return typeof value === "string" ? value.trim() : value ?? null;
+}
+
+function buildFlowSnapshot(value: unknown): string {
+  return JSON.stringify(sortSnapshotValue(value));
 }
 
 export default function BrdFlow({
@@ -174,6 +198,7 @@ export default function BrdFlow({
   const tocDraft            = useRef<Record<string, unknown> | null>(null);
   const citationsDraft      = useRef<Record<string, unknown> | null>(null);
   const contentProfileDraft = useRef<Record<string, unknown> | null>(null);
+  const initialSnapshotRef  = useRef<string>("");
 
   // Flush all pending drafts into uploadMeta before navigating
   function flushDrafts() {
@@ -195,6 +220,25 @@ export default function BrdFlow({
     citationsDraft.current      = null;
     contentProfileDraft.current = null;
   }
+
+  function getPendingUploadMeta(): UploadFlowData | null {
+    if (!uploadMeta) return uploadMeta;
+    return {
+      ...uploadMeta,
+      ...(scopeDraft.current          !== null ? { scope:          scopeDraft.current }          : {}),
+      ...(metadataDraft.current       !== null ? { metadata:       metadataDraft.current }       : {}),
+      ...(tocDraft.current            !== null ? { toc:            tocDraft.current }            : {}),
+      ...(citationsDraft.current      !== null ? { citations:      citationsDraft.current }      : {}),
+      ...(contentProfileDraft.current !== null ? { contentProfile: contentProfileDraft.current } : {}),
+    };
+  }
+
+  function hasPendingChanges(): boolean {
+    const pending = getPendingUploadMeta();
+    if (!pending) return false;
+    if (!initialSnapshotRef.current) return true;
+    return buildFlowSnapshot(pending) !== initialSnapshotRef.current;
+  }
   // ── End FIX ───────────────────────────────────────────────────────────────
 
   const isLastStep     = step === steps.length - 1;
@@ -211,7 +255,7 @@ export default function BrdFlow({
       .get<BrdDetailResponse>(`/brd/${initialMeta.brdId}`)
       .then((res) => {
         const d = res.data;
-        setUploadMeta({
+        const nextMeta: UploadFlowData = {
           format:         d.format         ?? initialMeta.format,
           brdId:          d.id             ?? initialMeta.brdId,
           title:          d.title          ?? initialMeta.title,
@@ -222,7 +266,9 @@ export default function BrdFlow({
           citations:      d.citations,
           contentProfile: d.contentProfile,
           brdConfig:      d.brdConfig,
-        });
+        };
+        initialSnapshotRef.current = buildFlowSnapshot(nextMeta);
+        setUploadMeta(nextMeta);
       })
       .catch((err) => {
         console.error("Failed to load BRD:", err);
@@ -237,49 +283,26 @@ export default function BrdFlow({
   const prev = () => { flushDrafts(); setStep((s) => Math.max(s - 1, 0)); };
   // ── End FIX ───────────────────────────────────────────────────────────────
 
-  // On exit: blank upload screen (nothing to save) → close immediately.
-  // On Generate step (work already saved) → close immediately.
-  // Otherwise → show Save & Exit modal.
-  const requestClose = useCallback(() => {
-    const isBlankUpload = !isEditMode && step === 0 && !uploadMeta;
-    if (isGenerateStep || isBlankUpload) {
-      onClose?.();
-    } else {
-      flushDrafts();
-      setShowExitConfirm(true);
-    }
-  }, [isGenerateStep, isEditMode, step, uploadMeta, onClose]);
+  useEffect(() => {
+    if (!uploadMeta || initialSnapshotRef.current) return;
+    initialSnapshotRef.current = buildFlowSnapshot(uploadMeta);
+  }, [uploadMeta]);
 
-  // Save current state as "paused" then close
-  const handleSaveAndExit = useCallback(async () => {
-    if (!uploadMeta?.brdId) {
+  function requestClose() {
+    const pending = getPendingUploadMeta();
+    const isBlankUpload = !isEditMode && step === 0 && !pending;
+    if (isGenerateStep || isBlankUpload || !hasPendingChanges()) {
       onClose?.();
       return;
     }
+    setShowExitConfirm(true);
+  }
 
+  function handleDiscardAndExit() {
     setIsSaving(true);
-    try {
-      await api.post("/brd/save", {
-        brdId:          uploadMeta.brdId,
-        title:          uploadMeta.title,
-        format:         uploadMeta.format,
-        status:         "PAUSED",
-        scope:          uploadMeta.scope,
-        metadata:       uploadMeta.metadata,
-        toc:            uploadMeta.toc,
-        citations:      uploadMeta.citations,
-        contentProfile: uploadMeta.contentProfile,
-        brdConfig:      uploadMeta.brdConfig ?? null,
-      });
-    } catch (err) {
-      console.warn("[BrdFlow] Save-on-exit failed:", err);
-      // Still exit — don't block the user
-    } finally {
-      setIsSaving(false);
-      setShowExitConfirm(false);
-      onClose?.();
-    }
-  }, [uploadMeta, onClose]);
+    setShowExitConfirm(false);
+    onClose?.();
+  }
 
   function getBestTitle(): string {
     const md = uploadMeta?.metadata as Record<string, unknown> | undefined;
@@ -534,11 +557,11 @@ function renderStepContent() {
         </div>
       </div>
 
-      {/* Save & Exit modal */}
+      {/* Discard & Exit modal */}
       {showExitConfirm && (
         <SaveAndExitModal
           isSaving={isSaving}
-          onConfirm={handleSaveAndExit}
+          onConfirm={handleDiscardAndExit}
           onCancel={() => setShowExitConfirm(false)}
         />
       )}

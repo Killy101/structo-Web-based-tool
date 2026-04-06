@@ -420,7 +420,7 @@ export default function DashboardPage() {
   const [brdLoad, setBrdLoad] = useState(true);
   const [txp, setTxp] = useState(1);
   const [balancePage, setBalancePage] = useState(1);
-  const BALANCE_PAGE_SIZE = 8;
+  const BALANCE_PAGE_SIZE = 5;
   const dark = useDark();
 
   // Fetch full BRD list directly — same call as BRD page, gives real status/geography/title
@@ -546,29 +546,34 @@ export default function DashboardPage() {
         <LiveClock />
       </div>
 
-      {/* ══ 3-COLUMN GRID ══
-           col-1: flex-1   col-2: flex-1   col-3: 240px fixed
-           All inside the shell's p-6 box — no extra padding added.        */}
+      {/* ══ FULL-WIDTH KPI ROW ══ */}
+      <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
+        {[
+          { label: "BRD Sources",  val: totalBrds,                          sub: "total registered",   color: "#2563eb" },
+          { label: "Users",        val: totalUsers,                          sub: "registered accounts", color: "#0f766e" },
+          { label: "Logins Today", val: lineData[6] ?? 0,                    sub: "login events today",  color: "#7c3aed" },
+          { label: "Total Events", val: acts.length,                         sub: "activity log entries", color: "#b45309" },
+        ].map((k, i) => (
+          <div key={k.label} className={`${C} u d${i+1}`} style={{ padding: "16px 18px 14px" }}>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11px] font-medium" style={{ color:"var(--c-sub)" }}>{k.label}</p>
+              <span className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: `${k.color}18` }}>
+                <span className="w-2 h-2 rounded-full" style={{ background: k.color }} />
+              </span>
+            </div>
+            <p className="jb text-[28px] font-bold leading-none" style={{ color:"var(--c-txt)" }}>
+              <CountUp to={k.val} />
+            </p>
+            <p className="text-[10px] mt-2" style={{ color:"var(--c-sub)" }}>{k.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* ══ 3-COLUMN GRID ══ */}
       <div className="db-grid gap-5">
 
         {/* ╔══════════ COL 1 ══════════╗ */}
         <div className="flex flex-col gap-4 min-w-0">
-
-          {/* KPI 2×2 */}
-          <div className="db-kpi grid grid-cols-2 gap-3">
-            {[
-              { label:"BRD Sources", val:totalBrds,  sub:"total registered" },
-              { label:"Users",       val:totalUsers,  sub:"registered accounts" },
-            ].map((k, i) => (
-              <div key={k.label} className={`${C} u d${i+1}`} style={{ padding: "16px 18px 14px", minHeight: 100 }}>
-                <p className="text-[11px] font-medium mb-2.5" style={{ color:"var(--c-sub)" }}>{k.label}</p>
-                <p className="jb text-[28px] font-bold leading-none" style={{ color:"var(--c-txt)" }}>
-                  <CountUp to={k.val} />
-                </p>
-                <p className="text-[10px] mt-2.5" style={{ color:"var(--c-sub)" }}>{k.sub}</p>
-              </div>
-            ))}
-          </div>
 
           {/* Line chart */}
           <div className={`${C} u d5 p-4`}>
@@ -586,7 +591,7 @@ export default function DashboardPage() {
                 </span>
               </div>
             </div>
-            <p className="jb text-[26px] font-bold mt-1" style={{ color:"var(--c-txt)" }}>
+            <p className="jb text-[22px] font-bold mt-1" style={{ color:"var(--c-txt)" }}>
               <CountUp to={lineData.reduce((a, b) => a + b, 0)} />
             </p>
             <p className="text-[11px] mb-3" style={{ color:"var(--c-sub)" }}>
@@ -672,35 +677,6 @@ export default function DashboardPage() {
         {/* ╔══════════ COL 2 ══════════╗ */}
         <div className="flex flex-col gap-4 min-w-0">
 
-          {/* System overview — concentric donut */}
-          <div className={`${C} u d2 p-4`}>
-            <p className="text-[13px] font-bold mb-4" style={{color:"var(--c-txt)"}}>System Overview</p>
-            <div className="flex items-center gap-4">
-              {/* donut */}
-              <div className="relative flex-shrink-0">
-                <Donut segs={ringSegs} size={130} />
-                
-              </div>
-              {/* legend */}
-              <div className="flex flex-col gap-2.5 flex-1 min-w-0">
-                {RING_C.map((r, i) => (
-                  <div key={r.l} className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:r.color}}/>
-                      <span className="text-[11px]" style={{color:"var(--c-sub)"}}>{r.l}</span>
-                    </div>
-                    <span className="jb text-[11px] font-medium" style={{color:"var(--c-txt)"}}>
-                      {sumOf4 > 0 ? Math.round(((ringSegs[i]?.raw ?? 0) / sumOf4) * 100) : 0}%
-                    </span>
-                  </div>
-                ))}
-                <p className="text-[10px] leading-relaxed mt-1 pt-2" style={{borderTop:"1px solid var(--c-b)", color:"var(--c-sub)"}}>
-                  Percentages reflect system utilisation across key resource categories.
-                </p>
-              </div>
-            </div>
-          </div>
-
           {/* BRD Processing Chart */}
           <div className={`${C} u d3 p-4`}>
             <div className="flex items-center justify-between mb-3">
@@ -774,32 +750,56 @@ export default function DashboardPage() {
           </div>
 
           {/* Compare Analytics */}
-          <div className="u d3">
+          <div className="u d4">
             <CompareUsageChart />
           </div>
 
-          {/* Pipeline — Bubble chart */}
-          <div className={`${C} u d4 p-5 flex flex-col flex-1`}>
-            <div className="flex items-start justify-between mb-1">
-              <div>
-                <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Pipeline</p>
-                <p className="text-[11px] mt-0.5" style={{color:"var(--c-sub)"}}>Feature activity · all time</p>
+        </div>
+
+        {/* ╔══════════ COL 3 — sidebar ══════════╗ */}
+        <div className="db-col3 flex flex-col gap-4 min-w-0">
+
+          {/* System Overview — concentric donut */}
+          <div className={`${C} u d2 p-4`}>
+            <p className="text-[13px] font-bold mb-4" style={{color:"var(--c-txt)"}}>System Overview</p>
+            <div className="flex items-center gap-4">
+              <div className="relative flex-shrink-0">
+                <Donut segs={ringSegs} size={110} />
+              </div>
+              <div className="flex flex-col gap-2.5 flex-1 min-w-0">
+                {RING_C.map((r, i) => (
+                  <div key={r.l} className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:r.color}}/>
+                      <span className="text-[11px]" style={{color:"var(--c-sub)"}}>{r.l}</span>
+                    </div>
+                    <span className="jb text-[11px] font-medium" style={{color:"var(--c-txt)"}}>
+                      {sumOf4 > 0 ? Math.round(((ringSegs[i]?.raw ?? 0) / sumOf4) * 100) : 0}%
+                    </span>
+                  </div>
+                ))}
+                <p className="text-[10px] leading-relaxed mt-1 pt-2" style={{borderTop:"1px solid var(--c-b)", color:"var(--c-sub)"}}>
+                  System utilisation across key resource categories.
+                </p>
               </div>
             </div>
+          </div>
+
+          {/* ── Pipeline ── */}
+          <div className={`${C} u d3 p-4`}>
+            <p className="text-[13px] font-bold mb-1" style={{color:"var(--c-txt)"}}>Pipeline</p>
+            <p className="text-[11px] mb-3" style={{color:"var(--c-sub)"}}>Feature activity · all time</p>
             {(() => {
               const features = [
-                { label: "BRD Sources", short: "BRD",     count: totalBrds,  color: "#2563eb" },
-                { label: "Users",       short: "Users",   count: totalUsers, color: "#0f766e" },
+                { label: "BRD Sources", short: "BRD",   count: totalBrds,  color: "#2563eb" },
+                { label: "Users",       short: "Users", count: totalUsers, color: "#0f766e" },
               ];
               const maxVal = Math.max(...features.map(f => f.count), 1);
-              const W = 340, H = 200;
-              const positions = [
-                { cx: 110, cy: 100 },
-                { cx: 240, cy: 100 },
-              ];
+              const W = 280, H = 150;
+              const positions = [{ cx: 90, cy: 75 }, { cx: 200, cy: 75 }];
               return (
-                <div className="flex-1 flex flex-col">
-                  <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block", overflow: "visible", flex: 1 }}>
+                <>
+                  <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block", overflow: "visible" }}>
                     <defs>
                       {features.map((f, i) => (
                         <radialGradient key={i} id={`bg${i}`} cx="35%" cy="35%" r="65%">
@@ -809,62 +809,30 @@ export default function DashboardPage() {
                       ))}
                     </defs>
                     {features.map((f, i) => {
-                      const minR = 28, maxR = 62;
-                      const r = minR + ((f.count / maxVal) * (maxR - minR));
+                      const r = 28 + ((f.count / maxVal) * 34);
                       const p = positions[i];
                       return (
                         <g key={f.label} className={`bubble-${i}`}>
-                          {/* Outer glow pulse ring */}
-                          <circle cx={p.cx} cy={p.cy} r={r + 10}
-                            fill="none" stroke={f.color} strokeWidth="1"
-                            opacity="0.1" />
-                          {/* Mid glow ring */}
-                          <circle cx={p.cx} cy={p.cy} r={r + 5}
-                            fill="none" stroke={f.color} strokeWidth="1"
-                            opacity="0.18" />
-                          {/* Main bubble */}
-                          <circle cx={p.cx} cy={p.cy} r={r}
-                            fill={`url(#bg${i})`}
-                            stroke={f.color} strokeWidth="1.5" strokeOpacity="0.6" />
-                          {/* Count */}
-                          <text x={p.cx} y={p.cy - 4} textAnchor="middle"
-                            fontSize={r > 44 ? 20 : 15} fontWeight="700"
-                            fill={f.color} fontFamily="'JetBrains Mono',monospace"
-                            style={{ filter: "brightness(1.4)" }}>
-                            {f.count}
-                          </text>
-                          {/* Short label */}
-                          <text x={p.cx} y={p.cy + (r > 44 ? 16 : 13)} textAnchor="middle"
-                            fontSize={r > 44 ? 10 : 9} fontWeight="600"
-                            fill={f.color} fontFamily="'Plus Jakarta Sans',sans-serif"
-                            opacity="0.9">
-                            {f.short}
-                          </text>
+                          <circle cx={p.cx} cy={p.cy} r={r + 8} fill="none" stroke={f.color} strokeWidth="1" opacity="0.1" />
+                          <circle cx={p.cx} cy={p.cy} r={r} fill={`url(#bg${i})`} stroke={f.color} strokeWidth="1.5" strokeOpacity="0.6" />
+                          <text x={p.cx} y={p.cy - 3} textAnchor="middle" fontSize={r > 44 ? 18 : 14} fontWeight="700" fill={f.color} fontFamily="'JetBrains Mono',monospace" style={{ filter: "brightness(1.4)" }}>{f.count}</text>
+                          <text x={p.cx} y={p.cy + (r > 44 ? 14 : 12)} textAnchor="middle" fontSize="9" fontWeight="600" fill={f.color} fontFamily="'Plus Jakarta Sans',sans-serif" opacity="0.9">{f.short}</text>
                         </g>
                       );
                     })}
                   </svg>
-                  {/* Legend row */}
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8, paddingTop: 10, borderTop: "1px solid var(--c-b)" }}>
-                    {[
-                      { label: "BRD Sources", color: "#2563eb" },
-                      { label: "Users",       color: "#0f766e" },
-                    ].map(f => (
+                  <div style={{ display: "flex", gap: "6px 14px", marginTop: 6, paddingTop: 8, borderTop: "1px solid var(--c-b)" }}>
+                    {features.map(f => (
                       <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--c-sub)" }}>
                         <span style={{ width: 7, height: 7, borderRadius: "50%", background: f.color, flexShrink: 0, display: "inline-block" }} />
                         {f.label}
                       </span>
                     ))}
                   </div>
-                </div>
+                </>
               );
             })()}
           </div>
-
-        </div>
-
-        {/* ╔══════════ COL 3 — sidebar ══════════╗ */}
-        <div className="db-col3 flex flex-col gap-4 min-w-0">
 
           {/* Balance */}
           {(() => {
@@ -941,34 +909,32 @@ export default function DashboardPage() {
                         })}
                       </div>
                       {/* Pagination controls */}
-                      {balanceTotalPages > 1 && (
-                        <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop:"1px solid var(--c-b)" }}>
-                          <span className="jb text-[10px]" style={{ color:"var(--c-dim)" }}>
-                            {(safeBalancePage - 1) * BALANCE_PAGE_SIZE + 1}–{Math.min(safeBalancePage * BALANCE_PAGE_SIZE, brds.length)} / {brds.length}
+                      <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop:"1px solid var(--c-b)" }}>
+                        <span className="jb text-[10px]" style={{ color:"var(--c-dim)" }}>
+                          {(safeBalancePage - 1) * BALANCE_PAGE_SIZE + 1}–{Math.min(safeBalancePage * BALANCE_PAGE_SIZE, brds.length)} / {brds.length}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setBalancePage(p => Math.max(1, p - 1))}
+                            disabled={safeBalancePage === 1}
+                            className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                            style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                              color: safeBalancePage === 1 ? "var(--c-dim)" : "var(--c-sub)",
+                              cursor: safeBalancePage === 1 ? "not-allowed" : "pointer" }}
+                          >←</button>
+                          <span className="jb text-[10px]" style={{ color:"var(--c-sub)" }}>
+                            {safeBalancePage} / {balanceTotalPages}
                           </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => setBalancePage(p => Math.max(1, p - 1))}
-                              disabled={safeBalancePage === 1}
-                              className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
-                              style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
-                                color: safeBalancePage === 1 ? "var(--c-dim)" : "var(--c-sub)",
-                                cursor: safeBalancePage === 1 ? "not-allowed" : "pointer" }}
-                            >←</button>
-                            <span className="jb text-[10px]" style={{ color:"var(--c-sub)" }}>
-                              {safeBalancePage} / {balanceTotalPages}
-                            </span>
-                            <button
-                              onClick={() => setBalancePage(p => Math.min(balanceTotalPages, p + 1))}
-                              disabled={safeBalancePage >= balanceTotalPages}
-                              className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
-                              style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
-                                color: safeBalancePage >= balanceTotalPages ? "var(--c-dim)" : "var(--c-sub)",
-                                cursor: safeBalancePage >= balanceTotalPages ? "not-allowed" : "pointer" }}
-                            >→</button>
-                          </div>
+                          <button
+                            onClick={() => setBalancePage(p => Math.min(balanceTotalPages, p + 1))}
+                            disabled={safeBalancePage >= balanceTotalPages}
+                            className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] transition-colors"
+                            style={{ background:"var(--c-bg)", border:"1px solid var(--c-b)",
+                              color: safeBalancePage >= balanceTotalPages ? "var(--c-dim)" : "var(--c-sub)",
+                              cursor: safeBalancePage >= balanceTotalPages ? "not-allowed" : "pointer" }}
+                          >→</button>
                         </div>
-                      )}
+                      </div>
                     </>
                 }
               </div>

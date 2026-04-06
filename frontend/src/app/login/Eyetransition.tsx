@@ -42,8 +42,8 @@ export default function EyeTransition({ onComplete }: EyeTransitionProps) {
 
       {/* Brand name */}
     <div className={`${styles.brandMark} ${phase !== "idle" ? styles.brandMarkFade : ""}`}>
-      <span><span className={styles.brandI}>I</span>DAF</span>
-      <span className={styles.brandTagline}>InnoStream Document Architecture Framework</span>
+      <span><span className={styles.brandI}>S</span>tructo</span>
+      <span className={styles.brandTagline}>Document Intelligence Platform</span>
     </div>
 
       {/* THE EYE */}
@@ -126,7 +126,7 @@ export default function EyeTransition({ onComplete }: EyeTransitionProps) {
           {/* Pupil inner depth */}
           <circle cx="200" cy="100" r="20" fill="#000" opacity="0.8" />
 
-          {/* IDAF logo mark inside pupil */}
+          {/* Structo logo mark inside pupil */}
           <text
             className={styles.pupilText}
             x="200" y="104"
@@ -137,7 +137,7 @@ export default function EyeTransition({ onComplete }: EyeTransitionProps) {
             fontWeight="800"
             letterSpacing="1"
           >
-            IDAF
+            STRC
           </text>
 
           {/* Catchlight / specular highlight */}

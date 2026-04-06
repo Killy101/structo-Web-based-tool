@@ -49,6 +49,8 @@ function InlineImageCell({ brdId, image }: { brdId?: string; image: CellImageMet
     <img
       src={imgSrc}
       alt={image.cellText || image.mediaName}
+      data-brd-export-image="1"
+      data-brd-image-id={String(image.id)}
       className="mt-1 max-w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#1a1f35]"
       onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
     />
@@ -85,15 +87,16 @@ const APPROVAL_RESTRICTED = new Set(["metajson", "innod", "content"]);
 type Format = "new" | "old";
 
 interface ScopeRow {
-  id: string; title: string; referenceLink: string; contentUrl: string;
+  id: string; stableKey: string; title: string; referenceLink: string; contentUrl: string; contentNote: string;
   issuingAuth: string; asrbId: string; smeComments: string;
   initialEvergreen: string; dateOfIngestion: string; isOutOfScope: boolean;
 }
 interface ScopeEntry {
-  document_title?: string; regulator_url?: string; content_url?: string;
+  document_title?: string; regulator_url?: string; content_url?: string; content_note?: string;
   issuing_authority?: string; issuing_authority_code?: string;
   asrb_id?: string; sme_comments?: string;
   initial_evergreen?: string; date_of_ingestion?: string; strikethrough?: boolean;
+  stable_key?: string; stableKey?: string;
 }
 interface TocRow {
   id: string; level: string; name: string;
@@ -104,6 +107,7 @@ interface TocRow {
   _prevName?: string; _prevDefinition?: string; _prevExample?: string;
   _prevNote?: string; _prevTocRequirements?: string; _prevSmeComments?: string;
 }
+interface CustomMetadataRow { id: string; label: string; value: string; comment: string; }
 interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; remarksNotes: string; }
 interface WhitespaceRow { id: string; tags: string; innodReplace: string; }
 
@@ -121,6 +125,11 @@ function asRecordArray(v: unknown): Record<string, unknown>[] {
 }
 function asString(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+function hasDocumentLocationValue(value: unknown): boolean {
+  const normalized = asString(value).replace(/\u00a0/g, " ").trim();
+  return normalized !== "" && normalized !== "—" && normalized !== "-";
 }
 
 function deriveTitle(metadata: Record<string, unknown> | undefined, fallback: string | undefined): string {
@@ -150,46 +159,110 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
   const p = (...keys: string[]): string => keys.map(t).find(Boolean) ?? "";
   if (format === "old") {
     return {
-      // Legacy "Source Name" label → stored as content_category_name by extractor
-      sourceName:           p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
-      // Legacy "Authoritative Source" label → stored as authoritative_source (and mirrored to issuing_agency)
-      authoritativeSource:  p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
-      sourceType:           p("source_type", "sourceType", "Source Type"),
-      publicationDate:      p("publication_date", "publicationDate", "Publication Date"),
-      lastUpdatedDate:      p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
-      processingDate:       p("processing_date", "processingDate", "Processing Date"),
-      issuingAgency:        p("issuing_agency", "issuingAgency", "Issuing Agency"),
-      contentUrl:           p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
-      geography:            p("geography", "Geography"),
-      language:             p("language", "Language"),
-      payloadSubtype:       p("payload_subtype", "payloadSubtype", "Payload Subtype"),
-      status:               p("status", "Status"),
+      sourceName:              p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
+      authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+      sourceType:              p("source_type", "sourceType", "Source Type"),
+      contentType:             p("content_type", "contentType", "Content Type"),
+      publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
+      lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+      effectiveDate:           p("effective_date", "effectiveDate", "Effective Date"),
+      commentDueDate:          p("comment_due_date", "commentDueDate", "Comment Due Date"),
+      complianceDate:          p("compliance_date", "complianceDate", "Compliance Date"),
+      processingDate:          p("processing_date", "processingDate", "Processing Date"),
+      issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+      name:                    p("name", "Name", "document_title", "documentTitle", "title"),
+      relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
+      contentUrl:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
+      payloadType:             p("payload_type", "payloadType", "Payload Type"),
+      payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+      summary:                 p("summary", "Summary"),
+      smeComments:             p("sme_comments", "smeComments", "SME Comments"),
+      geography:               p("geography", "Geography"),
+      language:                p("language", "Language"),
+      status:                  p("status", "Status"),
     };
   }
   return {
     contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+    sourceType:              p("source_type", "sourceType", "Source Type"),
+    contentType:             p("content_type", "contentType", "Content Type"),
     publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
     lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+    effectiveDate:           p("effective_date", "effectiveDate", "Effective Date"),
+    commentDueDate:          p("comment_due_date", "commentDueDate", "Comment Due Date"),
+    complianceDate:          p("compliance_date", "complianceDate", "Compliance Date"),
     processingDate:          p("processing_date", "processingDate", "Processing Date"),
     issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+    name:                    p("name", "Name", "document_title", "documentTitle", "title"),
     relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
     contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
+    payloadType:             p("payload_type", "payloadType", "Payload Type"),
+    payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+    summary:                 p("summary", "Summary"),
+    smeComments:             p("sme_comments", "smeComments", "SME Comments"),
     geography:               p("geography", "Geography"),
     language:                p("language", "Language"),
+    status:                  p("status", "Status"),
   };
+}
+function extractCustomMetadataRows(metadata?: Record<string, unknown>): CustomMetadataRow[] {
+  if (!metadata) return [];
+  const raw = metadata.custom_rows ?? metadata.customRows ?? metadata.metadata_custom_rows;
+  return asRecordArray(raw)
+    .map((row, index) => ({
+      id: asString(row.id) || `custom-${index}`,
+      label: asString(row.label),
+      value: asString(row.value),
+      comment: asString(row.comment),
+    }))
+    .filter((row) => row.label || row.value || row.comment);
 }
 function asScopeEntryArray(v: unknown): ScopeEntry[] {
   return Array.isArray(v) ? v.filter(i => i !== null && typeof i === "object") as ScopeEntry[] : [];
 }
-function toScopeRow(e: ScopeEntry, id: string, oos: boolean): ScopeRow {
+function normalizeAsrbAndSme(asrbRaw?: string, smeRaw?: string) {
+  const pattern = /\bASRB[- ]?\d+\b/gi;
+  const normalizeId = (value: string) => value.toUpperCase().replace(/[-\s]+/g, "");
+  const unique = (values: string[]) => Array.from(new Set(values.map(normalizeId).filter(Boolean))).join(", ");
+
+  let asrbId = unique(asrbRaw?.match(pattern) ?? []);
+  let smeComments = (smeRaw ?? "").trim();
+
+  const embedded = unique(smeComments.match(pattern) ?? []);
+  if (embedded) {
+    asrbId = asrbId || embedded;
+    smeComments = smeComments.replace(pattern, "");
+    smeComments = smeComments.replace(/^[\s,;:/-]+|[\s,;:/-]+$/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+
+  return { asrbId, smeComments };
+}
+function toScopeRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string): ScopeRow {
   const auth = e.issuing_authority ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
-  return { id, isOutOfScope: oos || !!e.strikethrough, title: e.document_title ?? "", referenceLink: e.regulator_url ?? "", contentUrl: e.content_url ?? "", issuingAuth: auth, asrbId: e.asrb_id ?? "", smeComments: e.sme_comments ?? "", initialEvergreen: e.initial_evergreen ?? "", dateOfIngestion: e.date_of_ingestion ?? "" };
+  const { asrbId, smeComments } = normalizeAsrbAndSme(e.asrb_id, e.sme_comments);
+  return {
+    id,
+    stableKey,
+    isOutOfScope: oos || !!e.strikethrough,
+    title: e.document_title ?? "",
+    referenceLink: e.regulator_url ?? "",
+    contentUrl: e.content_url ?? "",
+    contentNote: e.content_note ?? "",
+    issuingAuth: auth,
+    asrbId,
+    smeComments,
+    initialEvergreen: e.initial_evergreen ?? "",
+    dateOfIngestion: e.date_of_ingestion ?? "",
+  };
 }
 function buildScopeRows(d?: Record<string, unknown>): ScopeRow[] {
   if (!d) return [];
   const now = Date.now().toString(); const rows: ScopeRow[] = [];
-  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-in-${i}`, false)));
-  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-out-${i}`, true)));
+  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-in-${i}`, false, e.stable_key ?? e.stableKey ?? `in-${i}`)));
+  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-out-${i}`, true, e.stable_key ?? e.stableKey ?? `out-${i}`)));
   return rows;
 }
 function hasExtraCols(rows: ScopeRow[]) {
@@ -524,6 +597,45 @@ function DocBlock({ id, children }: { id?: string; children: React.ReactNode }) 
 function Empty() { return <p className="text-[12px] text-slate-400 dark:text-slate-600 italic py-4 text-center">No data defined</p>; }
 function Nil()   { return <span className="text-slate-300 dark:text-slate-600 italic">—</span>; }
 
+function normalizeMetadataCommentKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function parseMetadataComments(raw?: string, labels: string[] = []): Record<string, string> {
+  const out: Record<string, string> = {};
+  const normalized = (raw ?? "").replace(/\r?\n+/g, " ").trim();
+  if (!normalized) return out;
+
+  if (labels.length > 0) {
+    const escapedLabels = [...labels]
+      .sort((a, b) => b.length - a.length)
+      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = new RegExp(`(${escapedLabels.join("|")}):\\s*`, "gi");
+    const matches = Array.from(normalized.matchAll(pattern));
+    if (matches.length > 0) {
+      matches.forEach((match, index) => {
+        const label = match[1] ?? "";
+        const start = (match.index ?? 0) + match[0].length;
+        const end = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
+        const comment = normalized.slice(start, end).trim();
+        if (label && comment) out[normalizeMetadataCommentKey(label)] = comment;
+      });
+      return out;
+    }
+  }
+
+  for (const line of (raw ?? "").split(/\r?\n+/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf(":");
+    if (idx <= 0) continue;
+    const label = normalizeMetadataCommentKey(trimmed.slice(0, idx));
+    const comment = trimmed.slice(idx + 1).trim();
+    if (label && comment) out[label] = comment;
+  }
+  return out;
+}
+
 const TBL_WRAP = "tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]";
 const TH = "px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] last:border-r-0 bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap";
 const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0 text-[11.5px] text-slate-700 dark:text-slate-300";
@@ -531,25 +643,55 @@ const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] 
 function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildScopeRows(scopeData); const extra = hasExtraCols(rows);
   if (rows.length === 0) return <Empty />;
-  
-  // Group scope images by fieldLabel for direct cell matching
+
+  const normalizeScopeImageKey = (value: string) =>
+    value.toLowerCase().replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[^a-z0-9]+/g, "");
+
   const imagesByLabel = new Map<string, CellImageMeta[]>();
-  images.filter(img => img.section === "scope").forEach(img => {
-    const key = (img.fieldLabel || img.cellText || "").toLowerCase().trim();
+  const imagesByCellText = new Map<string, CellImageMeta[]>();
+  const pushImage = (map: Map<string, CellImageMeta[]>, key: string, image: CellImageMeta) => {
     if (!key) return;
-    const arr = imagesByLabel.get(key) || [];
-    arr.push(img);
-    imagesByLabel.set(key, arr);
-  });
-  const getScopeImgs = (...texts: string[]) => {
-    for (const t of texts) {
-      const key = t.toLowerCase().trim();
-      const found = imagesByLabel.get(key);
-      if (found?.length) return found;
-    }
-    return [];
+    const current = map.get(key) ?? [];
+    current.push(image);
+    map.set(key, current);
   };
-  
+
+  images.filter(img => img.section === "scope").forEach(img => {
+    pushImage(imagesByLabel, normalizeScopeImageKey(img.fieldLabel || ""), img);
+    pushImage(imagesByCellText, normalizeScopeImageKey(img.cellText || ""), img);
+  });
+
+  const getScopeImgs = (row: ScopeRow, field: "title" | "referenceLink" | "contentUrl" | "issuingAuth" | "asrbId" | "smeComments", fallbackText = "") => {
+    const result: CellImageMeta[] = [];
+    const seen = new Set<number>();
+    const fieldAliases = {
+      title: [field, "document title"],
+      referenceLink: [field, "reference link", "reference url"],
+      contentUrl: [field, "content url"],
+      issuingAuth: [field, "issuing authority"],
+      asrbId: [field, "asrb id"],
+      smeComments: [field, "sme comments"],
+    }[field];
+
+    [`${row.stableKey}-${field}`, ...fieldAliases].forEach(rawKey => {
+      const key = normalizeScopeImageKey(rawKey);
+      for (const image of imagesByLabel.get(key) ?? []) {
+        if (seen.has(image.id)) continue;
+        seen.add(image.id);
+        result.push(image);
+      }
+    });
+
+    const textKey = normalizeScopeImageKey(fallbackText);
+    for (const image of imagesByCellText.get(textKey) ?? []) {
+      if (seen.has(image.id)) continue;
+      seen.add(image.id);
+      result.push(image);
+    }
+
+    return result;
+  };
+
   return (
     <div className={TBL_WRAP}>
       <table className="w-full text-[11.5px]" style={{ minWidth: 860, tableLayout: "fixed" }}>
@@ -576,12 +718,18 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
         <tbody>
           {rows.map((row, i) => {
             const oos = row.isOutOfScope;
-            const rowImages = getScopeImgs(row.title, row.smeComments);
+            const titleImages = getScopeImgs(row, "title", row.title);
+            const referenceImages = getScopeImgs(row, "referenceLink", row.referenceLink);
+            const contentImages = getScopeImgs(row, "contentUrl", row.contentUrl);
+            const authorityImages = getScopeImgs(row, "issuingAuth", row.issuingAuth);
+            const asrbImages = getScopeImgs(row, "asrbId", row.asrbId);
+            const smeImages = getScopeImgs(row, "smeComments", row.smeComments);
+
             return (
               <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"} style={{opacity:oos?0.55:1}}>
                 <td className={TD} style={{wordBreak:"break-word"}}>
                   <span className={oos?"line-through":""}>{row.title||<Nil/>}</span>
-                  {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                  {titleImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
                 <td className={TD}>
                   {row.referenceLink
@@ -589,18 +737,30 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
                         className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
                         title={row.referenceLink}>{row.referenceLink}</a>
                     : <Nil/>}
+                  {referenceImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={TD}>
+                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
                   {row.contentUrl
                     ? <a href={row.contentUrl} target="_blank" rel="noreferrer"
                         className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
                         title={row.contentUrl}>{row.contentUrl}</a>
                     : <Nil/>}
+                  {row.contentNote && <div className={`mt-1 text-[10.5px] leading-relaxed text-slate-500 dark:text-slate-400 ${oos?"line-through":""}`}>{row.contentNote}</div>}
+                  {contentImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={TD} style={{wordBreak:"break-word"}}><span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span></td>
-                <td className={TD}>{row.asrbId?<span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>:<Nil/>}</td>
+                <td className={TD} style={{wordBreak:"break-word"}}>
+                  <span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span>
+                  {authorityImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
+                  {row.asrbId
+                    ? <span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>
+                    : <Nil/>}
+                  {asrbImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
                 <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
                   <span className={oos?"line-through":""}>{row.smeComments||<Nil/>}</span>
+                  {smeImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
                 {extra.evergreen && <td className={TD}>{row.initialEvergreen||"—"}</td>}
                 {extra.ingestion && <td className={TD}>{row.dateOfIngestion||"—"}</td>}
@@ -617,10 +777,56 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
   );
 }
 
-function MetaGrid({ values, format, brdId, images }: { values: Record<string, string>; format: Format; brdId?: string; images: CellImageMeta[] }) {
+function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<string, string>; format: Format; metadata?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const fields = format === "old"
-    ? [{label:"Source Name",key:"sourceName"},{label:"Source Type",key:"sourceType"},{label:"Publication Date",key:"publicationDate"},{label:"Last Updated Date",key:"lastUpdatedDate"},{label:"Processing Date",key:"processingDate"},{label:"Issuing Agency",key:"issuingAgency"},{label:"Content URL",key:"contentUrl"},{label:"Geography",key:"geography"},{label:"Language",key:"language"},{label:"Payload Subtype",key:"payloadSubtype"},{label:"Status",key:"status"}]
-    : [{label:"Content Category Name",key:"contentCategoryName"},{label:"Publication Date",key:"publicationDate"},{label:"Last Updated Date",key:"lastUpdatedDate"},{label:"Processing Date",key:"processingDate"},{label:"Issuing Agency",key:"issuingAgency"},{label:"Related Government Agency",key:"relatedGovernmentAgency"},{label:"Content URI",key:"contentUri"},{label:"Geography",key:"geography"},{label:"Language",key:"language"}];
+    ? [
+        {label:"Source Name",key:"sourceName"},
+        {label:"Authoritative Source",key:"authoritativeSource"},
+        {label:"Source Type",key:"sourceType"},
+        {label:"Content Type",key:"contentType"},
+        {label:"Publication Date",key:"publicationDate"},
+        {label:"Last Updated Date",key:"lastUpdatedDate"},
+        {label:"Effective Date",key:"effectiveDate"},
+        {label:"Comment Due Date",key:"commentDueDate"},
+        {label:"Compliance Date",key:"complianceDate"},
+        {label:"Processing Date",key:"processingDate"},
+        {label:"Issuing Agency",key:"issuingAgency"},
+        {label:"Name",key:"name"},
+        {label:"Related Government Agency",key:"relatedGovernmentAgency"},
+        {label:"Content URL",key:"contentUrl"},
+        {label:"Impacted Citation",key:"impactedCitation"},
+        {label:"Payload Type",key:"payloadType"},
+        {label:"Payload Subtype",key:"payloadSubtype"},
+        {label:"Summary",key:"summary"},
+        {label:"Geography",key:"geography"},
+        {label:"Language",key:"language"},
+        {label:"Status",key:"status"},
+      ]
+    : [
+        {label:"Content Category Name",key:"contentCategoryName"},
+        {label:"Authoritative Source",key:"authoritativeSource"},
+        {label:"Source Type",key:"sourceType"},
+        {label:"Content Type",key:"contentType"},
+        {label:"Publication Date",key:"publicationDate"},
+        {label:"Last Updated Date",key:"lastUpdatedDate"},
+        {label:"Effective Date",key:"effectiveDate"},
+        {label:"Comment Due Date",key:"commentDueDate"},
+        {label:"Compliance Date",key:"complianceDate"},
+        {label:"Processing Date",key:"processingDate"},
+        {label:"Issuing Agency",key:"issuingAgency"},
+        {label:"Name",key:"name"},
+        {label:"Related Government Agency",key:"relatedGovernmentAgency"},
+        {label:"Content URI",key:"contentUri"},
+        {label:"Impacted Citation",key:"impactedCitation"},
+        {label:"Payload Type",key:"payloadType"},
+        {label:"Payload Subtype",key:"payloadSubtype"},
+        {label:"Summary",key:"summary"},
+        {label:"Geography",key:"geography"},
+        {label:"Language",key:"language"},
+        {label:"Status",key:"status"},
+      ];
+  const commentMap = parseMetadataComments(values.smeComments, fields.map((field) => field.label));
+  const customRows = extractCustomMetadataRows(metadata);
 
   // tableIndex=5 is the metadata table: col0=label, col1=value(Document Location)
   const metaImgs = images.filter(img =>
@@ -643,24 +849,61 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
     imagesByMetaRow.set(img.rowIndex, ri);
   });
 
+  const getRowImages = (field: { label: string; key: string }, index: number): CellImageMeta[] => {
+    const byKey = imagesByLabel.get(field.key.toLowerCase()) || [];
+    const byLabel = imagesByLabel.get(field.label.toLowerCase()) || [];
+    return byKey.length > 0
+      ? byKey
+      : byLabel.length > 0
+        ? byLabel
+        : (imagesByMetaRow.get(index + 1) || []);
+  };
+
+  const visibleFields = fields
+    .map((field, index) => ({
+      field,
+      rowImages: getRowImages(field, index),
+      rowComment: commentMap[normalizeMetadataCommentKey(field.label)] || "",
+    }))
+    .filter(({ field, rowImages }) => hasDocumentLocationValue(values[field.key]) || rowImages.length > 0);
+
+  const visibleCustomRows = customRows.filter((row) => hasDocumentLocationValue(row.value));
+
   return (
     <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
-      <table className="w-full text-[11.5px]"><tbody>
-        {fields.map((f, i) => {
-          // Try field key first (new uploads), then display label, then rowIndex fallback.
-          const byKey = imagesByLabel.get(f.key.toLowerCase()) || [];
-          const byLabel = imagesByLabel.get(f.label.toLowerCase()) || [];
-          const rowImages = byKey.length > 0
-            ? byKey
-            : byLabel.length > 0
-              ? byLabel
-              : (imagesByMetaRow.get(i + 1) || []);
+      <table className="w-full text-[11.5px]" style={{ minWidth: 980 }}>
+        <thead>
+          <tr>
+            <th className="px-3 py-2 w-44 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>Metadata Element</th>
+            <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>Document Location</th>
+            <th className="px-3 py-2 w-72 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>SME Comments</th>
+          </tr>
+        </thead>
+        <tbody>
+        {visibleFields.map(({ field, rowImages, rowComment }, i) => (
+          <tr key={field.key} data-meta-row="1" className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+            <td className="px-3 py-2 w-44 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{field.label}</td>
+            <td data-doc-location="1" className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+              {values[field.key] || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+            </td>
+            <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+              {rowComment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+            </td>
+          </tr>
+        ))}
+        {visibleCustomRows.map((row, index) => {
+          const stripeIndex = visibleFields.length + index;
           return (
-            <tr key={f.key} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-              <td className="px-3 py-2 w-36 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
-              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300">
-                {values[f.key] || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
-                {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+            <tr key={row.id} data-meta-row="1" className={stripeIndex%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+              <td className="px-3 py-2 w-44 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-violet-600 dark:text-violet-400 align-middle whitespace-pre-wrap break-words" style={MONO}>
+                {row.label || "Custom Row"}
+              </td>
+              <td data-doc-location="1" className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {row.value || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              </td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {row.comment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
               </td>
             </tr>
           );
@@ -682,14 +925,14 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
 function DraftAndCurrent({ current, prev }: { current: string; prev?: string }) {
   if (!prev) return <>{current || <Nil />}</>;
   return (
-    <div className="space-y-1">
-      <div className="flex items-baseline gap-1.5">
+    <div className="space-y-1" data-draft-current="1">
+      <div className="flex items-baseline gap-1.5" data-export-part="prev">
         <span className="text-[9px] font-bold uppercase tracking-wider text-amber-500 dark:text-amber-400 shrink-0" style={MONO}>prev</span>
-        <span className="text-[11px] text-slate-400 dark:text-slate-500 line-through whitespace-pre-wrap break-words">{prev}</span>
+        <span className="text-[11px] text-slate-400 dark:text-slate-500 line-through whitespace-pre-wrap break-words" data-prev-value="1">{prev}</span>
       </div>
-      <div className="flex items-baseline gap-1.5">
+      <div className="flex items-baseline gap-1.5" data-export-part="current">
         <span className="text-[9px] font-bold uppercase tracking-wider text-blue-500 dark:text-blue-400 shrink-0" style={MONO}>latest</span>
-        <span className="text-[11.5px] text-slate-700 dark:text-slate-200 font-medium whitespace-pre-wrap break-words">{current || <Nil />}</span>
+        <span className="text-[11.5px] text-slate-700 dark:text-slate-200 font-medium whitespace-pre-wrap break-words" data-current-value="1">{current || <Nil />}</span>
       </div>
     </div>
   );
@@ -919,8 +1162,274 @@ function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unk
   );
 }
 
+function sanitizeFilePart(v: string) { return v.replace(/[^a-zA-Z0-9._-]/g, "_"); }
+
+function escapeXml(v: unknown) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildExcelHtml(html: string, t: string) {
+  return `<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"/><title>${t}</title><style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111827}table{border-collapse:collapse;width:100%}th,td{border:1px solid #cbd5e1;padding:4px 6px;vertical-align:top;white-space:normal!important;word-break:break-word}.tbl-scroll{overflow:visible!important}.dark *{color:#111827!important;background:#ffffff!important}</style></head><body>${html}</body></html>`;
+}
+
+function buildWordHtml(html: string, t: string) {
+  return `<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"/><title>${escapeXml(t)}</title><style>@page WordSection1{size:8.5in 11in;margin:0.65in 0.7in 0.7in 0.7in;}body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111827;line-height:1.45;}table{border-collapse:collapse;width:100%;margin:10px 0;}th,td{border:1px solid #cbd5e1;padding:4px 6px;vertical-align:top;white-space:normal!important;word-break:break-word;}h1,h2,h3,h4,h5,h6{font-family:Georgia,"Times New Roman",serif;color:#0f172a;margin:14px 0 8px;page-break-after:avoid;}a{color:#1d4ed8;text-decoration:underline;}img{display:block;max-width:100%;height:auto;margin:6px 0;page-break-inside:avoid;border:1px solid #cbd5e1;}.tbl-scroll{overflow:visible!important;}.dark *{color:#111827!important;background:#ffffff!important;}</style></head><body><div class="WordSection1">${html}</div></body></html>`;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Failed to convert export image to a data URL."));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read export image blob."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function inlineExportImages(root: HTMLElement): Promise<void> {
+  const images = Array.from(root.querySelectorAll("img"));
+  await Promise.all(images.map(async (img) => {
+    const src = img.getAttribute("src")?.trim();
+    if (!src) {
+      img.remove();
+      return;
+    }
+
+    img.removeAttribute("srcset");
+    img.removeAttribute("sizes");
+    img.removeAttribute("loading");
+    img.removeAttribute("decoding");
+    img.style.maxWidth = img.style.maxWidth || "100%";
+    img.style.height = img.style.height || "auto";
+    img.style.display = img.style.display || "block";
+    img.style.margin = img.style.margin || "6px 0";
+    img.style.pageBreakInside = img.style.pageBreakInside || "avoid";
+
+    if (src.startsWith("data:")) return;
+
+    try {
+      const response = await fetch(src, { credentials: "include" });
+      if (!response.ok) throw new Error(`Image request failed with status ${response.status}`);
+      const blob = await response.blob();
+      img.setAttribute("src", await blobToDataUrl(blob));
+    } catch (error) {
+      console.warn("[prepareBrdExportElement] Failed to inline BRD image for export", { src, error });
+    }
+  }));
+}
+
+function buildStoredZip(files: Record<string, string>, mimeType: string): Blob {
+  function toBytes(str: string): Uint8Array {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str);
+    const utf8 = unescape(encodeURIComponent(str));
+    return Uint8Array.from(utf8, ch => ch.charCodeAt(0));
+  }
+  function u32le(n: number): number[] { return [n&0xff,(n>>8)&0xff,(n>>16)&0xff,(n>>24)&0xff]; }
+  function u16le(n: number): number[] { return [n&0xff,(n>>8)&0xff]; }
+  function joinParts(parts: Array<number[] | Uint8Array>): Uint8Array {
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const out = new Uint8Array(total);
+    let cursor = 0;
+    for (const part of parts) {
+      const bytes = part instanceof Uint8Array ? part : Uint8Array.from(part);
+      out.set(bytes, cursor);
+      cursor += bytes.length;
+    }
+    return out;
+  }
+  function toBlobPart(bytes: Uint8Array): ArrayBuffer {
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    return copy.buffer;
+  }
+  function crc32(data: Uint8Array): number {
+    let crc = 0xffffffff;
+    const crc32Fn = crc32 as unknown as { _t?: Uint32Array };
+    const table = crc32Fn._t ?? (() => {
+      const lookup = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        lookup[i] = c;
+      }
+      return (crc32Fn._t = lookup);
+    })();
+    for (const b of data) crc = table[(crc ^ b) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+  let centralSize = 0;
+
+  for (const [path, content] of Object.entries(files)) {
+    const nameBytes = toBytes(path);
+    const dataBytes = toBytes(content);
+    const crc = crc32(dataBytes);
+    const size = dataBytes.length;
+    const local = joinParts([
+      [0x50,0x4b,0x03,0x04],
+      u16le(20), u16le(0), u16le(0), u16le(0), u16le(0),
+      u32le(crc), u32le(size), u32le(size), u16le(nameBytes.length), u16le(0),
+      nameBytes, dataBytes,
+    ]);
+    const central = joinParts([
+      [0x50,0x4b,0x01,0x02],
+      u16le(20), u16le(20), u16le(0), u16le(0), u16le(0), u16le(0),
+      u32le(crc), u32le(size), u32le(size), u16le(nameBytes.length), u16le(0), u16le(0), u16le(0), u16le(0), u32le(0), u32le(offset),
+      nameBytes,
+    ]);
+    localParts.push(local);
+    centralParts.push(central);
+    offset += local.length;
+    centralSize += central.length;
+  }
+
+  const numFiles = Object.keys(files).length;
+  const eocd = Uint8Array.from([0x50,0x4b,0x05,0x06,...u16le(0),...u16le(0),...u16le(numFiles),...u16le(numFiles),...u32le(centralSize),...u32le(offset),...u16le(0)]);
+  const blobParts: BlobPart[] = [
+    ...localParts.map(toBlobPart),
+    ...centralParts.map(toBlobPart),
+    toBlobPart(eocd),
+  ];
+  return new Blob(blobParts, { type: mimeType });
+}
+
+export function buildBrdExportFilename(title?: string, brdId?: string): string {
+  const safeTitle = sanitizeFilePart((title || "BRD").trim()).replace(/^_+|_+$/g, "") || "BRD";
+  const safeId = sanitizeFilePart((brdId || "NO_ID").trim()).replace(/^_+|_+$/g, "") || "NO_ID";
+  return `${safeTitle}-${safeId}.docx`;
+}
+
+export async function prepareBrdExportElement(sourceEl: HTMLElement): Promise<HTMLElement> {
+  const clone = sourceEl.cloneNode(true) as HTMLElement;
+
+  clone.querySelector("#section-generate")?.closest("[style*='paddingTop']")?.remove();
+  clone.querySelector("#section-generate")?.remove();
+  const cpBlock = clone.querySelector("#section-content-profile");
+  cpBlock?.parentElement?.remove();
+
+  clone.querySelectorAll("[data-draft-current='1']").forEach((node) => {
+    const current = node.querySelector("[data-current-value='1']")?.textContent?.trim();
+    const prev = node.querySelector("[data-prev-value='1']")?.textContent?.trim();
+    const replacement = document.createElement("span");
+    replacement.textContent = current || prev || "—";
+    replacement.style.whiteSpace = "pre-wrap";
+    replacement.style.wordBreak = "break-word";
+    node.replaceWith(replacement);
+  });
+
+  clone.querySelectorAll("button, svg, canvas, iframe, object, embed").forEach(el => el.remove());
+  clone.querySelectorAll("a").forEach(link => {
+    link.removeAttribute("target");
+    link.removeAttribute("rel");
+    const text = link.textContent?.trim();
+    const href = link.getAttribute("href")?.trim();
+    if (!text && href) link.textContent = href;
+  });
+  clone.querySelectorAll("tr[data-meta-row='1']").forEach((row) => {
+    const docLocation = row.querySelector("[data-doc-location='1']")?.textContent;
+    if (!hasDocumentLocationValue(docLocation)) {
+      row.remove();
+    }
+  });
+
+  clone.querySelectorAll("div").forEach(div => {
+    const style = div.getAttribute("style") ?? "";
+    if ((style.includes("borderBottom") || style.includes("border-bottom")) && div.querySelector("span")) {
+      const labelEl = Array.from(div.querySelectorAll("span")).find(s =>
+        (s.getAttribute("style") ?? "").includes("serif") || (s.getAttribute("style") ?? "").includes("Georgia")
+      );
+      const label = labelEl?.textContent?.trim();
+      if (label) {
+        const replacement = document.createElement("div");
+        replacement.style.cssText = "font-weight:700;font-size:13pt;padding-bottom:6px;margin-bottom:10px;border-bottom:2px solid #1e293b;font-family:Georgia,serif;letter-spacing:-0.01em;";
+        replacement.textContent = label;
+        div.replaceWith(replacement);
+      }
+    }
+  });
+
+  clone.querySelectorAll("div").forEach(div => {
+    if (/^\s*\d+\s+(document|section|rule)/i.test(div.textContent ?? "") && div.children.length <= 3) {
+      div.remove();
+    }
+  });
+
+  clone.querySelectorAll("[style*='linear-gradient']").forEach(d => d.remove());
+  await inlineExportImages(clone);
+  return clone;
+}
+
+export function buildWordDocxBlob(html: string, t: string): Blob {
+  const now = new Date().toISOString();
+  const wrappedHtml = buildWordHtml(html, t);
+  const files: Record<string, string> = {
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="html" ContentType="text/html"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`,
+    "docProps/app.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>Structo</Application>
+  <DocSecurity>0</DocSecurity>
+  <ScaleCrop>false</ScaleCrop>
+  <HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Sections</vt:lpstr></vt:variant><vt:variant><vt:i4>1</vt:i4></vt:variant></vt:vector></HeadingPairs>
+  <TitlesOfParts><vt:vector size="1" baseType="lpstr"><vt:lpstr>BRD Export</vt:lpstr></vt:vector></TitlesOfParts>
+  <Company>Structo</Company>
+</Properties>`,
+    "docProps/core.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:title>${escapeXml(t)}</dc:title>
+  <dc:creator>Structo</dc:creator>
+  <cp:lastModifiedBy>Structo</cp:lastModifiedBy>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>
+</cp:coreProperties>`,
+    "word/document.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wne="http://schemas.microsoft.com/office/2006/wordml" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+  <w:body>
+    <w:altChunk r:id="rId1"/>
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="936" w:right="1008" w:bottom="936" w:left="1008" w:header="720" w:footer="720" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`,
+    "word/_rels/document.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk.html"/>
+</Relationships>`,
+    "word/afchunk.html": wrappedHtml,
+  };
+
+  return buildStoredZip(files, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+}
+
 const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; description:string; iconKey:keyof typeof GenBtnIcons; accentLight:string; accentDark:string; iconColorLight:string; iconColorDark:string; btnBg:string; btnHover:string; badgeLabel:string }> = {
-  brd:      { label:"BRD Document",    sublabel:"Export",    description:"Full BRD content as Excel workbook",       iconKey:"brd",      accentLight:"#f1f5f9", accentDark:"#252d45", iconColorLight:"#475569", iconColorDark:"#94a3b8", btnBg:"#1e293b", btnHover:"#334155", badgeLabel:".xls"  },
+  brd:      { label:"BRD Document",    sublabel:"Export",    description:"Full BRD content as Word document",        iconKey:"brd",      accentLight:"#f1f5f9", accentDark:"#252d45", iconColorLight:"#475569", iconColorDark:"#94a3b8", btnBg:"#1e293b", btnHover:"#334155", badgeLabel:".docx" },
   metajson: { label:"Metajson",         sublabel:"Generate", description:"Structured metadata as JSON schema",        iconKey:"metajson", accentLight:"#eff6ff", accentDark:"#1e2d4d", iconColorLight:"#1d4ed8", iconColorDark:"#60a5fa", btnBg:"#1d4ed8", btnHover:"#1e40af", badgeLabel:".json" },
   innod:    { label:"Innod Metajson",   sublabel:"Generate", description:"Innod.Xml-compatible metadata output",      iconKey:"innod",    accentLight:"#eef2ff", accentDark:"#1e1f4d", iconColorLight:"#4338ca", iconColorDark:"#818cf8", btnBg:"#4338ca", btnHover:"#3730a3", badgeLabel:".json" },
   content:  { label:"Content Profile",  sublabel:"Export",   description:"Levels & whitespace rules as Excel",        iconKey:"content",  accentLight:"#f5f3ff", accentDark:"#2a1f45", iconColorLight:"#7c3aed", iconColorDark:"#a78bfa", btnBg:"#7c3aed", btnHover:"#6d28d9", badgeLabel:".xls"  },
@@ -964,7 +1473,18 @@ export default function Generate({ brdId, title, format, status, initialData, on
 
   const activeFormat: Format   = format === "old" ? "old" : "new";
   const metadataValues         = buildTemplateMetadataValues(activeFormat, metadataData);
-  const displayTitle           = deriveTitle(metadataData, title);
+  const autoTitle              = deriveTitle(metadataData, title);
+  const [customTitle, setCustomTitle] = useState<string | null>(null);
+  const derivedTitle           = customTitle ?? autoTitle;
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(derivedTitle);
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!titleEditing) setTitleDraft(derivedTitle);
+  }, [derivedTitle, titleEditing]);
+  const displayTitle           = (titleEditing ? titleDraft : derivedTitle) || derivedTitle;
+  const resolvedTitle          = displayTitle.trim() || derivedTitle;
   const resolvedSaveStatus: SaveStatus =
     status === "PAUSED" || status === "COMPLETED" || status === "APPROVED" || status === "ON_HOLD"
       ? status
@@ -982,22 +1502,22 @@ export default function Generate({ brdId, title, format, status, initialData, on
     doneResetTimers.current[key] = window.setTimeout(() => { setDone(p => ({ ...p, [key]: false })); delete doneResetTimers.current[key]; }, ms);
   }
 
-  function sanitizeFilePart(v: string) { return v.replace(/[^a-zA-Z0-9._-]/g, "_"); }
-
-  function buildExcelHtml(html: string, t: string) {
-    return `<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"/><title>${t}</title><style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111827}table{border-collapse:collapse;width:100%}th,td{border:1px solid #cbd5e1;padding:4px 6px;vertical-align:top;white-space:normal!important;word-break:break-word}.tbl-scroll{overflow:visible!important}.dark *{color:#111827!important;background:#ffffff!important}</style></head><body>${html}</body></html>`;
-  }
-
   function downloadExcelFile(base: string, t: string, el: HTMLElement) {
     const blob = new Blob(["\ufeff", buildExcelHtml(el.outerHTML, t)], {type:"application/vnd.ms-excel;charset=utf-8;"});
     const url = URL.createObjectURL(blob); const a = document.createElement("a");
     a.href = url; a.download = `${sanitizeFilePart(base)}.xls`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
+  function downloadDocxFile(base: string, t: string, el: HTMLElement) {
+    const blob = buildWordDocxBlob(el.outerHTML, t);
+    const url = URL.createObjectURL(blob); const a = document.createElement("a");
+    a.href = url; a.download = `${sanitizeFilePart(base)}.docx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }
+
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null); setSavedVersionLabel(null);
     try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      await api.post("/brd/save", { brdId, title: resolvedTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       try {
         const versionResponse = await api.post<{ versionNum: number; label?: string }>(`/brd/${brdId}/versions`, {
           scope: scopeData,
@@ -1027,40 +1547,40 @@ export default function Generate({ brdId, title, format, status, initialData, on
     finally { setSaving(false); }
   }
 
-  async function runGenerateBrdExcel() {
+  async function handleTitleSave() {
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) {
+      setTitleError("Title cannot be empty.");
+      return;
+    }
+
+    setTitleSaving(true);
+    setTitleError(null);
+    try {
+      if (brdId) {
+        await api.patch(`/brd/${brdId}`, { title: nextTitle });
+      }
+      setCustomTitle(nextTitle);
+      setTitleDraft(nextTitle);
+      setTitleEditing(false);
+      setSavedToDB(false);
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setTitleError(error?.response?.data?.error ?? error?.message ?? "Failed to update title.");
+    } finally {
+      setTitleSaving(false);
+    }
+  }
+
+  async function runGenerateBrdDocx() {
     setGenerating(p=>({...p,brd:true}));
     try {
       const page = docPageRef.current; if (!page) throw new Error("BRD content not found");
-      const clone = page.cloneNode(true) as HTMLElement;
-      clone.querySelector("#section-generate")?.closest("[style*='paddingTop']")?.remove();
-      clone.querySelector("#section-generate")?.remove();
-      const cpBlock = clone.querySelector("#section-content-profile");
-      cpBlock?.parentElement?.remove();
-      clone.querySelectorAll("button").forEach(btn => btn.remove());
-      clone.querySelectorAll("div").forEach(div => {
-        const style = div.getAttribute("style") ?? "";
-        if ((style.includes("borderBottom") || style.includes("border-bottom")) && div.querySelector("span")) {
-          const labelEl = Array.from(div.querySelectorAll("span")).find(s =>
-            (s.getAttribute("style") ?? "").includes("serif") || (s.getAttribute("style") ?? "").includes("Georgia")
-          );
-          const label = labelEl?.textContent?.trim();
-          if (label) {
-            const replacement = document.createElement("div");
-            replacement.style.cssText = "font-weight:700;font-size:13pt;padding-bottom:6px;margin-bottom:10px;border-bottom:2px solid #1e293b;font-family:Georgia,serif;letter-spacing:-0.01em;";
-            replacement.textContent = label;
-            div.replaceWith(replacement);
-          }
-        }
-      });
-      clone.querySelectorAll("div").forEach(div => {
-        if (/^\s*\d+\s+(document|section|rule)/i.test(div.textContent ?? "") && div.children.length <= 3) {
-          div.remove();
-        }
-      });
-      clone.querySelectorAll("[style*='linear-gradient']").forEach(d => d.remove());
-      downloadExcelFile(`${brdId||"BRD"}_BRD`, `${brdId||"BRD"} - BRD`, clone);
+      const clone = await prepareBrdExportElement(page);
+      const exportName = buildBrdExportFilename(resolvedTitle, brdId);
+      downloadDocxFile(exportName.replace(/\.docx$/i, ""), `${resolvedTitle || brdId || "BRD"} - BRD`, clone);
       setCompleted(p=>({...p,brd:true})); markDone("brd");
-    } catch { window.alert("Failed to generate BRD Excel."); setDone(p=>({...p,brd:false})); setCompleted(p=>({...p,brd:false})); }
+    } catch (error) { console.error("[runGenerateBrdDocx]", error); window.alert("Failed to generate BRD Word document."); setDone(p=>({...p,brd:false})); setCompleted(p=>({...p,brd:false})); }
     finally { setGenerating(p=>({...p,brd:false})); }
   }
 
@@ -1077,7 +1597,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   async function runGenerateMetajson() {
     setGenerating(p=>({...p,metajson:true}));
     try {
-      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:displayTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
+      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:resolvedTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
       // Load any previously saved version and merge — saved takes priority as initial value
       let initialData = r.data.metajson;
       if (brdId) {
@@ -1105,7 +1625,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   async function runGenerateInnod() {
     setGenerating(p=>({...p,innod:true}));
     try {
-      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:displayTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
+      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:resolvedTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
       // Load any previously saved version — saved takes priority as initial value
       let initialData = r.data.metajson;
       if (brdId) {
@@ -1141,9 +1661,70 @@ export default function Generate({ brdId, title, format, status, initialData, on
 
         {/* Document Header */}
         <div style={{textAlign:"center",marginBottom:36,paddingBottom:28,borderBottom:"1.5px solid #ddd8d0"}}>
-          <h1 style={{fontFamily:"'Georgia','Times New Roman',serif",fontSize:26,fontWeight:700,color:"var(--brd-title-color,#1e293b)",letterSpacing:"-0.02em",lineHeight:1.25,margin:"0 0 14px"}}>
-            {displayTitle}
-          </h1>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap" as const,marginBottom:14}}>
+            {titleEditing ? (
+              <>
+                <input
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleTitleSave();
+                    }
+                    if (e.key === "Escape") {
+                      setTitleDraft(derivedTitle);
+                      setTitleEditing(false);
+                      setTitleError(null);
+                    }
+                  }}
+                  autoFocus
+                  style={{fontFamily:"'Georgia','Times New Roman',serif",fontSize:24,fontWeight:700,color:"var(--brd-title-color,#1e293b)",letterSpacing:"-0.02em",lineHeight:1.25,margin:0,padding:"6px 10px",border:"1px solid #cbd5e1",borderRadius:8,minWidth:280,maxWidth:"100%"}}
+                />
+                <button
+                  onClick={() => void handleTitleSave()}
+                  disabled={titleSaving}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60 transition-colors"
+                >
+                  {titleSaving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={() => {
+                    setTitleDraft(derivedTitle);
+                    setTitleEditing(false);
+                    setTitleError(null);
+                  }}
+                  disabled={titleSaving}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <h1 style={{fontFamily:"'Georgia','Times New Roman',serif",fontSize:26,fontWeight:700,color:"var(--brd-title-color,#1e293b)",letterSpacing:"-0.02em",lineHeight:1.25,margin:0}}>
+                  {displayTitle}
+                </h1>
+                {canEdit && (
+                  <button
+                    onClick={() => {
+                      setTitleDraft(derivedTitle);
+                      setTitleEditing(true);
+                      setTitleError(null);
+                    }}
+                    title="Edit title"
+                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 hover:text-slate-700 transition-colors"
+                  >
+                    <EditIcon />
+                    Edit title
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          {titleError && (
+            <p className="text-[11px] text-red-600 dark:text-red-400 mb-3">{titleError}</p>
+          )}
           <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap" as const}}>
             {brdId && <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#64748b",background:"#f1f5f9",border:"1px solid #e2e8f0",padding:"3px 10px",borderRadius:4}}>{brdId}</span>}
             <span style={{color:"#cbd5e1",fontSize:13}}>·</span>
@@ -1159,7 +1740,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
         
         <DocBlock id="section-metadata">
           <DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/>
-          <MetaGrid values={metadataValues} format={activeFormat} brdId={brdId} images={images} />
+          <MetaGrid values={metadataValues} format={activeFormat} metadata={metadataData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
         
@@ -1250,7 +1831,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
                       </div>
                       <div className="px-4 pb-4 pt-1">
                         <button
-                          onClick={key==="brd"?runGenerateBrdExcel:key==="metajson"?runGenerateMetajson:key==="innod"?runGenerateInnod:runGenerateContentProfileExcel}
+                          onClick={key==="brd"?runGenerateBrdDocx:key==="metajson"?runGenerateMetajson:key==="innod"?runGenerateInnod:runGenerateContentProfileExcel}
                           disabled={!!generating[key]||!!done[key]||locked}
                           className="w-full py-2 rounded-md text-[12px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                           style={{background:done[key]?"#16a34a":GEN_BTN_CONFIG[key].btnBg,transition:"background 0.15s"}}

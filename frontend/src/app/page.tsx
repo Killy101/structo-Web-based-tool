@@ -103,6 +103,7 @@ export default function HomePage() {
   const router = useRouter();
   const [covered, setCovered] = useState(false);
   const [showEye, setShowEye] = useState(false);
+  const [lightMode, setLightMode] = useState(false);
 
   // No e.preventDefault needed — these are buttons, not anchor tags
   const goToLogin = useCallback(() => {
@@ -132,7 +133,7 @@ export default function HomePage() {
       {/* Eye transition plays on top of the black cover */}
       {showEye && <EyeTransition onComplete={handleEyeDone} />}
 
-      <div className={styles.page}>
+      <div className={`${styles.page} ${lightMode ? styles.lightMode : ""}`}>
         {/* Navigation */}
         <nav className={`${styles.nav} ${styles.navAnimate}`}>
           <div className={styles.navBrand}>
@@ -155,6 +156,25 @@ export default function HomePage() {
             <a href="#about" className={styles.navLink}>About Us</a>
             <a href="#features" className={styles.navLink}>Features</a>
           </div>
+          <button
+            onClick={() => setLightMode(v => !v)}
+            className={styles.themeToggle}
+            aria-label={lightMode ? "Switch to dark mode" : "Switch to light mode"}
+            title={lightMode ? "Dark mode" : "Light mode"}
+          >
+            {lightMode ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+              </svg>
+            )}
+          </button>
           {/* button instead of <a> — no preventDefault needed */}
           <button onClick={goToLogin} className={styles.loginBtn}>
             Login
@@ -183,8 +203,8 @@ export default function HomePage() {
                 data-reveal
                 data-delay="80"
               >
-                IDAF: A Web-Based Platform for Intelligent Document Comparison,
-                Change Detection, and Structuring
+                <span className={styles.heroBrandSpan}>Structo</span>
+                Intelligent Document Comparison, Change Detection &amp; Structuring
               </h1>
               <p
                 className={`${styles.heroDesc} ${styles.revealItem}`}
@@ -312,6 +332,23 @@ export default function HomePage() {
           </section>
         </div>
 
+        {/* Stats */}
+        <section className={styles.statsSection}>
+          <div className={styles.statsGrid}>
+            {[
+              { number: "10K+", label: "Documents Processed" },
+              { number: "99.9%", label: "Structural Accuracy" },
+              { number: "5+", label: "Supported Formats" },
+              { number: "Real-time", label: "Change Detection" },
+            ].map((stat, i) => (
+              <div key={i} className={`${styles.statItem} ${styles.revealItem}`} data-reveal data-delay={`${i * 60}`}>
+                <div className={styles.statNumber}>{stat.number}</div>
+                <div className={styles.statLabel}>{stat.label}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* About Us */}
         <section className={styles.about} id="about">
           <div className={styles.aboutInner}>
@@ -346,7 +383,7 @@ export default function HomePage() {
                   At Innodata&apos;s Legal Regulatory Delivery Unit, we empower
                   organizations to manage complex documents with clarity, accuracy, and
                   speed. Through our platform{" "}
-                  <strong style={{ color: "#e8963a" }}>IDAF</strong>, we transform
+                  <strong style={{ color: "#e8963a" }}>Structo</strong>, we transform
                   traditional document workflows into intelligent, automated processes
                   that reduce manual effort and improve compliance confidence.
                 </p>
@@ -530,6 +567,73 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* Workflow Section */}
+        <section className={styles.workflow} id="workflow">
+          <div className={styles.workflowInner}>
+            <div className={`${styles.sectionLabel} ${styles.revealItem}`} data-reveal data-delay="0">
+              How It Works
+            </div>
+            <h2 className={`${styles.sectionTitle} ${styles.revealItem}`} data-reveal data-delay="60">
+              From raw documents to structured output
+            </h2>
+            <div className={styles.workflowSteps}>
+              {[
+                {
+                  step: "01",
+                  title: "Upload Document",
+                  desc: "Upload your PDF, Word, or XML source documents. Structo accepts multiple formats and extracts content intelligently.",
+                  icon: (
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                  ),
+                  color: "#1a8fd1",
+                },
+                {
+                  step: "02",
+                  title: "AI Comparison",
+                  desc: "Our AI engine compares document versions, detects structural changes, additions, deletions, and generates a diff report.",
+                  icon: (
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6m-3-3h6"/>
+                    </svg>
+                  ),
+                  color: "#d4862e",
+                },
+                {
+                  step: "03",
+                  title: "Validate & Export",
+                  desc: "Review detected changes, validate INNOD.XML structure, and export clean structured output ready for regulatory submission.",
+                  icon: (
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><path d="M9 12h6"/>
+                    </svg>
+                  ),
+                  color: "#10b981",
+                },
+              ].map((s, i) => (
+                <div key={i} className={`${styles.workflowStepWrap} ${styles.revealItem}`} data-reveal data-delay={`${i * 100}`}>
+                  <div className={styles.workflowStep}>
+                    <div className={styles.workflowStepNum} style={{ color: s.color, borderColor: `${s.color}30` }}>
+                      {s.step}
+                    </div>
+                    <div className={styles.workflowIcon} style={{ background: `${s.color}18`, color: s.color, borderColor: `${s.color}28` }}>
+                      {s.icon}
+                    </div>
+                    <h3 className={styles.workflowTitle}>{s.title}</h3>
+                    <p className={styles.workflowDesc}>{s.desc}</p>
+                  </div>
+                  {i < 2 && <div className={styles.workflowArrow} aria-hidden="true">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(26,143,209,0.3)" strokeWidth="2" strokeLinecap="round">
+                      <path d="M5 12h14M12 5l7 7-7 7"/>
+                    </svg>
+                  </div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
         {/* CTA Banner */}
         <section className={styles.ctaBanner}>
           <div className={styles.ctaBannerInner}>
@@ -545,8 +649,8 @@ export default function HomePage() {
               data-reveal
               data-delay="80"
             >
-              Join the Innodata platform and bring intelligence to your regulatory
-              process.
+              Join Structo and bring intelligence to your legal &amp; regulatory
+              document workflows.
             </p>
             {/* button instead of <a> */}
             <button
@@ -565,16 +669,16 @@ export default function HomePage() {
           <div className={styles.footerInner}>
             <div className={styles.footerBrand}>
               <div className={styles.brandName} style={{ color: "white" }}>
-                Innodata
+                Structo
               </div>
               <div
                 style={{ color: "#64748b", fontSize: "13px", marginTop: "4px" }}
               >
-                Legal Regulatory Delivery Unit
+                Innodata · Legal Regulatory Delivery Unit
               </div>
             </div>
             <div style={{ color: "#475569", fontSize: "13px" }}>
-              © 2026 Innodata. All rights reserved. A&M
+              © 2026 Innodata. All rights reserved.
             </div>
           </div>
         </footer>

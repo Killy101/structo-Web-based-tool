@@ -234,22 +234,6 @@ function VersionHistoryModal({
     }
   }
 
-  async function handleEditVersion(v: BrdVersionSummary) {
-    if (!canEditVersions) return;
-
-    setVersionLoading(true);
-    setLoadingId(v.id);
-    try {
-      const r = await api.get<BrdVersionDetail>(`/brd/${brd.id}/versions/${v.versionNum}`);
-      setEditingVersion(r.data);
-    } catch {
-      setError("Failed to load that version.");
-    } finally {
-      setVersionLoading(false);
-      setLoadingId(null);
-    }
-  }
-
   async function confirmDeleteVersion() {
     if (!confirmDelete) return;
     if (!canEditVersions) return;
@@ -470,19 +454,6 @@ function VersionHistoryModal({
                               }
                               View
                             </button>
-                            <button onClick={() => handleEditVersion(v)} disabled={!canEditVersions || versionLoading || isDeleting}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50 transition-colors whitespace-nowrap">
-                              <EditIcon />
-                              Edit
-                            </button>
-                            <button onClick={() => canEditVersions && setConfirmDelete(v)} disabled={!canEditVersions || versionLoading || isDeleting}
-                              title="Delete this version"
-                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 disabled:opacity-40 transition-colors">
-                              {isDeleting
-                                ? <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity="0.75"/></svg>
-                                : <TrashIcon />
-                              }
-                            </button>
                           </div>
                         </div>
                       </div>
@@ -579,7 +550,7 @@ export default function BrdPage() {
       escape(b.geography),
       escape(STATUS_LABEL[b.status] ?? b.status),
       escape(b.version),
-      escape(b.format === "old" ? "OLD" : "New"),
+      escape(b.format === "old" ? "Old Version" : "New Version"),
       escape(b.lastUpdated),
     ].join(","));
     const csv = [headers.map(escape).join(","), ...rows].join("\n");
@@ -1039,8 +1010,8 @@ export default function BrdPage() {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded">{brd.version}</span>
                       {brd.format === "old"
-                        ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-400/30">Old</span>
-                        : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-400/10 dark:text-blue-300 dark:border-blue-400/30">New</span>
+                        ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-400/30">Old Version</span>
+                        : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-400/10 dark:text-blue-300 dark:border-blue-400/30">New Version</span>
                       }
                     </div>
                   </td>
