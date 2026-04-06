@@ -12,8 +12,12 @@ merging, and normalization happens there.  This file retains:
 
 import re
 import os
+import html
+import shutil
 import subprocess
 import tempfile
+import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from zipfile import BadZipFile
@@ -21,6 +25,7 @@ from zipfile import BadZipFile
 import docx2txt
 import fitz  # PyMuPDF
 from docx import Document
+from lxml import html as lxml_html
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,8 +64,15 @@ def _extract_docx(path: str) -> str:
 
 def _extract_doc(path: str) -> str:
     """Extract text from legacy .doc by converting to a temporary .docx."""
-    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
-    os.close(temp_fd)
+    if _is_mhtml_doc(path):
+        mhtml_text = _extract_mhtml_doc_text(path)
+        if mhtml_text.strip():
+            return mhtml_text
+
+    # Use a unique path without pre-creating the file, same reason as convert_doc_to_docx.
+    temp_docx_path = os.path.join(
+        tempfile.gettempdir(), f"brd_extract_{uuid.uuid4().hex}.docx"
+    )
     temp_docx = Path(temp_docx_path)
     try:
         if _convert_doc_to_docx_with_word(path, str(temp_docx)):
@@ -78,27 +90,232 @@ def _extract_doc(path: str) -> str:
             pass
 
 
+def _is_mhtml_doc(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            header = f.read(4096)
+        lowered = header.lower()
+        return (
+            b"mime-version" in lowered
+            or b"multipart/related" in lowered
+            or b"exported from confluence" in lowered
+            or b"content-location:" in lowered
+            or b"<html" in lowered
+        )
+    except Exception:
+        return False
+
+
+def _extract_html_from_mhtml_doc(path: str) -> str:
+    import quopri
+    from email import policy
+    from email.parser import BytesParser
+
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(raw)
+        if message.is_multipart():
+            html_parts: list[str] = []
+            for part in message.walk():
+                if part.get_content_type() != "text/html":
+                    continue
+                payload = part.get_payload(decode=True) or b""
+                charset = part.get_content_charset() or "utf-8"
+                html_parts.append(payload.decode(charset, errors="replace"))
+            if html_parts:
+                return "\n".join(html_parts)
+    except Exception:
+        pass
+
+    try:
+        decoded = quopri.decodestring(raw).decode("utf-8", errors="replace")
+    except Exception:
+        decoded = raw.decode("utf-8", errors="replace")
+
+    match = re.search(r"(<html\b.*?</html>)", decoded, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1) if match else decoded
+
+
+def _normalize_html_text(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _append_html_block_to_docx(node, document) -> None:
+    tag = getattr(node, "tag", None)
+    if not isinstance(tag, str):
+        return
+
+    tag = tag.lower()
+    if tag in {"script", "style", "meta", "link", "head"}:
+        return
+
+    if tag in {"body", "div", "section", "article", "main", "header", "footer"}:
+        for child in node:
+            _append_html_block_to_docx(child, document)
+        return
+
+    if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        text = _normalize_html_text(" ".join(node.itertext()))
+        if text:
+            document.add_heading(text, level=min(int(tag[1]), 6))
+        return
+
+    if tag in {"p", "li"}:
+        text = _normalize_html_text(" ".join(node.itertext()))
+        if text:
+            document.add_paragraph(text)
+        return
+
+    if tag in {"ul", "ol"}:
+        for child in node:
+            _append_html_block_to_docx(child, document)
+        return
+
+    if tag == "table":
+        rows: list[list[str]] = []
+        max_cols = 0
+        for row in node.xpath(".//tr"):
+            cells = [
+                _normalize_html_text(" ".join(cell.itertext()))
+                for cell in row.xpath("./th|./td")
+            ]
+            if any(cells):
+                rows.append(cells)
+                max_cols = max(max_cols, len(cells))
+
+        if rows and max_cols:
+            table = document.add_table(rows=len(rows), cols=max_cols)
+            table.style = "Table Grid"
+            for row_index, row_values in enumerate(rows):
+                for col_index, value in enumerate(row_values):
+                    table.cell(row_index, col_index).text = value
+            document.add_paragraph("")
+        return
+
+    text = _normalize_html_text(" ".join(node.itertext()))
+    if text and tag not in {"span", "strong", "em", "b", "i", "a", "br"}:
+        document.add_paragraph(text)
+
+
+def _convert_mhtml_doc_to_docx(src_path: str, dst_docx_path: str) -> bool:
+    try:
+        html_source = _extract_html_from_mhtml_doc(src_path)
+        if not html_source.strip():
+            return False
+
+        root = lxml_html.fromstring(html_source)
+        body = root.find("body")
+        if body is None:
+            body = root
+
+        document = Document()
+        before_count = len(document.paragraphs) + len(document.tables)
+        for child in body:
+            _append_html_block_to_docx(child, document)
+
+        after_count = len(document.paragraphs) + len(document.tables)
+        if after_count == before_count:
+            text = _normalize_html_text(" ".join(root.itertext()))
+            if not text:
+                return False
+            document.add_paragraph(text)
+
+        document.save(dst_docx_path)
+        return Path(dst_docx_path).exists() and os.path.getsize(dst_docx_path) > 0
+    except Exception as exc:
+        print(f"[WARN convert_doc_to_docx] HTML/MHTML conversion failed: {exc}")
+        return False
+
+
+def _extract_mhtml_doc_text(path: str) -> str:
+    decoded = _extract_html_from_mhtml_doc(path)
+
+    lines: list[str] = []
+
+    # Preserve table rows as pipe-delimited lines so fallback parser can recover scope/citation rows.
+    for table_html in re.findall(r"<table[^>]*>(.*?)</table>", decoded, flags=re.IGNORECASE | re.DOTALL):
+        for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.IGNORECASE | re.DOTALL):
+            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
+            cleaned_cells = [_normalize_html_text(cell) for cell in cells]
+            cleaned_cells = [cell for cell in cleaned_cells if cell]
+            if cleaned_cells:
+                lines.append(" | ".join(cleaned_cells))
+
+    # Keep headings/paragraphs/list items as regular text lines.
+    body_chunks = re.findall(r"<(?:h[1-6]|p|li)[^>]*>(.*?)</(?:h[1-6]|p|li)>", decoded, flags=re.IGNORECASE | re.DOTALL)
+    for chunk in body_chunks:
+        cleaned = _normalize_html_text(chunk)
+        if cleaned:
+            lines.append(cleaned)
+
+    return "\n".join(lines)
+
+
 def convert_doc_to_docx(src_path: str) -> str | None:
     """
     Convert a legacy .doc file to a temporary .docx file.
 
+    Attempts (in order):
+      0. Pure-Python HTML/MHTML synthesis for Confluence/Word-exported `.doc`.
+      1. Pure-Python: the file may already be OOXML (ZIP) saved with a .doc
+         extension — python-docx can open it directly without any extra tools.
+      2. Word COM via pywin32 (Windows + Microsoft Word).
+      3. LibreOffice soffice command-line (any platform).
+
     Returns the path of the converted .docx file on success (the caller is
-    responsible for deleting it), or None if conversion is not available
-    (neither Word/COM nor LibreOffice is installed).
+    responsible for deleting it), or None if all methods fail.
     """
-    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
-    os.close(temp_fd)
+    if _is_mhtml_doc(src_path):
+        temp_docx_path = os.path.join(
+            tempfile.gettempdir(), f"brd_html_{uuid.uuid4().hex}.docx"
+        )
+        if _convert_mhtml_doc_to_docx(src_path, temp_docx_path):
+            print(f"[DEBUG convert_doc_to_docx] Converted HTML/MHTML .doc via python-docx: {temp_docx_path}")
+            return temp_docx_path
+        Path(temp_docx_path).unlink(missing_ok=True)
+
+    # ── Method 1: file is already OOXML (.docx) saved with a .doc extension ──
+    # Many "doc" files from modern Word are actually ZIP/OOXML — python-docx
+    # can open them directly.  No extra tools required.
+    try:
+        with zipfile.ZipFile(src_path, "r"):
+            pass  # confirms it's a valid ZIP (OOXML)
+        from docx import Document
+        Document(src_path)  # confirms python-docx can parse it
+        # Copy to a .docx temp path so downstream code sees the right extension
+        temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
+        os.close(temp_fd)
+        shutil.copy2(src_path, temp_docx_path)
+        print(f"[DEBUG convert_doc_to_docx] File is OOXML — copied as .docx (no converter needed)")
+        return temp_docx_path
+    except Exception:
+        pass  # not OOXML; fall through to external converters
+
+    # ── Methods 2 & 3: true binary .doc — needs Word COM or LibreOffice ───────
+    # Generate a unique path WITHOUT pre-creating the file.
+    # mkstemp would create an empty file that can prevent Word's SaveAs from
+    # overwriting it on some Windows configurations.
+    temp_docx_path = os.path.join(
+        tempfile.gettempdir(), f"brd_convert_{uuid.uuid4().hex}.docx"
+    )
     temp_docx = Path(temp_docx_path)
     try:
-        if _convert_doc_to_docx_with_word(src_path, str(temp_docx)):
+        if _convert_doc_to_docx_with_word(src_path, temp_docx_path):
             print(f"[DEBUG convert_doc_to_docx] Converted via Word COM: {temp_docx_path}")
             return temp_docx_path
-        if _convert_doc_to_docx_with_soffice(src_path, str(temp_docx)):
+        if _convert_doc_to_docx_with_soffice(src_path, temp_docx_path):
             print(f"[DEBUG convert_doc_to_docx] Converted via LibreOffice: {temp_docx_path}")
             return temp_docx_path
     except Exception as exc:
         print(f"[WARN convert_doc_to_docx] Conversion error: {exc}")
     temp_docx.unlink(missing_ok=True)
+    print("[WARN convert_doc_to_docx] All conversion methods failed. "
+          "Install pywin32 (Windows+Word) or LibreOffice to handle binary .doc files.")
     return None
 
 
@@ -122,7 +339,8 @@ def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
         document.SaveAs(os.path.abspath(dst_docx_path), FileFormat=16)
         document.Close(False)
         document = None
-        return Path(dst_docx_path).exists()
+        # Verify the file was actually written with real content (not 0 bytes)
+        return Path(dst_docx_path).exists() and os.path.getsize(dst_docx_path) > 100
     except Exception:
         return False
     finally:
