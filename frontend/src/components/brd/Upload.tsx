@@ -297,8 +297,9 @@ export default function Upload({ onComplete }: Props) {
     if (brdIdToDelete) {
       try {
         await api.delete(`/brd/${brdIdToDelete}`);
+        await api.delete(`/brd/${brdIdToDelete}/permanent`);
       } catch (err) {
-        console.warn("[Upload] Failed to delete orphaned BRD on discard:", err);
+        console.warn("[Upload] Failed to fully discard orphaned BRD on duplicate cancel:", err);
       }
     }
   }
