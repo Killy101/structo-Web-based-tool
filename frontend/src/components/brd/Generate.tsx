@@ -150,32 +150,53 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
   const p = (...keys: string[]): string => keys.map(t).find(Boolean) ?? "";
   if (format === "old") {
     return {
-      // Legacy "Source Name" label → stored as content_category_name by extractor
-      sourceName:           p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
-      // Legacy "Authoritative Source" label → stored as authoritative_source (and mirrored to issuing_agency)
-      authoritativeSource:  p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
-      sourceType:           p("source_type", "sourceType", "Source Type"),
-      publicationDate:      p("publication_date", "publicationDate", "Publication Date"),
-      lastUpdatedDate:      p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
-      processingDate:       p("processing_date", "processingDate", "Processing Date"),
-      issuingAgency:        p("issuing_agency", "issuingAgency", "Issuing Agency"),
-      contentUrl:           p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
-      geography:            p("geography", "Geography"),
-      language:             p("language", "Language"),
-      payloadSubtype:       p("payload_subtype", "payloadSubtype", "Payload Subtype"),
-      status:               p("status", "Status"),
+      sourceName:              p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
+      authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+      sourceType:              p("source_type", "sourceType", "Source Type"),
+      contentType:             p("content_type", "contentType", "Content Type"),
+      publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
+      lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+      effectiveDate:           p("effective_date", "effectiveDate", "Effective Date"),
+      commentDueDate:          p("comment_due_date", "commentDueDate", "Comment Due Date"),
+      complianceDate:          p("compliance_date", "complianceDate", "Compliance Date"),
+      processingDate:          p("processing_date", "processingDate", "Processing Date"),
+      issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+      name:                    p("name", "Name", "document_title", "documentTitle", "title"),
+      relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
+      contentUrl:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
+      payloadType:             p("payload_type", "payloadType", "Payload Type"),
+      payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+      summary:                 p("summary", "Summary"),
+      smeComments:             p("sme_comments", "smeComments", "SME Comments"),
+      geography:               p("geography", "Geography"),
+      language:                p("language", "Language"),
+      status:                  p("status", "Status"),
     };
   }
   return {
     contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
+    sourceType:              p("source_type", "sourceType", "Source Type"),
+    contentType:             p("content_type", "contentType", "Content Type"),
     publicationDate:         p("publication_date", "publicationDate", "Publication Date"),
     lastUpdatedDate:         p("last_updated_date", "lastUpdatedDate", "Last Updated Date"),
+    effectiveDate:           p("effective_date", "effectiveDate", "Effective Date"),
+    commentDueDate:          p("comment_due_date", "commentDueDate", "Comment Due Date"),
+    complianceDate:          p("compliance_date", "complianceDate", "Compliance Date"),
     processingDate:          p("processing_date", "processingDate", "Processing Date"),
     issuingAgency:           p("issuing_agency", "issuingAgency", "Issuing Agency"),
+    name:                    p("name", "Name", "document_title", "documentTitle", "title"),
     relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
     contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
+    payloadType:             p("payload_type", "payloadType", "Payload Type"),
+    payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
+    summary:                 p("summary", "Summary"),
+    smeComments:             p("sme_comments", "smeComments", "SME Comments"),
     geography:               p("geography", "Geography"),
     language:                p("language", "Language"),
+    status:                  p("status", "Status"),
   };
 }
 function asScopeEntryArray(v: unknown): ScopeEntry[] {
@@ -524,6 +545,45 @@ function DocBlock({ id, children }: { id?: string; children: React.ReactNode }) 
 function Empty() { return <p className="text-[12px] text-slate-400 dark:text-slate-600 italic py-4 text-center">No data defined</p>; }
 function Nil()   { return <span className="text-slate-300 dark:text-slate-600 italic">—</span>; }
 
+function normalizeMetadataCommentKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function parseMetadataComments(raw?: string, labels: string[] = []): Record<string, string> {
+  const out: Record<string, string> = {};
+  const normalized = (raw ?? "").replace(/\r?\n+/g, " ").trim();
+  if (!normalized) return out;
+
+  if (labels.length > 0) {
+    const escapedLabels = [...labels]
+      .sort((a, b) => b.length - a.length)
+      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = new RegExp(`(${escapedLabels.join("|")}):\\s*`, "gi");
+    const matches = Array.from(normalized.matchAll(pattern));
+    if (matches.length > 0) {
+      matches.forEach((match, index) => {
+        const label = match[1] ?? "";
+        const start = (match.index ?? 0) + match[0].length;
+        const end = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
+        const comment = normalized.slice(start, end).trim();
+        if (label && comment) out[normalizeMetadataCommentKey(label)] = comment;
+      });
+      return out;
+    }
+  }
+
+  for (const line of (raw ?? "").split(/\r?\n+/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf(":");
+    if (idx <= 0) continue;
+    const label = normalizeMetadataCommentKey(trimmed.slice(0, idx));
+    const comment = trimmed.slice(idx + 1).trim();
+    if (label && comment) out[label] = comment;
+  }
+  return out;
+}
+
 const TBL_WRAP = "tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]";
 const TH = "px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] last:border-r-0 bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap";
 const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0 text-[11.5px] text-slate-700 dark:text-slate-300";
@@ -619,8 +679,54 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
 
 function MetaGrid({ values, format, brdId, images }: { values: Record<string, string>; format: Format; brdId?: string; images: CellImageMeta[] }) {
   const fields = format === "old"
-    ? [{label:"Source Name",key:"sourceName"},{label:"Source Type",key:"sourceType"},{label:"Publication Date",key:"publicationDate"},{label:"Last Updated Date",key:"lastUpdatedDate"},{label:"Processing Date",key:"processingDate"},{label:"Issuing Agency",key:"issuingAgency"},{label:"Content URL",key:"contentUrl"},{label:"Geography",key:"geography"},{label:"Language",key:"language"},{label:"Payload Subtype",key:"payloadSubtype"},{label:"Status",key:"status"}]
-    : [{label:"Content Category Name",key:"contentCategoryName"},{label:"Publication Date",key:"publicationDate"},{label:"Last Updated Date",key:"lastUpdatedDate"},{label:"Processing Date",key:"processingDate"},{label:"Issuing Agency",key:"issuingAgency"},{label:"Related Government Agency",key:"relatedGovernmentAgency"},{label:"Content URI",key:"contentUri"},{label:"Geography",key:"geography"},{label:"Language",key:"language"}];
+    ? [
+        {label:"Source Name",key:"sourceName"},
+        {label:"Authoritative Source",key:"authoritativeSource"},
+        {label:"Source Type",key:"sourceType"},
+        {label:"Content Type",key:"contentType"},
+        {label:"Publication Date",key:"publicationDate"},
+        {label:"Last Updated Date",key:"lastUpdatedDate"},
+        {label:"Effective Date",key:"effectiveDate"},
+        {label:"Comment Due Date",key:"commentDueDate"},
+        {label:"Compliance Date",key:"complianceDate"},
+        {label:"Processing Date",key:"processingDate"},
+        {label:"Issuing Agency",key:"issuingAgency"},
+        {label:"Name",key:"name"},
+        {label:"Related Government Agency",key:"relatedGovernmentAgency"},
+        {label:"Content URL",key:"contentUrl"},
+        {label:"Impacted Citation",key:"impactedCitation"},
+        {label:"Payload Type",key:"payloadType"},
+        {label:"Payload Subtype",key:"payloadSubtype"},
+        {label:"Summary",key:"summary"},
+        {label:"Geography",key:"geography"},
+        {label:"Language",key:"language"},
+        {label:"Status",key:"status"},
+      ]
+    : [
+        {label:"Content Category Name",key:"contentCategoryName"},
+        {label:"Authoritative Source",key:"authoritativeSource"},
+        {label:"Source Type",key:"sourceType"},
+        {label:"Content Type",key:"contentType"},
+        {label:"Publication Date",key:"publicationDate"},
+        {label:"Last Updated Date",key:"lastUpdatedDate"},
+        {label:"Effective Date",key:"effectiveDate"},
+        {label:"Comment Due Date",key:"commentDueDate"},
+        {label:"Compliance Date",key:"complianceDate"},
+        {label:"Processing Date",key:"processingDate"},
+        {label:"Issuing Agency",key:"issuingAgency"},
+        {label:"Name",key:"name"},
+        {label:"Related Government Agency",key:"relatedGovernmentAgency"},
+        {label:"Content URI",key:"contentUri"},
+        {label:"Impacted Citation",key:"impactedCitation"},
+        {label:"Payload Type",key:"payloadType"},
+        {label:"Payload Subtype",key:"payloadSubtype"},
+        {label:"Summary",key:"summary"},
+        {label:"Geography",key:"geography"},
+        {label:"Language",key:"language"},
+        {label:"Status",key:"status"},
+      ];
+  const commentMap = parseMetadataComments(values.smeComments, fields.map((field) => field.label));
+
 
   // tableIndex=5 is the metadata table: col0=label, col1=value(Document Location)
   const metaImgs = images.filter(img =>
@@ -645,9 +751,16 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
 
   return (
     <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
-      <table className="w-full text-[11.5px]"><tbody>
+      <table className="w-full text-[11.5px]" style={{ minWidth: 980 }}>
+        <thead>
+          <tr>
+            <th className="px-3 py-2 w-44 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>Metadata Element</th>
+            <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>Document Location</th>
+            <th className="px-3 py-2 w-72 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>SME Comments</th>
+          </tr>
+        </thead>
+        <tbody>
         {fields.map((f, i) => {
-          // Try field key first (new uploads), then display label, then rowIndex fallback.
           const byKey = imagesByLabel.get(f.key.toLowerCase()) || [];
           const byLabel = imagesByLabel.get(f.label.toLowerCase()) || [];
           const rowImages = byKey.length > 0
@@ -655,12 +768,16 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
             : byLabel.length > 0
               ? byLabel
               : (imagesByMetaRow.get(i + 1) || []);
+          const rowComment = commentMap[normalizeMetadataCommentKey(f.label)] || "";
           return (
             <tr key={f.key} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-              <td className="px-3 py-2 w-36 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
-              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300">
+              <td className="px-3 py-2 w-44 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{f.label}</td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
                 {values[f.key] || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
                 {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+              </td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {rowComment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
               </td>
             </tr>
           );
@@ -964,7 +1081,18 @@ export default function Generate({ brdId, title, format, status, initialData, on
 
   const activeFormat: Format   = format === "old" ? "old" : "new";
   const metadataValues         = buildTemplateMetadataValues(activeFormat, metadataData);
-  const displayTitle           = deriveTitle(metadataData, title);
+  const autoTitle              = deriveTitle(metadataData, title);
+  const [customTitle, setCustomTitle] = useState<string | null>(null);
+  const derivedTitle           = customTitle ?? autoTitle;
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(derivedTitle);
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!titleEditing) setTitleDraft(derivedTitle);
+  }, [derivedTitle, titleEditing]);
+  const displayTitle           = (titleEditing ? titleDraft : derivedTitle) || derivedTitle;
+  const resolvedTitle          = displayTitle.trim() || derivedTitle;
   const resolvedSaveStatus: SaveStatus =
     status === "PAUSED" || status === "COMPLETED" || status === "APPROVED" || status === "ON_HOLD"
       ? status
@@ -997,7 +1125,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null); setSavedVersionLabel(null);
     try {
-      await api.post("/brd/save", { brdId, title: displayTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+      await api.post("/brd/save", { brdId, title: resolvedTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
       try {
         const versionResponse = await api.post<{ versionNum: number; label?: string }>(`/brd/${brdId}/versions`, {
           scope: scopeData,
@@ -1025,6 +1153,31 @@ export default function Generate({ brdId, title, format, status, initialData, on
       setSaveError(error?.response?.data?.error ?? error?.message ?? "Save failed.");
     }
     finally { setSaving(false); }
+  }
+
+  async function handleTitleSave() {
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) {
+      setTitleError("Title cannot be empty.");
+      return;
+    }
+
+    setTitleSaving(true);
+    setTitleError(null);
+    try {
+      if (brdId) {
+        await api.patch(`/brd/${brdId}`, { title: nextTitle });
+      }
+      setCustomTitle(nextTitle);
+      setTitleDraft(nextTitle);
+      setTitleEditing(false);
+      setSavedToDB(false);
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setTitleError(error?.response?.data?.error ?? error?.message ?? "Failed to update title.");
+    } finally {
+      setTitleSaving(false);
+    }
   }
 
   async function runGenerateBrdExcel() {
@@ -1077,7 +1230,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   async function runGenerateMetajson() {
     setGenerating(p=>({...p,metajson:true}));
     try {
-      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:displayTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
+      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:resolvedTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
       // Load any previously saved version and merge — saved takes priority as initial value
       let initialData = r.data.metajson;
       if (brdId) {
@@ -1105,7 +1258,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   async function runGenerateInnod() {
     setGenerating(p=>({...p,innod:true}));
     try {
-      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:displayTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
+      const r = await api.post<{success:boolean;metajson:Record<string,unknown>;filename?:string}>("/brd/generate/metajson",{brdId,title:resolvedTitle,format,scope:scopeData,metadata:metadataData,toc:tocData,citations:citationsData,contentProfile:contentProfileData,brdConfig:brdConfigData});
       // Load any previously saved version — saved takes priority as initial value
       let initialData = r.data.metajson;
       if (brdId) {
@@ -1141,9 +1294,70 @@ export default function Generate({ brdId, title, format, status, initialData, on
 
         {/* Document Header */}
         <div style={{textAlign:"center",marginBottom:36,paddingBottom:28,borderBottom:"1.5px solid #ddd8d0"}}>
-          <h1 style={{fontFamily:"'Georgia','Times New Roman',serif",fontSize:26,fontWeight:700,color:"var(--brd-title-color,#1e293b)",letterSpacing:"-0.02em",lineHeight:1.25,margin:"0 0 14px"}}>
-            {displayTitle}
-          </h1>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap" as const,marginBottom:14}}>
+            {titleEditing ? (
+              <>
+                <input
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleTitleSave();
+                    }
+                    if (e.key === "Escape") {
+                      setTitleDraft(derivedTitle);
+                      setTitleEditing(false);
+                      setTitleError(null);
+                    }
+                  }}
+                  autoFocus
+                  style={{fontFamily:"'Georgia','Times New Roman',serif",fontSize:24,fontWeight:700,color:"var(--brd-title-color,#1e293b)",letterSpacing:"-0.02em",lineHeight:1.25,margin:0,padding:"6px 10px",border:"1px solid #cbd5e1",borderRadius:8,minWidth:280,maxWidth:"100%"}}
+                />
+                <button
+                  onClick={() => void handleTitleSave()}
+                  disabled={titleSaving}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60 transition-colors"
+                >
+                  {titleSaving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={() => {
+                    setTitleDraft(derivedTitle);
+                    setTitleEditing(false);
+                    setTitleError(null);
+                  }}
+                  disabled={titleSaving}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <h1 style={{fontFamily:"'Georgia','Times New Roman',serif",fontSize:26,fontWeight:700,color:"var(--brd-title-color,#1e293b)",letterSpacing:"-0.02em",lineHeight:1.25,margin:0}}>
+                  {displayTitle}
+                </h1>
+                {canEdit && (
+                  <button
+                    onClick={() => {
+                      setTitleDraft(derivedTitle);
+                      setTitleEditing(true);
+                      setTitleError(null);
+                    }}
+                    title="Edit title"
+                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 hover:text-slate-700 transition-colors"
+                  >
+                    <EditIcon />
+                    Edit title
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          {titleError && (
+            <p className="text-[11px] text-red-600 dark:text-red-400 mb-3">{titleError}</p>
+          )}
           <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap" as const}}>
             {brdId && <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#64748b",background:"#f1f5f9",border:"1px solid #e2e8f0",padding:"3px 10px",borderRadius:4}}>{brdId}</span>}
             <span style={{color:"#cbd5e1",fontSize:13}}>·</span>

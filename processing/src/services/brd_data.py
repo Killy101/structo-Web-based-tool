@@ -68,9 +68,13 @@ class LevelData:
     definition: str = ""
     examples: list[str] = field(default_factory=list)
     required: bool = False
+    note: str = ""
+    toc_requirements: str = ""
+    toc_sme_comments: str = ""
     citation_rules: str = ""        # raw citation rule text, cleaned
     source_of_law: str = ""
     is_citable: str = ""            # "Y" | "N" | ""
+    citation_sme_comments: str = ""
     explicit_patterns: list[str] = field(default_factory=list)  # extracted regex, if any
     redjay_xml_tag: str = ""        # from content profile, if available
 
@@ -673,36 +677,58 @@ def _extract_metadata_normalized(doc, format_: str) -> dict[str, str]:
     if detected_format == "new":
         return {
             "_format": "new",
-            "Content Category Name": t("content_category_name") or t("document_title"),
-            "Publication Date":      t("publication_date")  or "{iso-date}",
-            "Last Updated Date":     t("last_updated_date") or "{iso-date}",
-            "Effective Date":        "{iso-date}",
-            "Processing Date":       t("processing_date")   or "{iso-date}",
-            "Issuing Agency":        t("issuing_agency"),
-            "Content URI":           t("content_uri")       or "{string}",
-            "Geography":             t("geography"),
-            "Language":              t("language"),
-            "Delivery Type":         "{string}",
-            "Unique File Id":        "{string}",
+            "Content Category Name":     t("content_category_name") or t("document_title"),
+            "Authoritative Source":      t("authoritative_source") or t("issuing_agency"),
+            "Content Type":              t("content_type"),
+            "Publication Date":          t("publication_date")  or "{iso-date}",
+            "Last Updated Date":         t("last_updated_date") or "{iso-date}",
+            "Effective Date":            t("effective_date") or "{iso-date}",
+            "Comment Due Date":          t("comment_due_date"),
+            "Compliance Date":           t("compliance_date"),
+            "Processing Date":           t("processing_date") or "{iso-date}",
+            "Name":                      t("name") or t("document_title"),
+            "Issuing Agency":            t("issuing_agency"),
+            "Related Government Agency": t("related_government_agency"),
+            "Content URI":               t("content_uri") or "{string}",
+            "Geography":                 t("geography"),
+            "Language":                  t("language"),
+            "Impacted Citation":         t("impacted_citation"),
+            "Payload Type":              t("payload_type"),
+            "Payload Subtype":           t("payload_subtype"),
+            "Summary":                   t("summary"),
+            "SME Comments":              t("sme_comments"),
+            "Status":                    t("status"),
+            "Delivery Type":             t("delivery_type") or "{string}",
+            "Unique File Id":            "{string}",
         }
     else:
         return {
             "_format": "old",
-            "Source Name":       t("content_category_name") or t("document_title"),
-            "Source Type":       t("source_type"),
-            "Publication Date":  t("publication_date")  or "{iso-date}",
-            "Last Updated Date": t("last_updated_date") or "{iso-date}",
-            "Effective Date":    "{iso-date}",
-            "Processing Date":   t("processing_date")   or "{iso-date}",
-            "Issuing Agency":    t("issuing_agency"),
-            "Content URI":       t("content_uri")       or "{string}",
-            "Geography":         t("geography"),
-            "Language":          t("language"),
-            "Payload Subtype":   t("payload_subtype")   or "Acts",
-            "Status":            t("status")            or "Effective",
-            "BRD_Version":       t("version"),
-            "Delivery Type":     "{string}",
-            "Unique File Id":    "{string}",
+            "Authoritative Source":      t("authoritative_source") or t("issuing_agency"),
+            "Source Name":               t("content_category_name") or t("document_title"),
+            "Source Type":               t("source_type"),
+            "Content Type":              t("content_type"),
+            "Publication Date":          t("publication_date") or "{iso-date}",
+            "Last Updated Date":         t("last_updated_date") or "{iso-date}",
+            "Effective Date":            t("effective_date") or "{iso-date}",
+            "Comment Due Date":          t("comment_due_date"),
+            "Compliance Date":           t("compliance_date"),
+            "Processing Date":           t("processing_date") or "{iso-date}",
+            "Name":                      t("name") or t("document_title"),
+            "Issuing Agency":            t("issuing_agency"),
+            "Related Government Agency": t("related_government_agency"),
+            "Content URI":               t("content_uri") or "{string}",
+            "Geography":                 t("geography"),
+            "Language":                  t("language"),
+            "Impacted Citation":         t("impacted_citation"),
+            "Payload Type":              t("payload_type"),
+            "Payload Subtype":           t("payload_subtype") or "Acts",
+            "Summary":                   t("summary"),
+            "SME Comments":              t("sme_comments"),
+            "Status":                    t("status") or "Effective",
+            "BRD_Version":               t("version"),
+            "Delivery Type":             t("delivery_type") or "{string}",
+            "Unique File Id":            "{string}",
         }
 
 
@@ -799,10 +825,17 @@ def _build_levels(doc) -> list[LevelData]:
             continue
         seen.add(level_num)
 
-        name       = _clean(str(section.get("name", "")))
+        name = _clean(str(section.get("name", "")))
         definition = _clean_multiline(str(section.get("definition", "")))
         raw_example = str(section.get("example", ""))
-        required   = _required_value(str(section.get("required", "")))
+        required = _required_value(str(section.get("required", "")))
+        note = _clean_multiline(str(section.get("note") or ""))
+        toc_requirements = _clean_multiline(str(
+            section.get("tocRequirements") or section.get("toc_requirements") or ""
+        ))
+        toc_sme_comments = _clean_multiline(str(
+            section.get("smeComments") or section.get("sme_comments") or ""
+        ))
 
         # Pull citation row
         cit = citation_index.get(str(level_num), {})
@@ -810,7 +843,10 @@ def _build_levels(doc) -> list[LevelData]:
             cit.get("citationRules") or cit.get("citation_rules") or ""
         ))
         source_of_law = _clean(str(cit.get("sourceOfLaw") or cit.get("source_of_law") or ""))
-        is_citable    = _clean(str(cit.get("isCitable") or cit.get("is_citable") or ""))
+        is_citable = _clean(str(cit.get("isCitable") or cit.get("is_citable") or ""))
+        citation_sme_comments = _clean_multiline(str(
+            cit.get("smeComments") or cit.get("sme_comments") or ""
+        ))
 
         # ── Build examples with priority ordering ─────────────────────────────
         # Start with raw TOC examples (preserving newlines for multi-type levels)
@@ -835,9 +871,13 @@ def _build_levels(doc) -> list[LevelData]:
                 definition=definition,
                 examples=combined_examples,
                 required=required,
+                note=note,
+                toc_requirements=toc_requirements,
+                toc_sme_comments=toc_sme_comments,
                 citation_rules=citation_rules,
                 source_of_law=source_of_law,
                 is_citable=is_citable,
+                citation_sme_comments=citation_sme_comments,
                 explicit_patterns=explicit_patterns,
             )
         )
@@ -860,8 +900,9 @@ def _build_levels(doc) -> list[LevelData]:
                 level=level_num,
                 examples=cit_examples,
                 citation_rules=citation_rules,
-                source_of_law=_clean(str(cit.get("sourceOfLaw") or "")),
-                is_citable=_clean(str(cit.get("isCitable") or "")),
+                source_of_law=_clean(str(cit.get("sourceOfLaw") or cit.get("source_of_law") or "")),
+                is_citable=_clean(str(cit.get("isCitable") or cit.get("is_citable") or "")),
+                citation_sme_comments=_clean_multiline(str(cit.get("smeComments") or cit.get("sme_comments") or "")),
                 explicit_patterns=explicit_patterns,
             )
         )
@@ -1087,6 +1128,7 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
                 "citationRules": lv.citation_rules,
                 "sourceOfLaw":   lv.source_of_law,
                 "isCitable":     lv.is_citable,
+                "smeComments":   lv.citation_sme_comments,
             }
             for lv in brd.levels
         ]
@@ -1109,12 +1151,15 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
     toc_dict = {
         "sections": [
             {
-                "id":         str(lv.level),
-                "level":      str(lv.level),
-                "name":       lv.name,
-                "required":   "Yes" if lv.required else "No",
-                "definition": lv.definition,
-                "example":    "; ".join(lv.examples),
+                "id":              str(lv.level),
+                "level":           str(lv.level),
+                "name":            lv.name,
+                "required":        "Yes" if lv.required else "No",
+                "definition":      lv.definition,
+                "example":         "; ".join(lv.examples),
+                "note":            lv.note,
+                "tocRequirements": lv.toc_requirements,
+                "smeComments":     lv.toc_sme_comments,
             }
             for lv in brd.levels
         ]
