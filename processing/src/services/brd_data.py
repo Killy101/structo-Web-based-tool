@@ -44,11 +44,13 @@ class ScopeEntry:
     document_title: str
     regulator_url: str = ""
     content_url: str = ""
+    content_note: str = ""
     issuing_authority: str = ""
     issuing_authority_code: str = ""
     geography: str = ""
     asrb_id: str = ""
     sme_comments: str = ""
+    stable_key: str = ""
     strikethrough: bool = False
 
 
@@ -639,11 +641,13 @@ def _extract_scope_entries(doc) -> tuple[list[ScopeEntry], list[ScopeEntry]]:
             document_title=_clean(d.get("document_title", "")),
             regulator_url=_clean(d.get("regulator_url", "")),
             content_url=_clean(d.get("content_url", "")),
+            content_note=_clean(d.get("content_note", "")),
             issuing_authority=_clean(d.get("issuing_authority", "")),
             issuing_authority_code=_clean(d.get("issuing_authority_code", "")),
             geography=_clean(d.get("geography", "")),
             asrb_id=_clean(d.get("asrb_id", "")),
             sme_comments=_clean(d.get("sme_comments", "")),
+            stable_key=_clean(d.get("stable_key", d.get("stableKey", ""))),
             strikethrough=bool(d.get("strikethrough", False)),
         )
 
@@ -1103,11 +1107,13 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
                 "document_title": e.document_title,
                 "regulator_url":  e.regulator_url,
                 "content_url":    e.content_url,
+                "content_note":   e.content_note,
                 "issuing_authority": e.issuing_authority,
                 "issuing_authority_code": e.issuing_authority_code,
                 "geography":      e.geography,
                 "asrb_id":        e.asrb_id,
                 "sme_comments":   e.sme_comments,
+                "stable_key":     e.stable_key,
                 "strikethrough":  False,
             }
             for e in brd.scope_entries

@@ -106,6 +106,43 @@ def _is_mhtml_doc(path: str) -> bool:
         return False
 
 
+def _decode_mhtml_payload(payload: bytes | bytearray | str | None, charset: str | None = None) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+
+    raw = bytes(payload)
+    normalized = (charset or "").strip().lower()
+    alias_map = {
+        "unicode": "utf-16le",
+        "utf16": "utf-16",
+        "utf16le": "utf-16le",
+        "utf16be": "utf-16be",
+    }
+
+    candidates: list[str] = []
+    if normalized:
+        candidates.append(alias_map.get(normalized, normalized))
+    if b"\x00" in raw:
+        candidates.extend(["utf-16", "utf-16le", "utf-16be"])
+    candidates.extend(["utf-8", "latin-1"])
+
+    seen: set[str] = set()
+    for encoding in candidates:
+        if not encoding or encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if text.strip("\x00\r\n\t "):
+            return text
+
+    return raw.decode("utf-8", errors="replace")
+
+
 def _extract_html_from_mhtml_doc(path: str) -> str:
     import quopri
     from email import policy
@@ -122,21 +159,18 @@ def _extract_html_from_mhtml_doc(path: str) -> str:
                 if part.get_content_type() != "text/html":
                     continue
                 payload = part.get_payload(decode=True)
-                charset = part.get_content_charset() or "utf-8"
-
-                if isinstance(payload, (bytes, bytearray)):
-                    html_parts.append(bytes(payload).decode(charset, errors="replace"))
-                elif isinstance(payload, str):
-                    html_parts.append(payload)
+                html_text = _decode_mhtml_payload(payload, part.get_content_charset())
+                if html_text.strip():
+                    html_parts.append(html_text)
             if html_parts:
                 return "\n".join(html_parts)
     except Exception:
         pass
 
     try:
-        decoded = quopri.decodestring(raw).decode("utf-8", errors="replace")
+        decoded = _decode_mhtml_payload(quopri.decodestring(raw), "utf-8")
     except Exception:
-        decoded = raw.decode("utf-8", errors="replace")
+        decoded = _decode_mhtml_payload(raw, "utf-8")
 
     match = re.search(r"(<html\b.*?</html>)", decoded, flags=re.IGNORECASE | re.DOTALL)
     return match.group(1) if match else decoded
@@ -533,6 +567,33 @@ def _fallback_from_text(text: str, format: str) -> dict:
     joined  = "\n".join(lines)
     lowered = joined.lower()
     url_pattern = re.compile(r"https?://[^\s\)\]]+")
+    asrb_pattern = re.compile(r"\bASRB[- ]?\d+\b", re.IGNORECASE)
+
+    def split_url_and_note(raw_value: str) -> tuple[str, str]:
+        raw_value = (raw_value or "").strip()
+        urls = [match.group(0).rstrip(".,;") for match in url_pattern.finditer(raw_value)]
+        if not urls:
+            return (raw_value if "http" in raw_value.lower() else ""), ""
+        primary = max(urls, key=lambda url: (url.count("/"), int("?" in url or "#" in url), len(url)))
+        note_lines: list[str] = []
+        for line in raw_value.splitlines():
+            cleaned = url_pattern.sub("", line).strip()
+            cleaned = re.sub(r"\s+", " ", cleaned)
+            if cleaned:
+                note_lines.append(cleaned)
+        return primary, "\n".join(dict.fromkeys(note_lines))
+
+    def split_asrb_and_comments(asrb_raw: str, sme_raw: str) -> tuple[str, str]:
+        normalize = lambda values: ", ".join(dict.fromkeys(v.upper().replace(" ", "").replace("-", "") for v in values if v))
+        asrb_id = normalize(asrb_pattern.findall(asrb_raw or ""))
+        sme_comments = (sme_raw or "").strip()
+        embedded = normalize(asrb_pattern.findall(sme_comments))
+        if embedded:
+            asrb_id = asrb_id or embedded
+            sme_comments = asrb_pattern.sub("", sme_comments)
+            sme_comments = re.sub(r"^[\s,;:/-]+|[\s,;:/-]+$", "", sme_comments)
+            sme_comments = re.sub(r"\s{2,}", " ", sme_comments).strip()
+        return asrb_id, sme_comments
 
     # ── TOC ──────────────────────────────────────────────────────────────────
     toc_sections: list[dict] = []
@@ -572,15 +633,19 @@ def _fallback_from_text(text: str, format: str) -> dict:
                 geography = auth_match.group(3).strip()
             else:
                 auth_name, auth_code, geography = issuing_auth, "", ""
+            regulator_url, _ = split_url_and_note(parts[1] if len(parts) > 1 else "")
+            content_url, content_note = split_url_and_note(parts[2] if len(parts) > 2 else "")
+            asrb_id, sme_comments = split_asrb_and_comments(parts[4] if len(parts) > 4 else "", parts[5] if len(parts) > 5 else "")
             in_scope.append({
                 "document_title":         parts[0],
-                "regulator_url":          parts[1] if "http" in parts[1] else "",
-                "content_url":            parts[2] if "http" in parts[2] else "",
+                "regulator_url":          regulator_url,
+                "content_url":            content_url,
+                "content_note":           content_note,
                 "issuing_authority":      auth_name,
                 "issuing_authority_code": auth_code,
                 "geography":              geography,
-                "asrb_id":                parts[4] if len(parts) > 4 else "",
-                "sme_comments":           parts[5] if len(parts) > 5 else "",
+                "asrb_id":                asrb_id,
+                "sme_comments":           sme_comments,
                 "strikethrough":          False,
             })
     else:
@@ -590,6 +655,7 @@ def _fallback_from_text(text: str, format: str) -> dict:
                     "document_title":         url,
                     "regulator_url":          "https://www.legislation.gov.au",
                     "content_url":            url,
+                    "content_note":           "",
                     "issuing_authority":      "",
                     "issuing_authority_code": "",
                     "geography":              "",

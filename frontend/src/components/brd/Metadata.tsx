@@ -35,6 +35,13 @@ interface CellImageMeta {
   fieldLabel: string;
 }
 
+interface CustomMetadataRow {
+  id: string;
+  label: string;
+  value: string;
+  comment: string;
+}
+
 const OLD_FIELDS: FieldConfig[] = [
   { key: "sourceName",              label: "Source Name",                type: "text", placeholder: "e.g., Federal Register",                  icon: "◈" },
   { key: "authoritativeSource",     label: "Authoritative Source",       type: "text", placeholder: "e.g., Code of Federal Regulations",       icon: "≡" },
@@ -155,24 +162,66 @@ function parseMetadataComments(raw: string, fields: FieldConfig[] = []): Record<
   return out;
 }
 
-function serializeMetadataComments(fields: FieldConfig[], comments: Record<string, string>): string {
-  return fields
-    .map((field) => {
+function serializeMetadataComments(
+  fields: FieldConfig[],
+  comments: Record<string, string>,
+  customRows: CustomMetadataRow[] = []
+): string {
+  return [
+    ...fields.map((field) => {
       const key = normalizeMetadataCommentKey(field.label);
       const comment = (comments[key] ?? "").trim();
       return comment ? `${field.label}: ${comment}` : "";
-    })
+    }),
+    ...customRows.map((row) => {
+      const label = row.label.trim();
+      const comment = row.comment.trim();
+      return label && comment ? `${label}: ${comment}` : "";
+    }),
+  ]
     .filter(Boolean)
     .join("\n");
+}
+
+function sanitizeCustomMetadataRows(rows: CustomMetadataRow[]): CustomMetadataRow[] {
+  return rows
+    .map((row, index) => ({
+      id: row.id?.trim() || `custom-${index}`,
+      label: row.label?.trim() ?? "",
+      value: row.value ?? "",
+      comment: row.comment ?? "",
+    }))
+    .filter((row) => row.label || row.value || row.comment);
+}
+
+function extractCustomMetadataRows(initialData?: Record<string, unknown>): CustomMetadataRow[] {
+  const raw = initialData?.custom_rows ?? initialData?.customRows ?? initialData?.metadata_custom_rows;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((row, index) => {
+      if (!row || typeof row !== "object") return null;
+      const entry = row as Record<string, unknown>;
+      return {
+        id: typeof entry.id === "string" && entry.id.trim() ? entry.id : `custom-${index}`,
+        label: typeof entry.label === "string" ? entry.label : "",
+        value: typeof entry.value === "string" ? entry.value : "",
+        comment: typeof entry.comment === "string" ? entry.comment : "",
+      };
+    })
+    .filter((row): row is CustomMetadataRow => !!row)
+    .filter((row) => row.label || row.value || row.comment);
 }
 
 function buildOutgoingMetadata(
   format: Format,
   values: Record<string, string>,
   comments: Record<string, string>,
-  fields: FieldConfig[]
-): Record<string, string> {
-  const smeComments = serializeMetadataComments(fields, comments);
+  fields: FieldConfig[],
+  customRows: CustomMetadataRow[]
+): Record<string, unknown> {
+  const normalizedCustomRows = sanitizeCustomMetadataRows(customRows);
+  const smeComments = serializeMetadataComments(fields, comments, normalizedCustomRows);
 
   return format === "old" ? {
     source_name:               values.sourceName ?? "",
@@ -197,6 +246,7 @@ function buildOutgoingMetadata(
     geography:                 values.geography ?? "",
     language:                  values.language ?? "",
     status:                    values.status ?? "",
+    custom_rows:               normalizedCustomRows,
   } : {
     content_category_name:     values.contentCategoryName ?? "",
     authoritative_source:      values.authoritativeSource ?? "",
@@ -220,6 +270,7 @@ function buildOutgoingMetadata(
     geography:                 values.geography ?? "",
     language:                  values.language ?? "",
     status:                    values.status ?? "",
+    custom_rows:               normalizedCustomRows,
   };
 }
 
@@ -230,6 +281,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
   );
   const [values, setValues]               = useState<Record<string, string>>({});
   const [commentValues, setCommentValues] = useState<Record<string, string>>({});
+  const [customRows, setCustomRows]       = useState<CustomMetadataRow[]>([]);
   const [saved, setSaved]                 = useState(false);
   const [images, setImages]               = useState<CellImageMeta[]>([]);
   const isInitializing = useRef(false);
@@ -246,12 +298,14 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
   // ── FIX: only reset values when initialData or format genuinely changes ──
   useEffect(() => {
     const nextValues = buildMetadataValues(format, initialData);
-    const signature = `${format}:${JSON.stringify(nextValues)}`;
+    const nextCustomRows = extractCustomMetadataRows(initialData);
+    const signature = `${format}:${JSON.stringify(nextValues)}:${JSON.stringify(nextCustomRows)}`;
     if (lastAppliedSignatureRef.current === signature && metadataValuesEqual(valuesRef.current, nextValues)) return;
 
     isInitializing.current = true;
     setValues(nextValues);
     setCommentValues(parseMetadataComments(nextValues.smeComments ?? "", fields));
+    setCustomRows(nextCustomRows);
     lastAppliedSignatureRef.current = signature;
     setSaved(false);
   }, [format, initialData, fields]);
@@ -270,9 +324,9 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       isInitializing.current = false;
       return;
     }
-    onDataChange(buildOutgoingMetadata(format, values, commentValues, fields));
+    onDataChange(buildOutgoingMetadata(format, values, commentValues, fields, customRows));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [values, commentValues]);
+  }, [values, commentValues, customRows]);
 
   useEffect(() => {
     if (!brdId) return;
@@ -337,11 +391,29 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     setSaved(false);
   }
 
+  function addRow() {
+    setCustomRows((prev) => [
+      ...prev,
+      { id: `custom-${Date.now()}-${prev.length}`, label: "", value: "", comment: "" },
+    ]);
+    setSaved(false);
+  }
+
+  function updateCustomRow(id: string, key: keyof Omit<CustomMetadataRow, "id">, value: string) {
+    setCustomRows((prev) => prev.map((row) => (row.id === id ? { ...row, [key]: value } : row)));
+    setSaved(false);
+  }
+
+  function deleteCustomRow(id: string) {
+    setCustomRows((prev) => prev.filter((row) => row.id !== id));
+    setSaved(false);
+  }
+
   async function handleSave() {
     if (!brdId) return;
     try {
       await api.put(`/brd/${brdId}/sections/metadata`, {
-        data: buildOutgoingMetadata(format, values, commentValues, fields),
+        data: buildOutgoingMetadata(format, values, commentValues, fields, customRows),
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -366,6 +438,15 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={addRow}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-slate-800 dark:bg-[#252d45] text-white dark:text-slate-200 border border-transparent dark:border-[#3a4460] hover:bg-slate-700 dark:hover:bg-[#2e3a55] transition-all"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+            </svg>
+            Add Row
+          </button>
           <button
             onClick={handleSave}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${
@@ -487,6 +568,58 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                         value={commentValues[commentKey] ?? ""}
                         onChange={(e) => setComment(field.label, e.target.value)}
                         placeholder="SME comment for this field"
+                        className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[44px]"
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+              {customRows.map((row, rowIdx) => {
+                const tableIdx = fields.length + rowIdx;
+                return (
+                  <tr key={row.id} className={tableIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1 space-y-1">
+                          <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-violet-600 dark:text-violet-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                            Custom Row
+                          </span>
+                          <input
+                            type="text"
+                            value={row.label}
+                            onChange={(e) => updateCustomRow(row.id, "label", e.target.value)}
+                            placeholder="Custom metadata element"
+                            className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => deleteCustomRow(row.id)}
+                          className="mt-5 inline-flex items-center justify-center w-8 h-8 rounded-lg border border-rose-200 dark:border-rose-800/50 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all"
+                          aria-label="Delete custom metadata row"
+                          title="Delete row"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 7h12M9 7V5h6v2m-7 3v7m4-7v7m4-7v7M7 7l1 12h8l1-12" />
+                          </svg>
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                      <input
+                        type="text"
+                        value={row.value}
+                        onChange={(e) => updateCustomRow(row.id, "value", e.target.value)}
+                        placeholder="Document location"
+                        className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600"
+                      />
+                    </td>
+                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                      <textarea
+                        rows={2}
+                        value={row.comment}
+                        onChange={(e) => updateCustomRow(row.id, "comment", e.target.value)}
+                        placeholder="SME comment for this row"
                         className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[44px]"
                       />
                     </td>

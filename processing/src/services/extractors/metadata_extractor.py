@@ -241,7 +241,7 @@ def _extract_metadata_new(doc) -> dict:
                         _append_named_comment(sme_comment_lines, raw_label, comment_value)
                     break
             if label and not matched:
-                print(f"[DEBUG metadata_extractor] unmatched label: {repr(label[:60])}")
+                print(f"[DEBUG metadata_extractor] unmatched label: {ascii(label[:60])}")
 
     for field in (
         "content_category_name", "authoritative_source", "source_type", "content_type",

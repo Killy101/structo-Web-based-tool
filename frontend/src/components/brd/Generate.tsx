@@ -85,15 +85,16 @@ const APPROVAL_RESTRICTED = new Set(["metajson", "innod", "content"]);
 type Format = "new" | "old";
 
 interface ScopeRow {
-  id: string; title: string; referenceLink: string; contentUrl: string;
+  id: string; stableKey: string; title: string; referenceLink: string; contentUrl: string; contentNote: string;
   issuingAuth: string; asrbId: string; smeComments: string;
   initialEvergreen: string; dateOfIngestion: string; isOutOfScope: boolean;
 }
 interface ScopeEntry {
-  document_title?: string; regulator_url?: string; content_url?: string;
+  document_title?: string; regulator_url?: string; content_url?: string; content_note?: string;
   issuing_authority?: string; issuing_authority_code?: string;
   asrb_id?: string; sme_comments?: string;
   initial_evergreen?: string; date_of_ingestion?: string; strikethrough?: boolean;
+  stable_key?: string; stableKey?: string;
 }
 interface TocRow {
   id: string; level: string; name: string;
@@ -104,6 +105,7 @@ interface TocRow {
   _prevName?: string; _prevDefinition?: string; _prevExample?: string;
   _prevNote?: string; _prevTocRequirements?: string; _prevSmeComments?: string;
 }
+interface CustomMetadataRow { id: string; label: string; value: string; comment: string; }
 interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; remarksNotes: string; }
 interface WhitespaceRow { id: string; tags: string; innodReplace: string; }
 
@@ -199,18 +201,61 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
     status:                  p("status", "Status"),
   };
 }
+function extractCustomMetadataRows(metadata?: Record<string, unknown>): CustomMetadataRow[] {
+  if (!metadata) return [];
+  const raw = metadata.custom_rows ?? metadata.customRows ?? metadata.metadata_custom_rows;
+  return asRecordArray(raw)
+    .map((row, index) => ({
+      id: asString(row.id) || `custom-${index}`,
+      label: asString(row.label),
+      value: asString(row.value),
+      comment: asString(row.comment),
+    }))
+    .filter((row) => row.label || row.value || row.comment);
+}
 function asScopeEntryArray(v: unknown): ScopeEntry[] {
   return Array.isArray(v) ? v.filter(i => i !== null && typeof i === "object") as ScopeEntry[] : [];
 }
-function toScopeRow(e: ScopeEntry, id: string, oos: boolean): ScopeRow {
+function normalizeAsrbAndSme(asrbRaw?: string, smeRaw?: string) {
+  const pattern = /\bASRB[- ]?\d+\b/gi;
+  const normalizeId = (value: string) => value.toUpperCase().replace(/[-\s]+/g, "");
+  const unique = (values: string[]) => Array.from(new Set(values.map(normalizeId).filter(Boolean))).join(", ");
+
+  let asrbId = unique(asrbRaw?.match(pattern) ?? []);
+  let smeComments = (smeRaw ?? "").trim();
+
+  const embedded = unique(smeComments.match(pattern) ?? []);
+  if (embedded) {
+    asrbId = asrbId || embedded;
+    smeComments = smeComments.replace(pattern, "");
+    smeComments = smeComments.replace(/^[\s,;:/-]+|[\s,;:/-]+$/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+
+  return { asrbId, smeComments };
+}
+function toScopeRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string): ScopeRow {
   const auth = e.issuing_authority ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
-  return { id, isOutOfScope: oos || !!e.strikethrough, title: e.document_title ?? "", referenceLink: e.regulator_url ?? "", contentUrl: e.content_url ?? "", issuingAuth: auth, asrbId: e.asrb_id ?? "", smeComments: e.sme_comments ?? "", initialEvergreen: e.initial_evergreen ?? "", dateOfIngestion: e.date_of_ingestion ?? "" };
+  const { asrbId, smeComments } = normalizeAsrbAndSme(e.asrb_id, e.sme_comments);
+  return {
+    id,
+    stableKey,
+    isOutOfScope: oos || !!e.strikethrough,
+    title: e.document_title ?? "",
+    referenceLink: e.regulator_url ?? "",
+    contentUrl: e.content_url ?? "",
+    contentNote: e.content_note ?? "",
+    issuingAuth: auth,
+    asrbId,
+    smeComments,
+    initialEvergreen: e.initial_evergreen ?? "",
+    dateOfIngestion: e.date_of_ingestion ?? "",
+  };
 }
 function buildScopeRows(d?: Record<string, unknown>): ScopeRow[] {
   if (!d) return [];
   const now = Date.now().toString(); const rows: ScopeRow[] = [];
-  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-in-${i}`, false)));
-  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-out-${i}`, true)));
+  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-in-${i}`, false, e.stable_key ?? e.stableKey ?? `in-${i}`)));
+  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-out-${i}`, true, e.stable_key ?? e.stableKey ?? `out-${i}`)));
   return rows;
 }
 function hasExtraCols(rows: ScopeRow[]) {
@@ -591,25 +636,55 @@ const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] 
 function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildScopeRows(scopeData); const extra = hasExtraCols(rows);
   if (rows.length === 0) return <Empty />;
-  
-  // Group scope images by fieldLabel for direct cell matching
+
+  const normalizeScopeImageKey = (value: string) =>
+    value.toLowerCase().replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[^a-z0-9]+/g, "");
+
   const imagesByLabel = new Map<string, CellImageMeta[]>();
-  images.filter(img => img.section === "scope").forEach(img => {
-    const key = (img.fieldLabel || img.cellText || "").toLowerCase().trim();
+  const imagesByCellText = new Map<string, CellImageMeta[]>();
+  const pushImage = (map: Map<string, CellImageMeta[]>, key: string, image: CellImageMeta) => {
     if (!key) return;
-    const arr = imagesByLabel.get(key) || [];
-    arr.push(img);
-    imagesByLabel.set(key, arr);
-  });
-  const getScopeImgs = (...texts: string[]) => {
-    for (const t of texts) {
-      const key = t.toLowerCase().trim();
-      const found = imagesByLabel.get(key);
-      if (found?.length) return found;
-    }
-    return [];
+    const current = map.get(key) ?? [];
+    current.push(image);
+    map.set(key, current);
   };
-  
+
+  images.filter(img => img.section === "scope").forEach(img => {
+    pushImage(imagesByLabel, normalizeScopeImageKey(img.fieldLabel || ""), img);
+    pushImage(imagesByCellText, normalizeScopeImageKey(img.cellText || ""), img);
+  });
+
+  const getScopeImgs = (row: ScopeRow, field: "title" | "referenceLink" | "contentUrl" | "issuingAuth" | "asrbId" | "smeComments", fallbackText = "") => {
+    const result: CellImageMeta[] = [];
+    const seen = new Set<number>();
+    const fieldAliases = {
+      title: [field, "document title"],
+      referenceLink: [field, "reference link", "reference url"],
+      contentUrl: [field, "content url"],
+      issuingAuth: [field, "issuing authority"],
+      asrbId: [field, "asrb id"],
+      smeComments: [field, "sme comments"],
+    }[field];
+
+    [`${row.stableKey}-${field}`, ...fieldAliases].forEach(rawKey => {
+      const key = normalizeScopeImageKey(rawKey);
+      for (const image of imagesByLabel.get(key) ?? []) {
+        if (seen.has(image.id)) continue;
+        seen.add(image.id);
+        result.push(image);
+      }
+    });
+
+    const textKey = normalizeScopeImageKey(fallbackText);
+    for (const image of imagesByCellText.get(textKey) ?? []) {
+      if (seen.has(image.id)) continue;
+      seen.add(image.id);
+      result.push(image);
+    }
+
+    return result;
+  };
+
   return (
     <div className={TBL_WRAP}>
       <table className="w-full text-[11.5px]" style={{ minWidth: 860, tableLayout: "fixed" }}>
@@ -636,12 +711,18 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
         <tbody>
           {rows.map((row, i) => {
             const oos = row.isOutOfScope;
-            const rowImages = getScopeImgs(row.title, row.smeComments);
+            const titleImages = getScopeImgs(row, "title", row.title);
+            const referenceImages = getScopeImgs(row, "referenceLink", row.referenceLink);
+            const contentImages = getScopeImgs(row, "contentUrl", row.contentUrl);
+            const authorityImages = getScopeImgs(row, "issuingAuth", row.issuingAuth);
+            const asrbImages = getScopeImgs(row, "asrbId", row.asrbId);
+            const smeImages = getScopeImgs(row, "smeComments", row.smeComments);
+
             return (
               <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"} style={{opacity:oos?0.55:1}}>
                 <td className={TD} style={{wordBreak:"break-word"}}>
                   <span className={oos?"line-through":""}>{row.title||<Nil/>}</span>
-                  {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                  {titleImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
                 <td className={TD}>
                   {row.referenceLink
@@ -649,18 +730,30 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
                         className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
                         title={row.referenceLink}>{row.referenceLink}</a>
                     : <Nil/>}
+                  {referenceImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={TD}>
+                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
                   {row.contentUrl
                     ? <a href={row.contentUrl} target="_blank" rel="noreferrer"
                         className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
                         title={row.contentUrl}>{row.contentUrl}</a>
                     : <Nil/>}
+                  {row.contentNote && <div className={`mt-1 text-[10.5px] leading-relaxed text-slate-500 dark:text-slate-400 ${oos?"line-through":""}`}>{row.contentNote}</div>}
+                  {contentImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={TD} style={{wordBreak:"break-word"}}><span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span></td>
-                <td className={TD}>{row.asrbId?<span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>:<Nil/>}</td>
+                <td className={TD} style={{wordBreak:"break-word"}}>
+                  <span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span>
+                  {authorityImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
+                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
+                  {row.asrbId
+                    ? <span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>
+                    : <Nil/>}
+                  {asrbImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                </td>
                 <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
                   <span className={oos?"line-through":""}>{row.smeComments||<Nil/>}</span>
+                  {smeImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
                 {extra.evergreen && <td className={TD}>{row.initialEvergreen||"—"}</td>}
                 {extra.ingestion && <td className={TD}>{row.dateOfIngestion||"—"}</td>}
@@ -677,7 +770,7 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
   );
 }
 
-function MetaGrid({ values, format, brdId, images }: { values: Record<string, string>; format: Format; brdId?: string; images: CellImageMeta[] }) {
+function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<string, string>; format: Format; metadata?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const fields = format === "old"
     ? [
         {label:"Source Name",key:"sourceName"},
@@ -726,7 +819,7 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
         {label:"Status",key:"status"},
       ];
   const commentMap = parseMetadataComments(values.smeComments, fields.map((field) => field.label));
-
+  const customRows = extractCustomMetadataRows(metadata);
 
   // tableIndex=5 is the metadata table: col0=label, col1=value(Document Location)
   const metaImgs = images.filter(img =>
@@ -778,6 +871,22 @@ function MetaGrid({ values, format, brdId, images }: { values: Record<string, st
               </td>
               <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
                 {rowComment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              </td>
+            </tr>
+          );
+        })}
+        {customRows.map((row, index) => {
+          const stripeIndex = fields.length + index;
+          return (
+            <tr key={row.id} className={stripeIndex%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+              <td className="px-3 py-2 w-44 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-violet-600 dark:text-violet-400 align-middle whitespace-pre-wrap break-words" style={MONO}>
+                {row.label || "Custom Row"}
+              </td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {row.value || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              </td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {row.comment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
               </td>
             </tr>
           );
@@ -1373,7 +1482,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
         
         <DocBlock id="section-metadata">
           <DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/>
-          <MetaGrid values={metadataValues} format={activeFormat} brdId={brdId} images={images} />
+          <MetaGrid values={metadataValues} format={activeFormat} metadata={metadataData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
         

@@ -69,13 +69,33 @@ function resolveGeography(meta: Record<string, unknown> | null): string {
   return '—'
 }
 
+function getMetaString(meta: Record<string, unknown> | null, keys: string[]): string {
+  if (!meta) return ''
+  for (const key of keys) {
+    const value = meta[key]
+    if (typeof value !== 'string') continue
+    const cleaned = value.trim()
+    if (!cleaned || /^\{.*\}$/.test(cleaned)) continue
+    return cleaned
+  }
+  return ''
+}
+
 function derivedFormat(format: string, meta: Record<string, unknown> | null): 'old' | 'new' {
-  const storedFmt  = (meta?._format as string) ?? ''
-  const hasLegacy  = !!(meta?.payload_subtype || meta?.source_type || meta?.authoritative_source)
-  if (storedFmt === 'old') return 'old'
-  if (storedFmt === 'new') return 'new'
-  if (hasLegacy)           return 'old'
-  return format === 'OLD'  ? 'old' : 'new'
+  const storedFmt = String(meta?._format ?? '').toLowerCase()
+  const sourceName = getMetaString(meta, ['source_name', 'sourceName', 'Source Name'])
+  const sourceType = getMetaString(meta, ['source_type', 'sourceType', 'Source Type'])
+  const contentCategory = getMetaString(meta, [
+    'content_category_name',
+    'contentCategoryName',
+    'Content Category Name',
+    'Content Category',
+  ])
+
+  if (contentCategory) return 'new'
+  if (sourceName && sourceType) return 'old'
+  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
+  return format === 'OLD' ? 'old' : 'new'
 }
 
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
@@ -475,12 +495,11 @@ router.post('/fix-formats', requireBrdEdit, authorize(['SUPER_ADMIN', 'ADMIN']),
       const meta = (b.metadata ?? null) as Record<string, unknown> | null
       if (!meta) continue
 
-      const storedFmt  = (meta._format as string) ?? ''
-      const hasLegacy  = !!(meta.payload_subtype || meta.source_type || meta.authoritative_source)
-      const shouldBeOld = storedFmt === 'old' || (hasLegacy && storedFmt !== 'new')
+      const detected = derivedFormat(b.format, meta)
+      const dbFormat = detected === 'old' ? 'OLD' : 'NEW'
 
-      if (shouldBeOld && b.format !== 'OLD') {
-        await pool.query(`UPDATE brds SET format = 'OLD' WHERE brd_id = $1`, [b.brdId])
+      if (b.format !== dbFormat) {
+        await pool.query(`UPDATE brds SET format = $2 WHERE brd_id = $1`, [b.brdId, dbFormat])
         fixed++
       }
     }
