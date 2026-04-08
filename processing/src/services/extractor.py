@@ -63,9 +63,11 @@ def _extract_doc(path: str) -> str:
             return _extract_docx(str(temp_docx))
         if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
             return _extract_docx(str(temp_docx))
+        if _convert_doc_to_docx_with_pandoc(path, str(temp_docx)):
+            return _extract_docx(str(temp_docx))
         raise ValueError(
-            "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
-            "or LibreOffice ('soffice' in PATH)."
+            "Failed to read legacy .doc file. Install pywin32 (Windows + Word), "
+            "LibreOffice ('soffice' in PATH), or Pandoc ('pandoc' in PATH)."
         )
     finally:
         try:
@@ -128,6 +130,15 @@ def _convert_doc_to_docx_with_soffice(src_path: str, dst_docx_path: str) -> bool
             return False
         target.write_bytes(converted.read_bytes())
         return True
+
+
+def _convert_doc_to_docx_with_pandoc(src_path: str, dst_docx_path: str) -> bool:
+    cmd = ["pandoc", src_path, "-o", dst_docx_path]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and Path(dst_docx_path).exists()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

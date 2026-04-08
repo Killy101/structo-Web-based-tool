@@ -114,7 +114,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     const createdAtMs = new Date(userRow.created_at).getTime()
     const changedAtMs = new Date(userRow.password_changed_at).getTime()
     const sameAsInitialPassword = Math.abs(changedAtMs - createdAtMs) <= 60_000
-    const mustChangePassword = passwordHistoryCount === 0 || (passwordHistoryCount === 1 && sameAsInitialPassword)
+    const mustChangePassword = userRow.role !== 'SUPER_ADMIN' && (passwordHistoryCount === 0 || (passwordHistoryCount === 1 && sameAsInitialPassword))
 
     const token = jwt.sign(
       { userId: userRow.id, role: userRow.role, teamId: userRow.team_id, mustChangePassword },

@@ -7,6 +7,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
+    libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -25,6 +26,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
+    libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
