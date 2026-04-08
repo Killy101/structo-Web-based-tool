@@ -1,46 +1,17 @@
-import asyncio
-import logging
-from contextlib import asynccontextmanager
+import tempfile
+from pathlib import Path
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from src.routers.process import router as process_router
 from src.routers.compare import router as compare_router
-from src.routers.autocompare import router as autocompare_router
-from src.services.autocompare_service import cleanup_old_sessions
-
-logger = logging.getLogger(__name__)
-
-CLEANUP_INTERVAL = 900  # run cleanup every 15 minutes
+from src.services.extractor import convert_doc_to_docx, extract_all_sections, extract_text
 
 
-async def _periodic_cleanup() -> None:
-    """Background task: remove expired autocompare sessions on a regular schedule."""
-    while True:
-        await asyncio.sleep(CLEANUP_INTERVAL)
-        try:
-            removed = cleanup_old_sessions()
-            if removed:
-                logger.info("Periodic cleanup removed %d expired autocompare session(s)", removed)
-        except Exception as exc:
-            logger.warning("Periodic cleanup error: %s", exc)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_periodic_cleanup())
-    yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-app = FastAPI(title="BRD Processing Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="BRD Processing Service", version="1.0.0")
 
 
 # GZip everything EXCEPT the streaming diff endpoint (buffering kills SSE/NDJSON)
@@ -67,7 +38,67 @@ app.add_middleware(
 
 app.include_router(process_router)
 app.include_router(compare_router)
-app.include_router(autocompare_router)
+
+
+@app.post("/process")
+async def process_upload(
+    file: UploadFile = File(...),
+    brd_id: str | None = Query(default=None),
+):
+    """Process a single BRD source file for the backend upload flow."""
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".pdf", ".doc", ".docx"}:
+        raise HTTPException(status_code=400, detail="Only PDF, DOC, and DOCX files are supported")
+
+    temp_path: str | None = None
+    converted_docx_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(await file.read())
+            temp_path = temp_file.name
+
+        working_path = temp_path
+        working_suffix = suffix
+
+        if suffix == ".doc":
+            converted_docx_path = convert_doc_to_docx(temp_path)
+            if converted_docx_path:
+                working_path = converted_docx_path
+                working_suffix = ".docx"
+
+        raw_text = extract_text(working_path, working_suffix)
+        extraction_input = working_path if working_suffix == ".docx" else raw_text
+        extracted = await extract_all_sections(extraction_input, brd_id=brd_id)
+
+        result = dict(extracted)
+        cell_images = result.pop("cell_images", [])
+
+        if "contentProfile" in result and "content_profile" not in result:
+            result["content_profile"] = result["contentProfile"]
+        if "brdConfig" in result and "brd_config" not in result:
+            result["brd_config"] = result["brdConfig"]
+
+        result["filename"] = filename
+        result["char_count"] = len(raw_text)
+        result["detected_format"] = result.get("format", "new")
+        result["image_metadata"] = cell_images
+        return result
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {exc}") from exc
+    finally:
+        for path_str in {temp_path, converted_docx_path}:
+            if not path_str:
+                continue
+            try:
+                Path(path_str).unlink(missing_ok=True)
+            except Exception:
+                pass
+
 
 @app.get("/health")
 def health():

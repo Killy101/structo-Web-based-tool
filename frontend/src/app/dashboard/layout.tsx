@@ -57,12 +57,6 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
     "ADMIN",
     "USER",
   ],
-  // AutoCompare: same access as Compare
-  "/dashboard/autocompare": [
-    "SUPER_ADMIN",
-    "ADMIN",
-    "USER",
-  ],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -77,10 +71,6 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard/compare": {
     title: "Compare BRD Sources",
     subtitle: "Compare document processing sources",
-  },
-  "/dashboard/autocompare": {
-    title: "AutoCompare",
-    subtitle: "AI-assisted PDF + XML comparison and update",
   },
   "/dashboard/files": {
     title: "File Upload",
@@ -283,7 +273,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const isBrdRoute =
     pathname.startsWith("/dashboard/brd") ||
     pathname.startsWith("/dashboard/compare") ||
-    pathname.startsWith("/dashboard/autocompare") ||
     pathname.startsWith("/dashboard/logs");
 
   const hasFeature = (feature: string | string[]) => {
@@ -307,14 +296,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     (pathname.startsWith("/dashboard/compare") &&
       !hasFeature([
         "compare-basic",
-        "compare-chunk",
-        "compare-merge",
-        "compare-pdf-xml-only",
-      ])) ||
-    (pathname.startsWith("/dashboard/autocompare") &&
-      !hasFeature([
-        "compare-basic",
-        "compare-chunk",
         "compare-merge",
         "compare-pdf-xml-only",
       ]));

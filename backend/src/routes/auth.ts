@@ -29,7 +29,7 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<'ADMIN' | 'USER', str
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-chunk', 'compare-merge'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-merge'],
   }
   return {
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],

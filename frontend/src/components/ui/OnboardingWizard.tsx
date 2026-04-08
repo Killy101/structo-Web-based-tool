@@ -37,8 +37,8 @@ const STEPS = [
     bullets: [
       "BRD Sources — manage document processing sources",
       "Compare — side-by-side document diff viewer",
-      "AutoCompare — AI-assisted automated comparison",
       "History — full audit trail of all actions",
+      "Logs — activity visibility for admins",
     ],
   },
   {
@@ -54,7 +54,7 @@ const STEPS = [
     color: "#10b981",
     bullets: [
       "① Go to BRD Sources → upload your document pair",
-      "② Open Compare or AutoCompare",
+      "② Open Compare",
       "③ Review diffs and export validated XML",
     ],
   },
@@ -71,7 +71,7 @@ const STEPS = [
     color: "#a78bfa",
     bullets: [
       "Press ? to open keyboard shortcuts help",
-      "Alt+1–4 to jump between main pages",
+      "Use Alt+1–3, H, and U to jump between key pages",
       "Click the Live Activity button for the audit feed",
     ],
   },

@@ -131,7 +131,6 @@ function buildPolicyPresetFeatures(
           "dashboard",
           "brd-view-generate",
           "compare-basic",
-          "compare-chunk",
           "compare-merge",
         ];
   }

@@ -11,7 +11,7 @@ type PolicyRole = (typeof POLICY_ROLES)[number]
 
 const FEATURE_CATALOG: Record<string, string> = {
   dashboard: 'Dashboard', 'brd-process': 'BRD Process', 'brd-view-generate': 'BRD View and Generate Sources',
-  'user-management': 'User Management', 'compare-basic': 'Compare', 'compare-chunk': 'Compare Chunk',
+  'user-management': 'User Management', 'compare-basic': 'Compare',
   'compare-merge': 'Compare Merge', 'compare-pdf-xml-only': 'Compare PDF + XML Only', 'user-logs': 'User Logs',
 }
 
@@ -35,7 +35,7 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<PolicyRole, string[]>
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-chunk', 'compare-merge'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-merge'],
   }
   return {
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],

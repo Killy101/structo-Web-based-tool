@@ -67,7 +67,6 @@ const NAV_ITEMS: NavItem[] = [
     roles: ["SUPER_ADMIN", "ADMIN", "USER"],
     feature: [
       "compare-basic",
-      "compare-chunk",
       "compare-merge",
       "compare-pdf-xml-only",
     ],
@@ -89,32 +88,6 @@ const NAV_ITEMS: NavItem[] = [
           strokeLinejoin="round"
           strokeWidth={1.8}
           d="M9 10l2 2-2 2m6-4l-2 2 2 2"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "/dashboard/autocompare",
-    label: "AutoCompare",
-    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
-    feature: [
-      "compare-basic",
-      "compare-chunk",
-      "compare-merge",
-      "compare-pdf-xml-only",
-    ],
-    icon: (
-      <svg
-        className="w-5 h-5"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={1.8}
-          d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
         />
       </svg>
     ),
@@ -208,6 +181,7 @@ const TYPE_DOT: Record<string, string> = {
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  onMobileClose?: () => void;
   hoverMode?: boolean;
 }
 

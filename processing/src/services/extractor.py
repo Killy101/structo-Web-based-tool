@@ -64,35 +64,21 @@ def _extract_docx(path: str) -> str:
 
 def _extract_doc(path: str) -> str:
     """Extract text from legacy .doc by converting to a temporary .docx."""
-<<<<<<< HEAD
-    temp_docx_path = convert_legacy_doc_to_docx(path)
-=======
     if _is_mhtml_doc(path):
         mhtml_text = _extract_mhtml_doc_text(path)
         if mhtml_text.strip():
             return mhtml_text
 
-    # Use a unique path without pre-creating the file, same reason as convert_doc_to_docx.
-    temp_docx_path = os.path.join(
-        tempfile.gettempdir(), f"brd_extract_{uuid.uuid4().hex}.docx"
-    )
->>>>>>> 9db71dee7d64e1430604bf68c3c05c96cf2b0c82
+    temp_docx_path = convert_doc_to_docx(path)
+    if not temp_docx_path:
+        raise ValueError(
+            "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
+            "or LibreOffice ('soffice' in PATH)."
+        )
+
     temp_docx = Path(temp_docx_path)
     try:
-<<<<<<< HEAD
-        if _convert_doc_to_docx_with_word(path, str(temp_docx)):
-            return _extract_docx(str(temp_docx))
-        if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
-            return _extract_docx(str(temp_docx))
-        if _convert_doc_to_docx_with_pandoc(path, str(temp_docx)):
-            return _extract_docx(str(temp_docx))
-        raise ValueError(
-            "Failed to read legacy .doc file. Install pywin32 (Windows + Word), "
-            "LibreOffice ('soffice' in PATH), or Pandoc ('pandoc' in PATH)."
-        )
-=======
         return _extract_docx(str(temp_docx))
->>>>>>> 8faea7800fef24b242d648c460d7130cbf21a05f
     finally:
         try:
             temp_docx.unlink(missing_ok=True)
@@ -100,31 +86,6 @@ def _extract_doc(path: str) -> str:
             pass
 
 
-<<<<<<< HEAD
-def convert_legacy_doc_to_docx(path: str) -> str:
-    """
-    Convert a legacy .doc file to a temporary .docx path and return that path.
-    Caller is responsible for deleting the returned temp file.
-    """
-    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
-    os.close(temp_fd)
-    temp_docx = Path(temp_docx_path)
-
-    if _convert_doc_to_docx_with_word(path, str(temp_docx)):
-        return str(temp_docx)
-    if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
-        return str(temp_docx)
-
-    try:
-        temp_docx.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    raise ValueError(
-        "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
-        "or LibreOffice ('soffice' in PATH)."
-    )
-=======
 def _is_mhtml_doc(path: str) -> bool:
     try:
         with open(path, "rb") as f:
@@ -469,7 +430,6 @@ def convert_doc_to_docx(src_path: str) -> str | None:
     print("[WARN convert_doc_to_docx] All conversion methods failed. "
           "Install pywin32 (Windows+Word) or LibreOffice to handle binary .doc files.")
     return None
->>>>>>> 9db71dee7d64e1430604bf68c3c05c96cf2b0c82
 
 
 def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
