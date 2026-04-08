@@ -55,7 +55,7 @@ export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
     const errorMsg = "RESEND_API_KEY not configured in environment";
-    console.error("[email]", errorMsg);
+    console.log("[email]", errorMsg);
     return { success: false, error: errorMsg };
   }
 
@@ -65,14 +65,14 @@ export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<
 
   if (recipients.length === 0) {
     const errorMsg = "No recipient email provided";
-    console.error("[email]", errorMsg);
+    console.log("[email]", errorMsg);
     return { success: false, error: errorMsg };
   }
 
   const invalidRecipient = recipients.find((r) => !isValidRecipient(r));
   if (invalidRecipient) {
     const errorMsg = `Invalid recipient email format: ${invalidRecipient}`;
-    console.error("[email]", errorMsg);
+    console.log("[email]", errorMsg);
     return { success: false, error: errorMsg };
   }
 
@@ -95,7 +95,7 @@ export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<
     
     if (result.error) {
       const errorMsg = `Resend error: ${result.error.message || JSON.stringify(result.error)}`;
-      console.error("[email] Failed to send password email:", errorMsg);
+      console.log("[email] Failed to send password email:", errorMsg);
       return { success: false, error: errorMsg };
     }
     
@@ -103,7 +103,7 @@ export async function sendPasswordEmail(input: SendPasswordEmailInput): Promise<
     return { success: true };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error("[email] Exception while sending password email:", errorMsg);
+    console.log("[email] Exception while sending password email:", errorMsg);
     return { success: false, error: errorMsg };
   }
 }

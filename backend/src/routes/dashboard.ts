@@ -77,7 +77,7 @@ router.get('/stats', authenticate, async (req: AuthRequest, res: Response) => {
       recentActivity:   recentActivityRes.rows,
     })
   } catch (error) {
-    console.error('Dashboard stats error:', error)
+    console.log('Dashboard stats error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

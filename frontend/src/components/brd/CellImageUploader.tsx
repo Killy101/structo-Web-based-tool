@@ -1,6 +1,6 @@
 "use client";
 // CellImageUploader.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import api from "@/app/lib/api";
 import BrdImage from "./BrdImage";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -53,6 +53,14 @@ export default function CellImageUploader({
   const [deleting, setDeleting]   = useState<number | null>(null);
   const [error, setError]         = useState<string | null>(null);
 
+  const dismiss = useCallback(() => {
+    if (preview) URL.revokeObjectURL(preview);
+    setPreview(null);
+    setPending(null);
+    setOpen(false);
+    setError(null);
+  }, [preview]);
+
   // Close popover on outside click
   useEffect(() => {
     if (!open) return;
@@ -63,7 +71,7 @@ export default function CellImageUploader({
     }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [open, pending]);
+  }, [open, pending, dismiss]);
 
   // Cleanup object URL on unmount
   useEffect(() => {
@@ -151,14 +159,6 @@ export default function CellImageUploader({
     } finally {
       setDeleting(null);
     }
-  }
-
-  function dismiss() {
-    if (preview) URL.revokeObjectURL(preview);
-    setPreview(null);
-    setPending(null);
-    setOpen(false);
-    setError(null);
   }
 
   const hasImages = existingImages.length > 0;

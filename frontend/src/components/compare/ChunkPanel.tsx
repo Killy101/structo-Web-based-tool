@@ -568,7 +568,6 @@ export default function ChunkPanel({
   onFilesReady,
   onJobCreated,
   activeJob,
-  fileCount = 2,
   conversionPair = "pdf-to-pdf",
 }: ChunkPanelProps) {
   const exts = EXT_MAP[conversionPair];
@@ -633,7 +632,7 @@ export default function ChunkPanel({
             onJobCreated({ job_id: currentJobId, source_name: chunksData.source_name ?? "", status: "done" });
             const firstChanged = allChunks.find((c: PdfChunk) => c.has_changes);
             if (firstChanged) setSelectedIdx(firstChanged.index);
-          } catch (fetchErr) {
+          } catch {
             setLoading(false);
             setError("Failed to load results. Try refreshing.");
           }
@@ -665,7 +664,7 @@ export default function ChunkPanel({
     };
     reader.onerror = () => { setXmlLevels([]); setTagName(""); setLoadingLevels(false); };
     reader.readAsText(xmlFile, "utf-8");
-  }, [xmlFile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [xmlFile]);
 
   const filteredChunks = chunks.filter(c => {
     const matchFilter =

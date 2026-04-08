@@ -534,7 +534,7 @@ export default function BrdPage() {
     } catch (err) {
       const error = err as { response?: { data?: { error?: string } }; message?: string };
       setFetchError(error?.response?.data?.error ?? error?.message ?? "Unknown error");
-      console.error("Failed to fetch BRDs:", err);
+      console.log("Failed to fetch BRDs:", err);
     } finally { setLoading(false); }
   }, []);
 
@@ -571,7 +571,7 @@ export default function BrdPage() {
     try {
       const res = await api.get<(Brd & { deletedAt: string })[]>("/brd/deleted");
       setDeletedBrds(res.data);
-    } catch (err) { console.error("Failed to fetch deleted BRDs:", err); }
+    } catch (err) { console.log("Failed to fetch deleted BRDs:", err); }
     finally { setTrashLoading(false); }
   };
 
@@ -581,7 +581,7 @@ export default function BrdPage() {
       await api.post(`/brd/${id}/restore`);
       setDeletedBrds(prev => prev.filter(b => b.id !== id));
       fetchBrds();
-    } catch (err) { console.error("Failed to restore BRD:", err); }
+    } catch (err) { console.log("Failed to restore BRD:", err); }
     finally { setRestoring(null); }
   };
 
@@ -592,7 +592,7 @@ export default function BrdPage() {
       setDeletedBrds(prev => prev.filter(item => item.id !== brd.id));
       fetchBrds();
     } catch (err) {
-      console.error("Failed to permanently delete BRD:", err);
+      console.log("Failed to permanently delete BRD:", err);
     } finally {
       setPermanentDeleting(null);
       setPermanentDeleteTarget(null);
@@ -614,7 +614,7 @@ export default function BrdPage() {
       setTrashSelected(new Set());
       fetchBrds();
     } catch (err) {
-      console.error("Failed to bulk permanently delete BRDs:", err);
+      console.log("Failed to bulk permanently delete BRDs:", err);
     } finally {
       setBulkTrashDeleting(false);
       setBulkTrashDeleteOpen(false);
@@ -629,7 +629,7 @@ export default function BrdPage() {
       setBrds(prev => prev.filter(b => b.id !== deleteTarget.id));
       setSelected(s => { const n = new Set(s); n.delete(deleteTarget.id); return n; });
       setDeleteTarget(null);
-    } catch (err) { console.error("Failed to delete BRD:", err); }
+    } catch (err) { console.log("Failed to delete BRD:", err); }
     finally { setDeleteLoading(false); }
   };
 
@@ -654,7 +654,7 @@ export default function BrdPage() {
           await api.delete(`/brd/${id}`, { timeout: 30000 });
           deletedIds.add(id);
         } catch (err) {
-          console.error(`Failed to delete BRD ${id}:`, err);
+          console.log(`Failed to delete BRD ${id}:`, err);
           failedIds.push(id);
         }
       }
@@ -671,7 +671,7 @@ export default function BrdPage() {
         setBulkDeleteOpen(false);
       }
     } catch (err) {
-      console.error("Failed to bulk delete:", err);
+      console.log("Failed to bulk delete:", err);
       const error = err as { response?: { data?: { error?: string } }; message?: string };
       setFetchError(error?.response?.data?.error ?? error?.message ?? "Failed to bulk delete");
     }
@@ -719,7 +719,7 @@ export default function BrdPage() {
     } catch (err) {
       const error = err as { response?: { data?: { error?: string } }; message?: string };
       setFetchError(error?.response?.data?.error ?? error?.message ?? "Re-upload failed");
-      console.error("Failed to re-upload BRD:", err);
+      console.log("Failed to re-upload BRD:", err);
     } finally {
       setReuploadingId(null);
       setReuploadTargetId(null);

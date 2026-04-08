@@ -369,7 +369,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         });
         setCellImages(restored);
       } catch (err) {
-        console.error("[TOC] Error fetching images:", err);
+        console.log("[TOC] Error fetching images:", err);
       }
     };
     fetchImages();

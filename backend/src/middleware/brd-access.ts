@@ -64,7 +64,7 @@ export async function attachBrdAccessPolicy(req: AuthRequest, res: Response, nex
     res.locals.brdAccess = buildPolicy({ userId: rows[0].id, role: rows[0].role, teamSlug: rows[0].team_slug ?? null })
     return next()
   } catch (error) {
-    console.error('[BRD access policy]', error)
+    console.log('[BRD access policy]', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

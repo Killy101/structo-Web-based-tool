@@ -13,7 +13,6 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["Alt", "1"], description: "Go to Dashboard", category: "Navigation" },
   { keys: ["Alt", "2"], description: "Go to BRD Sources", category: "Navigation" },
   { keys: ["Alt", "3"], description: "Go to Compare", category: "Navigation" },
-  { keys: ["Alt", "4"], description: "Go to AutoCompare", category: "Navigation" },
   { keys: ["Alt", "H"], description: "Go to History", category: "Navigation" },
   { keys: ["Alt", "U"], description: "Go to User Management", category: "Navigation" },
   // UI
@@ -77,7 +76,6 @@ export default function KeyboardShortcuts() {
         case "1": e.preventDefault(); router.push("/dashboard"); break;
         case "2": e.preventDefault(); router.push("/dashboard/brd"); break;
         case "3": e.preventDefault(); router.push("/dashboard/compare"); break;
-        case "4": e.preventDefault(); router.push("/dashboard/autocompare"); break;
         case "h": case "H": e.preventDefault(); router.push("/dashboard/history"); break;
         case "u": case "U": e.preventDefault(); router.push("/dashboard/users"); break;
         case "a": case "A":

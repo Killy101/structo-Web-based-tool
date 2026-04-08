@@ -16,7 +16,7 @@ export async function createNotification(
       [userId, type, title, message, meta ? JSON.stringify(meta) : null],
     )
   } catch (err) {
-    console.error('Failed to create notification:', err)
+    console.log('Failed to create notification:', err)
   }
 }
 

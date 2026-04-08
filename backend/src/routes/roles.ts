@@ -40,7 +40,7 @@ router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (_req: 
     const formatted = roles.map((r: any) => ({ ...r, _count: { users: r.userCount } }))
     res.json({ roles: formatted })
   } catch (error) {
-    console.error('Get roles error:', error)
+    console.log('Get roles error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -55,7 +55,7 @@ router.get('/base-policies', authenticate, authorize(['SUPER_ADMIN']), async (_r
     )
     res.json({ policies })
   } catch (error) {
-    console.error('Get base policies error:', error)
+    console.log('Get base policies error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -79,7 +79,7 @@ router.patch('/base-policies/:role', authenticate, authorize(['SUPER_ADMIN']), a
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BASE_ROLE_POLICY_UPDATED', $2)`, [req.user!.userId, `Updated feature policy for ${role}`])
     res.json({ message: 'Base role policy updated', policy: { id: updated[0].id, role, features: updated[0].features, updatedAt: updated[0].updatedAt } })
   } catch (error) {
-    console.error('Update base policy error:', error)
+    console.log('Update base policy error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -105,7 +105,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthReque
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'ROLE_CREATED', $2)`, [req.user!.userId, `Created user role "${name.trim()}"`])
     res.status(201).json({ message: 'Role created', role: role[0] })
   } catch (error) {
-    console.error('Create role error:', error)
+    console.log('Create role error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -143,7 +143,7 @@ router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthR
     )
     res.json({ message: 'Role updated', role: updated[0] })
   } catch (error) {
-    console.error('Update role error:', error)
+    console.log('Update role error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -162,7 +162,7 @@ router.delete('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: Auth
     await pool.query(`DELETE FROM user_roles WHERE id = $1`, [targetId])
     res.json({ message: 'Role deleted' })
   } catch (error) {
-    console.error('Delete role error:', error)
+    console.log('Delete role error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

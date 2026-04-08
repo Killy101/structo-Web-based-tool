@@ -943,7 +943,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
         });
         setCellImages(restored);
       })
-      .catch(err => console.error("[Scope] Error fetching images:", err));
+      .catch(err => console.log("[Scope] Error fetching images:", err));
   }, [brdId]);
 
   useEffect(() => {

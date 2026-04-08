@@ -156,7 +156,7 @@ export async function createNotification(
     });
   } catch (err) {
     // Notifications are non-critical; log but do not throw
-    console.error("Failed to create notification:", err);
+    console.log("Failed to create notification:", err);
   }
 }
 &nbsp;

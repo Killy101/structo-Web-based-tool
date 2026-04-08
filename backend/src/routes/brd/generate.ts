@@ -218,15 +218,18 @@ function pickHardcodedToken(raw: string): string {
     return "{string}";
   }
 
-  const slashMatch = text.match(/\/[A-Za-z][A-Za-z0-9-]*/);
-  if (slashMatch?.[0]) return slashMatch[0];
+  const slashMatch = text.match(/\/[A-Za-z0-9][A-Za-z0-9._/-]*/);
+  if (slashMatch?.[0]) return slashMatch[0].replace(/[),.;]+$/, "");
 
-  const tokenMatch = text.match(/[A-Za-z][A-Za-z0-9-]*/);
-  if (!tokenMatch?.[0]) return "";
+  const tokenMatches = text.match(/[A-Za-z][A-Za-z0-9._-]*/g) ?? [];
+  const ignored = new Set(["hardcoded", "path", "level", "definition"]);
+  for (let i = tokenMatches.length - 1; i >= 0; i -= 1) {
+    const token = tokenMatches[i];
+    if (!token || ignored.has(token.toLowerCase()) || isPlaceholderLevelToken(token)) continue;
+    return token.replace(/[),.;]+$/, "");
+  }
 
-  const token = tokenMatch[0];
-  if (isPlaceholderLevelToken(token)) return "";
-  return token;
+  return "";
 }
 
 function deriveRootPathFromContentProfile(
@@ -1142,7 +1145,7 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
 
     res.json({ success: true, metajson, filename: `${filename}.json` });
   } catch (err) {
-    console.error("[generate/metajson] error:", err);
+    console.log("[generate/metajson] error:", err);
     res.status(500).json({ success: false, error: "Failed to generate metajson" });
   }
 });

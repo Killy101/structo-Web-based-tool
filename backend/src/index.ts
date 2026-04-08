@@ -97,7 +97,7 @@ async function runStartupMigrations() {
     `)
     console.log('[migrations] users_id_seq reset OK')
   } catch (err) {
-    console.error('[migrations] startup migration failed:', err)
+    console.log('[migrations] startup migration failed:', err)
   }
 }
 

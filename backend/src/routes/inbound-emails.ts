@@ -72,7 +72,7 @@ router.post('/inbound/resend', async (req: Request, res: Response) => {
 
     res.status(201).json({ message: 'Inbound email stored', email: rows[0] })
   } catch (error) {
-    console.error('Inbound email webhook error:', error)
+    console.log('Inbound email webhook error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -90,7 +90,7 @@ router.get('/inbound', authenticate, authorize(['SUPER_ADMIN']), async (_req: Au
 
     res.json({ emails: rows })
   } catch (error) {
-    console.error('Get inbound emails error:', error)
+    console.log('Get inbound emails error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -119,7 +119,7 @@ router.patch('/inbound/:id/processed', authenticate, authorize(['SUPER_ADMIN']),
 
     res.json({ message: 'Inbound email updated', email: rows[0] })
   } catch (error) {
-    console.error('Update inbound email status error:', error)
+    console.log('Update inbound email status error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

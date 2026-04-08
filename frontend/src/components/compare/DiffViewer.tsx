@@ -207,7 +207,7 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
 
   // ── Filtered chunks by section ──────────────────────────────────────────
   const mapSection = useCallback(
-    sectionMapper ?? ((s: string) => s || null),
+    (section: string) => (sectionMapper ? sectionMapper(section) : section || null),
     [sectionMapper],
   );
 
@@ -226,7 +226,7 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
       additions: fc.filter((c) => c.kind === "add").length,
       deletions: fc.filter((c) => c.kind === "del").length,
       modifications: fc.filter((c) => c.kind === "mod").length,
-      empties: fc.filter((c) => c.kind === "emp").length,
+      emphasis: fc.filter((c) => c.kind === "emp").length,
     };
   }, [filteredChunks, filterSection, result.stats]);
 
@@ -276,7 +276,7 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
                   className="w-full text-[10px] font-semibold rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/[0.04] text-slate-700 dark:text-slate-200 pl-7 pr-7 py-1.5 focus:outline-none focus:ring-1 focus:ring-teal-500/40 focus:border-teal-500/40 appearance-none cursor-pointer truncate"
                 >
                   <option value="">All Sections ({totalNonEmp})</option>
-                  {xmlSections.map((s) => (
+                  {sectionsWithChanges.map((s) => (
                     <option key={s.id} value={s.label}>
                       {s.label} ({sectionCountMap.get(s.label) ?? 0})
                     </option>

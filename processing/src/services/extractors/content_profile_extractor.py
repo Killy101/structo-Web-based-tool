@@ -25,7 +25,7 @@ REDJAy XML Tag generation rules (from spreadsheet):
 
 from .scope_extractor    import extract_scope
 from .metadata_extractor import extract_metadata
-from .toc_extractor      import extract_toc
+from .toc_extractor      import extract_toc, _extract_path_from_definition
 
 
 # ---------------------------------------------------------------------------
@@ -472,36 +472,20 @@ def extract_content_profile(doc) -> dict:
     toc_sections_pre: list[dict] = toc.get("sections") or []
 
     import re as _re_path
-    _HARDCODED_PATH_RE = _re_path.compile(r"hardcoded\s*[–\-—:]?\s*(/\S+)", _re_path.IGNORECASE)
-    _BARE_PATH_RE      = _re_path.compile(r"^\s*(/[A-Za-z][A-Za-z0-9_/-]*)\s*$")
 
     def _path_from_section(sec: dict) -> str:
-        """
-        Return the path segment for a Level 0 or Level 1 section.
-        Priority:
-          1. "path" key already populated by toc_extractor (legacy BRDs)
-          2. Parse it live from the "definition" field
-             e.g. "Hardcoded – /us"         → "/us"
-                  "Hardcoded –/aladmincode"  → "/aladmincode"
-                  "Hardcoded - /de"          → "/de"
-                  "Hardcoded: /kr"           → "/kr"
-                  "/KRNARKActs"              → "/KRNARKActs"  (bare path)
-        Never falls back to a hardcoded value like "/us".
-        """
+        """Return the extracted hardcoded path token for a Level 0 or 1 section."""
         path = str(sec.get("path") or "").strip()
         if path:
             return path
         defn = str(sec.get("definition") or "")
-        m = _HARDCODED_PATH_RE.search(defn)
-        if m:
-            return m.group(1).rstrip(".,;")
-        # Fallback: definition is itself a bare path segment (e.g. KR.NARK Level 0/1)
-        m2 = _BARE_PATH_RE.match(defn)
-        return m2.group(1).rstrip(".,;") if m2 else ""
+        return _extract_path_from_definition(defn)
 
     _level_paths: dict[str, str] = {}
     for _sec in toc_sections_pre:
-        _lv = str(_sec.get("level", "")).strip()
+        _lv_raw = str(_sec.get("level", "")).strip()
+        _lv_match = _re_path.search(r"\d+", _lv_raw)
+        _lv = _lv_match.group(0) if _lv_match else _lv_raw
         if _lv in ("0", "1"):
             _level_paths[_lv] = _path_from_section(_sec)
 

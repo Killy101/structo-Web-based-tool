@@ -93,7 +93,7 @@ router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: A
 
     res.json({ users })
   } catch (error) {
-    console.error('Get users error:', error)
+    console.log('Get users error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -166,7 +166,7 @@ router.post('/create', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async 
 
     res.status(201).json({ message: 'User created successfully', generatedPassword, emailSent: emailResult.success, emailError: emailResult.error || undefined, id: newUser.id, userIdStr: newUser.userId })
   } catch (error) {
-    console.error('Create user error:', error)
+    console.log('Create user error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -214,7 +214,7 @@ router.patch('/:id/profile', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), 
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_PROFILE_UPDATED', $2)`, [req.user!.userId, `Updated profile details for ${target.user_id} -> ${updated[0].userId}`])
     res.json({ message: 'User profile updated successfully', user: updated[0] })
   } catch (error) {
-    console.error('Update user profile error:', error)
+    console.log('Update user profile error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -242,7 +242,7 @@ router.patch('/:id/team', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), asy
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_ASSIGNED', $2)`, [req.user!.userId, `Assigned user ${target.user_id} to team ${teamId ?? 'none'}`])
     res.json({ message: 'Team assignment updated' })
   } catch (error) {
-    console.error('Assign team error:', error)
+    console.log('Assign team error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -269,7 +269,7 @@ router.patch('/:id/role', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), asy
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'ROLE_CHANGED', $2)`, [req.user!.userId, `Changed ${target.user_id} from ${target.role} to ${role}`])
     res.json({ message: 'Role updated successfully' })
   } catch (error) {
-    console.error('Change role error:', error)
+    console.log('Change role error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -291,7 +291,7 @@ router.patch('/:id/deactivate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_DEACTIVATED', $2)`, [req.user!.userId, `Deactivated user ${target.user_id}`])
     res.json({ message: 'User deactivated' })
   } catch (error) {
-    console.error('Deactivate user error:', error)
+    console.log('Deactivate user error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -312,7 +312,7 @@ router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']),
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_ACTIVATED', $2)`, [req.user!.userId, `Activated user ${target.user_id}`])
     res.json({ message: 'User activated' })
   } catch (error) {
-    console.error('Activate user error:', error)
+    console.log('Activate user error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -345,7 +345,7 @@ router.delete('/:id/hard', authenticate, authorize(['SUPER_ADMIN']), async (req:
 
     res.json({ message: 'User hard-deleted successfully', deletedUserId: targetId })
   } catch (error) {
-    console.error('Hard delete user error:', error)
+    console.log('Hard delete user error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -386,7 +386,7 @@ router.delete('/hard/purge-non-superadmin', authenticate, authorize(['SUPER_ADMI
       deletedUserIds,
     })
   } catch (error) {
-    console.error('Hard purge users error:', error)
+    console.log('Hard purge users error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -415,7 +415,7 @@ router.patch('/:id/user-role', authenticate, authorize(['SUPER_ADMIN']), async (
     )
     res.json({ message: 'User role updated' })
   } catch (error) {
-    console.error('Assign user role error:', error)
+    console.log('Assign user role error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

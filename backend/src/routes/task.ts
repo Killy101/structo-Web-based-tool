@@ -53,7 +53,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
 
     res.json({ tasks })
   } catch (error) {
-    console.error('Get tasks error:', error)
+    console.log('Get tasks error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -118,7 +118,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: 
 
     res.status(201).json({ message: 'Task created', task: fullTask[0] })
   } catch (error) {
-    console.error('Create task error:', error)
+    console.log('Create task error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -172,7 +172,7 @@ router.patch('/:id/progress', authenticate, async (req: AuthRequest, res: Respon
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TASK_PROGRESS', $2)`, [actorId, `Updated task "${task.title}" to ${percentage ?? updated[0].percentage}%`])
     res.json({ message: 'Task updated', task: updated[0] })
   } catch (error) {
-    console.error('Update task error:', error)
+    console.log('Update task error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -194,7 +194,7 @@ router.get('/:id/comments', authenticate, async (req: AuthRequest, res: Response
     )
     res.json({ comments })
   } catch (error) {
-    console.error('Get comments error:', error)
+    console.log('Get comments error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -235,7 +235,7 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
 
     res.status(201).json({ comment })
   } catch (error) {
-    console.error('Create comment error:', error)
+    console.log('Create comment error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -255,7 +255,7 @@ router.delete('/:id/comments/:commentId', authenticate, async (req: AuthRequest,
     await pool.query(`DELETE FROM task_comments WHERE id = $1`, [commentId])
     res.json({ message: 'Comment deleted' })
   } catch (error) {
-    console.error('Delete comment error:', error)
+    console.log('Delete comment error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -268,7 +268,7 @@ router.delete('/:id', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (
     await pool.query(`UPDATE task_assignments SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`, [taskId])
     res.json({ message: 'Task deleted' })
   } catch (error) {
-    console.error('Delete task error:', error)
+    console.log('Delete task error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -282,7 +282,7 @@ router.post('/:id/restore', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), a
     await pool.query(`UPDATE task_assignments SET deleted_at = NULL, updated_at = NOW() WHERE id = $1`, [taskId])
     res.json({ message: 'Task restored' })
   } catch (error) {
-    console.error('Restore task error:', error)
+    console.log('Restore task error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

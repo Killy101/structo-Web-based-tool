@@ -288,9 +288,10 @@ export default function ComparePage() {
   // Uses allXmlSections to walk parent chains, cached for O(1) per chunk
   // Also builds a normalised-key fallback so PDF-based headings can match
   // Includes backend xml_sections from diff result for full coverage
-  const sectionToChosenMap = React.useMemo(() => {
-    const map = new Map<string, string>();
-    if (xmlSections.length === 0) return map;
+  const sectionLookup = React.useMemo(() => {
+    const exactMap = new Map<string, string>();
+    const normalizedMap = new Map<string, string>();
+    if (xmlSections.length === 0) return { exactMap, normalizedMap };
 
     // Merge client-side and backend sections for maximum label coverage
     const mergedSections = [...allXmlSections];
@@ -302,13 +303,12 @@ export default function ComparePage() {
         }
       }
     }
-    if (mergedSections.length === 0) return map;
+    if (mergedSections.length === 0) return { exactMap, normalizedMap };
 
     const chosenLabels = new Set(xmlSections.map((s) => s.label));
     const byId = new Map(mergedSections.map((s) => [s.id, s]));
 
     const normKey = (s: string) => s.replace(/\W+/g, " ").trim().toLowerCase();
-    const normMap = new Map<string, string>(); // norm(label) → label
 
     for (const sec of mergedSections) {
       // Walk up parent chain until we find a chosen-level ancestor
@@ -323,25 +323,23 @@ export default function ComparePage() {
         cur = byId.get(cur.parent_id);
       }
       if (found) {
-        map.set(sec.label, found);
-        normMap.set(normKey(sec.label), found);
+        exactMap.set(sec.label, found);
+        normalizedMap.set(normKey(sec.label), found);
       }
     }
-    // Attach normMap for fallback lookups
-    (map as any)._norm = normMap;
-    return map;
+
+    return { exactMap, normalizedMap };
   }, [xmlSections, allXmlSections, diffResult]);
 
   function chunkSectionToChosen(chunkSection: string): string | null {
     if (!chunkSection || xmlSections.length === 0) return null;
-    const exact = sectionToChosenMap.get(chunkSection);
+    const exact = sectionLookup.exactMap.get(chunkSection);
     if (exact) return exact;
     // Fallback: normalised match (PDF heading vs XML label)
-    const normMap = (sectionToChosenMap as any)._norm as Map<string, string> | undefined;
-    if (normMap) {
-      const key = chunkSection.replace(/\W+/g, " ").trim().toLowerCase();
-      const nm = normMap.get(key);
-      if (nm) return nm;
+    const key = chunkSection.replace(/\W+/g, " ").trim().toLowerCase();
+    const normalized = sectionLookup.normalizedMap.get(key);
+    if (normalized) {
+      return normalized;
     }
     // Last fallback: if chunk.section directly matches a chosen section label
     const chosenLabels = new Set(xmlSections.map((s) => s.label));
@@ -353,10 +351,6 @@ export default function ComparePage() {
       if (chunkNorm.includes(sNorm) || sNorm.includes(chunkNorm)) return s.label;
     }
     return null;
-  }
-
-  function handleExitWorkflow() {
-    setWorkflow("selector");
   }
 
   async function runDiff() {

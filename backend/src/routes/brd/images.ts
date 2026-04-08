@@ -75,7 +75,7 @@ router.get('/:brdId/images', async (req: AuthRequest, res: Response) => {
 
     return res.json({ images })
   } catch (err) {
-    console.error('[GET /brd/:brdId/images]', err)
+    console.log('[GET /brd/:brdId/images]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -104,7 +104,7 @@ router.get('/:brdId/images/:imageId/blob', async (req: AuthRequest, res: Respons
     res.set('X-Content-Type-Options', 'nosniff')
     return res.send(img.imageData)
   } catch (err) {
-    console.error('[GET /brd/:brdId/images/:imageId/blob]', err)
+    console.log('[GET /brd/:brdId/images/:imageId/blob]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -144,7 +144,7 @@ router.post('/:brdId/images', requireBrdEdit, async (req: Request, res: Response
 
     return res.json({ saved: records.length })
   } catch (err) {
-    console.error('[POST /brd/:brdId/images]', err)
+    console.log('[POST /brd/:brdId/images]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -178,7 +178,7 @@ router.post('/:brdId/images/upload', requireBrdEdit, async (req: Request, res: R
 
     return res.json({ success: true, image: created[0] })
   } catch (err) {
-    console.error('[POST /brd/:brdId/images/upload]', err)
+    console.log('[POST /brd/:brdId/images/upload]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -199,7 +199,7 @@ router.delete('/:brdId/images/:imageId', requireBrdEdit, async (req: Request, re
     await pool.query(`DELETE FROM brd_cell_images WHERE id = $1`, [imageId])
     return res.json({ success: true })
   } catch (err) {
-    console.error('[DELETE /brd/:brdId/images/:imageId]', err)
+    console.log('[DELETE /brd/:brdId/images/:imageId]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
