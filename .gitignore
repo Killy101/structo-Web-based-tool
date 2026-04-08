@@ -15,4 +15,5 @@ Thumbs.db
 .idea/
 
 # Logs
-*.log
+*.log__pycache__/
+*.pyc

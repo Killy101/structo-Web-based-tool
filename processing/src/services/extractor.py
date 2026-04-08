@@ -12,8 +12,12 @@ merging, and normalization happens there.  This file retains:
 
 import re
 import os
+import html
+import shutil
 import subprocess
 import tempfile
+import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from zipfile import BadZipFile
@@ -21,6 +25,7 @@ from zipfile import BadZipFile
 import docx2txt
 import fitz  # PyMuPDF
 from docx import Document
+from lxml import html as lxml_html
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,9 +46,13 @@ def extract_text(file_path: str, suffix: str) -> str:
 
 def _extract_pdf(path: str) -> str:
     doc = fitz.open(path)
-    pages = [page.get_text("text") for page in doc]
-    doc.close()
-    return "\n\n".join(pages)
+    try:
+        pages: list[str] = []
+        for page in doc:
+            pages.append(str(page.get_text("text")))
+        return "\n\n".join(pages)
+    finally:
+        doc.close()
 
 
 def _extract_docx(path: str) -> str:
@@ -55,10 +64,22 @@ def _extract_docx(path: str) -> str:
 
 def _extract_doc(path: str) -> str:
     """Extract text from legacy .doc by converting to a temporary .docx."""
-    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
-    os.close(temp_fd)
+<<<<<<< HEAD
+    temp_docx_path = convert_legacy_doc_to_docx(path)
+=======
+    if _is_mhtml_doc(path):
+        mhtml_text = _extract_mhtml_doc_text(path)
+        if mhtml_text.strip():
+            return mhtml_text
+
+    # Use a unique path without pre-creating the file, same reason as convert_doc_to_docx.
+    temp_docx_path = os.path.join(
+        tempfile.gettempdir(), f"brd_extract_{uuid.uuid4().hex}.docx"
+    )
+>>>>>>> 9db71dee7d64e1430604bf68c3c05c96cf2b0c82
     temp_docx = Path(temp_docx_path)
     try:
+<<<<<<< HEAD
         if _convert_doc_to_docx_with_word(path, str(temp_docx)):
             return _extract_docx(str(temp_docx))
         if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
@@ -69,11 +90,386 @@ def _extract_doc(path: str) -> str:
             "Failed to read legacy .doc file. Install pywin32 (Windows + Word), "
             "LibreOffice ('soffice' in PATH), or Pandoc ('pandoc' in PATH)."
         )
+=======
+        return _extract_docx(str(temp_docx))
+>>>>>>> 8faea7800fef24b242d648c460d7130cbf21a05f
     finally:
         try:
             temp_docx.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+<<<<<<< HEAD
+def convert_legacy_doc_to_docx(path: str) -> str:
+    """
+    Convert a legacy .doc file to a temporary .docx path and return that path.
+    Caller is responsible for deleting the returned temp file.
+    """
+    temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
+    os.close(temp_fd)
+    temp_docx = Path(temp_docx_path)
+
+    if _convert_doc_to_docx_with_word(path, str(temp_docx)):
+        return str(temp_docx)
+    if _convert_doc_to_docx_with_soffice(path, str(temp_docx)):
+        return str(temp_docx)
+
+    try:
+        temp_docx.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    raise ValueError(
+        "Failed to read legacy .doc file. Install pywin32 (Windows + Word) "
+        "or LibreOffice ('soffice' in PATH)."
+    )
+=======
+def _is_mhtml_doc(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            header = f.read(4096)
+        lowered = header.lower()
+        return (
+            b"mime-version" in lowered
+            or b"multipart/related" in lowered
+            or b"exported from confluence" in lowered
+            or b"content-location:" in lowered
+            or b"<html" in lowered
+        )
+    except Exception:
+        return False
+
+
+def _decode_mhtml_payload(payload: bytes | bytearray | str | None, charset: str | None = None) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+
+    raw = bytes(payload)
+    normalized = (charset or "").strip().lower()
+    alias_map = {
+        "unicode": "utf-16le",
+        "utf16": "utf-16",
+        "utf16le": "utf-16le",
+        "utf16be": "utf-16be",
+    }
+
+    candidates: list[str] = []
+    if normalized:
+        candidates.append(alias_map.get(normalized, normalized))
+    if b"\x00" in raw:
+        candidates.extend(["utf-16", "utf-16le", "utf-16be"])
+    candidates.extend(["utf-8", "latin-1"])
+
+    seen: set[str] = set()
+    for encoding in candidates:
+        if not encoding or encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if text.strip("\x00\r\n\t "):
+            return text
+
+    return raw.decode("utf-8", errors="replace")
+
+
+def _extract_html_from_mhtml_doc(path: str) -> str:
+    import quopri
+    from email import policy
+    from email.parser import BytesParser
+
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(raw)
+        if message.is_multipart():
+            html_parts: list[str] = []
+            for part in message.walk():
+                if part.get_content_type() != "text/html":
+                    continue
+                raw_payload = part.get_payload(decode=True)
+                payload: bytes | bytearray | str | None
+                if isinstance(raw_payload, (bytes, bytearray, str)) or raw_payload is None:
+                    payload = raw_payload
+                else:
+                    payload = str(raw_payload)
+                html_text = _decode_mhtml_payload(payload, part.get_content_charset())
+                if html_text.strip():
+                    html_parts.append(html_text)
+            if html_parts:
+                return "\n".join(html_parts)
+    except Exception:
+        pass
+
+    try:
+        decoded = _decode_mhtml_payload(quopri.decodestring(raw), "utf-8")
+    except Exception:
+        decoded = _decode_mhtml_payload(raw, "utf-8")
+
+    match = re.search(r"(<html\b.*?</html>)", decoded, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1) if match else decoded
+
+
+def _normalize_html_text(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _table_signature_from_cells(cells: list[str]) -> str:
+    normalized = [re.sub(r"\s+", " ", str(cell)).strip().lower() for cell in cells[:4]]
+    return " | ".join(cell for cell in normalized if cell)
+
+
+def _append_table_rows_to_docx(rows: list[list[str]], document) -> bool:
+    if not rows:
+        return False
+    max_cols = max((len(row) for row in rows), default=0)
+    if max_cols <= 0:
+        return False
+
+    table = document.add_table(rows=len(rows), cols=max_cols)
+    table.style = "Table Grid"
+    for row_index, row_values in enumerate(rows):
+        for col_index, value in enumerate(row_values):
+            table.cell(row_index, col_index).text = value
+    document.add_paragraph("")
+    return True
+
+
+def _docx_has_expected_brd_tables(docx_path: str) -> bool:
+    try:
+        doc = Document(docx_path)
+    except Exception:
+        return False
+
+    hits: set[str] = set()
+    for table in doc.tables:
+        if not table.rows:
+            continue
+        header = _table_signature_from_cells([cell.text for cell in table.rows[0].cells])
+        if "document title" in header and "reference url" in header:
+            hits.add("scope")
+        if "metadata element" in header and "document location" in header:
+            hits.add("metadata")
+        if "citation rules" in header or ("source of law" in header and "level" in header):
+            hits.add("citation_rules")
+        if "is level citable" in header:
+            hits.add("citable_levels")
+        if "product owner" in header:
+            hits.add("owners")
+
+    return len(hits) >= 4 or {"scope", "metadata", "citation_rules"}.issubset(hits)
+
+
+def _append_html_block_to_docx(node, document) -> None:
+    tag = getattr(node, "tag", None)
+    if not isinstance(tag, str):
+        return
+
+    tag = tag.lower()
+    if tag in {"script", "style", "meta", "link", "head"}:
+        return
+
+    if tag in {"body", "div", "section", "article", "main", "header", "footer"}:
+        for child in node:
+            _append_html_block_to_docx(child, document)
+        return
+
+    if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        text = _normalize_html_text(" ".join(node.itertext()))
+        if text:
+            document.add_heading(text, level=min(int(tag[1]), 6))
+        return
+
+    if tag in {"p", "li"}:
+        text = _normalize_html_text(" ".join(node.itertext()))
+        if text:
+            document.add_paragraph(text)
+        return
+
+    if tag in {"ul", "ol"}:
+        for child in node:
+            _append_html_block_to_docx(child, document)
+        return
+
+    if tag == "table":
+        rows: list[list[str]] = []
+        for row in node.xpath(".//tr"):
+            cells = [
+                _normalize_html_text(" ".join(cell.itertext()))
+                for cell in row.xpath("./th|./td")
+            ]
+            if any(cells):
+                rows.append(cells)
+
+        _append_table_rows_to_docx(rows, document)
+        return
+
+    text = _normalize_html_text(" ".join(node.itertext()))
+    if text and tag not in {"span", "strong", "em", "b", "i", "a", "br"}:
+        document.add_paragraph(text)
+
+
+def _convert_mhtml_doc_to_docx(src_path: str, dst_docx_path: str) -> bool:
+    try:
+        html_source = _extract_html_from_mhtml_doc(src_path)
+        if not html_source.strip():
+            return False
+
+        root = lxml_html.fromstring(html_source)
+        body = root.find("body")
+        if body is None:
+            body = root
+
+        document = Document()
+        before_count = len(document.paragraphs) + len(document.tables)
+        for child in body:
+            _append_html_block_to_docx(child, document)
+
+        existing_signatures = {
+            _table_signature_from_cells([cell.text for cell in table.rows[0].cells])
+            for table in document.tables
+            if table.rows
+        }
+
+        # Some Confluence-exported MHTML is malformed enough that `lxml` drops
+        # later tables (notably Citation Rules and Metadata). Re-scan the raw
+        # HTML with regex and append any missing tables by header signature.
+        for table_html in re.findall(r"<table[^>]*>(.*?)</table>", html_source, flags=re.IGNORECASE | re.DOTALL):
+            rows: list[list[str]] = []
+            for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.IGNORECASE | re.DOTALL):
+                cells = [
+                    _normalize_html_text(cell)
+                    for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
+                ]
+                if any(cells):
+                    rows.append(cells)
+
+            if not rows:
+                continue
+            signature = _table_signature_from_cells(rows[0])
+            if signature and signature in existing_signatures:
+                continue
+            if _append_table_rows_to_docx(rows, document) and signature:
+                existing_signatures.add(signature)
+
+        after_count = len(document.paragraphs) + len(document.tables)
+        if after_count == before_count:
+            text = _normalize_html_text(" ".join(root.itertext()))
+            if not text:
+                return False
+            document.add_paragraph(text)
+
+        document.save(dst_docx_path)
+        return Path(dst_docx_path).exists() and os.path.getsize(dst_docx_path) > 0
+    except Exception as exc:
+        print(f"[WARN convert_doc_to_docx] HTML/MHTML conversion failed: {exc}")
+        return False
+
+
+def _extract_mhtml_doc_text(path: str) -> str:
+    decoded = _extract_html_from_mhtml_doc(path)
+
+    lines: list[str] = []
+
+    # Preserve table rows as pipe-delimited lines so fallback parser can recover scope/citation rows.
+    for table_html in re.findall(r"<table[^>]*>(.*?)</table>", decoded, flags=re.IGNORECASE | re.DOTALL):
+        for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.IGNORECASE | re.DOTALL):
+            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
+            cleaned_cells = [_normalize_html_text(cell) for cell in cells]
+            cleaned_cells = [cell for cell in cleaned_cells if cell]
+            if cleaned_cells:
+                lines.append(" | ".join(cleaned_cells))
+
+    # Keep headings/paragraphs/list items as regular text lines.
+    body_chunks = re.findall(r"<(?:h[1-6]|p|li)[^>]*>(.*?)</(?:h[1-6]|p|li)>", decoded, flags=re.IGNORECASE | re.DOTALL)
+    for chunk in body_chunks:
+        cleaned = _normalize_html_text(chunk)
+        if cleaned:
+            lines.append(cleaned)
+
+    return "\n".join(lines)
+
+
+def convert_doc_to_docx(src_path: str) -> str | None:
+    """
+    Convert a legacy `.doc` file to a temporary `.docx` file.
+
+    Attempts (in order):
+      0. Pure-Python: the file may already be OOXML (ZIP) saved with a `.doc`
+         extension — `python-docx` can open it directly without any extra tools.
+      1. Word COM via pywin32 (Windows + Microsoft Word).
+      2. LibreOffice `soffice` command-line (any platform).
+      3. Pure-Python HTML/MHTML synthesis as a last-resort fallback.
+
+    The HTML/MHTML fallback is intentionally last because it can flatten some
+    Confluence-exported table structure and produce less-complete metadata than
+    a native document conversion.
+
+    Returns the path of the converted `.docx` file on success (the caller is
+    responsible for deleting it), or `None` if all methods fail.
+    """
+    is_mhtml = _is_mhtml_doc(src_path)
+
+    # ── Method 0: file is already OOXML (.docx) saved with a .doc extension ──
+    try:
+        with zipfile.ZipFile(src_path, "r"):
+            pass
+        from docx import Document
+        Document(src_path)
+        temp_fd, temp_docx_path = tempfile.mkstemp(suffix=".docx")
+        os.close(temp_fd)
+        shutil.copy2(src_path, temp_docx_path)
+        print("[DEBUG convert_doc_to_docx] File is OOXML — copied as .docx (no converter needed)")
+        return temp_docx_path
+    except Exception:
+        pass
+
+    # ── Methods 1 & 2: prefer native converters for best table fidelity ──────
+    temp_docx_path = os.path.join(
+        tempfile.gettempdir(), f"brd_convert_{uuid.uuid4().hex}.docx"
+    )
+    temp_docx = Path(temp_docx_path)
+    try:
+        if _convert_doc_to_docx_with_word(src_path, temp_docx_path):
+            if not is_mhtml or _docx_has_expected_brd_tables(temp_docx_path):
+                print(f"[DEBUG convert_doc_to_docx] Converted via Word COM: {temp_docx_path}")
+                return temp_docx_path
+            print("[WARN convert_doc_to_docx] Word conversion lost BRD tables; falling back to HTML/MHTML synthesis")
+            temp_docx.unlink(missing_ok=True)
+
+        if _convert_doc_to_docx_with_soffice(src_path, temp_docx_path):
+            if not is_mhtml or _docx_has_expected_brd_tables(temp_docx_path):
+                print(f"[DEBUG convert_doc_to_docx] Converted via LibreOffice: {temp_docx_path}")
+                return temp_docx_path
+            print("[WARN convert_doc_to_docx] LibreOffice conversion lost BRD tables; falling back to HTML/MHTML synthesis")
+            temp_docx.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"[WARN convert_doc_to_docx] Conversion error: {exc}")
+    temp_docx.unlink(missing_ok=True)
+
+    # ── Method 3: MHTML/HTML fallback for environments without Word/soffice ──
+    if is_mhtml:
+        temp_docx_path = os.path.join(
+            tempfile.gettempdir(), f"brd_html_{uuid.uuid4().hex}.docx"
+        )
+        if _convert_mhtml_doc_to_docx(src_path, temp_docx_path):
+            print(f"[DEBUG convert_doc_to_docx] Converted HTML/MHTML .doc via python-docx fallback: {temp_docx_path}")
+            return temp_docx_path
+        Path(temp_docx_path).unlink(missing_ok=True)
+
+    print("[WARN convert_doc_to_docx] All conversion methods failed. "
+          "Install pywin32 (Windows+Word) or LibreOffice to handle binary .doc files.")
+    return None
+>>>>>>> 9db71dee7d64e1430604bf68c3c05c96cf2b0c82
 
 
 def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
@@ -96,7 +492,8 @@ def _convert_doc_to_docx_with_word(src_path: str, dst_docx_path: str) -> bool:
         document.SaveAs(os.path.abspath(dst_docx_path), FileFormat=16)
         document.Close(False)
         document = None
-        return Path(dst_docx_path).exists()
+        # Verify the file was actually written with real content (not 0 bytes)
+        return Path(dst_docx_path).exists() and os.path.getsize(dst_docx_path) > 100
     except Exception:
         return False
     finally:
@@ -220,6 +617,33 @@ def _fallback_from_text(text: str, format: str) -> dict:
     joined  = "\n".join(lines)
     lowered = joined.lower()
     url_pattern = re.compile(r"https?://[^\s\)\]]+")
+    asrb_pattern = re.compile(r"\bASRB[- ]?\d+\b", re.IGNORECASE)
+
+    def split_url_and_note(raw_value: str) -> tuple[str, str]:
+        raw_value = (raw_value or "").strip()
+        urls = [match.group(0).rstrip(".,;") for match in url_pattern.finditer(raw_value)]
+        if not urls:
+            return (raw_value if "http" in raw_value.lower() else ""), ""
+        primary = max(urls, key=lambda url: (url.count("/"), int("?" in url or "#" in url), len(url)))
+        note_lines: list[str] = []
+        for line in raw_value.splitlines():
+            cleaned = url_pattern.sub("", line).strip()
+            cleaned = re.sub(r"\s+", " ", cleaned)
+            if cleaned:
+                note_lines.append(cleaned)
+        return primary, "\n".join(dict.fromkeys(note_lines))
+
+    def split_asrb_and_comments(asrb_raw: str, sme_raw: str) -> tuple[str, str]:
+        normalize = lambda values: ", ".join(dict.fromkeys(v.upper().replace(" ", "").replace("-", "") for v in values if v))
+        asrb_id = normalize(asrb_pattern.findall(asrb_raw or ""))
+        sme_comments = (sme_raw or "").strip()
+        embedded = normalize(asrb_pattern.findall(sme_comments))
+        if embedded:
+            asrb_id = asrb_id or embedded
+            sme_comments = asrb_pattern.sub("", sme_comments)
+            sme_comments = re.sub(r"^[\s,;:/-]+|[\s,;:/-]+$", "", sme_comments)
+            sme_comments = re.sub(r"\s{2,}", " ", sme_comments).strip()
+        return asrb_id, sme_comments
 
     # ── TOC ──────────────────────────────────────────────────────────────────
     toc_sections: list[dict] = []
@@ -259,15 +683,19 @@ def _fallback_from_text(text: str, format: str) -> dict:
                 geography = auth_match.group(3).strip()
             else:
                 auth_name, auth_code, geography = issuing_auth, "", ""
+            regulator_url, _ = split_url_and_note(parts[1] if len(parts) > 1 else "")
+            content_url, content_note = split_url_and_note(parts[2] if len(parts) > 2 else "")
+            asrb_id, sme_comments = split_asrb_and_comments(parts[4] if len(parts) > 4 else "", parts[5] if len(parts) > 5 else "")
             in_scope.append({
                 "document_title":         parts[0],
-                "regulator_url":          parts[1] if "http" in parts[1] else "",
-                "content_url":            parts[2] if "http" in parts[2] else "",
+                "regulator_url":          regulator_url,
+                "content_url":            content_url,
+                "content_note":           content_note,
                 "issuing_authority":      auth_name,
                 "issuing_authority_code": auth_code,
                 "geography":              geography,
-                "asrb_id":                parts[4] if len(parts) > 4 else "",
-                "sme_comments":           parts[5] if len(parts) > 5 else "",
+                "asrb_id":                asrb_id,
+                "sme_comments":           sme_comments,
                 "strikethrough":          False,
             })
     else:
@@ -277,6 +705,7 @@ def _fallback_from_text(text: str, format: str) -> dict:
                     "document_title":         url,
                     "regulator_url":          "https://www.legislation.gov.au",
                     "content_url":            url,
+                    "content_note":           "",
                     "issuing_authority":      "",
                     "issuing_authority_code": "",
                     "geography":              "",

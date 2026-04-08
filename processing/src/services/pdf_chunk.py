@@ -3,27 +3,40 @@ pdf_chunk.py — PDF chunking & XML change-detection service.
 
 Pipeline per request
 ────────────────────
-1. Extract text from OLD PDF  (PyMuPDF / fitz)
-2. Extract text from NEW PDF  (PyMuPDF / fitz)
-3. Chunk BOTH with RecursiveCharacterTextSplitter (native implementation)
+1. Extract text from OLD PDF  — uses pdf_extractor_core.load_pdf() (smart
+   block-segmentation pipeline) when available, falls back to legacy extractor
+2. Extract text from NEW PDF  (same pipeline)
+3. Chunk BOTH with structural heading splits
 4. Chunk the XML file with the existing xml_compare.chunk_xml helper
 5. Align NEW-PDF chunks ↔ XML chunks by position index
 6. Detect changes: compare each NEW-PDF chunk against its OLD-PDF counterpart
 7. Return structured result consumed by ChunkPanel.tsx
 
+pdf_extractor_core integration
+───────────────────────────────
+pdf_extractor_core.py wraps extractor.py's pure PDF logic with tkinter stubs
+so it can be imported in a headless server environment. It provides:
+  load_pdf(path)  — full block-segmentation pipeline
+  _line_text()    — PdfLine → plain text
+  _norm_cmp()     — normalisation
+
 Dependencies
 ────────────
     pip install pymupdf
 
-The XML chunking still relies on src.services.xml_compare so the existing
-tag/attribute filtering is preserved.
+The XML chunking still relies on src.services.xml_compare.
 """
 
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 import logging
 import re
+import hashlib
+import functools
+import concurrent.futures
 from collections import Counter
 from typing import Optional, Any
 
@@ -34,11 +47,82 @@ from src.services.word_compare import compare_words, chunk_has_real_changes
 try:
     from src.services.word_compare import build_inline_diff
 except ImportError:
-    # Fallback for word_compare versions that don't yet have build_inline_diff
     def build_inline_diff(old_text: str, new_text: str) -> list:  # type: ignore[misc]
         return []
 
+# ── Smart extractor import ─────────────────────────────────────────────────────
+# Import pdf_extractor_core (server-safe wrapper around extractor.py).
+#
+# Strategy — three attempts in order:
+#   1. src.services.pdf_extractor_core  (normal package import from project root)
+#   2. pdf_extractor_core               (flat import, cwd = src/services/)
+#   3. importlib spec_from_file_location (direct path relative to THIS file)
+#      — works regardless of sys.path, covers any project layout
+#
+# All failures are LOGGED so the real error is visible in server output.
+
+_extractor_load_pdf   = None
+_extractor_line_text  = None
+_extractor_norm_cmp   = None
+_EXTRACTOR_AVAILABLE  = False
+
+def _try_load_extractor_core() -> bool:
+    global _extractor_load_pdf, _extractor_line_text, _extractor_norm_cmp, _EXTRACTOR_AVAILABLE
+    import importlib as _il
+    import importlib.util as _ilu
+    import os as _os
+    import logging as _log
+    _lg = _log.getLogger(__name__)
+
+    # Attempt 1 & 2: standard importlib
+    for _mod_path in ("src.services.pdf_extractor_core", "pdf_extractor_core"):
+        try:
+            _m = _il.import_module(_mod_path)
+            _extractor_load_pdf  = _m.load_pdf
+            _extractor_line_text = _m._line_text
+            _extractor_norm_cmp  = _m._norm_cmp
+            _lg.info("pdf_chunk: pdf_extractor_core loaded via '%s' ✓", _mod_path)
+            return True
+        except ImportError:
+            pass  # expected when path not on sys.path
+        except Exception as _e:
+            _lg.warning("pdf_chunk: import '%s' failed: %s", _mod_path, _e)
+
+    # Attempt 3: direct file path — always works once the file is deployed
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _candidates = [
+        _os.path.join(_here, "pdf_extractor_core.py"),               # same dir
+        _os.path.join(_here, "services", "pdf_extractor_core.py"),   # src/services/
+        _os.path.join(_here, "..", "services", "pdf_extractor_core.py"),
+    ]
+    for _fpath in _candidates:
+        if not _os.path.exists(_fpath):
+            continue
+        try:
+            _spec = _ilu.spec_from_file_location("pdf_extractor_core", _fpath)
+            _m2   = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
+            _spec.loader.exec_module(_m2)          # type: ignore[union-attr]
+            _extractor_load_pdf  = _m2.load_pdf
+            _extractor_line_text = _m2._line_text
+            _extractor_norm_cmp  = _m2._norm_cmp
+            _lg.info("pdf_chunk: pdf_extractor_core loaded from '%s' ✓", _fpath)
+            return True
+        except Exception as _e:
+            _lg.warning("pdf_chunk: load from '%s' failed: %s", _fpath, _e)
+
+    return False
+
+_EXTRACTOR_AVAILABLE = _try_load_extractor_core()
+
 logger = logging.getLogger(__name__)
+if _EXTRACTOR_AVAILABLE:
+    logger.info("pdf_chunk: smart extractor pipeline active ✓")
+else:
+    logger.warning(
+        "pdf_chunk: pdf_extractor_core.py not found or failed to load — "
+        "check that pdf_extractor_core.py is in src/services/ alongside pdf_chunk.py. "
+        "Falling back to legacy legislation extractor."
+    )
 
 
 # ── PDF helpers ────────────────────────────────────────────────────────────────
@@ -128,32 +212,40 @@ def _clean_legislation_block(text: str) -> str:
     lines = [' '.join(ln.split()) for ln in text.split('\n')]
     return '\n'.join(ln for ln in lines if ln.strip())
 
+_legislation_pdf_cache: dict[str, bool] = {}
+
 def _is_legislation_pdf(pdf_bytes: bytes) -> bool:
     """
     Quick heuristic: peek at page 1 blocks to see if this looks like a
     UK legislation PDF with the characteristic footnote-at-top-of-page layout.
-    Returns True if the clean extractor should be used.
+    Result is cached by MD5 hash of first 16 KB — zero overhead on repeated
+    calls with the same PDF (e.g. once per chunk in detect_pdf_changes).
     """
+    h = hashlib.md5(pdf_bytes[:16384]).hexdigest()
+    if h in _legislation_pdf_cache:
+        return _legislation_pdf_cache[h]
+    result = False
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        if len(doc) == 0:
+        if len(doc) > 0:
+            page = doc[0]
+            blocks = page.get_text("blocks")
             doc.close()
-            return False
-        page = doc[0]
-        blocks = page.get_text("blocks")
-        doc.close()
-        # If any block at x0~102 and y0<150 starts with a known footnote phrase → legislation PDF
-        for b in blocks[:20]:
-            x0, y0 = b[0], b[1]
-            text = b[4].strip() if len(b) > 4 else ""
-            if 95 <= x0 <= 122 and y0 < 200 and _LEGISLATION_SKIP.match(text):
-                return True
-            # Also trigger on F-marker in margin at very top
-            if x0 < 90 and y0 < 60 and _LEGISLATION_FOOTNOTE_REF.match(text):
-                return True
-        return False
+            for b in blocks[:20]:
+                x0, y0 = b[0], b[1]
+                text = b[4].strip() if len(b) > 4 else ""
+                if 95 <= x0 <= 122 and y0 < 200 and _LEGISLATION_SKIP.match(text):
+                    result = True
+                    break
+                if x0 < 90 and y0 < 60 and _LEGISLATION_FOOTNOTE_REF.match(text):
+                    result = True
+                    break
+        else:
+            doc.close()
     except Exception:
-        return False
+        pass
+    _legislation_pdf_cache[h] = result
+    return result
 
 def _extract_legislation_text(
     pdf_bytes: bytes,
@@ -234,6 +326,54 @@ def _extract_pdf_text(
         return _extract_legislation_text(pdf_bytes, page_start, page_end)
     text, _, _ = _single_pass_extract(pdf_bytes, "part")
     return text
+
+
+def _extractor_pdf_to_text(pdf_bytes: bytes) -> str:
+    """
+    Extract plain text using pdf_extractor_core.load_pdf() (the smart
+    block-segmentation pipeline from extractor.py, server-safe version).
+
+    Writes bytes to a temp file (load_pdf needs a path), runs the pipeline,
+    then converts PdfLine objects to plain text with paragraph gaps preserved.
+    Falls back to _extract_pdf_text() if the core is not available.
+    """
+    if not _EXTRACTOR_AVAILABLE:
+        return _extract_pdf_text(pdf_bytes)
+
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            fh.write(pdf_bytes)
+            tmp = fh.name
+
+        lines = _extractor_load_pdf(tmp)   # type: ignore[misc]
+        text_parts: list[str] = []
+        prev_y: float = -1.0
+        PARA_GAP = 20.0
+
+        for line in lines:
+            raw = _extractor_line_text(line).strip()   # type: ignore[misc]
+            if not raw:
+                continue
+            if prev_y >= 0 and (line.y - prev_y) > PARA_GAP:
+                text_parts.append("")
+            text_parts.append(raw)
+            prev_y = line.y
+
+        return "\n".join(text_parts)
+
+    except Exception as exc:
+        logger.warning(
+            "_extractor_pdf_to_text: smart pipeline failed (%s); "
+            "falling back to legacy extractor", exc
+        )
+        return _extract_pdf_text(pdf_bytes)
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _single_pass_extract(
@@ -889,13 +1029,38 @@ def chunk_pdfs_and_xml(
     def _tick(label: str) -> None:
         logger.warning("TIMING %s: %.2fs", label, _time.time() - _t0)
 
-    # 1 & 2 — extract text + headings in ONE pass each
-    _emit(5, "Extracting text from OLD PDF")
-    old_text, old_font_headings, old_heading_pages = _single_pass_extract(old_pdf_bytes, tag_name)
-    _tick("single_pass OLD")
-    _emit(12, "Extracting text from NEW PDF")
-    new_text, new_font_headings, new_heading_pages = _single_pass_extract(new_pdf_bytes, tag_name)
-    _tick("single_pass NEW")
+    # 1 & 2 — extract text + headings
+    # When pdf_extractor_core is available we run its load_pdf() pipeline for
+    # the text body (block segmentation, amendment merging, header/footer removal)
+    # while _single_pass_extract handles heading detection — both PDFs in parallel.
+    _emit(5, "Extracting text from PDFs")
+
+    def _extract_old():
+        headings_text, font_headings, heading_pages = _single_pass_extract(old_pdf_bytes, tag_name)
+        # UK legislation PDFs are already cleaned during _single_pass_extract,
+        # so running the smart extractor again just duplicates the most
+        # expensive pass with little benefit.
+        if _EXTRACTOR_AVAILABLE and not _is_legislation_pdf(old_pdf_bytes):
+            body_text = _extractor_pdf_to_text(old_pdf_bytes)
+        else:
+            body_text = headings_text
+        return body_text, font_headings, heading_pages
+
+    def _extract_new():
+        headings_text, font_headings, heading_pages = _single_pass_extract(new_pdf_bytes, tag_name)
+        if _EXTRACTOR_AVAILABLE and not _is_legislation_pdf(new_pdf_bytes):
+            body_text = _extractor_pdf_to_text(new_pdf_bytes)
+        else:
+            body_text = headings_text
+        return body_text, font_headings, heading_pages
+
+    # Run both PDFs in parallel — they are independent and each blocks on I/O
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _pool:
+        _fut_old = _pool.submit(_extract_old)
+        _fut_new = _pool.submit(_extract_new)
+        old_text, old_font_headings, old_heading_pages = _fut_old.result()
+        new_text, new_font_headings, new_heading_pages = _fut_new.result()
+    _tick("parallel_extract OLD+NEW")
     # Derive total page counts from text (count \n\n separators = page count)
     # This avoids two extra fitz.open() calls just to get page count.
     old_total_pages = old_text.count("\n\n") + 1 if old_text else 1

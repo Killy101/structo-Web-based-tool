@@ -1,1665 +1,606 @@
 """
-FastAPI router for XML Chunk / Compare / Merge operations.
+src/router/compare.py
+=====================
+FastAPI router for the PDF Diff Inspector feature.
 
-Aligned with Innodata Tool architecture:
-  POST /compare/upload              — Upload OLD PDF, NEW PDF, XML (job init)
-  POST /compare/start-chunking      — Trigger async chunking job
-  GET  /compare/chunks              — List chunks for a job
-  GET  /compare/compare/{chunk_id}  — Load comparison data for a single chunk
-  POST /compare/save-xml            — Save edited XML for a chunk
-  POST /compare/merge               — Merge XML (legacy: old/new + accept/reject)
-  POST /compare/merge/chunks        — Merge all XML chunk files into final output
-  POST /compare/chunk               — Chunk XML file (legacy, tag-based)
-  POST /compare/chunk/pdf           — LangChain PDF + XML chunking pipeline
-  POST /compare/chunk/download      — Download a single XML chunk
-  POST /compare/validate            — Validate an XML chunk
-  POST /compare/diff                — Compare two XML files
-  POST /compare/diff/pdf            — Compare two PDFs alongside an XML reference
-  POST /compare/merge/pdf           — Merge PDF-detected changes into XML
-  POST /compare/detect              — Per-span change detection (OLD vs NEW PDF)
+Mount in your app with:
+    from src.router.compare import router as compare_router
+    app.include_router(compare_router)
+
+Endpoints
+---------
+POST /compare/diff          Compare two PDFs → chunks + render segments
+POST /compare/xml/apply     Apply one diff chunk into XML
+POST /compare/xml/locate    Locate a chunk in XML (read-only, for highlight)
+GET  /compare/health        Health check + rapidfuzz status
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import Response
-from pydantic import BaseModel
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import logging
+import os
+import sys
+import tempfile
+import time
+import traceback
+from pathlib import Path
 from typing import Optional
-import json
-import uuid
-import re
+import asyncio
+import json as _json
+import queue as _queue_mod
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
-from src.services.xml_compare import (
-    chunk_xml,
-    compare_xml,
-    line_diff,
-    merge_xml,
-)
-from src.services.pdf_chunk import (
-    chunk_pdfs_and_xml,
-    compare_pdfs_with_xml,
-    merge_pdfs_with_xml,
-    detect_pdf_changes,
-    validate_xml_chunk,
-    merge_xml_chunks,
-)
-from src.services.pdf_layout_diff import compare_pdfs_layout
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import ORJSONResponse, StreamingResponse
+from pydantic import BaseModel
 
+try:
+    import orjson as _orjson
+    _has_orjson = True
+except ImportError:
+    _has_orjson = False
+
+logger = logging.getLogger(__name__)
+
+# ── Import the pure diff engine ───────────────────────────────────────────────
+#
+# The engine module may be named either:
+#   • pdf_extractor_core   (server-safe wrapper already in src/services/)
+#   • comp_extractor       (standalone build)
+#
+# We try every realistic location so this router works regardless of how the
+# project is laid out or from which directory uvicorn is launched.
+#
+# Search order
+# ────────────
+#  1. src.services.pdf_extractor_core  — standard package import (preferred)
+#  2. src.services.comp_extractor      — alternative package name
+#  3. pdf_extractor_core               — flat import (cwd on sys.path)
+#  4. comp_extractor                   — flat import
+#  5. Direct file path probes          — always works once the file is deployed
+
+_THIS_DIR = Path(__file__).parent          # src/router/  (or src/routers/)
+_SVC_DIR  = _THIS_DIR.parent / "services" # src/services/
+
+# Ensure services/ is on sys.path for flat imports (attempts 3 & 4)
+if str(_SVC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SVC_DIR))
+
+
+def _load_engine():
+    """Try every known name / path for the diff engine. Returns the module or raises."""
+
+    # ── Attempts 1–4: standard importlib ──────────────────────────────────────
+    for mod_name in (
+        "src.services.comp_extractor",
+        "src.services.pdf_extractor_core",
+        "comp_extractor",
+        "pdf_extractor_core",
+    ):
+        try:
+            m = importlib.import_module(mod_name)
+            if not hasattr(m, "compute_diff") or not hasattr(m, "precompute"):
+                logger.info("compare router: '%s' missing compute_diff/precompute, skipping", mod_name)
+                continue
+            logger.info("compare router: diff engine loaded via '%s' ✓", mod_name)
+            return m
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.warning("compare router: import '%s' failed: %s", mod_name, exc)
+
+    # ── Attempt 5: direct file path probes ────────────────────────────────────
+    candidates = [
+        _SVC_DIR / "comp_extractor.py",
+        _SVC_DIR / "pdf_extractor_core.py",
+        _THIS_DIR.parent / "comp_extractor.py",
+        _THIS_DIR.parent / "pdf_extractor_core.py",
+    ]
+    for fpath in candidates:
+        if not fpath.exists():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("_diff_engine", fpath)
+            m = importlib.util.module_from_spec(spec)           # type: ignore[arg-type]
+            spec.loader.exec_module(m)                          # type: ignore[union-attr]
+            if not hasattr(m, "compute_diff") or not hasattr(m, "precompute"):
+                logger.info("compare router: '%s' missing compute_diff/precompute, skipping", fpath)
+                continue
+            logger.info("compare router: diff engine loaded from '%s' ✓", fpath)
+            return m
+        except Exception as exc:
+            logger.warning("compare router: load from '%s' failed: %s", fpath, exc)
+
+    raise RuntimeError(
+        "Could not import diff engine (pdf_extractor_core or comp_extractor).\n"
+        f"Searched in: {_SVC_DIR}\n"
+        "Make sure pymupdf is installed:  pip install pymupdf\n"
+        "And that pdf_extractor_core.py (or comp_extractor.py) is in src/services/"
+    )
+
+
+ce = _load_engine()
+
+# ── Process-safe PDF loader (for parallel multiprocessing) ────────────────────
+def _load_pdf_in_process(path: str):
+    """Top-level function for ProcessPoolExecutor — loads engine fresh in child."""
+    eng = _load_engine()
+    return eng.load_pdf(path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/compare", tags=["compare"])
 
-# ── In-memory job store (replace with Redis/PostgreSQL in production) ─────────
-# Structure: { job_id: { status, files, chunks, source_name, ... } }
-_jobs: dict[str, dict] = {}
+
+# ── Serialisation helpers ─────────────────────────────────────────────────────
+
+def _chunk_to_dict(ch: object, idx: int) -> dict:
+    d = {
+        "id":         idx,
+        "kind":       ch.kind,          # "add" | "del" | "mod" | "emp"
+        "block_a":    ch.block_a,
+        "block_b":    ch.block_b,
+        "text_a":     ch.text_a or "",
+        "text_b":     ch.text_b or "",
+        "confidence": round(ch.confidence, 3),
+        "reason":     ch.reason or "",
+        "context_a":  getattr(ch, "context_a", "") or "",
+        "context_b":  getattr(ch, "context_b", "") or "",
+        "xml_context": getattr(ch, "xml_context", "") or "",
+        "section":    getattr(ch, "section", "") or "",
+    }
+    # Word-level diff fields (only for MOD chunks that have them)
+    wr = getattr(ch, "words_removed", "") or ""
+    wa = getattr(ch, "words_added", "") or ""
+    if wr or wa:
+        d["words_removed"] = wr
+        d["words_added"] = wa
+        d["words_before"] = getattr(ch, "words_before", "") or ""
+        d["words_after"] = getattr(ch, "words_after", "") or ""
+    # Emphasis detail (only for EMP chunks)
+    emp = getattr(ch, "emp_detail", "") or ""
+    if emp:
+        d["emp_detail"] = emp
+    return d
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. UPLOAD — initialise a job, receive files, return job_id
-# ─────────────────────────────────────────────────────────────────────────────
+def _pane_to_json(data: dict) -> dict:
+    """
+    Serialise precompute() output for the frontend.
 
-@router.post("/upload")
-async def upload_endpoint(
-    old_pdf:     UploadFile = File(...),
-    new_pdf:     UploadFile = File(...),
-    xml_file:    Optional[UploadFile] = File(None),  # optional — omit in 2-file mode
-    source_name: str               = Form(...),
+    segments     → [[text, tagName], ...]
+    tag_cfgs     → { tagName: { background?, foreground?, font?, ... } }
+                   font tuples are expanded to { family, size, style }
+    offsets      → { "chunkId": charOffset }   (string keys for JSON)
+    offset_ends  → { "chunkId": charOffset }
+    """
+    serialised_segs = [[t, tag] for t, tag in data.get("segments", [])]
+
+    serial_cfgs: dict = {}
+    for key, val in data.get("tag_cfgs", {}).items():
+        if not isinstance(key, str) or not isinstance(val, dict):
+            continue
+        cleaned: dict = {}
+        for k, v in val.items():
+            if isinstance(v, tuple):
+                cleaned[k] = {
+                    "family": v[0],
+                    "size":   v[1],
+                    "style":  v[2] if len(v) > 2 else "",
+                }
+            else:
+                cleaned[k] = v
+        serial_cfgs[key] = cleaned
+
+    return {
+        "segments":    serialised_segs,
+        "tag_cfgs":    serial_cfgs,
+        "offsets":     {str(k): v for k, v in data.get("offsets", {}).items()},
+        "offset_ends": {str(k): v for k, v in data.get("offset_ends", {}).items()},
+    }
+
+
+def _dict_to_chunk(d: dict) -> object:
+    return ce.Chunk(
+        kind=d["kind"],
+        block_a=d.get("block_a", -1),
+        block_b=d.get("block_b", -1),
+        text_a=d.get("text_a", ""),
+        text_b=d.get("text_b", ""),
+        confidence=d.get("confidence", 1.0),
+        reason=d.get("reason", ""),
+        context_a=d.get("context_a", ""),
+        context_b=d.get("context_b", ""),
+        xml_context=d.get("xml_context", ""),
+        words_removed=d.get("words_removed", ""),
+        words_added=d.get("words_added", ""),
+        words_before=d.get("words_before", ""),
+        words_after=d.get("words_after", ""),
+        section=d.get("section", ""),
+    )
+
+
+# ── POST /compare/diff/inspect ────────────────────────────────────────────────
+
+@router.post("/diff/inspect")
+async def diff_pdfs(
+    old_file: UploadFile = File(..., description="Old / reference PDF"),
+    new_file: UploadFile = File(..., description="New / updated PDF"),
+    xml_file_a: Optional[UploadFile] = File(None, description="Old XML ground truth (optional)"),
+    xml_file_b: Optional[UploadFile] = File(None, description="New XML ground truth (optional)"),
 ):
     """
-    Upload OLD PDF, NEW PDF, and (optionally) an XML reference file.
-    2-file mode: xml_file may be omitted entirely.
-    3-file mode: xml_file required for tag-based XML chunking.
-    """
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
+    Run the 3-stage diff pipeline on two uploaded PDFs.
 
-    xml_bytes: Optional[bytes] = None
-    xml_filename: Optional[str] = None
-    if xml_file is not None:
-        xml_bytes = await xml_file.read()
-        xml_filename = xml_file.filename
-        try:
-            xml_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
-
-    job_id = str(uuid.uuid4())
-
-    _jobs[job_id] = {
-        "job_id":       job_id,
-        "status":       "uploaded",
-        "source_name":  source_name.strip(),
-        "old_filename": old_pdf.filename,
-        "new_filename": new_pdf.filename,
-        "xml_filename": xml_filename,
-        "_old_bytes":   old_bytes,
-        "_new_bytes":   new_bytes,
-        "_xml_bytes":   xml_bytes,  # None when no XML uploaded
-        "chunks":       [],
-        "summary":      None,
-        "progress":     0,
-        "error":        None,
+    Returns
+    -------
+    {
+      success  : true
+      chunks   : list of change objects  (add / del / mod / emp)
+      pane_a   : render data for the left pane  (old doc)
+      pane_b   : render data for the right pane (new doc)
+      stats    : { total, additions, deletions, modifications, emphasis }
+      file_a   : original filename
+      file_b   : original filename
     }
-
-    return {
-        "success":      True,
-        "job_id":       job_id,
-        "source_name":  source_name.strip(),
-        "old_filename": old_pdf.filename,
-        "new_filename": new_pdf.filename,
-        "xml_filename": xml_filename,
-        "status":       "uploaded",
-        "message":      "Files uploaded. POST /start-chunking to begin processing.",
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. START CHUNKING — trigger processing for an uploaded job
-# ─────────────────────────────────────────────────────────────────────────────
-
-class StartChunkingRequest(BaseModel):
-    job_id:        str
-    tag_name:      str            = "section"
-    chunk_size:    int            = 1500
-    chunk_overlap: int            = 150
-    attribute:     Optional[str]  = None
-    value:         Optional[str]  = None
-    max_file_size: Optional[int]  = None
-
-
-@router.post("/start-chunking")
-async def start_chunking_endpoint(payload: StartChunkingRequest):
     """
-    Trigger chunking for a previously uploaded job.
-
-    Runs chunk_pdfs_and_xml in a thread pool executor so the async event
-    loop stays free to serve /progress polling requests during processing.
-    """
-    from fastapi.concurrency import run_in_threadpool
-
-    job = _jobs.get(payload.job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {payload.job_id} not found")
-
-    if job["status"] == "processing":
-        raise HTTPException(status_code=409, detail="Job is already processing")
-
-    job["status"]   = "processing"
-    job["progress"] = 0
-    job["stage"]    = "Extracting text from PDFs"
-
+    tmp_a = tmp_b = None
     try:
-        raw_xml = job.get("_xml_bytes")
-        xml_str = raw_xml.decode("utf-8") if raw_xml else ""
+        data_a = await old_file.read()
+        data_b = await new_file.read()
+        xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
+        xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
 
-        def _progress(pct: int, stage: str) -> None:
-            job["progress"] = min(pct, 99)
-            job["stage"]    = stage
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
+            fa.write(data_a)
+            tmp_a = fa.name
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
+            fb.write(data_b)
+            tmp_b = fb.name
 
-        # ── Run in thread pool — keeps event loop free for /progress polls ──
-        def _run() -> dict:
-            return chunk_pdfs_and_xml(
-                old_pdf_bytes=job["_old_bytes"],
-                new_pdf_bytes=job["_new_bytes"],
-                xml_content=xml_str,
-                tag_name=payload.tag_name,
-                source_name=job["source_name"],
-                attribute=payload.attribute,
-                value=payload.value,
-                max_file_size=payload.max_file_size,
-                chunk_size=payload.chunk_size,
-                chunk_overlap=payload.chunk_overlap,
-                progress_callback=_progress,
-            )
-
-        result = await run_in_threadpool(_run)
-
-        job["status"]   = "done"
-        job["progress"] = 100
-        job["stage"]    = "Complete"
-        job["chunks"]   = result.get("pdf_chunks", [])
-        job["summary"]  = result.get("summary", {})
-        job.pop("_xml_bytes", None)
-
-        return {
-            "success":     True,
-            "job_id":      payload.job_id,
-            "status":      "done",
-            "source_name": job["source_name"],
-            **result,
-        }
-
-    except Exception as exc:
-        job["status"] = "error"
-        job["stage"]  = "Failed"
-        job["error"]  = str(exc)
-        raise HTTPException(status_code=422, detail=str(exc))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2b. CHUNK DIRECT — upload + chunk in a single request (faster, no round-trip)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/chunk-direct")
-async def chunk_direct_endpoint(
-    old_pdf:     UploadFile = File(...),
-    new_pdf:     UploadFile = File(...),
-    xml_file:    Optional[UploadFile] = File(None),
-    source_name: str  = Form(...),
-    tag_name:    str  = Form("part"),
-    chunk_size:  int  = Form(1500),
-    chunk_overlap: int = Form(150),
-):
-    """
-    Upload files and run chunking in a single request.
-    Eliminates the upload→chunk round-trip and the double memory buffering.
-    Returns the same response as /start-chunking.
-    """
-    from fastapi.concurrency import run_in_threadpool
-
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
-
-    xml_bytes: Optional[bytes] = None
-    xml_str = ""
-    if xml_file is not None:
-        xml_bytes = await xml_file.read()
-        try:
-            xml_str = xml_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
-
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {
-        "job_id":       job_id,
-        "status":       "processing",
-        "source_name":  source_name.strip(),
-        "old_filename": old_pdf.filename,
-        "new_filename": new_pdf.filename,
-        "_old_bytes":   old_bytes,
-        "_new_bytes":   new_bytes,
-        "chunks":       [],
-        "summary":      None,
-        "progress":     0,
-        "stage":        "Starting…",
-        "error":        None,
-    }
-
-    def _progress(pct: int, stage: str) -> None:
-        _jobs[job_id]["progress"] = min(pct, 99)
-        _jobs[job_id]["stage"]    = stage
-
-    try:
-        def _run() -> dict:
-            return chunk_pdfs_and_xml(
-                old_pdf_bytes=old_bytes,
-                new_pdf_bytes=new_bytes,
-                xml_content=xml_str,
-                tag_name=tag_name,
-                source_name=source_name.strip(),
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                progress_callback=_progress,
-            )
-
-        result = await run_in_threadpool(_run)
-
-        full_chunks = result.get("pdf_chunks", [])
-
-        # ── Pre-compute span-level detection for changed chunks ───────────────
-        # Run detect_pdf_changes now, while old_bytes/new_bytes are still in
-        # memory, for every chunk flagged as changed by the word-level pass.
-        # This populates detected_changes on the chunk so ComparePanel takes
-        # the fast path (no /detect-chunk round-trip when opening a chunk).
-        #
-        # We process all changed chunks in a single threadpool call to keep
-        # the async event loop free.
-        changed_chunks = [c for c in full_chunks if c.get("has_changes")]
-
-        if changed_chunks:
-            def _predetect() -> None:
-                import logging as _log
-                _lg = _log.getLogger(__name__)
-                for idx, chunk in enumerate(changed_chunks):
-                    try:
-                        det = detect_pdf_changes(
-                            old_bytes,
-                            new_bytes,
-                            old_page_start=chunk.get("old_page_start"),
-                            old_page_end=chunk.get("old_page_end"),
-                            new_page_start=chunk.get("new_page_start"),
-                            new_page_end=chunk.get("new_page_end"),
-                            old_anchor_text=chunk.get("old_anchor"),
-                            new_anchor_text=chunk.get("new_anchor"),
-                        )
-                        chunk["detected_changes"] = det.get("changes", [])
-                        chunk["detect_summary"]   = det.get("summary", {
-                            "addition": 0, "removal": 0,
-                            "modification": 0, "emphasis": 0, "mismatch": 0,
-                        })
-                        # Correct has_changes: if span detection found nothing,
-                        # downgrade the chunk so ChunkPanel shows a green tick.
-                        if not chunk["detected_changes"]:
-                            chunk["has_changes"] = False
-                            chunk["change_types"] = []
-                    except Exception as exc:
-                        _lg.warning(
-                            "predetect failed for chunk %d: %s",
-                            chunk.get("index", idx), exc,
-                        )
-
-            await run_in_threadpool(_predetect)
-
-        # ── Recompute summary AFTER predetect may have corrected has_changes ──
-        # The word-level summary from chunk_pdfs_and_xml is now stale — some
-        # chunks that were word-flagged as changed may have been downgraded to
-        # unchanged after span detection found nothing real.  Recount from the
-        # actual chunk flags so the UI never shows "15 Changed / 0 Unchanged"
-        # while simultaneously displaying "All chunks match".
-        final_changed   = sum(1 for c in full_chunks if c.get("has_changes"))
-        final_unchanged = len(full_chunks) - final_changed
-        final_summary = {
-            "total":     len(full_chunks),
-            "changed":   final_changed,
-            "unchanged": final_unchanged,
-        }
-
-        _jobs[job_id].update({
-            "status":   "done",
-            "progress": 100,
-            "stage":    "Complete",
-            "chunks":   full_chunks,   # full data kept server-side for /detect-chunk
-            "summary":  final_summary,
-        })
-
-        # ── Attach word counts before stripping text fields ───────────────────
-        # Count words from old_text/new_text while they're still present.
-        # These lightweight integers travel in the slim response so the frontend
-        # can show a mismatch warning without needing the full text.
-        for chunk in full_chunks:
-            ot = chunk.get("old_text") or ""
-            nt = chunk.get("new_text") or ""
-            chunk["old_word_count"] = len(ot.split()) if ot else 0
-            chunk["new_word_count"] = len(nt.split()) if nt else 0
-
-        # Strip heavy fields from HTTP response — the browser only needs
-        # metadata to render the chunk list. Full text / XML is fetched
-        # on demand when the user opens a specific chunk.
-        # detected_changes is NOT stripped — ComparePanel needs it on first open.
-        _HEAVY = {"old_text", "new_text", "xml_content", "xml_chunk_file"}
-        slim_chunks = [
-            {k: v for k, v in chunk.items() if k not in _HEAVY}
-            for chunk in full_chunks
-        ]
-
-        return {
-            "success":     True,
-            "job_id":      job_id,
-            "status":      "done",
-            "source_name": source_name.strip(),
-            "pdf_chunks":  slim_chunks,
-            "summary":     final_summary,
-            "old_pdf_chunk_count": result.get("old_pdf_chunk_count", 0),
-            "new_pdf_chunk_count": result.get("new_pdf_chunk_count", 0),
-            "xml_chunk_count":     result.get("xml_chunk_count", 0),
-            "folder_structure":    result.get("folder_structure", {}),
-        }
-    except Exception as exc:
-        _jobs[job_id].update({"status": "error", "stage": "Failed", "error": str(exc)})
-        raise HTTPException(status_code=422, detail=str(exc))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. GET CHUNKS — list all chunks for a job
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/chunks")
-async def get_chunks_endpoint(job_id: str):
-    """
-    Return the chunk list for a completed job.
-    Powers the ChunkPanel list UI: Changed / No changes badges.
-
-    GET /compare/chunks?job_id=<uuid>
-    """
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    # Lightweight rows — exclude full xml_content for performance
-    chunk_list = [
-        {
-            "index":          c.get("index"),
-            "label":          c.get("label"),
-            "filename":       c.get("filename"),
-            "has_changes":    c.get("has_changes", False),
-            "change_types":   c.get("change_types", []),
-            "change_summary": c.get("change_summary", {"addition": 0, "removal": 0, "modification": 0}),
-            "xml_tag":        c.get("xml_tag"),
-            "xml_size":       c.get("xml_size", 0),
-        }
-        for c in job.get("chunks", [])
-    ]
-
-    return {
-        "success":     True,
-        "job_id":      job_id,
-        "status":      job["status"],
-        "source_name": job["source_name"],
-        "summary":     job.get("summary"),
-        "chunks":      chunk_list,
-        "progress":    job.get("progress", 0),
-    }
-
-
-@router.get("/progress")
-async def get_progress_endpoint(job_id: str):
-    """
-    Lightweight progress poll — called every ~500ms by the frontend.
-    Returns current progress % (0-100), status, and a human-readable stage label.
-
-    GET /compare/progress?job_id=<uuid>
-    """
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    return {
-        "success":  True,
-        "job_id":   job_id,
-        "status":   job["status"],           # uploaded | processing | done | error
-        "progress": job.get("progress", 0),  # 0-100
-        "stage":    job.get("stage", ""),    # human-readable current step
-        "error":    job.get("error"),
-    }
-
-
-
-
-class DetectChunkRequest(BaseModel):
-    job_id:      str
-    chunk_index: int   # 1-based chunk index
-
-
-@router.post("/detect-chunk")
-async def detect_chunk_endpoint(payload: DetectChunkRequest):
-    """
-    Run per-span change detection for a single chunk using PDFs already stored
-    in the job — no file re-upload needed.
-
-    POST /compare/detect-chunk
-    Body: { job_id, chunk_index }
-
-    Returns the same shape as POST /compare/detect.
-    """
-    job = _jobs.get(payload.job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {payload.job_id} not found")
-
-    old_bytes = job.get("_old_bytes")
-    new_bytes = job.get("_new_bytes")
-    if not old_bytes or not new_bytes:
-        raise HTTPException(
-            status_code=409,
-            detail="PDF bytes no longer in memory. Re-upload files to use /detect instead.",
+        # Stage 1 — extract text from both PDFs (parallel)
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_a = pool.submit(ce.load_pdf, tmp_a)
+            fut_b = pool.submit(ce.load_pdf, tmp_b)
+            lines_a = fut_a.result()
+            lines_b = fut_b.result()
+        t2 = time.perf_counter()
+        logging.info(
+            "load_pdf (parallel): old=%dlines  new=%dlines  %.2fs",
+            len(lines_a), len(lines_b), t2 - t0,
         )
 
-    chunks: list[dict] = job.get("chunks", [])
-    chunk = next((c for c in chunks if c.get("index") == payload.chunk_index), None)
-    if not chunk:
-        raise HTTPException(status_code=404, detail=f"Chunk {payload.chunk_index} not found")
+        # Stage 2 — anchor-keyed diff (with optional XML cross-validation)
+        blocks_a, blocks_b, chunks = ce.compute_diff(
+            lines_a, lines_b,
+            xml_text_a=xml_a_text,
+            xml_text_b=xml_b_text,
+        )
+        t3 = time.perf_counter()
+        logging.info(
+            "compute_diff: blocks_a=%d blocks_b=%d chunks=%d  %.2fs",
+            len(blocks_a), len(blocks_b), len(chunks), t3 - t2,
+        )
 
-    xml_content = chunk.get("xml_content", "") or chunk.get("xml_chunk_file", "") or ""
-    xml_bytes = xml_content.encode("utf-8") if xml_content else b""
+        # Stage 3 — build render segments for each pane (parallel)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+            fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+            pane_a = fut_pa.result()
+            pane_b = fut_pb.result()
+        t5 = time.perf_counter()
+        logging.info(
+            "precompute (parallel): pane_a+pane_b=%.2fs  total=%.2fs",
+            t5 - t3, t5 - t0,
+        )
 
-    old_text = chunk.get("old_text", "")
-    new_text = chunk.get("new_text", "")
+        # Stage 4 — extract XML sections and assign chunks (when XML available)
+        xml_sections = []
+        if xml_b_text and hasattr(ce, "extract_xml_sections"):
+            xml_sections = ce.extract_xml_sections(xml_b_text)
+            if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
+                ce.assign_chunks_to_sections(chunks, xml_sections, xml_b_text)
 
-    old_page_start = chunk.get("old_page_start")
-    old_page_end   = chunk.get("old_page_end")
-    new_page_start = chunk.get("new_page_start")
-    new_page_end   = chunk.get("new_page_end")
+        payload = {
+            "success": True,
+            "chunks":  [_chunk_to_dict(ch, i) for i, ch in enumerate(chunks)],
+            "pane_a":  _pane_to_json(pane_a),
+            "pane_b":  _pane_to_json(pane_b),
+            "stats": {
+                "total":          len(chunks),
+                "additions":      sum(1 for c in chunks if c.kind == ce.KIND_ADD),
+                "deletions":      sum(1 for c in chunks if c.kind == ce.KIND_DEL),
+                "modifications":  sum(1 for c in chunks if c.kind == ce.KIND_MOD),
+                "emphasis":       sum(1 for c in chunks if c.kind == ce.KIND_EMP),
+            },
+            "xml_sections": [{"id": s["id"], "label": s["label"], "level": s["level"], "parent_id": s["parent_id"]} for s in xml_sections],
+            "file_a": old_file.filename,
+            "file_b": new_file.filename,
+        }
 
-    page_ranges_known = all(v is not None for v in [
-        old_page_start, old_page_end, new_page_start, new_page_end
-    ])
+        t6 = time.perf_counter()
+        logging.info("payload built in %.2fs", t6 - t5)
 
-    try:
-        from fastapi.concurrency import run_in_threadpool
+        return ORJSONResponse(payload)
 
-        def _detect() -> dict:
-            import re as _re
-            import difflib
-
-            # ── Noise-line filter ──────────────────────────────────────────────
-            # These patterns match lines that are purely structural/editorial
-            # markers — page headers, section titles that ARE the chunk boundary
-            # (already handled by trimming), footnote amendment annotations, etc.
-            # They must NOT match content lines that happen to contain these words
-            # mid-sentence.  We therefore require the pattern to match the FULL line
-            # (or nearly so) rather than just the start, and we keep the list tight.
-            _NOISE_PAT = _re.compile(
-                r'^(?:'
-                r'\d{1,4}$'                                   # lone page/footnote number
-                r'|page\s+\d+\s*(?:of\s+\d+)?$'              # "Page 3 of 10"
-                r'|[fc]\d+\s'                                 # F1 C2 amendment markers (followed by space)
-                r'|[fc]\d+$'                                  # F1 C2 at end of line
-                r'|textual\s+amendments?\s*$'
-                r'|modifications?\s+etc\.?\s*$'
-                r'|commencement\s*$'
-                r'|extent\s*$'
-                # FIX Bug 6: running page headers, e.g. "PART 2  EMPLOYMENT INCOME: CHARGE TO TAX"
-                # These appear at the top of every page in the old/new PDF and differ between
-                # editions when section titles are renumbered — causing spurious modifications.
-                r'|(?:part|chapter|section|schedule)\s+\d+[a-z]?\s*[:\-–]\s*\S'
-                r'|(?:part|chapter|section|schedule)\s+\d+[a-z]?\s+[A-Z][A-Z ,;]{3,}'
-                r'|word(?:s)?\s+in\s+s\.\s*\d'               # "Words in s. 1(2)..."
-                r'|(?:s\.|pt\.|sch\.|art\.|reg\.|para\.)\s*\d+[a-z]?\s*[\(\[\{]'  # "S. 1(2)..." short refs
-                r'|inserted\s+(?:by|with\s+effect)'
-                r'|omitted\s+(?:by|with\s+effect)'
-                r'|repealed\s+(?:by|with\s+effect)'
-                r'|substituted\s+(?:by|with\s+effect)'
-                r'|applied\s+\(with\s+effect'
-                r'|with\s+effect\s+in\s+accordance\s+with'
-                r'|in\s+accordance\s+with\s+s\.\s*\d'
-                r'|by\s+(?:finance|income|corporation|equality|revenue|taxation|tax)\s+act\b'
-                r'|\(with\s+(?:sch|art|reg)\.'
-                r'|\([a-z]\.\s*\d+[,\s]'                     # "(c. 4, ..." act citation
-                r'|\(s\.i\.\s*\d{4}'                         # "(S.I. 2017/..."
-                r'|s\.i\.\s*\d{4}/\d+'                       # "S.I. 2017/353"
-                r')',
-                _re.IGNORECASE,
-            )
-
-            def _strip_leading_num(s: str) -> str:
-                return _re.sub(r'^\d+[a-z]?\s+', '', s, count=1)
-
-            # Additional pattern: amendment footnote fragments that appear
-            # as multi-line continuations (e.g. 'Word in' / 's. 1(1)(a)' / 'substituted...')
-            _AMEND_FRAG = _re.compile(
-                r'^(?:'
-                r'word(?:s)?\s+in$'                        # 'Word in' (cont. of F1 annotation)
-                r'|s\.\s*\d+[a-z]?(?:\([^)]+\))*\s*$'   # 's. 1(1)(a)' standalone
-                r'|sch\.\s*\d+\s+para(?:s?\.)?\s+\d'    # 'Sch. 2 paras. 52-59'
-                r'|paras?\.\s*\d'                          # 'para. 3'
-                r'|(?:of\s+)?the\s+amending\s+act'        # 'of the amending Act'
-                r'|\)\s*by\s+(?:finance|income|tax)\s+act'  # ') by Finance Act'
-                r'|\(c\.\s*\d'                            # '(c. 11)' act citation
-                r')',
-                _re.IGNORECASE,
-            )
-
-            def _is_noise_line(s: str) -> bool:
-                # Only drop very short lines that are purely numeric/symbolic
-                # (like lone page numbers or single letters).  Raise threshold
-                # from 10 → 6 so we keep short-but-real content like "(a) text".
-                if len(s) <= 6 and not _re.search(r'[a-z]{2,}', s, _re.I):
-                    return True
-                s2 = _strip_leading_num(s)
-                if bool(_NOISE_PAT.match(s2.lower())):
-                    return True
-                # Also filter amendment footnote fragments
-                return bool(_AMEND_FRAG.match(s2.strip()))
-
-            _trail = _re.compile(r'[,;]?\s*\b(?:and|or|but|nor|yet)\s*$|[,;:–—\-]\s*$', _re.IGNORECASE)
-            _lead  = _re.compile(r'^\s*\b(?:and|or|but|nor)\b\s*', _re.IGNORECASE)
-            def _norm_line(s: str) -> str:
-                """Normalize a line for comparison - strip leading numbers, trailing connectors/punctuation."""
-                s = _strip_leading_num(s)
-                # Do NOT strip sub-item markers (a)/(1) — they are legally significant.
-                # Stripping them would cause (a) text X and (b) text X to match as equal.
-                s = _trail.sub('', _lead.sub('', s.lower())).strip()
-                return s
-
-            # ── Anchor-trim chunk text ───────────────────────────────────────
-            old_anchor   = chunk.get("old_anchor") or chunk.get("old_heading") or ""
-            new_anchor   = chunk.get("new_anchor") or chunk.get("new_heading") or ""
-            chunk_tag    = chunk.get("xml_tag", "") or ""   # e.g. "part", "chapter"
-
-            # ── Use XML as the comparison baseline when available ────────────
-            # The XML represents the accepted/approved state of the document —
-            # it is the "what should be" ground truth derived from the OLD PDF.
-            # Comparing OLD PDF text → NEW PDF text introduces hundreds of false
-            # positives from PDF rendering differences (reflow, hyphenation,
-            # ligatures, running headers) that are NOT real content changes.
-            #
-            # Strategy:
-            #   • If xml_content is present → extract its plain text and use
-            #     that as the "old" baseline.  Compare XML text → NEW PDF text.
-            #   • If no xml_content → fall back to OLD PDF text → NEW PDF text.
-            #
-            # This means unchanged chunks (XML = NEW PDF) produce zero changes,
-            # and truly changed lines stand out cleanly against the clean XML baseline.
-            baseline_text = old_text   # default: OLD PDF text
-            baseline_label = "old_pdf"
-
-            if xml_content and xml_content.strip():
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(exc), "traceback": traceback.format_exc()},
+        )
+    finally:
+        for p in (tmp_a, tmp_b):
+            if p and os.path.exists(p):
                 try:
-                    import xml.etree.ElementTree as _ET
-                    import unicodedata as _ud
-                    _LIG = str.maketrans({
-                        "\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl",
-                        "\ufb03": "ffi", "\ufb04": "ffl",
-                        "\u00ad": "", "\u00a0": " ",
-                        "\u2019": "'", "\u2018": "'",
-                        "\u201c": '"', "\u201d": '"',
-                        "\u2013": "-", "\u2014": "-", "\u2026": "...",
-                        "\u2022": " ", "\u00b7": " ",
-                    })
-                    def _xml_to_plain(xml_str: str) -> str:
-                        """Extract plain text from XML, preserving paragraph structure."""
-                        try:
-                            root = _ET.fromstring(xml_str)
-                        except _ET.ParseError:
-                            # Strip tags with regex as fallback
-                            import re as _re2
-                            return _re2.sub(r"<[^>]+>", " ", xml_str)
-                        lines_out: list[str] = []
-                        for elem in root.iter():
-                            # Treat block-level elements as paragraph breaks
-                            tag = (elem.tag or "").lower().split("}")[-1]
-                            text = (elem.text or "").strip()
-                            tail = (elem.tail or "").strip()
-                            if text:
-                                norm = _ud.normalize("NFKC", text).translate(_LIG)
-                                norm = " ".join(norm.split())
-                                if norm:
-                                    lines_out.append(norm)
-                            if tail:
-                                norm = _ud.normalize("NFKC", tail).translate(_LIG)
-                                norm = " ".join(norm.split())
-                                if norm:
-                                    lines_out.append(norm)
-                        return "\n".join(lines_out)
+                    os.unlink(p)
+                except OSError:
+                    pass
 
-                    xml_plain = _xml_to_plain(xml_content)
-                    if xml_plain.strip():
-                        baseline_text = xml_plain
-                        baseline_label = "xml"
-                except Exception as _xe:
-                    import logging
-                    logging.getLogger(__name__).warning("XML→plain failed: %s", _xe)
-                    # keep baseline_text = old_text
 
-            def _trim_to_anchor_text(text: str, anchor: str, tag_name: str = "") -> str:
-                """
-                Drop ALL lines that appear before (and NOT including) the anchor heading.
+# ── POST /compare/diff/stream — with real-time progress ───────────────────────
 
-                Strategy (in order of priority):
-                  0. Strict structural match — e.g. "Part 2" must match EXACTLY
-                     "Part 2" or "Part 2A", NOT "Part 2: Employment Income" running
-                     headers that exist in both old and new with different sub-titles.
-                     This prevents the fuzzy pass from landing on a running header
-                     that appears earlier in the text than the real section start.
-                  1. Exact line match (case-insensitive, stripped)
-                  2. Anchor is a substring of the line OR line is a substring of anchor
-                  3. Fuzzy word-overlap match (≥80% of anchor words — raised from 60%
-                     to avoid matching lines that merely share common words like "part"
-                     or "chapter" with the anchor label).
+@router.post("/diff/stream")
+async def diff_pdfs_stream(
+    old_file: UploadFile = File(..., description="Old / reference PDF"),
+    new_file: UploadFile = File(..., description="New / updated PDF"),
+    xml_file_a: Optional[UploadFile] = File(None, description="Old XML ground truth (optional)"),
+    xml_file_b: Optional[UploadFile] = File(None, description="New XML ground truth (optional)"),
+):
+    """
+    Same as /diff/inspect but streams NDJSON progress lines, then the result.
 
-                The function returns text starting AT the anchor line (inclusive).
-                If no anchor is found the original text is returned unchanged.
-                """
-                if not anchor or not text:
-                    return text
-                needle = anchor.strip().lower()
-                lines = text.splitlines()
+    Each line is a JSON object:
+      {"t":"p","s":"old","p":page,"n":total}   — loading old PDF
+      {"t":"p","s":"new","p":page,"n":total}   — loading new PDF
+      {"t":"p","s":"diff"}                     — running diff
+      {"t":"p","s":"render","chunks":N}        — building render
+      {"t":"r","d":{...result...}}             — final result
+      {"t":"e","msg":"..."}                    — error
+    """
+    data_a = await old_file.read()
+    data_b = await new_file.read()
+    xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
+    xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
+    fname_a = old_file.filename
+    fname_b = new_file.filename
 
-                # Build a regex that matches structural headings for this tag
-                # e.g. tag_name="part" → matches lines like "Part 2", "PART II", "Part 2A"
-                tag_lc = (tag_name or "").lower().strip()
-                _struct_pat = None
-                if tag_lc in ("part", "chapter", "schedule", "article", "section"):
-                    _struct_pat = _re.compile(
-                        rf'^\s*{tag_lc}\s+[\dIVXivx]+[a-zA-Z]?\b',
-                        _re.IGNORECASE,
-                    )
+    q: _queue_mod.Queue = _queue_mod.Queue()
 
-                # Pass 0 – strict structural match: "Part 2" must equal the line
-                # exactly (ignoring case/whitespace) OR be the first token group on
-                # the line with nothing else meaningful following.
-                # This is critical: running headers like "PART 2  EMPLOYMENT INCOME"
-                # must NOT match when the anchor is just "Part 2".
-                candidate_idx = -1
-                if _struct_pat and _re.fullmatch(
-                    rf'\s*{_re.escape(tag_lc)}\s+[\dIVXivx]+[a-zA-Z]?\s*',
-                    needle, _re.IGNORECASE
-                ):
-                    for i, ln in enumerate(lines):
-                        ll = ln.strip().lower()
-                        if not ll:
-                            continue
-                        # Accept only lines where the structural heading IS the
-                        # whole line (no trailing title text like ": Employment…")
-                        if _re.fullmatch(
-                            rf'{_re.escape(tag_lc)}\s+[\dIVXivx]+[a-zA-Z]?',
-                            ll, _re.IGNORECASE
-                        ):
-                            # Make sure this heading's ordinal matches the anchor's
-                            needle_ord = _re.search(r'[\dIVXivx]+[a-zA-Z]?$', needle)
-                            line_ord   = _re.search(r'[\dIVXivx]+[a-zA-Z]?$', ll)
-                            if needle_ord and line_ord and needle_ord.group().lower() == line_ord.group().lower():
-                                candidate_idx = i
-                                break
+    def _run():
+        tmp_a = tmp_b = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
+                fa.write(data_a); tmp_a = fa.name
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
+                fb.write(data_b); tmp_b = fb.name
 
-                # Pass 1 – exact / substring match
-                if candidate_idx < 0:
-                    for i, ln in enumerate(lines):
-                        ll = ln.strip().lower()
-                        if not ll:
-                            continue
-                        if needle == ll or needle[:60] in ll or ll[:60] in needle:
-                            candidate_idx = i
-                            break
+            t0 = time.perf_counter()
 
-                # Pass 2 – fuzzy word-overlap (≥80% of anchor words match).
-                # Threshold raised from 60% → 80% to prevent short anchors like
-                # "Part 2" from matching running-header lines that contain "Part".
-                if candidate_idx < 0:
-                    anchor_words = [w for w in needle.split() if len(w) > 3]
-                    if anchor_words:
-                        threshold = max(1, round(len(anchor_words) * 0.80))  # FIX: was 0.60
-                        for i, ln in enumerate(lines):
-                            ll = ln.strip().lower()
-                            if sum(1 for w in anchor_words if w in ll) >= threshold:
-                                candidate_idx = i
-                                break
+            # Stage 1 — load PDFs in parallel (ThreadPoolExecutor is safe here:
+            # fitz/PyMuPDF releases the GIL during file I/O and page rendering)
+            q.put(_json.dumps({"t": "p", "s": "old", "p": 0, "n": 1}) + "\n")
+            with ThreadPoolExecutor(max_workers=2) as load_pool:
+                fut_a = load_pool.submit(ce.load_pdf, tmp_a)
+                fut_b = load_pool.submit(ce.load_pdf, tmp_b)
+                lines_a = fut_a.result()
+                q.put(_json.dumps({"t": "p", "s": "old", "p": 1, "n": 1}) + "\n")
+                lines_b = fut_b.result()
+            q.put(_json.dumps({"t": "p", "s": "new", "p": 1, "n": 1}) + "\n")
 
-                if candidate_idx < 0:
-                    # No anchor found — return full text (safe fallback)
-                    return text
+            t1 = time.perf_counter()
+            print(f"[TIMING] load_pdf parallel: {len(lines_a)}+{len(lines_b)} lines, {t1-t0:.2f}s", flush=True)
 
-                # Pass 3 – structural guard: if there is a structural heading of the
-                # same tag type BEFORE our candidate that does NOT match the anchor,
-                # it means that heading belongs to a previous chunk bleeding in via
-                # page overlap.  Advance candidate_idx to skip past it.
-                if _struct_pat and candidate_idx > 0:
-                    for i in range(candidate_idx - 1, -1, -1):
-                        ll = lines[i].strip().lower()
-                        if not ll:
-                            continue
-                        if _struct_pat.match(ll) and ll != needle:
-                            # Found a prior structural heading that isn't ours —
-                            # our candidate_idx is already past it, which is correct.
-                            break
+            # Stage 2 — diff (with optional XML cross-validation)
+            q.put(_json.dumps({"t": "p", "s": "diff"}) + "\n")
 
-                return "\n".join(lines[candidate_idx:])
+            def _diff_progress(sub_stage: str, pct: int):
+                q.put(_json.dumps({"t": "p", "s": "diff", "sub": sub_stage, "sp": pct}) + "\n")
 
-            # Use distinct names so Python doesn't treat old_text/new_text as
-            # locals for the whole _detect() function (would cause UnboundLocalError
-            # because they are read from the outer scope before the trim call).
-            # When baseline is XML, skip anchor-trimming (XML is already clean).
-            if baseline_label == "xml":
-                old_text_trimmed = baseline_text
-            else:
-                old_text_trimmed = _trim_to_anchor_text(baseline_text, old_anchor, chunk_tag)
-            new_text_trimmed = _trim_to_anchor_text(new_text, new_anchor, chunk_tag)
-
-            # ── Text diff (always authoritative) ────────────────────────────
-            old_lines = [ln.strip() for ln in old_text_trimmed.splitlines()
-                         if ln.strip() and not _is_noise_line(ln.strip())]
-            new_lines = [ln.strip() for ln in new_text_trimmed.splitlines()
-                         if ln.strip() and not _is_noise_line(ln.strip())]
-
-            # ── Sentence reflow joining ──────────────────────────────────────
-            # PyMuPDF splits long sentences at the PDF column width, so the same
-            # sentence may be broken across different lines in old vs new PDFs
-            # when text reflows after amendments.  Join consecutive lines that
-            # form a single sentence before diffing so reflow alone never produces
-            # a false-positive change.
-            #
-            # A line is a "continuation" (not a sentence boundary) when:
-            #   • it does NOT end with sentence-terminal punctuation (. ! ? —)
-            #   • AND the next line does NOT start with a sub-item marker (a) (b) (1)
-            #     or a structural keyword (Part/Chapter/Section/Schedule)
-            #   • AND both lines together are shorter than 400 chars (guards against
-            #     accidentally joining two genuinely separate short provisions)
-            _SENT_END   = _re.compile(r'[.!?—]\s*$')
-            _ITEM_START = _re.compile(
-                r'^\s*(?:\([a-z]{1,2}\)|\([0-9]+[a-z]?\)|\d+[a-z]?\.|[a-z]{1,2}\))',
-                _re.IGNORECASE,
-            )
-            _STRUCT_START = _re.compile(
-                r'^\s*(?:part|chapter|schedule|article|section)\s+[\dIVXivx]+',
-                _re.IGNORECASE,
+            blocks_a, blocks_b, chunks = ce.compute_diff(
+                lines_a, lines_b,
+                xml_text_a=xml_a_text,
+                xml_text_b=xml_b_text,
+                on_progress=_diff_progress,
             )
 
-            # Pattern to detect amendment annotation starts — don't join these
-            _AMEND_START = _re.compile(
-                r'^[FCfc]\d+\s|^[FCfc]\d+$|^word(?:s)?\s+in\s|^substituted|^inserted|^repealed|^omitted|^applied',
-                _re.IGNORECASE,
-            )
+            t2 = time.perf_counter()
+            print(f"[TIMING] compute_diff: {len(chunks)} chunks, {t2-t1:.2f}s", flush=True)
 
-            def _join_continuation_lines(lines: list[str]) -> list[str]:
-                """Merge lines that are continuations of the previous sentence."""
-                if not lines:
-                    return lines
-                out: list[str] = []
-                i = 0
-                while i < len(lines):
-                    cur = lines[i]
-                    # Never join if either line looks like an amendment annotation
-                    while (
-                        i + 1 < len(lines)
-                        and not _SENT_END.search(cur)
-                        and not _ITEM_START.match(lines[i + 1])
-                        and not _STRUCT_START.match(lines[i + 1])
-                        and not _AMEND_START.match(cur)
-                        and not _AMEND_START.match(lines[i + 1])
-                        and len(cur) + len(lines[i + 1]) < 400
-                    ):
-                        i += 1
-                        cur = cur.rstrip() + " " + lines[i].lstrip()
-                    out.append(cur)
-                    i += 1
-                return out
+            # Stage 3 — render (precompute IS thread-safe — separate data)
+            q.put(_json.dumps({"t": "p", "s": "render", "chunks": len(chunks)}) + "\n")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+                fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+                pane_a = fut_pa.result()
+                pane_b = fut_pb.result()
 
-            old_lines = _join_continuation_lines(old_lines)
-            new_lines = _join_continuation_lines(new_lines)
+            t3 = time.perf_counter()
+            print(f"[TIMING] precompute: {t3-t2:.2f}s, total={t3-t0:.2f}s", flush=True)
 
-            old_norms = [_norm_line(l) for l in old_lines]
-            new_norms = [_norm_line(l) for l in new_lines]
+            # Stage 4 — extract XML sections and assign chunks (when XML available)
+            xml_sections = []
+            if xml_b_text and hasattr(ce, "extract_xml_sections"):
+                xml_sections = ce.extract_xml_sections(xml_b_text)
+                if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
+                    ce.assign_chunks_to_sections(chunks, xml_sections, xml_b_text)
 
-            # autojunk=False: _isjunk only skips bare single-char / pure-punctuation
-            # tokens (len<5).  Keeping the threshold tight is critical — the previous
-            # value of 12 excluded sub-item markers like "(a) pension income" from
-            # being used as alignment anchors, causing wholesale misalignment of
-            # sub-paragraphs and was a major source of false-positive changes.
-            def _isjunk(s: str) -> bool:
-                return len(s) < 5   # FIX: was 12 — only skip bare chars/punctuation
+            t5 = time.perf_counter()
 
-            changes: list[dict] = []
-            cid = 0
-            matcher = difflib.SequenceMatcher(_isjunk, old_norms, new_norms, autojunk=False)
-
-            for op, i1, i2, j1, j2 in matcher.get_opcodes():
-                if op == "equal":
-                    continue
-                elif op == "insert":
-                    for k in range(j1, j2):
-                        cid += 1
-                        changes.append({
-                            "id": f"chg_{cid:04d}", "type": "addition",
-                            "text": new_lines[k], "old_text": None, "new_text": new_lines[k],
-                            "page": new_page_start or 1, "old_page": None,
-                            "new_page": new_page_start or 1,
-                            "bbox": None, "old_bbox": None, "new_bbox": None,
-                            "old_formatting": None, "new_formatting": None,
-                            "suggested_xml": f"<ins>{new_lines[k]}</ins>",
-                        })
-                elif op == "delete":
-                    for k in range(i1, i2):
-                        cid += 1
-                        changes.append({
-                            "id": f"chg_{cid:04d}", "type": "removal",
-                            "text": old_lines[k], "old_text": old_lines[k], "new_text": None,
-                            "page": old_page_start or 1, "old_page": old_page_start or 1,
-                            "new_page": None,
-                            "bbox": None, "old_bbox": None, "new_bbox": None,
-                            "old_formatting": None, "new_formatting": None,
-                            "suggested_xml": f"<del>{old_lines[k]}</del>",
-                        })
-                elif op == "replace":
-                    paired = min(i2 - i1, j2 - j1)
-                    for k in range(paired):
-                        on = old_norms[i1+k]
-                        nn = new_norms[j1+k]
-                        if on == nn:
-                            continue
-                        ow = set(on.split())
-                        nw = set(nn.split())
-                        diff_words = (ow - nw) | (nw - ow)
-                        overlap = len(ow & nw) / max(len(ow | nw), 1)
-
-                        # Require at least 1 meaningful changed word (len ≥ 2) OR
-                        # a char-level ratio < 0.85 — catches single-word substitutions
-                        # like "offices" → "employers" that the old len>3 guard missed.
-                        meaningful = [w for w in diff_words if len(w) >= 2]
-                        char_ratio = difflib.SequenceMatcher(None, on, nn).ratio()
-                        if not meaningful or (len(meaningful) == 1 and char_ratio > 0.92):
-                            # Single cosmetic difference (punctuation/hyphen) — skip
-                            continue
-                        # High-overlap lines are likely reflow/formatting noise only
-                        if overlap > 0.88 and char_ratio > 0.90:
-                            continue
-                        # FIX (Bug 4): when lines are too dissimilar to be a
-                        # "modification" (overlap ≤ 0.25), emit BOTH removal and
-                        # addition.  The old code emitted only "addition", silently
-                        # hiding the removed content and producing ghost additions.
-                        if overlap > 0.25:
-                            # Similar enough — treat as a modification
-                            cid += 1
-                            changes.append({
-                                "id": f"chg_{cid:04d}", "type": "modification",
-                                "text": new_lines[j1+k],
-                                "old_text": old_lines[i1+k], "new_text": new_lines[j1+k],
-                                "page": new_page_start or 1,
-                                "old_page": old_page_start or 1, "new_page": new_page_start or 1,
-                                "bbox": None, "old_bbox": None, "new_bbox": None,
-                                "old_formatting": None, "new_formatting": None,
-                                "suggested_xml": f"<del>{old_lines[i1+k]}</del><ins>{new_lines[j1+k]}</ins>",
-                            })
-                        else:
-                            # Too dissimilar — emit explicit removal then addition
-                            cid += 1
-                            changes.append({
-                                "id": f"chg_{cid:04d}", "type": "removal",
-                                "text": old_lines[i1+k], "old_text": old_lines[i1+k], "new_text": None,
-                                "page": old_page_start or 1, "old_page": old_page_start or 1, "new_page": None,
-                                "bbox": None, "old_bbox": None, "new_bbox": None,
-                                "old_formatting": None, "new_formatting": None,
-                                "suggested_xml": f"<del>{old_lines[i1+k]}</del>",
-                            })
-                            cid += 1
-                            changes.append({
-                                "id": f"chg_{cid:04d}", "type": "addition",
-                                "text": new_lines[j1+k], "old_text": None, "new_text": new_lines[j1+k],
-                                "page": new_page_start or 1, "old_page": None, "new_page": new_page_start or 1,
-                                "bbox": None, "old_bbox": None, "new_bbox": None,
-                                "old_formatting": None, "new_formatting": None,
-                                "suggested_xml": f"<ins>{new_lines[j1+k]}</ins>",
-                            })
-                    for k in range(paired, i2 - i1):
-                        cid += 1
-                        changes.append({
-                            "id": f"chg_{cid:04d}", "type": "removal",
-                            "text": old_lines[i1+k], "old_text": old_lines[i1+k], "new_text": None,
-                            "page": old_page_start or 1, "old_page": old_page_start or 1, "new_page": None,
-                            "bbox": None, "old_bbox": None, "new_bbox": None,
-                            "old_formatting": None, "new_formatting": None,
-                            "suggested_xml": f"<del>{old_lines[i1+k]}</del>",
-                        })
-                    for k in range(paired, j2 - j1):
-                        cid += 1
-                        changes.append({
-                            "id": f"chg_{cid:04d}", "type": "addition",
-                            "text": new_lines[j1+k], "old_text": None, "new_text": new_lines[j1+k],
-                            "page": new_page_start or 1, "old_page": None, "new_page": new_page_start or 1,
-                            "bbox": None, "old_bbox": None, "new_bbox": None,
-                            "old_formatting": None, "new_formatting": None,
-                            "suggested_xml": f"<ins>{new_lines[j1+k]}</ins>",
-                        })
-
-            # ── Layout diff: enrich changes with bbox + harvest emphasis ────────
-            # Only run when page ranges are known.
-            # Two jobs:
-            #   1. Enrich text-diff changes with bbox from layout (was the only job before).
-            #   2. NEW: collect emphasis changes from layout (bold/italic/underline
-            #      flips on lines whose text is identical).  Plain-text extraction
-            #      has no formatting metadata so emphasis can only come from here.
-            if page_ranges_known:
-                try:
-                    layout_result = compare_pdfs_layout(
-                        old_bytes, new_bytes, xml_bytes,
-                        old_page_start=old_page_start, old_page_end=old_page_end,
-                        new_page_start=new_page_start, new_page_end=new_page_end,
-                    )
-                    # Build lookup: normalized text → layout change (for bbox enrichment)
-                    layout_by_text: dict[str, dict] = {}
-                    for lc in layout_result.get("changes", []):
-                        for key in ("old_text", "new_text", "text"):
-                            t = (lc.get(key) or "").strip().lower()[:80]
-                            if t and len(t) > 5:
-                                layout_by_text[t] = lc
-
-                    # 1. Enrich text-diff changes with bbox from layout
-                    for c in changes:
-                        search_key = (c.get("new_text") or c.get("old_text") or c.get("text") or "").strip().lower()[:80]
-                        if search_key and search_key in layout_by_text:
-                            lc = layout_by_text[search_key]
-                            c["bbox"]     = lc.get("bbox")
-                            c["old_bbox"] = lc.get("old_bbox")
-                            c["new_bbox"] = lc.get("new_bbox")
-                            c["old_page"] = lc.get("old_page") or c["old_page"]
-                            c["new_page"] = lc.get("new_page") or c["new_page"]
-                            c["page"]     = lc.get("page")     or c["page"]
-
-                    # 2. Harvest emphasis changes from layout diff.
-                    # A layout emphasis change means: text is identical across old/new
-                    # but bold/italic/underline differs on that line.  The text diff
-                    # above operates on plain text so it misses these entirely.
-                    # De-duplicate against text-diff changes by normalised text so we
-                    # never produce a duplicate entry for the same line.
-                    text_diff_keys: set[str] = set()
-                    for c in changes:
-                        for key in ("old_text", "new_text", "text"):
-                            t = (c.get(key) or "").strip().lower()[:80]
-                            if t:
-                                text_diff_keys.add(t)
-
-                    for lc in layout_result.get("changes", []):
-                        if lc.get("type") != "emphasis":
-                            continue
-                        # Skip if the same text was already caught by the text diff
-                        # (shouldn't happen — emphasis means text is equal — but guard anyway)
-                        lc_key = (lc.get("new_text") or lc.get("old_text") or lc.get("text") or "").strip().lower()[:80]
-                        if lc_key in text_diff_keys:
-                            continue
-                        if not lc_key or len(lc_key) <= 4:
-                            continue
-
-                        # Build the emphasis list from new_formatting
-                        fmt_new = lc.get("new_formatting") or {}
-                        emphasis_flags: list[str] = []
-                        if fmt_new.get("bold"):
-                            emphasis_flags.append("bold")
-                        if fmt_new.get("italic"):
-                            emphasis_flags.append("italic")
-                        # pdfminer Line objects expose bold/italic only; underline is
-                        # not reliably extracted by pdfminer so omit to avoid noise.
-
-                        cid += 1
-                        emphasis_entry: dict = {
-                            "id":             f"chg_{cid:04d}",
-                            "type":           "emphasis",
-                            "text":           lc.get("text") or lc.get("new_text") or "",
-                            "old_text":       lc.get("old_text"),
-                            "new_text":       lc.get("new_text"),
-                            "page":           lc.get("page") or new_page_start or 1,
-                            "old_page":       lc.get("old_page") or old_page_start or 1,
-                            "new_page":       lc.get("new_page") or new_page_start or 1,
-                            "bbox":           lc.get("bbox"),
-                            "old_bbox":       lc.get("old_bbox"),
-                            "new_bbox":       lc.get("new_bbox"),
-                            "old_formatting": lc.get("old_formatting"),
-                            "new_formatting": lc.get("new_formatting"),
-                            "emphasis":       emphasis_flags,
-                            "suggested_xml":  lc.get("suggested_xml"),
-                        }
-                        changes.append(emphasis_entry)
-                        text_diff_keys.add(lc_key)   # prevent double-adding
-
-                except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).warning("layout diff (bbox+emphasis) failed: %s", e)
-
-            summary = {"addition": 0, "removal": 0, "modification": 0, "emphasis": 0}
-            for c in changes:
-                t = c["type"]
-                if t in summary:
-                    summary[t] += 1
-                # Tag each change with the baseline source for UI display
-                c["baseline"] = baseline_label
-
-
-            # ── Post-diff noise filter ──────────────────────────────────
-            # When >80 changes remain, strip two categories of artefact:
-#  A — modifications where only the amendment/footnote marker changed (F1→F2)
-#  B — near-identical lines (char ratio > 0.94) with no meaningful word diff
-            if len(changes) > 80:
-                _AMEND_MARKER = _re.compile(
-                    r'(?:^[FCfc]\d+\s+|^[FCfc]\d+$|\s+[FCfc]\d+$)'
-                )
-                def _strip_markers(s):
-                    return _AMEND_MARKER.sub('', s).strip()
-
-                denoised = []
-                for _c in changes:
-                    if _c['type'] not in ('modification', 'mismatch'):
-                        denoised.append(_c)
-                        continue
-                    _ot = (_c.get('old_text') or '').strip()
-                    _nt = (_c.get('new_text') or '').strip()
-                    if not _ot or not _nt:
-                        denoised.append(_c)
-                        continue
-                    # Pass A: only amendment marker changed — drop
-                    if _strip_markers(_ot) == _strip_markers(_nt):
-                        continue
-                    # Pass B: cosmetic diff only — drop
-                    _cr = difflib.SequenceMatcher(None, _ot.lower(), _nt.lower()).ratio()
-                    if _cr > 0.94:
-                        _ow = set(w for w in _strip_markers(_ot).lower().split() if len(w) >= 3)
-                        _nw = set(w for w in _strip_markers(_nt).lower().split() if len(w) >= 3)
-                        if not ((_ow - _nw) | (_nw - _ow)):
-                            continue
-                    denoised.append(_c)
-
-                if len(denoised) < len(changes):
-                    import logging as _lg
-                    _lg.getLogger(__name__).info(
-                        'post-diff denoise: %d -> %d changes (chunk %s)',
-                        len(changes), len(denoised), getattr(payload, 'chunk_index', '?'),
-                    )
-                    changes = denoised
-                    summary = {'addition': 0, 'removal': 0, 'modification': 0, 'emphasis': 0}
-                    for _c in changes:
-                        if _c['type'] in summary:
-                            summary[_c['type']] += 1
-
-            # Cap at 200 changes — if more, something went wrong with noise filtering
-            # and rendering 1000+ items freezes the browser
-            MAX_CHANGES = 200
-            if len(changes) > MAX_CHANGES:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "detect-chunk: %d changes truncated to %d (chunk %s)",
-                    len(changes), MAX_CHANGES, payload.chunk_index,
-                )
-                changes = changes[:MAX_CHANGES]
-                # Recount after truncation
-                summary = {"addition": 0, "removal": 0, "modification": 0, "emphasis": 0}
-                for c in changes:
-                    t = c["type"]
-                    if t in summary:
-                        summary[t] += 1
-
-            return {
-                "changes":       changes,
-                "summary":       summary,
-                "xml_content":   xml_content,
-                "baseline":      baseline_label,  # "xml" or "old_pdf"
-                # Full plain text for the text-diff viewer (one line per entry)
-                "old_full_text": "\n".join(old_text_trimmed.splitlines()),
-                "new_full_text": "\n".join(new_text_trimmed.splitlines()),
+            payload = {
+                "success": True,
+                "chunks": [_chunk_to_dict(ch, i) for i, ch in enumerate(chunks)],
+                "pane_a": _pane_to_json(pane_a),
+                "pane_b": _pane_to_json(pane_b),
+                "stats": {
+                    "total":         len(chunks),
+                    "additions":     sum(1 for c in chunks if c.kind == ce.KIND_ADD),
+                    "deletions":     sum(1 for c in chunks if c.kind == ce.KIND_DEL),
+                    "modifications": sum(1 for c in chunks if c.kind == ce.KIND_MOD),
+                    "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
+                },
+                "xml_sections": [{"id": s["id"], "label": s["label"], "level": s["level"], "parent_id": s["parent_id"]} for s in xml_sections],
+                "file_a": fname_a,
+                "file_b": fname_b,
             }
 
-        result = await run_in_threadpool(_detect)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Detection failed: {exc}")
+            t6 = time.perf_counter()
+            print(f"[TIMING] payload build: {t6-t5:.2f}s", flush=True)
 
-    return {
-        "success":      True,
-        "job_id":       payload.job_id,
-        "chunk_index":  payload.chunk_index,
-        "changes":      result.get("changes", []),
-        "xml_content":  result.get("xml_content", xml_content),
-        "summary":      result.get("summary", {}),
-        "baseline":     result.get("baseline", "old_pdf"),
-        "old_full_text": result.get("old_full_text", ""),
-        "new_full_text": result.get("new_full_text", ""),
-    }
+            # Serialize the big result with orjson when available
+            if _has_orjson:
+                result_bytes = b'{"t":"r","d":' + _orjson.dumps(payload) + b'}\n'
+            else:
+                result_bytes = (_json.dumps({"t": "r", "d": payload}) + "\n").encode()
 
+            t7 = time.perf_counter()
+            print(f"[TIMING] serialize: {t7-t6:.2f}s ({len(result_bytes)/1024/1024:.1f}MB), TOTAL={t7-t0:.2f}s", flush=True)
 
+            q.put(result_bytes)
+            q.put(None)  # sentinel
 
-@router.get("/compare/{chunk_id}")
-async def get_compare_chunk_endpoint(chunk_id: str, job_id: str):
-    """
-    Return full comparison data for a single chunk.
-    Called when user clicks a "Changed" row to open the Compare module.
+        except Exception as exc:
+            logging.exception("diff/stream _run failed")
+            err_line = _json.dumps({"t": "e", "msg": str(exc)}) + "\n"
+            q.put(err_line.encode())
+            q.put(None)
+        finally:
+            for p in (tmp_a, tmp_b):
+                if p and os.path.exists(p):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
 
-    GET /compare/compare/{chunk_id}?job_id=<uuid>
-    """
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    async def _generate():
+        loop = asyncio.get_event_loop()
+        fut = loop.run_in_executor(None, _run)
 
-    chunks = job.get("chunks", [])
-    try:
-        idx   = int(chunk_id)
-        chunk = next((c for c in chunks if c.get("index") == idx), None)
-    except ValueError:
-        chunk = next((c for c in chunks if c.get("filename") == chunk_id), None)
+        while True:
+            try:
+                item = q.get_nowait()
+                if item is None:
+                    break
+                yield item if isinstance(item, bytes) else item.encode()
+            except _queue_mod.Empty:
+                if fut.done():
+                    # Drain remaining items
+                    while not q.empty():
+                        item = q.get_nowait()
+                        if item is None:
+                            break
+                        yield item if isinstance(item, bytes) else item.encode()
+                    # Check for executor exceptions
+                    exc = fut.exception()
+                    if exc:
+                        yield (_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode()
+                    break
+                await asyncio.sleep(0.05)
 
-    if not chunk:
-        raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found")
-
-    return {
-        "success":     True,
-        "job_id":      job_id,
-        "chunk_id":    chunk_id,
-        "source_name": job["source_name"],
-        "chunk":       chunk,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. SAVE XML — persist edited XML for a chunk after user review
-# ─────────────────────────────────────────────────────────────────────────────
-
-class SaveXmlRequest(BaseModel):
-    job_id:      str
-    chunk_id:    str
-    xml_content: str
-    has_changes: Optional[bool] = None
-
-
-@router.post("/save-xml")
-async def save_xml_endpoint(payload: SaveXmlRequest):
-    """
-    Persist edited XML content for a chunk after review in the XML editor.
-    Validates before saving. In production writes to CHUNKED/ or COMPARE/ on disk.
-    """
-    job = _jobs.get(payload.job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {payload.job_id} not found")
-
-    validation = validate_xml_chunk(payload.xml_content)
-    if not validation.get("valid", True):
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Invalid XML", "errors": validation.get("errors", [])},
-        )
-
-    chunks = job.get("chunks", [])
-    try:
-        idx   = int(payload.chunk_id)
-        chunk = next((c for c in chunks if c.get("index") == idx), None)
-    except ValueError:
-        chunk = next((c for c in chunks if c.get("filename") == payload.chunk_id), None)
-
-    if not chunk:
-        raise HTTPException(status_code=404, detail=f"Chunk {payload.chunk_id} not found")
-
-    chunk["xml_chunk_file"] = payload.xml_content
-    chunk["xml_content"]    = payload.xml_content
-    if payload.has_changes is not None:
-        chunk["has_changes"] = payload.has_changes
-
-    return {
-        "success":    True,
-        "job_id":     payload.job_id,
-        "chunk_id":   payload.chunk_id,
-        "filename":   chunk.get("filename"),
-        "validation": validation,
-        "message":    "XML saved successfully",
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. CHUNK (XML only — legacy)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/chunk")
-async def chunk_endpoint(
-    file:          UploadFile    = File(...),
-    tag_name:      str           = Form(...),
-    attribute:     Optional[str] = Form(None),
-    value:         Optional[str] = Form(None),
-    max_file_size: Optional[int] = Form(None),
-    identifier:    Optional[str] = Form(None),
-):
-    """Chunk an XML file by tag name (legacy, XML-only)."""
-    content_bytes = await file.read()
-    try:
-        xml_str = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=422, detail="File must be valid UTF-8 XML")
-
-    try:
-        chunks = chunk_xml(
-            xml_content=xml_str,
-            tag_name=tag_name,
-            attribute=attribute or None,
-            value=value or None,
-            max_file_size=max_file_size,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {
-        "success":       True,
-        "identifier":    identifier or file.filename,
-        "filename":      file.filename,
-        "tag_name":      tag_name,
-        "attribute":     attribute,
-        "value":         value,
-        "max_file_size": max_file_size,
-        "total_chunks":  len(chunks),
-        "chunks":        chunks,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. CHUNK PDF — LangChain PDF + XML chunking pipeline
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/chunk/pdf")
-async def chunk_pdf_endpoint(
-    old_pdf:       UploadFile    = File(...),
-    new_pdf:       UploadFile    = File(...),
-    xml_file:      UploadFile    = File(...),
-    tag_name:      str           = Form(...),
-    source_name:   str           = Form(...),
-    attribute:     Optional[str] = Form(None),
-    value:         Optional[str] = Form(None),
-    max_file_size: Optional[int] = Form(None),
-    chunk_size:    int           = Form(1500),
-    chunk_overlap: int           = Form(150),
-):
-    """
-    LangChain-powered pipeline (single-request, no job queue):
-      1. Extract text from OLD and NEW PDFs (PyMuPDF)
-      2. Split both with RecursiveCharacterTextSplitter
-      3. Chunk the XML file by tag_name
-      4. Align PDF chunks ↔ XML chunks by index
-      5. Detect changes per chunk (NEW vs OLD)
-      6. Return XML chunks named: SourceName_innod.NNNNN.xml
-    """
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
-    xml_bytes = await xml_file.read()
-
-    try:
-        xml_str = xml_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
-
-    try:
-        result = chunk_pdfs_and_xml(
-            old_pdf_bytes=old_bytes,
-            new_pdf_bytes=new_bytes,
-            xml_content=xml_str,
-            tag_name=tag_name,
-            source_name=source_name,
-            attribute=attribute or None,
-            value=value or None,
-            max_file_size=max_file_size,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {
-        "success":      True,
-        "source_name":  source_name,
-        "old_filename": old_pdf.filename,
-        "new_filename": new_pdf.filename,
-        "xml_filename": xml_file.filename,
-        **result,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. DOWNLOAD individual XML chunk
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/chunk/download")
-async def download_chunk_endpoint(
-    old_pdf:       UploadFile    = File(...),
-    new_pdf:       UploadFile    = File(...),
-    xml_file:      UploadFile    = File(...),
-    tag_name:      str           = Form(...),
-    source_name:   str           = Form(...),
-    chunk_index:   int           = Form(...),
-    attribute:     Optional[str] = Form(None),
-    value:         Optional[str] = Form(None),
-    max_file_size: Optional[int] = Form(None),
-    chunk_size:    int           = Form(1500),
-    chunk_overlap: int           = Form(150),
-):
-    """Download a single XML chunk file as an attachment."""
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
-    xml_bytes = await xml_file.read()
-
-    try:
-        xml_str = xml_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
-
-    try:
-        result = chunk_pdfs_and_xml(
-            old_pdf_bytes=old_bytes,
-            new_pdf_bytes=new_bytes,
-            xml_content=xml_str,
-            tag_name=tag_name,
-            source_name=source_name,
-            attribute=attribute or None,
-            value=value or None,
-            max_file_size=max_file_size,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    chunks = result.get("pdf_chunks", [])
-    if chunk_index < 1 or chunk_index > len(chunks):
-        raise HTTPException(status_code=404, detail=f"Chunk {chunk_index} not found")
-
-    chunk    = chunks[chunk_index - 1]
-    filename = chunk["filename"]
-    content  = chunk["xml_chunk_file"]
-
-    return Response(
-        content=content.encode("utf-8"),
-        media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    return StreamingResponse(
+        _generate(),
+        media_type="application/x-ndjson",
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"},
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. VALIDATE XML chunk
-# ─────────────────────────────────────────────────────────────────────────────
+# ── POST /compare/xml/apply ───────────────────────────────────────────────────
 
-class ValidateRequest(BaseModel):
-    xml_content: str
-
-
-@router.post("/validate")
-async def validate_endpoint(payload: ValidateRequest):
-    """Validate an XML chunk for structure, required tags, and syntax."""
-    result = validate_xml_chunk(payload.xml_content)
-    return {"success": True, **result}
+class ApplyRequest(BaseModel):
+    xml_text: str
+    chunk: dict
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10. MERGE XML chunks → final document
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ChunkItem(BaseModel):
-    filename:    str
-    xml_content: str
-    has_changes: bool = False
-
-
-class MergeChunksRequest(BaseModel):
-    chunks:      list[ChunkItem]
-    source_name: str = "Document"
+class ApplyResponse(BaseModel):
+    success:    bool
+    changed:    bool
+    xml_text:   str
+    message:    str
+    span_start: Optional[int] = None
+    span_end:   Optional[int] = None
 
 
-@router.post("/merge/chunks")
-async def merge_chunks_endpoint(payload: MergeChunksRequest):
-    """
-    Merge all XML chunk files into a single final XML document.
-
-    Input:  SourceName_innod.00001.xml, 00002.xml, ...
-    Output: SourceName_final.xml  (saved to MERGED/ folder in production)
-
-    Validates each chunk, combines sequentially, generates final output.
-    """
+@router.post("/xml/apply", response_model=ApplyResponse)
+async def apply_chunk(body: ApplyRequest):
+    """Apply one diff chunk into XML. Returns updated XML + a nav highlight span."""
     try:
-        merged = merge_xml_chunks(
-            chunks=[c.model_dump() for c in payload.chunks],
-            source_name=payload.source_name,
+        ch = _dict_to_chunk(body.chunk)
+        updated, changed, msg, span = ce._apply_chunk_to_xml(body.xml_text, ch)
+        return ApplyResponse(
+            success=True,
+            changed=changed,
+            xml_text=updated,
+            message=msg,
+            span_start=span[0] if span else None,
+            span_end=span[1]   if span else None,
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
 
-    safe     = re.sub(r'[^\w\-]', '_', payload.source_name).strip('_') or 'Document'
-    filename = f"{safe}_final.xml"
 
+# ── POST /compare/xml/locate ──────────────────────────────────────────────────
+
+class LocateRequest(BaseModel):
+    xml_text: str
+    chunk: dict
+
+
+class LocateResponse(BaseModel):
+    success:    bool
+    span_start: Optional[int] = None
+    span_end:   Optional[int] = None
+
+
+@router.post("/xml/locate", response_model=LocateResponse)
+async def locate_chunk(body: LocateRequest):
+    """Find where a chunk appears in XML without modifying it (for nav highlight)."""
+    try:
+        ch = _dict_to_chunk(body.chunk)
+        probe = (
+            ch.text_b if ch.kind in (ce.KIND_ADD, ce.KIND_MOD) else ch.text_a
+        ) or ch.text_a or ch.text_b or ""
+        span = ce._locate_xml_span(body.xml_text, probe)
+        return LocateResponse(
+            success=True,
+            span_start=span[0] if span else None,
+            span_end=span[1]   if span else None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── GET /compare/health ───────────────────────────────────────────────────────
+
+@router.get("/health")
+async def health():
     return {
-        "success":     True,
-        "merged_xml":  merged,
-        "filename":    filename,
-        "source_name": payload.source_name,
+        "status":    "ok",
+        "rapidfuzz": getattr(ce, "_USE_RAPIDFUZZ", False),
+        "engine":    getattr(ce, "__file__", "unknown"),
     }
 
 
-@router.post("/merge/chunks/download")
-async def merge_chunks_download_endpoint(payload: MergeChunksRequest):
-    """Merge chunks and return the result as a file download."""
+# ── POST /compare/xml/sections — parse XML structure ──────────────────────────
+
+class SectionsRequest(BaseModel):
+    xml_text: str
+
+
+@router.post("/xml/sections")
+async def parse_xml_sections(body: SectionsRequest):
+    """Parse the innodLevel structure of an XML document and return sections."""
     try:
-        merged = merge_xml_chunks(
-            chunks=[c.model_dump() for c in payload.chunks],
-            source_name=payload.source_name,
-        )
+        if not hasattr(ce, "extract_xml_sections"):
+            return {"success": True, "sections": []}
+        sections = ce.extract_xml_sections(body.xml_text)
+        return {
+            "success": True,
+            "sections": [
+                {"id": s["id"], "label": s["label"], "level": s["level"], "parent_id": s["parent_id"]}
+                for s in sections
+            ],
+        }
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    safe     = re.sub(r'[^\w\-]', '_', payload.source_name).strip('_') or 'Document'
-    filename = f"{safe}_final.xml"
-
-    return Response(
-        content=merged.encode("utf-8"),
-        media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. DIFF — compare two XML files
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/diff")
-async def diff_endpoint(
-    old_file: UploadFile = File(...),
-    new_file: UploadFile = File(...),
-):
-    """Compare two XML files — structural diff + line diff."""
-    old_bytes = await old_file.read()
-    new_bytes = await new_file.read()
-
-    try:
-        old_xml = old_bytes.decode("utf-8")
-        new_xml = new_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=422, detail="Files must be valid UTF-8 XML")
-
-    try:
-        diff  = compare_xml(old_xml, new_xml)
-        lines = line_diff(old_xml, new_xml)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {
-        "success":      True,
-        "old_filename": old_file.filename,
-        "new_filename": new_file.filename,
-        "diff":         diff,
-        "line_diff":    lines,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 12. MERGE (legacy: old/new XML + accept/reject lists)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class MergeRequest(BaseModel):
-    old_xml: str
-    new_xml: str
-    accept:  list[str] = []
-    reject:  list[str] = []
-
-
-@router.post("/merge")
-async def merge_endpoint(payload: MergeRequest):
-    """Merge old and new XML based on accepted/rejected change paths."""
-    try:
-        merged = merge_xml(
-            old_xml=payload.old_xml,
-            new_xml=payload.new_xml,
-            accept=payload.accept,
-            reject=payload.reject,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {"success": True, "merged_xml": merged}
-
-
-@router.post("/merge/download")
-async def merge_download_endpoint(payload: MergeRequest):
-    """Same as /merge but returns the result as a file download."""
-    try:
-        merged = merge_xml(
-            old_xml=payload.old_xml,
-            new_xml=payload.new_xml,
-            accept=payload.accept,
-            reject=payload.reject,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return Response(
-        content=merged.encode("utf-8"),
-        media_type="application/xml",
-        headers={"Content-Disposition": 'attachment; filename="merged.xml"'},
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 13. DIFF PDF — compare two PDFs alongside XML reference
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/diff/pdf")
-async def diff_pdf_endpoint(
-    old_pdf:  UploadFile = File(...),
-    new_pdf:  UploadFile = File(...),
-    xml_file: UploadFile = File(...),
-):
-    """
-    Compare two PDFs alongside an XML reference file.
-    Returns structural paragraph-level diff, line-level diff, and XML content.
-    """
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
-    xml_bytes = await xml_file.read()
-
-    try:
-        result = compare_pdfs_with_xml(old_bytes, new_bytes, xml_bytes)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {
-        "success":      True,
-        "old_filename": old_pdf.filename,
-        "new_filename": new_pdf.filename,
-        "xml_filename": xml_file.filename,
-        **result,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 14. MERGE PDF — merge PDF-detected changes into XML
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/merge/pdf")
-async def merge_pdf_endpoint(
-    old_pdf:  UploadFile = File(...),
-    new_pdf:  UploadFile = File(...),
-    xml_file: UploadFile = File(...),
-    accept:   str        = Form("[]"),
-    reject:   str        = Form("[]"),
-):
-    """
-    Merge changes detected between two PDFs into an XML structure.
-    accept / reject are JSON-encoded lists of paragraph paths from /diff/pdf.
-    """
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
-    xml_bytes = await xml_file.read()
-
-    try:
-        accept_list = json.loads(accept)
-        reject_list = json.loads(reject)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid accept/reject JSON: {exc}")
-
-    try:
-        merged = merge_pdfs_with_xml(
-            old_bytes, new_bytes, xml_bytes, accept_list, reject_list
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {"success": True, "merged_xml": merged}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 15. DETECT — per-span change detection (OLD vs NEW PDF → XML)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/detect")
-async def detect_changes_endpoint(
-    old_pdf:         UploadFile = File(...),
-    new_pdf:         UploadFile = File(...),
-    xml_file:        Optional[UploadFile] = File(None),
-    old_page_start:  Optional[int] = Form(None),
-    old_page_end:    Optional[int] = Form(None),
-    new_page_start:  Optional[int] = Form(None),
-    new_page_end:    Optional[int] = Form(None),
-    old_anchor_text: Optional[str] = Form(None),  # heading text that starts this chunk in old PDF
-    new_anchor_text: Optional[str] = Form(None),  # heading text that starts this chunk in new PDF
-    # legacy single page_start/end (standalone mode)
-    page_start:      Optional[int] = Form(None),
-    page_end:        Optional[int] = Form(None),
-):
-    """
-    Detect per-span changes between OLD and NEW PDFs.
-    In chunk mode, pass old_page_start/end + new_page_start/end + anchor texts
-    so detection is scoped to exactly that chunk's content.
-    """
-    old_bytes = await old_pdf.read()
-    new_bytes = await new_pdf.read()
-    xml_bytes = await xml_file.read() if xml_file is not None else b""
-
-    eff_old_start = old_page_start or page_start
-    eff_old_end   = old_page_end   or page_end
-    eff_new_start = new_page_start or page_start
-    eff_new_end   = new_page_end   or page_end
-
-    try:
-        from fastapi.concurrency import run_in_threadpool
-        result = await run_in_threadpool(
-            detect_pdf_changes,
-            old_bytes, new_bytes, xml_bytes,
-            old_page_start=eff_old_start,
-            old_page_end=eff_old_end,
-            new_page_start=eff_new_start,
-            new_page_end=eff_new_end,
-            old_anchor_text=old_anchor_text,
-            new_anchor_text=new_anchor_text,
-        )
-    except Exception as exc:
-        import traceback, logging
-        logging.getLogger(__name__).error(
-            "detect_pdf_changes failed: %s\n%s", exc, traceback.format_exc()
-        )
-        raise HTTPException(status_code=500, detail=f"Change detection failed: {exc}")
-
-    return {
-        "success":      True,
-        "old_filename": old_pdf.filename,
-        "new_filename": new_pdf.filename,
-        "xml_filename": xml_file.filename if xml_file else "",
-        **result,
-    }
+        raise HTTPException(status_code=500, detail=str(exc))

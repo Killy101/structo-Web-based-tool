@@ -35,7 +35,7 @@ Supported scope formats
 """
 
 import re
-from .base import extract_url_from_cell
+from .base import extract_url_and_note_from_cell, extract_url_and_note_from_text, extract_url_from_cell
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ _BOILERPLATE_MARKERS: list[str] = [
 ]
 
 _URL_RE   = re.compile(r"https?://")
-_ASRB_RE  = re.compile(r"ASRB\d+")
+_ASRB_RE  = re.compile(r"\bASRB[- ]?\d+\b", re.IGNORECASE)
 
 _INTRO_BLOB_RE = re.compile(
     r"(following\s+titles\s+are\s+currently\s+in\s+scope"
@@ -131,6 +131,7 @@ def _make_entry(title: str, ref_url: str = "", content_url: str = "") -> dict:
         "document_title":         title,
         "regulator_url":          ref_url,
         "content_url":            content_url,
+        "content_note":           "",
         "issuing_authority":      "",
         "issuing_authority_code": "",
         "geography":              "",
@@ -140,6 +141,32 @@ def _make_entry(title: str, ref_url: str = "", content_url: str = "") -> dict:
         "date_of_ingestion":      "",
         "strikethrough":          False,
     }
+
+
+def _normalise_asrb_and_sme(asrb_raw: str, sme_comments: str, fallback_asrb: str = "") -> tuple[str, str]:
+    """Keep ASRB IDs in the ASRB field even when older BRDs placed them in SME comments."""
+    def _dedupe(ids: list[str]) -> str:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in ids:
+            normalized = value.upper().replace(" ", "").replace("-", "")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                ordered.append(normalized)
+        return ", ".join(ordered)
+
+    asrb_id = _dedupe(_ASRB_RE.findall(asrb_raw or "")) or (fallback_asrb or "")
+    cleaned_comments = (sme_comments or "").strip()
+
+    if cleaned_comments:
+        embedded_asrb = _dedupe(_ASRB_RE.findall(cleaned_comments))
+        if embedded_asrb:
+            asrb_id = asrb_id or embedded_asrb
+            cleaned_comments = _ASRB_RE.sub("", cleaned_comments)
+            cleaned_comments = re.sub(r"^[\s,;:/-]+|[\s,;:/-]+$", "", cleaned_comments)
+            cleaned_comments = re.sub(r"\s{2,}", " ", cleaned_comments).strip()
+
+    return asrb_id, cleaned_comments
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,7 +232,7 @@ def _find_scope_section_table(doc):
         if tag == "p":
             from docx.text.paragraph import Paragraph
             p = Paragraph(el, doc)
-            style = p.style.name if p.style else ""
+            style = (p.style.name or "") if p.style else ""
             text_lower = p.text.strip().lower()
             if style.startswith("Heading"):
                 if "scope" in text_lower:
@@ -727,6 +754,23 @@ def extract_scope(doc) -> dict:
       3. Legacy paragraph extractor (formats 4–7)
       4. Standard scored multi-column scope table
     """
+    # ── Diagnostic logging ────────────────────────────────────────────────────
+    heading_styles = [
+        (p.style.name if p.style else "?", p.text.strip()[:80])
+        for p in doc.paragraphs
+        if (p.style and p.style.name.startswith("Heading")) or "scope" in p.text.lower()
+    ]
+    table_summaries = []
+    for i, t in enumerate(doc.tables):
+        row0_text = " | ".join(c.text.strip()[:30] for c in t.rows[0].cells) if t.rows else "(empty)"
+        score = _score_table(t)
+        table_summaries.append(f"  table[{i}] cols={len(t.columns)} rows={len(t.rows)} score={score} row0=[{row0_text}]")
+    print(f"[DEBUG scope_extractor] headings/scope paragraphs: {heading_styles}")
+    print(f"[DEBUG scope_extractor] {len(doc.tables)} tables in document:")
+    for s in table_summaries:
+        print(s)
+    # ──────────────────────────────────────────────────────────────────────────
+
     section_table = _find_scope_section_table(doc)
     if section_table is not None:
         ref_url = _get_source_url(doc)
@@ -735,10 +779,12 @@ def extract_scope(doc) -> dict:
         return _extract_scope_single_col_table(section_table, ref_url)
 
     if _is_legacy_format(doc):
+        print("[DEBUG scope_extractor] Using legacy format extractor")
         return extract_scope_legacy(doc)
 
     scope_table = _find_scope_table(doc)
     if scope_table is None:
+        print("[DEBUG scope_extractor] No scope table found — returning empty scope")
         return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}
 
     pre_ctx     = _detect_pre_header_context(doc, scope_table)
@@ -753,9 +799,10 @@ def extract_scope(doc) -> dict:
         if col_idx is None or col_idx >= len(row_cells): return ""
         return row_cells[col_idx].text.strip().replace("\xa0", " ")
 
-    def safe_url(row_cells, col_idx):
-        if col_idx is None or col_idx >= len(row_cells): return ""
-        return extract_url_from_cell(row_cells[col_idx])
+    def safe_url_and_note(row_cells, col_idx):
+        if col_idx is None or col_idx >= len(row_cells):
+            return "", ""
+        return extract_url_and_note_from_cell(row_cells[col_idx])
 
     _auth_re = re.compile(r"^(.*?)\s*\(([^)]+)\)\s*/\s*(.+)$")
 
@@ -768,16 +815,15 @@ def extract_scope(doc) -> dict:
     all_entries: list[dict] = []
     for row in scope_table.rows[data_start:]:
         cells       = row.cells
-        doc_title   = safe_text(cells, col_map["title"])
-        ref_url     = safe_url(cells,  col_map["ref_url"])
-        content_url = safe_url(cells,  col_map["content_url"])
-        issuing_raw = safe_text(cells, col_map["authority"]).replace("\n", " ") or global_auth
-        asrb_raw    = safe_text(cells, col_map["asrb_id"])
-        asrb_match  = _ASRB_RE.search(asrb_raw)
-        asrb_id     = asrb_match.group(0) if asrb_match else global_asrb
-        sme_comments= safe_text(cells, col_map["sme"])
-        initial_ev  = safe_text(cells, col_map.get("initial_evergreen"))
-        date_ing    = safe_text(cells, col_map.get("date_of_ingestion"))
+        doc_title            = safe_text(cells, col_map["title"])
+        ref_url, _           = safe_url_and_note(cells, col_map["ref_url"])
+        content_url, content_note = safe_url_and_note(cells, col_map["content_url"])
+        issuing_raw          = safe_text(cells, col_map["authority"]).replace("\n", " ") or global_auth
+        asrb_raw             = safe_text(cells, col_map["asrb_id"])
+        sme_comments_raw     = safe_text(cells, col_map["sme"])
+        asrb_id, sme_comments = _normalise_asrb_and_sme(asrb_raw, sme_comments_raw, global_asrb)
+        initial_ev           = safe_text(cells, col_map.get("initial_evergreen"))
+        date_ing             = safe_text(cells, col_map.get("date_of_ingestion"))
 
         if _is_non_data_scope_row(doc_title, ref_url, content_url, sme_comments):
             continue
@@ -791,6 +837,7 @@ def extract_scope(doc) -> dict:
             "document_title":         doc_title,
             "regulator_url":          ref_url,
             "content_url":            content_url,
+            "content_note":           content_note,
             "issuing_authority":      auth_name,
             "issuing_authority_code": auth_code,
             "geography":              geography,
@@ -856,6 +903,7 @@ def _extract_scope_from_mhtml(path: str) -> dict:
         content_col = find_col(["content url", "url for the title"])
         auth_col    = find_col(["issuing authority"])
         asrb_col    = find_col(["asrb id"])
+        sme_col     = find_col(["sme comments", "sme checkpoint"])
 
         in_scope: list[dict] = []
         seen: set[str] = set()
@@ -878,16 +926,16 @@ def _extract_scope_from_mhtml(path: str) -> dict:
             if _row_is_header_text(title_low):
                 continue
 
-            ref_url     = gcell(ref_col)
-            content_url = gcell(content_col)
-            ref_url     = re.split(r"\s+NOTE\s*:", ref_url)[0].strip()
+            ref_url, _ = extract_url_and_note_from_text(gcell(ref_col))
+            content_url, content_note = extract_url_and_note_from_text(gcell(content_col))
+            ref_url = re.split(r"\s+NOTE\s*:", ref_url)[0].strip()
             content_url = re.split(r"\s+NOTE\s*:", content_url)[0].strip()
             issuing_raw = gcell(auth_col)
             asrb_raw    = gcell(asrb_col)
-            asrb_match  = _ASRB_RE.search(asrb_raw)
-            asrb_id     = asrb_match.group(0) if asrb_match else ""
+            sme_raw     = gcell(sme_col)
+            asrb_id, sme_comments = _normalise_asrb_and_sme(asrb_raw, sme_raw)
 
-            if _is_non_data_scope_row(doc_title, ref_url, content_url, ""):
+            if _is_non_data_scope_row(doc_title, ref_url, content_url, sme_comments):
                 continue
             if doc_title in seen:
                 continue
@@ -903,11 +951,12 @@ def _extract_scope_from_mhtml(path: str) -> dict:
                 "document_title":         doc_title,
                 "regulator_url":          ref_url,
                 "content_url":            content_url,
+                "content_note":           content_note,
                 "issuing_authority":      auth_name,
                 "issuing_authority_code": auth_code,
                 "geography":              geography,
                 "asrb_id":                asrb_id,
-                "sme_comments":           "",
+                "sme_comments":           sme_comments,
                 "initial_evergreen":      "",
                 "date_of_ingestion":      "",
                 "strikethrough":          False,
