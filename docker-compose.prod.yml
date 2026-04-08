@@ -1,5 +1,31 @@
 services:
 
+  # ── Database ──────────────────────────────────────────────────────────────────
+  # Self-hosted PostgreSQL running alongside the app on EC2.
+  #
+  # To use AWS RDS instead (recommended for production):
+  #   1. Delete this entire `db` service block
+  #   2. Remove the `depends_on` block from the `backend` service below
+  #   3. Remove `postgres_data` from the `volumes` section at the bottom
+  #   4. Set DATABASE_URL in backend/.env.production to your RDS endpoint:
+  #      DATABASE_URL=postgresql://user:pass@your-cluster.rds.amazonaws.com:5432/structo
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-structo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env.production or shell env}
+      POSTGRES_DB: ${POSTGRES_DB:-structo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # schema.sql runs automatically on first boot (empty database only)
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-structo} -d ${POSTGRES_DB:-structo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Frontend ──────────────────────────────────────────────────────────────────
   frontend:
     image: killy101/structo-frontend:${TAG:-latest}
@@ -7,6 +33,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: production
+      args:
+        # NEXT_PUBLIC_* vars are baked in at build time — set this before building
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://yourdomain.com/api}
     ports:
       - "3000:3000"
     env_file:
@@ -16,7 +45,6 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
-      - processing
 
   # ── Backend ───────────────────────────────────────────────────────────────────
   backend:
@@ -32,6 +60,9 @@ services:
     environment:
       - NODE_ENV=production
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
 
   # ── Processing ────────────────────────────────────────────────────────────────
   processing:
@@ -54,4 +85,5 @@ networks:
     name: structo_prod_network
 
 volumes:
-  processing_data:   # persists SQLite job DB + uploaded PDF bytes across restarts
+  postgres_data:     # PostgreSQL data — persistent across restarts
+  processing_data:   # SQLite job DB + uploaded PDF bytes
