@@ -77,17 +77,17 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
 
   // ── Auto-load XML if provided from upload ───────────────────────────────
   useEffect(() => {
-    if (initialXmlFile && !xmlText) {
+    if (!initialXmlFile || xmlText) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
       setXmlFilename(initialXmlFile.name);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setXmlText(e.target?.result as string);
-        setXmlStatus(`Loaded ${initialXmlFile.name}`);
-        setXmlOpen(true);
-      };
-      reader.readAsText(initialXmlFile);
-    }
-  }, [initialXmlFile]); // eslint-disable-line react-hooks/exhaustive-deps
+      setXmlText(e.target?.result as string);
+      setXmlStatus(`Loaded ${initialXmlFile.name}`);
+      setXmlOpen(true);
+    };
+    reader.readAsText(initialXmlFile);
+  }, [initialXmlFile, xmlText]);
 
   // ── Scroll XML to a <mark> element ──────────────────────────────────────
   function scrollXmlToMark() {
