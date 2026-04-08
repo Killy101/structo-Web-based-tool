@@ -73,7 +73,7 @@ router.get(
 
       res.json({ logs })
     } catch (error) {
-      console.error('Get user logs error:', error)
+      console.log('Get user logs error:', error)
       res.status(500).json({ error: 'Internal server error' })
     }
   },
@@ -100,7 +100,7 @@ router.get('/my', authenticate, async (req: AuthRequest, res: Response) => {
     )
     res.json({ logs })
   } catch (error) {
-    console.error('Get my logs error:', error)
+    console.log('Get my logs error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

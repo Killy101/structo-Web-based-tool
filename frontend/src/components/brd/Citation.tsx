@@ -196,7 +196,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
         });
         setCellImages(restored);
       } catch (err) {
-        console.error("[Citation] Error fetching images:", err);
+        console.log("[Citation] Error fetching images:", err);
       }
     };
     fetchImages();

@@ -1,5 +1,5 @@
 "use client";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import type { Chunk, ChunkKind, DiffStats } from "./types";
 import { KIND_META } from "./types";
 
@@ -264,7 +264,15 @@ export default function ChunkList({
 
       {/* List */}
       <div className="flex-1 overflow-y-auto py-1 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10">
-        {filtered.map((ch) => (
+        {groups ? groups.map((group) => (
+          <SectionHeader
+            key={group.label}
+            group={group}
+            activeId={activeId}
+            appliedIds={appliedIds}
+            onSelect={onSelect}
+          />
+        )) : filtered.map((ch) => (
           <ChunkRow
             key={ch.id}
             ch={ch}

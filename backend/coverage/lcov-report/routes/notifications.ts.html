@@ -301,7 +301,7 @@ router.get("/", authenticate, async (req: AuthRequest, res: Response) =&gt; {
 &nbsp;
     res.json({ notifications, unreadCount });
   } catch (error) {
-<span class="cstat-no" title="statement not covered" >    console.error("Get notifications error:", error);</span>
+<span class="cstat-no" title="statement not covered" >    console.log("Get notifications error:", error);</span>
 <span class="cstat-no" title="statement not covered" >    res.status(500).json({ error: "Internal server error" });</span>
   }
 });
@@ -330,7 +330,7 @@ router.patch(
 &nbsp;
       res.json({ notification: updated });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Mark notification read error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Mark notification read error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -352,7 +352,7 @@ router.patch(
 &nbsp;
       res.json({ message: "All notifications marked as read" });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Mark all read error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Mark all read error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -377,7 +377,7 @@ router.delete(
       await prisma.notification.delete({ where: { id: notifId } });
       res.json({ message: "Notification deleted" });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Delete notification error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Delete notification error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },

@@ -906,7 +906,7 @@ router.get("/", authenticate, async (req: AuthRequest, res: Response) =&gt; {
 &nbsp;
     res.json({ tasks });
   } catch (error) {
-<span class="cstat-no" title="statement not covered" >    console.error("Get tasks error:", error);</span>
+<span class="cstat-no" title="statement not covered" >    console.log("Get tasks error:", error);</span>
 <span class="cstat-no" title="statement not covered" >    res.status(500).json({ error: "Internal server error" });</span>
   }
 });
@@ -1018,7 +1018,7 @@ router.post(
 &nbsp;
       res.status(201).json({ message: "Task created", task });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Create task error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Create task error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -1084,7 +1084,7 @@ router.patch(
 &nbsp;
 <span class="cstat-no" title="statement not covered" >      res.json({ message: "Task updated", task: updated });</span>
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Update task error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Update task error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -1113,7 +1113,7 @@ router.get(
 &nbsp;
       res.json({ comments });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Get comments error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Get comments error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -1166,7 +1166,7 @@ router.post(
 &nbsp;
       res.status(201).json({ comment });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Create comment error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Create comment error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -1199,7 +1199,7 @@ router.delete(
 <span class="cstat-no" title="statement not covered" >      await prisma.taskComment.delete({ where: { id: commentId } });</span>
 <span class="cstat-no" title="statement not covered" >      res.json({ message: "Comment deleted" });</span>
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Delete comment error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Delete comment error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -1223,7 +1223,7 @@ router.delete(
 &nbsp;
 <span class="cstat-no" title="statement not covered" >      res.json({ message: "Task deleted" });</span>
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Delete task error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Delete task error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },

@@ -107,7 +107,7 @@ router.post('/save', requireBrdEdit, async (req: Request, res: Response) => {
     return res.json({ success: true, brdId, status: dbStatus })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error('[POST /brd/save]', message)
+    console.log('[POST /brd/save]', message)
     return res.status(500).json({ error: message })
   }
 })

@@ -141,7 +141,7 @@ export async function governanceControlsMiddleware(
 
     return next()
   } catch (error) {
-    console.error('Governance controls middleware error:', error)
+    console.log('Governance controls middleware error:', error)
     return next()
   }
 }

@@ -34,6 +34,6 @@ export async function seedDevUserIfNeeded() {
         console.log('[dev-seed]   User ID: TEST')
         console.log('[dev-seed]   Password: TestPassword@12345')
     } catch (error) {
-        console.error('[dev-seed] Error with test user:', error)
+        console.log('[dev-seed] Error with test user:', error)
     }
 }

@@ -130,7 +130,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       },
     })
   } catch (error) {
-    console.error('Login error:', error)
+    console.log('Login error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -173,7 +173,7 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
 
     res.json({ user: { ...user, effectiveFeatures } })
   } catch (error) {
-    console.error('Get user error:', error)
+    console.log('Get user error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -183,7 +183,7 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'LOGOUT', 'User logged out')`, [req.user!.userId])
     res.json({ message: 'Logged out' })
   } catch (error) {
-    console.error('Logout error:', error)
+    console.log('Logout error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -263,7 +263,7 @@ router.post('/change-password', authenticate, async (req: AuthRequest, res: Resp
     )
     res.json({ message: 'Password changed successfully' })
   } catch (error) {
-    console.error('Change password error:', error)
+    console.log('Change password error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -308,7 +308,7 @@ router.post('/reset-user-password', authenticate, async (req: AuthRequest, res: 
 
     res.json({ message: 'Password reset successfully', newPassword, targetUserId: target.user_id, emailSent: emailResult.success, emailError: emailResult.error || undefined })
   } catch (error) {
-    console.error('Reset user password error:', error)
+    console.log('Reset user password error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

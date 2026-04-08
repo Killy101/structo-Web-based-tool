@@ -80,13 +80,11 @@ const STEPS = [
 export default function OnboardingWizard({ onDone }: OnboardingWizardProps) {
   const [step, setStep] = useState(0);
   const [exiting, setExiting] = useState(false);
-  const [dir, setDir] = useState<"forward" | "back">("forward");
 
   const current = STEPS[step];
 
   const goNext = useCallback(() => {
     if (step < STEPS.length - 1) {
-      setDir("forward");
       setStep(s => s + 1);
     } else {
       setExiting(true);
@@ -96,7 +94,6 @@ export default function OnboardingWizard({ onDone }: OnboardingWizardProps) {
 
   const goBack = useCallback(() => {
     if (step > 0) {
-      setDir("back");
       setStep(s => s - 1);
     }
   }, [step]);

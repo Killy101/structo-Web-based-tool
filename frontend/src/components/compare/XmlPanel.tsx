@@ -1,7 +1,6 @@
 "use client";
-import React, { forwardRef, useMemo, useRef } from "react";
+import React, { forwardRef, useRef } from "react";
 import type { Chunk } from "./types";
-import { KIND_META } from "./types";
 
 interface Props {
   xmlText: string;
@@ -82,8 +81,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
       !!activeChunk &&
       activeChunk.kind !== "emp" &&
       !appliedIds.has(activeChunk.id);
-
-    const meta = activeChunk ? KIND_META[activeChunk.kind] : null;
 
     return (
       <div className="flex flex-col h-full min-w-0 border-t border-slate-200 dark:border-white/8">

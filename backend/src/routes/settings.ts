@@ -123,7 +123,7 @@ router.get('/operations-status', authenticate, async (_req: AuthRequest, res: Re
   try {
     return res.json(await loadOperationsStatus())
   } catch (error) {
-    console.error('Get operations status error:', error)
+    console.log('Get operations status error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -132,7 +132,7 @@ router.get('/governance', authenticate, authorize(['SUPER_ADMIN']), async (_req:
   try {
     return res.json({ settings: await loadGovernanceSettings() })
   } catch (error) {
-    console.error('Get governance settings error:', error)
+    console.log('Get governance settings error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -153,7 +153,7 @@ router.get('/governance-history', authenticate, authorize(['SUPER_ADMIN']), asyn
     )
     return res.json({ logs })
   } catch (error) {
-    console.error('Get governance history error:', error)
+    console.log('Get governance history error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -186,7 +186,7 @@ router.patch('/governance', authenticate, authorize(['SUPER_ADMIN']), async (req
 
     return res.json({ message: 'Governance settings updated', settings: { securityPolicy, operationsPolicy } })
   } catch (error) {
-    console.error('Update governance settings error:', error)
+    console.log('Update governance settings error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })

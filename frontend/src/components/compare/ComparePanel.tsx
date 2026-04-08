@@ -393,15 +393,16 @@ function XmlViewer({ content, hlText }: { content:string; hlText?:string }) {
     </div>
   );
   const lines = content.split("\n");
-  let firstHl=-1;
+  const firstHighlightedIndex = hl.length > 2
+    ? lines.findIndex((line) => line.toLowerCase().includes(hl))
+    : -1;
   return (
     <div style={{flex:1,overflow:"auto",background:"var(--xml-bg)"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"Consolas,monospace",fontSize:12,lineHeight:"20px"}}>
         <tbody>
           {lines.map((line,i)=>{
             const isHl=hl.length>2&&line.toLowerCase().includes(hl);
-            if(isHl&&firstHl===-1)firstHl=i;
-            const isFirst=isHl&&firstHl===i;
+            const isFirst=isHl&&firstHighlightedIndex===i;
             return (
               <tr key={i}
                 ref={isFirst ? ((el: HTMLTableRowElement | null) => { hlRef.current = el; }) : undefined}
@@ -526,9 +527,12 @@ function ChangeDetail({ch}:{ch:DetectedChange}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function ComparePanel({
-  initialChunk, initialOldPdf: _op, initialNewPdf: _np,
-  initialXmlFile: _xf, allChunks=[], onChunkDone,
-  onNavigateToChunk: _nc, activeJob,
+  initialChunk,
+  initialOldPdf: _op,
+  initialNewPdf: _np,
+  allChunks = [],
+  onChunkDone,
+  activeJob,
 }: ComparePanelProps) {
 
   // Old/new PDF files kept for filename display only — no iframe rendering

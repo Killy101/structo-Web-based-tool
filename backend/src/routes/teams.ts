@@ -92,7 +92,7 @@ router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (_req: 
 
     res.json({ teams: teamsFormatted })
   } catch (error) {
-    console.error('Get teams error:', error)
+    console.log('Get teams error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -119,7 +119,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthReque
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_CREATED', $2)`, [req.user!.userId, `Created team "${name.trim()}"`])
     res.status(201).json({ message: 'Team created', team })
   } catch (error) {
-    console.error('Create team error:', error)
+    console.log('Create team error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -150,7 +150,7 @@ router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthR
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_RENAMED', $2)`, [req.user!.userId, `Renamed team "${team.name}" to "${name.trim()}"`])
     res.json({ message: 'Team updated', team: updated[0] })
   } catch (error) {
-    console.error('Update team error:', error)
+    console.log('Update team error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -170,7 +170,7 @@ router.delete('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: Auth
     await pool.query(`DELETE FROM teams WHERE id = $1`, [targetId])
     res.json({ message: 'Team deleted' })
   } catch (error) {
-    console.error('Delete team error:', error)
+    console.log('Delete team error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -204,7 +204,7 @@ router.get('/policies', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async
 
     res.json({ policies: items, featureCatalog })
   } catch (error) {
-    console.error('Get team policies error:', error)
+    console.log('Get team policies error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -235,7 +235,7 @@ router.patch('/:id/policies/:role', authenticate, authorize(['SUPER_ADMIN']), as
 
     res.json({ message: 'Team policy updated', policy: { teamId: team.id, teamSlug: team.slug, role, features: updated[0].features, updatedAt: updated[0].updatedAt } })
   } catch (error) {
-    console.error('Update team policy error:', error)
+    console.log('Update team policy error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

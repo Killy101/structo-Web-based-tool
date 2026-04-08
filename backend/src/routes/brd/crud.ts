@@ -147,7 +147,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
 
     return res.json(data)
   } catch (err) {
-    console.error('[GET /brd]', err)
+    console.log('[GET /brd]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -181,7 +181,7 @@ router.get('/deleted', requireBrdTrashAccess, async (_req: AuthRequest, res: Res
 
     return res.json(data)
   } catch (err) {
-    console.error('[GET /brd/deleted]', err)
+    console.log('[GET /brd/deleted]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -237,7 +237,7 @@ router.get('/check-duplicate', async (req: AuthRequest, res: Response) => {
 
     return res.json({ exists: false })
   } catch (err) {
-    console.error('[GET /brd/check-duplicate]', err)
+    console.log('[GET /brd/check-duplicate]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -270,7 +270,7 @@ router.get('/check-duplicate-title', async (req: AuthRequest, res: Response) => 
 
     return res.json({ exists: false })
   } catch (err) {
-    console.error('[GET /brd/check-duplicate-title]', err)
+    console.log('[GET /brd/check-duplicate-title]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -316,7 +316,7 @@ router.get('/:brdId', async (req: AuthRequest, res: Response) => {
       brdConfig:      brd.brdConfig      ?? null,
     })
   } catch (err) {
-    console.error('[GET /brd/:brdId]', err)
+    console.log('[GET /brd/:brdId]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -360,7 +360,7 @@ router.post('/:brdId/query', authenticate, async (req: AuthRequest, res: Respons
 
     return res.status(201).json({ message: 'Query sent to Pre-Production', recipients: recipients.length })
   } catch (err) {
-    console.error('[POST /brd/:brdId/query]', err)
+    console.log('[POST /brd/:brdId/query]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -475,7 +475,7 @@ router.delete('/:brdId/permanent', requireBrdTrashAccess, authorize(['SUPER_ADMI
 
     return res.json({ success: true })
   } catch (err) {
-    console.error('[DELETE /brd/:brdId/permanent]', err)
+    console.log('[DELETE /brd/:brdId/permanent]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -506,7 +506,7 @@ router.post('/fix-formats', requireBrdEdit, authorize(['SUPER_ADMIN', 'ADMIN']),
 
     return res.json({ success: true, fixed, total: rows.length })
   } catch (err) {
-    console.error('[POST /brd/fix-formats]', err)
+    console.log('[POST /brd/fix-formats]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })

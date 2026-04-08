@@ -1139,7 +1139,7 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) =&gt; {
       },
     });
   } catch (error) {
-<span class="cstat-no" title="statement not covered" >    console.error("Login error:", error);</span>
+<span class="cstat-no" title="statement not covered" >    console.log("Login error:", error);</span>
 <span class="cstat-no" title="statement not covered" >    res.status(500).json({ error: "Internal server error" });</span>
   }
 });
@@ -1187,7 +1187,7 @@ router.get("/me", authenticate, <span class="fstat-no" title="function not cover
 &nbsp;
 <span class="cstat-no" title="statement not covered" >    res.json({ user: { ...user, effectiveFeatures } });</span>
   } catch (error) {
-<span class="cstat-no" title="statement not covered" >    console.error("Get user error:", error);</span>
+<span class="cstat-no" title="statement not covered" >    console.log("Get user error:", error);</span>
 <span class="cstat-no" title="statement not covered" >    res.status(500).json({ error: "Internal server error" });</span>
   }
 });
@@ -1281,7 +1281,7 @@ router.post(
 &nbsp;
 <span class="cstat-no" title="statement not covered" >      res.json({ message: "Password changed successfully" });</span>
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Change password error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Change password error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },
@@ -1349,7 +1349,7 @@ router.post(
         targetUserId: target.userId,
       });
     } catch (error) {
-<span class="cstat-no" title="statement not covered" >      console.error("Reset user password error:", error);</span>
+<span class="cstat-no" title="statement not covered" >      console.log("Reset user password error:", error);</span>
 <span class="cstat-no" title="statement not covered" >      res.status(500).json({ error: "Internal server error" });</span>
     }
   },

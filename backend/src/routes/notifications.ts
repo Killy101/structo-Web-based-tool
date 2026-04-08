@@ -90,7 +90,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
     const unreadCount = active.filter((n) => !n.isRead).length
     res.json({ notifications: all, unreadCount })
   } catch (error) {
-    console.error('Get notifications error:', error)
+    console.log('Get notifications error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -109,7 +109,7 @@ router.get('/archived', authenticate, async (req: AuthRequest, res: Response) =>
     })
     res.json({ notifications: archived })
   } catch (error) {
-    console.error('Get archived notifications error:', error)
+    console.log('Get archived notifications error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -133,7 +133,7 @@ router.patch('/:id/read', authenticate, async (req: AuthRequest, res: Response) 
     )
     res.json({ notification: updated[0] })
   } catch (error) {
-    console.error('Mark notification read error:', error)
+    console.log('Mark notification read error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -144,7 +144,7 @@ router.patch('/read-all', authenticate, async (req: AuthRequest, res: Response) 
     await pool.query(`UPDATE notifications SET is_read = true WHERE user_id = $1 AND is_read = false`, [userId])
     res.json({ message: 'All notifications marked as read' })
   } catch (error) {
-    console.error('Mark all read error:', error)
+    console.log('Mark all read error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -166,7 +166,7 @@ router.delete('/:id', authenticate, async (req: AuthRequest, res: Response) => {
     await pool.query(`DELETE FROM notifications WHERE id = $1`, [notifId])
     res.json({ message: 'Notification deleted' })
   } catch (error) {
-    console.error('Delete notification error:', error)
+    console.log('Delete notification error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -195,7 +195,7 @@ router.patch('/:id/archive', authenticate, async (req: AuthRequest, res: Respons
     )
     res.json({ notification: updated[0] })
   } catch (error) {
-    console.error('Archive notification error:', error)
+    console.log('Archive notification error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

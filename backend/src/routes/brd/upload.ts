@@ -250,7 +250,7 @@ router.post(
       })
 
     } catch (err) {
-      console.error('\nUpload error:', err)
+      console.log('\nUpload error:', err)
       return res.status(500).json({
         error: err instanceof Error ? err.message : 'Upload processing failed',
       })
@@ -363,7 +363,7 @@ router.post(
         imageMetadata:  responseImageMetadata,
       })
     } catch (err) {
-      console.error('[POST /brd/re-upload/:brdId]', err)
+      console.log('[POST /brd/re-upload/:brdId]', err)
       return res.status(500).json({ error: err instanceof Error ? err.message : 'Re-upload failed' })
     } finally {
       if (file?.path) fs.unlink(file.path, () => {})

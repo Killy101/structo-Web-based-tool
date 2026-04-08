@@ -57,7 +57,7 @@ router.get('/:brdId/sections', async (req: AuthRequest, res: Response) => {
     }
     return res.json(rows[0])
   } catch (err) {
-    console.error('[GET /brd/:brdId/sections]', err)
+    console.log('[GET /brd/:brdId/sections]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -74,7 +74,7 @@ router.get('/:brdId/sections/:name', async (req: AuthRequest, res: Response) => 
     )
     return res.json({ [name]: rows[0]?.value ?? null })
   } catch (err) {
-    console.error(`[GET /brd/:brdId/sections/${name}]`, err)
+    console.log(`[GET /brd/:brdId/sections/${name}]`, err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -100,7 +100,7 @@ router.put('/:brdId/sections/:name', requireBrdEdit, async (req: Request, res: R
     )
     return res.json({ success: true, brdId, section: name })
   } catch (err) {
-    console.error(`[PUT /brd/:brdId/sections/${name}]`, err)
+    console.log(`[PUT /brd/:brdId/sections/${name}]`, err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })

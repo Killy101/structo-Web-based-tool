@@ -355,7 +355,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
         });
         setCellImages(restored);
       } catch (err) {
-        console.error("[Metadata] Error fetching images:", err);
+        console.log("[Metadata] Error fetching images:", err);
       }
     };
     fetchImages();
@@ -418,7 +418,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      console.error("[Metadata] Save failed:", err);
+      console.log("[Metadata] Save failed:", err);
     }
   }
 

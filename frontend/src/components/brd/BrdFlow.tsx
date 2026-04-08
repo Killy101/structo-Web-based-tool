@@ -271,7 +271,7 @@ export default function BrdFlow({
         setUploadMeta(nextMeta);
       })
       .catch((err) => {
-        console.error("Failed to load BRD:", err);
+        console.log("Failed to load BRD:", err);
         setViewError("Failed to load BRD data. Please try again.");
       })
       .finally(() => setViewLoading(false));

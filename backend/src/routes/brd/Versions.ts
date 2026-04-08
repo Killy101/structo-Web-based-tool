@@ -51,7 +51,7 @@ router.get('/:brdId/versions', async (req: AuthRequest, res: Response) => {
 
     return res.json({ versions })
   } catch (err) {
-    console.error('[GET /brd/:brdId/versions]', err)
+    console.log('[GET /brd/:brdId/versions]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -93,7 +93,7 @@ router.get('/:brdId/versions/:versionNum', async (req: AuthRequest, res: Respons
       imageIds:       Array.isArray(version.imageIds) ? version.imageIds : null,
     })
   } catch (err) {
-    console.error('[GET /brd/:brdId/versions/:versionNum]', err)
+    console.log('[GET /brd/:brdId/versions/:versionNum]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -157,7 +157,7 @@ router.post('/:brdId/versions', requireBrdEdit, async (req: Request, res: Respon
       throw createErr
     }
   } catch (err) {
-    console.error('[POST /brd/:brdId/versions]', err)
+    console.log('[POST /brd/:brdId/versions]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -178,7 +178,7 @@ router.delete('/:brdId/versions/:versionNum', requireBrdEdit, async (req: Reques
     await pool.query(`DELETE FROM brd_versions WHERE id = $1`, [rows[0].id])
     return res.json({ success: true })
   } catch (err) {
-    console.error('[DELETE /brd/:brdId/versions/:versionNum]', err)
+    console.log('[DELETE /brd/:brdId/versions/:versionNum]', err)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })

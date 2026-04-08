@@ -417,7 +417,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
         });
         setCellImages(restored);
       } catch (err) {
-        console.error("[ContentProfile] Error fetching images:", err);
+        console.log("[ContentProfile] Error fetching images:", err);
       }
     };
     

@@ -1145,7 +1145,7 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
 
     res.json({ success: true, metajson, filename: `${filename}.json` });
   } catch (err) {
-    console.error("[generate/metajson] error:", err);
+    console.log("[generate/metajson] error:", err);
     res.status(500).json({ success: false, error: "Failed to generate metajson" });
   }
 });
