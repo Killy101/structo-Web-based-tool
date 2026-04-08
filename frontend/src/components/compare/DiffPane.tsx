@@ -63,7 +63,7 @@ interface LineSeg {
 }
 
 /* Build an array of lines, each containing its segments. */
-function buildLines(pane: PaneData, chunks: Chunk[]) {
+function buildLines(pane: PaneData) {
   const { segments, offsets, offset_ends } = pane;
 
   // sorted chunk ranges by start offset for fast lookup
@@ -147,7 +147,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       },
     }), []);
 
-    const lines = useMemo(() => buildLines(pane, chunks), [pane, chunks]);
+    const lines = useMemo(() => buildLines(pane), [pane]);
 
     // chunk id → kind lookup
     const kindMap = useMemo(() => {

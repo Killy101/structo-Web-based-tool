@@ -1,7 +1,47 @@
-# Environment
+# Environment / secrets
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
+!**/.env.example
+
+# Python virtual environments
+.venv/
+venv/
+venv_new/
+**/.venv/
+**/venv/
+**/venv_new/
+
+# Python cache
+__pycache__/
+*.pyc
+*.py[cod]
+*$py.class
+
+# Node dependencies
+**/node_modules/
+
+# Build artifacts
+frontend/.next/
+backend/dist/
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Coverage / test artifacts
+**/coverage/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Temporary files
+*.tmp
+tmp/
+**/tmp/
 
 # Docker overrides
 docker-compose.override.yml
@@ -15,5 +55,4 @@ Thumbs.db
 .idea/
 
 # Logs
-*.log__pycache__/
-*.pyc
+*.log
