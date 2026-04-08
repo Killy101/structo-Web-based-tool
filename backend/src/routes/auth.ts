@@ -20,8 +20,8 @@ function policySlug(teamSlug: string, role: 'ADMIN' | 'USER') {
 function defaultTeamRoleFeatures(teamSlug: string): Record<'ADMIN' | 'USER', string[]> {
   const slug = teamSlug.toLowerCase()
   if (slug === 'pre-production') return {
-    ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-process', 'compare-basic', 'compare-pdf-xml-only'],
+    ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],
+    USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
   if (slug === 'production') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
