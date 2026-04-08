@@ -124,11 +124,12 @@ function WorkflowCard({
 
 // ── WorkflowSelector ──────────────────────────────────────────────────────────
 function WorkflowSelector({
-  canCompare, canMerge, canDiff, onSelect,
+  canDirectDiff, canChunkDiff, canCompare, canMerge, onSelect,
 }: {
+  canDirectDiff: boolean;
+  canChunkDiff: boolean;
   canCompare: boolean;
   canMerge: boolean;
-  canDiff: boolean;
   onSelect: (w: Workflow) => void;
 }) {
   return (
@@ -158,7 +159,7 @@ function WorkflowSelector({
           description="Side-by-side PDF comparison with word-level highlighting. Upload two PDFs and instantly view all structural differences."
           badge="Workflow 1"
           color="blue"
-          locked={!canDiff}
+          locked={!canDirectDiff}
           onClick={() => onSelect("direct-diff")}
           icon={
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -179,7 +180,7 @@ function WorkflowSelector({
           description="PDF comparison with XML chunking. Upload PDFs and XML, choose a structural level (Part, Chapter, Section), then browse and apply changes."
           badge="Workflow 2"
           color="teal"
-          locked={!canDiff}
+          locked={!canChunkDiff}
           onClick={() => onSelect("diff")}
           icon={
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -244,7 +245,7 @@ function WorkflowSelector({
         </div>
       )}
 
-      {!canCompare && !canDiff && (
+      {!canDirectDiff && !canChunkDiff && !canCompare && (
         <div className="max-w-5xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
           <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -264,9 +265,10 @@ export default function ComparePage() {
   const { user } = useAuth();
   const features    = user?.effectiveFeatures ?? [];
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
-  const canCompare  = isSuperAdmin || features.includes("compare-basic");
-  const canMerge    = isSuperAdmin || features.includes("compare-merge");
-  const canDiff     = isSuperAdmin || features.includes("compare-diff") || canCompare;
+  const canDirectDiff = isSuperAdmin || features.includes("compare-basic");
+  const canChunkDiff  = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canCompare    = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canMerge      = isSuperAdmin || features.includes("compare-merge");
 
   const [workflow, setWorkflow] = useState<Workflow>("selector");
 
@@ -400,9 +402,10 @@ export default function ComparePage() {
       {/* ── Selector ───────────────────────────────────────────────────────── */}
       {workflow === "selector" && (
         <WorkflowSelector
+          canDirectDiff={canDirectDiff}
+          canChunkDiff={canChunkDiff}
           canCompare={canCompare}
           canMerge={canMerge}
-          canDiff={canDiff}
           onSelect={(w) => {
             setWorkflow(w);
             if (w === "compare")    trackCompareUsage("direct",     user?.userId ?? "anonymous");
