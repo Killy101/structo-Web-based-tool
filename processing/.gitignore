@@ -6,11 +6,15 @@ __pycache__/
 
 # Virtual environments
 venv/
+venv_new/
 .venv/
-processing/venv/
 venv39/
 .venv39/
-processing/venv39/
+
+# Environment files
+.env
+.env.*
+!.env.example
 
 # Node / JS
 **/node_modules/
@@ -26,9 +30,9 @@ build/
 # Temporary files
 *.tmp
 tmp/
-.env
 
 # Testing / coverage
+coverage/
 .pytest_cache/
 htmlcov/
 .coverage
