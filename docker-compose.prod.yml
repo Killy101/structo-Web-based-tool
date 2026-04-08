@@ -40,8 +40,11 @@ services:
       context: ./processing
       dockerfile: Dockerfile
       target: production
-    ports:
-      - "8000:8000"
+    # Port 8000 is intentionally NOT exposed to the host.
+    # The backend reaches it via the internal Docker network (http://processing:8000).
+    # Exposing it publicly would bypass all authentication and rate limiting.
+    volumes:
+      - processing_data:/app/data
     env_file:
       - ./processing/.env.production
     restart: unless-stopped
@@ -49,3 +52,6 @@ services:
 networks:
   default:
     name: structo_prod_network
+
+volumes:
+  processing_data:   # persists SQLite job DB + uploaded PDF bytes across restarts

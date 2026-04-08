@@ -44,8 +44,9 @@ services:
       target: development        # uses the hot-reload stage
     volumes:
       - ./processing:/app        # bind-mount source for hot reload
+      - processing_data:/app/data  # persist SQLite job DB + PDF bytes across restarts
     ports:
-      - "8000:8000"
+      - "8000:8000"              # DEV ONLY — remove in production (see docker-compose.prod.yml)
     env_file:
       - ./processing/.env        # copy from processing/.env.example
     environment:
@@ -58,3 +59,4 @@ volumes:
   frontend_nm:
   frontend_next:
   backend_nm:
+  processing_data:   # persists SQLite job DB + uploaded PDF bytes across restarts
