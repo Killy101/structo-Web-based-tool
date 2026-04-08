@@ -1140,10 +1140,18 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
         ]
     }
 
+    cp_level_count = len(brd.content_profile_levels)
+    cp_complexity = (
+        "high" if cp_level_count >= 7 else
+        "medium" if cp_level_count >= 4 else
+        "low" if cp_level_count > 0 else ""
+    )
+
     content_profile_dict: dict[str, Any] = {
         "heading_annotation": brd.heading_annotation,
         "rc_filename":        brd.rc_filename,
         "hardcoded_path":     brd.hardcoded_path,
+        "complexity":         cp_complexity,
         "levels": [
             {
                 "levelNumber":  cp.level_number,

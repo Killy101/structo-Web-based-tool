@@ -313,10 +313,20 @@ function extractExample(desc: string): string { const m = desc.match(/^Example:\
 function extractDefinition(desc: string): string { const m = desc.match(/^Definition:\s*(.+)$/m); return m ? m[1].trim() : ""; }
 function isPlaceholderLevelToken(v: string): boolean { return /^level\s*\d+$/.test(v.trim().replace(/^\/+/, "").replace(/[_\-]+/g, " ").toLowerCase()); }
 function pickHardcodedToken(raw: string): string {
-  if (!raw) return "";
-  const sm = raw.match(/\/[A-Za-z][A-Za-z0-9-]*/); if (sm?.[0]) return sm[0];
-  const tm = raw.match(/[A-Za-z][A-Za-z0-9-]*/); if (!tm?.[0]) return "";
-  return isPlaceholderLevelToken(tm[0]) ? "" : tm[0];
+  const text = raw.trim();
+  if (!text) return "";
+
+  const slashMatch = text.match(/\/[A-Za-z0-9][A-Za-z0-9._/-]*/);
+  if (slashMatch?.[0]) return slashMatch[0].replace(/[),.;]+$/, "");
+
+  const tokenMatches = text.match(/[A-Za-z][A-Za-z0-9._-]*/g) ?? [];
+  const ignored = new Set(["hardcoded", "path", "level", "definition"]);
+  for (let i = tokenMatches.length - 1; i >= 0; i -= 1) {
+    const token = tokenMatches[i];
+    if (!token || ignored.has(token.toLowerCase()) || isPlaceholderLevelToken(token)) continue;
+    return token.replace(/[),.;]+$/, "");
+  }
+  return "";
 }
 function deriveHardcodedPath(levels: LevelRow[]): string {
   let l0 = "", l1 = "";

@@ -105,14 +105,20 @@ function isPlaceholderLevelToken(value: string): boolean {
 }
 
 function pickHardcodedToken(raw: string): string {
-  if (!raw) return "";
-  const slashMatch = raw.match(/\/[A-Za-z][A-Za-z0-9-]*/);
-  if (slashMatch?.[0]) return slashMatch[0];
-  const tokenMatch = raw.match(/[A-Za-z][A-Za-z0-9-]*/);
-  if (!tokenMatch?.[0]) return "";
-  const token = tokenMatch[0];
-  if (isPlaceholderLevelToken(token)) return "";
-  return token;
+  const text = raw.trim();
+  if (!text) return "";
+
+  const slashMatch = text.match(/\/[A-Za-z0-9][A-Za-z0-9._/-]*/);
+  if (slashMatch?.[0]) return slashMatch[0].replace(/[),.;]+$/, "");
+
+  const tokenMatches = text.match(/[A-Za-z][A-Za-z0-9._-]*/g) ?? [];
+  const ignored = new Set(["hardcoded", "path", "level", "definition"]);
+  for (let i = tokenMatches.length - 1; i >= 0; i -= 1) {
+    const token = tokenMatches[i];
+    if (!token || ignored.has(token.toLowerCase()) || isPlaceholderLevelToken(token)) continue;
+    return token.replace(/[),.;]+$/, "");
+  }
+  return "";
 }
 
 function stamp(prefix = "") {

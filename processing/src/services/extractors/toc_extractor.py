@@ -19,32 +19,59 @@ import re
 # ─────────────────────────────────────────────
 
 # Matches a path segment in a definition, e.g.:
-#   "Hardcoded – /us"          → "/us"
-#   "Hardcoded –/aladmincode"  → "/aladmincode"
-#   "Hardcoded - /de"          → "/de"
-#   "Hardcoded: /kr"           → "/kr"   (colon separator)
-_HARDCODED_PATH_RE = re.compile(r"hardcoded\s*[–\-—:]?\s*(/\S+)", re.IGNORECASE)
+#   "Hardcoded – /us"                → "/us"
+#   "Hardcoded – \"/cl\""            → "/cl"
+#   "Hardcoded - (/de)"              → "/de"
+#   "Hardcoded: /kr"                 → "/kr"
+_HARDCODED_PATH_RE = re.compile(
+    r"hardcoded(?:\s+path)?\s*[–\-—:=]?\s*[\"'“”‘’(\[]*\s*(/[A-Za-z0-9][A-Za-z0-9_./-]*)",
+    re.IGNORECASE,
+)
 
-# Matches a definition that is *just* a path, e.g. "/kr" or "/KRNARKActs"
-# Used as a fallback for Level 0/1 when there is no "Hardcoded" keyword.
-_BARE_PATH_RE = re.compile(r"^\s*(/[A-Za-z][A-Za-z0-9_/-]*)\s*$")
+# Fallback: capture the first slash-prefixed token anywhere in the definition.
+_ANY_PATH_RE = re.compile(r"(/[A-Za-z0-9][A-Za-z0-9_./-]*)")
+
+# Matches a definition that is *just* a path, e.g. "/kr" or '"/KRNARKActs"'.
+_BARE_PATH_RE = re.compile(r"^\s*[\"'“”‘’(\[]*\s*(/[A-Za-z][A-Za-z0-9_./-]*)\s*[\"'“”‘’)\]]*\s*$")
 
 
 def _extract_path_from_definition(definition: str) -> str:
     """
-    Pull the path segment out of a Level 0 / Level 1 definition, e.g.:
-      "Hardcoded – /us"         → "/us"
-      "Hardcoded –/aladmincode" → "/aladmincode"
-      "Hardcoded: /kr"          → "/kr"
-      "/KRNARKActs"             → "/KRNARKActs"  (bare path, no keyword)
-    Returns "" if no path is found.
+    Pull the path segment out of a Level 0 / Level 1 definition.
+    Handles quoted values and lightly localized wording as long as a
+    slash-prefixed path is present somewhere in the text.
     """
-    m = _HARDCODED_PATH_RE.search(definition)
-    if m:
-        return m.group(1).rstrip(".,;")
+    cleaned = (definition or "").strip()
+    if not cleaned:
+        return ""
+
+    for pattern in (_HARDCODED_PATH_RE, _ANY_PATH_RE):
+        match = pattern.search(cleaned)
+        if match:
+            return match.group(1).rstrip(".,;:)]}\"'”’")
+
     # Fallback: definition is itself a bare path segment (e.g. KR.NARK Level 0/1)
-    m2 = _BARE_PATH_RE.match(definition)
-    return m2.group(1).rstrip(".,;") if m2 else ""
+    bare = _BARE_PATH_RE.match(cleaned)
+    return bare.group(1).rstrip(".,;:)]}\"'”’") if bare else ""
+
+
+def _normalize_level_value(raw: str) -> str:
+    """Normalize level cell values like `0`, `L0`, or `Level 0` → `0`."""
+    text = _clean(raw)
+    if not text:
+        return ""
+
+    digit_match = re.search(r"\b(?:level|lvl|l)?\s*(\d+)\b", text, re.IGNORECASE)
+    if digit_match:
+        return digit_match.group(1)
+
+    short = text.strip()
+    compact_match = re.fullmatch(r"[A-Za-z]?(\d{1,2})", short)
+    if compact_match:
+        return compact_match.group(1)
+
+    return short
+
 
 def _clean(text: str) -> str:
     """Normalise whitespace while preserving meaningful line breaks."""
@@ -150,13 +177,13 @@ def extract_toc(doc) -> dict:
                     return ""
                 return _clean(cells[idx].text)
 
-            level_raw = cell_text("level")
+            level_cell = cell_text("level")
+            level_raw = _normalize_level_value(level_cell)
 
-            # Skip completely empty rows or rows that look like sub-headers
+            # Skip completely empty rows or long descriptive sub-headers.
             if not level_raw:
                 continue
-            # Skip rows where the level cell contains a long description (not a number)
-            if len(level_raw) > 5:
+            if not re.search(r"\d", level_raw) and len(level_raw) > 5:
                 continue
 
             definition = cell_text("definition")
@@ -223,6 +250,7 @@ def extract_toc_legacy(doc) -> dict:
 
     _stop_lower = [
         "example annotated",
+        "annotated header text levels",
         "metadata",
         "references to other",
         "exceptions",
@@ -245,8 +273,15 @@ def extract_toc_legacy(doc) -> dict:
         text_lower = text.lower()
         is_heading = style.startswith("Heading")
 
-        # Start collecting at the "Levels" heading
-        if is_heading and "levels" in text_lower and not collecting:
+        # Start collecting at the `Levels` marker. Some legacy BRDs use a
+        # plain paragraph instead of a heading for this label.
+        is_levels_marker = bool(re.fullmatch(r"levels\s*:?", text_lower)) or (
+            is_heading
+            and "levels" in text_lower
+            and "citable" not in text_lower
+            and "annotated" not in text_lower
+        )
+        if is_levels_marker and not collecting:
             collecting = True
             continue
 

@@ -39,19 +39,22 @@ def _normalise_citation_rule(raw: str) -> str:
 
 
 def _is_citable_table(table) -> bool:
-    """3-column table: Level | Is Level Citable? | SME Comments"""
+    """Citable-levels table, including combined 5-column legacy variants."""
     if not table.rows:
         return False
     header = " ".join(c.text for c in table.rows[0].cells).lower()
-    return "citable" in header and "level" in header and len(table.rows[0].cells) <= 4
+    return "citable" in header and "level" in header
 
 
 def _is_citation_rules_table(table) -> bool:
-    """4-column table: Level | Citation Rules | Source of Law | SME Comments"""
+    """Rules table, including combined `Citable Levels` layouts with a `Rules` column."""
     if not table.rows:
         return False
     header = " ".join(c.text for c in table.rows[0].cells).lower()
-    return "citation rules" in header and "source" in header
+    has_level = "level" in header
+    has_rules = "citation rules" in header or re.search(r"\brules?\b", header) is not None
+    has_supporting_cols = "source" in header or "citable" in header
+    return has_level and has_rules and has_supporting_cols
 
 
 # ─────────────────────────────────────────────
@@ -96,19 +99,28 @@ def extract_citations(doc) -> dict:
         if not _is_citation_rules_table(table):
             continue
 
-        # Detect column positions from header row
+        # Detect column positions from header row. Some legacy BRDs combine
+        # `Is Level Citable?`, `Rules`, `Source of Law`, and `SME Comments`
+        # into one 5-column table rather than splitting them across two tables.
         header_cells = [_clean(c.text).lower() for c in table.rows[0].cells]
-        col_level  = next((i for i, h in enumerate(header_cells) if h.startswith("level")), 0)
-        col_rules  = next((i for i, h in enumerate(header_cells) if "citation rule" in h), 1)
-        col_source = next((i for i, h in enumerate(header_cells) if "source" in h), 2)
-        col_sme    = next((i for i, h in enumerate(header_cells) if "sme comment" in h), 3)
+        col_level = next((i for i, h in enumerate(header_cells) if h.startswith("level") or "citation level" in h), 0)
+        col_citable = next((i for i, h in enumerate(header_cells) if "citable" in h), None)
+        col_source = next((i for i, h in enumerate(header_cells) if "source" in h), None)
+        col_sme = next((i for i, h in enumerate(header_cells) if "sme comment" in h), None)
+        col_rules = next(
+            (i for i, h in enumerate(header_cells) if "rule" in h and "citable" not in h),
+            next(
+                (i for i in range(len(header_cells)) if i not in {col_level, col_citable, col_source, col_sme}),
+                1,
+            ),
+        )
 
         for ri, row in enumerate(table.rows[1:], start=1):
             cells = row.cells
             n = len(cells)
 
-            def cell(idx: int) -> str:
-                return _clean(cells[idx].text) if idx < n else ""
+            def cell(idx: int | None) -> str:
+                return _clean(cells[idx].text) if idx is not None and idx < n else ""
 
             lvl_raw       = cell(col_level)
             citation_rule = _normalise_citation_rule(cell(col_rules))
@@ -119,6 +131,11 @@ def extract_citations(doc) -> dict:
             if not lvl:
                 continue
 
+            citable = citable_map.get(lvl, "")
+            raw_citable = cell(col_citable).upper()
+            if raw_citable:
+                citable = "Y" if raw_citable.startswith("Y") else "N" if raw_citable.startswith("N") else raw_citable
+
             # Use level-2 citation rule as the overall style description
             if lvl == "2" and citation_rule and citation_rule.upper() != "N":
                 citation_style = citation_rule
@@ -128,7 +145,7 @@ def extract_citations(doc) -> dict:
                 "level":         lvl,
                 "citationRules": citation_rule,
                 "sourceOfLaw":   source_of_law,
-                "isCitable":     citable_map.get(lvl, ""),
+                "isCitable":     citable,
                 "smeComments":   sme_comments,
             })
 
