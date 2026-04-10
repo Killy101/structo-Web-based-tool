@@ -1,4 +1,5 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import BrdTableHeaderCell from "./BrdTableHeaderCell";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import BrdImage from "./BrdImage";
@@ -313,15 +314,12 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
           <table className="w-full border-collapse" style={{ minWidth: "860px" }}>
             <thead>
               <tr className="bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
-                {COLUMNS.map(col => (
-                  <th key={col.key} className={`${col.width} text-left px-3 py-2.5 border-r border-slate-200 dark:border-[#2a3147] last:border-r-0`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] text-black dark:text-slate-400">{col.icon}</span>
-                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>{col.label}</span>
-                    </div>
-                  </th>
-                ))}
-                <th className="w-8 px-2 py-2.5" />
+                <BrdTableHeaderCell className="w-16" title="Level" greenNote="Citation level" />
+                <BrdTableHeaderCell className="w-20" title="Citable" greenNote="Should this level be citable" />
+                <BrdTableHeaderCell className="w-72" title="Citation Rules" checkpoint="SME Checkpoint" blueNote="Include the levels and punctuation that should appear in ELA citations" />
+                <BrdTableHeaderCell className="w-56" title="Source of Law" checkpoint="SME Checkpoint" blueNote="Identify the level that should serve as the Source of Law" />
+                <BrdTableHeaderCell className="w-52" title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+                <th className="w-8 px-2 py-2.5 bg-slate-50 dark:bg-[#1e2235]" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight: 400 }}>
@@ -334,7 +332,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
                         {getCellImgs(row.level, col.key).map(img => (
                           <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" width={320} height={180} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
-                        {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
+                        {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} defaultCellText={String(row[col.key as keyof CitationRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                       </div>
                     </td>
                   ))}

@@ -596,7 +596,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                             {getCellImgs(row.id, col.key).map(img => (
                               <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                             ))}
-                            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
+                            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} defaultCellText={String(row[col.key as keyof typeof row] ?? "")} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
                           </div>
                           </td>
                         ))}
@@ -651,7 +651,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
           <div className="flex items-center gap-2">
             <div className="flex-1"><FieldRow label="Heading Annotation" value={headingAnnotation} onChange={setHeadingAnnotation} placeholder="e.g. Level 2" /></div>
-            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel="headingAnnotation" existingImages={getCellImgs("headingAnnotation", "value")} onUploaded={img => onCellUploaded("headingAnnotation", "value", img)} onDeleted={id => onCellDeleted("headingAnnotation", "value", id)}/>}
+            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel="headingAnnotation" existingImages={getCellImgs("headingAnnotation", "value")} defaultCellText={headingAnnotation} onUploaded={img => onCellUploaded("headingAnnotation", "value", img)} onDeleted={id => onCellDeleted("headingAnnotation", "value", id)}/>}
           </div>
           {getCellImgs("headingAnnotation", "value").map(img => (
             <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-2 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
@@ -699,7 +699,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                         {getCellImgs(row.id, col.key).map(img => (
                           <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
-                        {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
+                        {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={getCellImgs(row.id, col.key)} defaultCellText={String(row[col.key as keyof typeof row] ?? "")} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
                       </div>
                       </td>
                     ))}

@@ -1,6 +1,7 @@
 // ── TOC.tsx ──────────────────────────────────────────────────────────────────
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdImage from "./BrdImage";
+import BrdTableHeaderCell from "./BrdTableHeaderCell";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -612,17 +613,15 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
           <table className="w-full border-collapse" style={{ minWidth: "1100px" }}>
             <thead>
               <tr className="bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
-                {COLUMNS.map((col) => (
-                  <th key={col.key} className={`${col.width} text-left px-3 py-2.5 border-r border-slate-200 dark:border-[#2a3147] last:border-r-0`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] text-black dark:text-slate-400">{col.icon}</span>
-                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-black dark:text-slate-300 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>
-                        {col.label}
-                      </span>
-                    </div>
-                  </th>
-                ))}
-                <th className="w-8 px-2 py-2.5" />
+                <BrdTableHeaderCell className="w-20" title="Level" greenNote="Innodata only - From regulator website" />
+                <BrdTableHeaderCell className="w-40" title="Name" greenNote="Innodata only - Identifies Level" />
+                <BrdTableHeaderCell className="w-28" title="Required" greenNote="True levels must appear / False may or may not appear" />
+                <BrdTableHeaderCell className="w-52" title="Definition" greenNote="Innodata only - Level value as on regulator weblink" />
+                <BrdTableHeaderCell className="w-48" title="Example" greenNote="Innodata only - Sample values of respective Levels" />
+                <BrdTableHeaderCell className="w-44" title="Note" greenNote="Innodata only - Specific instructions for Tech during source configuration" />
+                <BrdTableHeaderCell className="w-52" title="TOC Requirements" checkpoint="SME Checkpoint" blueNote="For SMEs - To specify on how they want ToC to appear in ELA" />
+                <BrdTableHeaderCell className="w-48" title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+                <th className="w-8 px-2 py-2.5 bg-slate-50 dark:bg-[#1e2235]" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight: 400 }}>
@@ -641,7 +640,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.level, col.key).map(img => (
                             <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                         </div>
                         </td>
                       ))}

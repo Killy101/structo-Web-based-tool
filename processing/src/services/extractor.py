@@ -27,6 +27,8 @@ import fitz  # PyMuPDF
 from docx import Document
 from lxml import html as lxml_html
 
+from .extractors.base import extract_url_and_note_from_text
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public: file-type text extraction
@@ -660,17 +662,14 @@ def _fallback_from_text(text: str, format: str) -> dict:
 
     def split_url_and_note(raw_value: str) -> tuple[str, str]:
         raw_value = (raw_value or "").strip()
-        urls = [match.group(0).rstrip(".,;") for match in url_pattern.finditer(raw_value)]
-        if not urls:
-            return (raw_value if "http" in raw_value.lower() else ""), ""
-        primary = max(urls, key=lambda url: (url.count("/"), int("?" in url or "#" in url), len(url)))
-        note_lines: list[str] = []
-        for line in raw_value.splitlines():
-            cleaned = url_pattern.sub("", line).strip()
-            cleaned = re.sub(r"\s+", " ", cleaned)
-            if cleaned:
-                note_lines.append(cleaned)
-        return primary, "\n".join(dict.fromkeys(note_lines))
+        if not raw_value:
+            return "", ""
+
+        primary, note = extract_url_and_note_from_text(raw_value)
+        if primary == raw_value and "http" not in raw_value.lower():
+            return "", ""
+
+        return primary, note
 
     def split_asrb_and_comments(asrb_raw: str, sme_raw: str) -> tuple[str, str]:
         normalize = lambda values: ", ".join(dict.fromkeys(v.upper().replace(" ", "").replace("-", "") for v in values if v))

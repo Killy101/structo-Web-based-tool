@@ -10,6 +10,7 @@ from src.services.extractors.scope_extractor import _is_non_data_scope_row
 from src.services.extractors.image_extractor import extract_and_store_images_from_mhtml
 from src.services.extractors.toc_extractor import extract_toc
 from src.services.extractors.citations_extractor import _normalise_citation_rule
+from src.services.extractors.base import extract_url_and_note_from_text
 
 
 _TINY_PNG_BASE64 = (
@@ -151,6 +152,39 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
             _normalise_citation_rule(raw),
             'This is the example for this level: <Level 2> + "," + <Level 3> Crystal-Based on discussion with Paula',
         )
+
+    def test_scope_url_with_parentheses_keeps_full_pdf_link(self):
+        text = 'https://www.b3.com.br/data/files/82/91/0D/02/00D8C810719CE3C8DC0D8AA8/OC%20214-2023%20PRE%20PEC%20do%20PQO%20(PT).pdf'
+        url, note = extract_url_and_note_from_text(text)
+        self.assertEqual(url, text)
+        self.assertEqual(note, '')
+
+    def test_extract_all_preserves_metadata_content_uri_note_alongside_link(self):
+        doc = Document()
+        doc.add_heading("Metadata", level=1)
+        table = doc.add_table(rows=2, cols=3)
+        table.rows[0].cells[0].text = "Metadata Element"
+        table.rows[0].cells[1].text = "Document Location"
+        table.rows[0].cells[2].text = "SME Comments"
+        table.rows[1].cells[0].text = "Content URI"
+        table.rows[1].cells[1].text = (
+            "URL of the specific Document (e.g.)\n"
+            "https://www.b3.com.br/data/files/example.pdf"
+        )
+        table.rows[1].cells[2].text = "Ok"
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
+            doc.save(handle.name)
+            doc_path = handle.name
+
+        try:
+            extracted = extract_all(doc_path)
+        finally:
+            Path(doc_path).unlink(missing_ok=True)
+
+        metadata = extracted["metadata"]
+        self.assertEqual(metadata["Content URI"], "https://www.b3.com.br/data/files/example.pdf")
+        self.assertEqual(metadata.get("Content URI Note"), "URL of the specific Document (e.g.)")
 
     def test_extract_all_preserves_scope_evergreen_and_ingestion_columns(self):
         doc = Document()

@@ -1,4 +1,11 @@
-import { buildBrdExportFilename, buildWordDocxBlob, prepareBrdExportElement } from "../components/brd/Generate";
+import {
+  buildBrdExportFilename,
+  buildMetadataDocumentLocationText,
+  buildWordDocxBlob,
+  formatMetadataDateValue,
+  getMetadataRowImagesForField,
+  prepareBrdExportElement,
+} from "../components/brd/Generate";
 import { buildBrdImageBlobUrl } from "../utils/brdImageUrl";
 
 function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
@@ -90,6 +97,46 @@ describe("prepareBrdExportElement", () => {
     expect(rows).toHaveLength(1);
     expect(prepared.textContent).toContain("Source Name");
     expect(prepared.textContent).not.toContain("Status");
+  });
+});
+
+describe("getMetadataRowImagesForField", () => {
+  it("keeps a publication-date image off the source-type row when the image already has a semantic field label", () => {
+    const images = [
+      {
+        id: 41,
+        tableIndex: 5,
+        rowIndex: 3,
+        colIndex: 1,
+        rid: "rId7",
+        mediaName: "pubdate.png",
+        mimeType: "image/png",
+        cellText: "Publication date can usually be found on the first page",
+        blobUrl: null,
+        section: "metadata",
+        fieldLabel: "Publication Date",
+      },
+    ];
+
+    expect(getMetadataRowImagesForField({ label: "Source Type", key: "sourceType" }, 2, images)).toEqual([]);
+    expect(getMetadataRowImagesForField({ label: "Publication Date", key: "publicationDate" }, 4, images)).toHaveLength(1);
+  });
+});
+
+describe("metadata document location helpers", () => {
+  it("formats date-like values but leaves instructional text untouched", () => {
+    expect(formatMetadataDateValue("2024-01-15")).toBe("15 Jan 2024");
+    expect(formatMetadataDateValue("ISO 8601 of date processed (e.g. 2016-06-07T15:10:00Z)")).toBeNull();
+  });
+
+  it("preserves the descriptive text above a clickable content URL", () => {
+    expect(
+      buildMetadataDocumentLocationText(
+        "contentUrl",
+        "https://www.b3.com.br/data/files/example.pdf",
+        { "Content URI Note": "URL of the specific Document (e.g.)" },
+      ),
+    ).toBe("URL of the specific Document (e.g.)\nhttps://www.b3.com.br/data/files/example.pdf");
   });
 });
 

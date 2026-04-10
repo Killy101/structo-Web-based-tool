@@ -23,6 +23,7 @@ interface Props {
   existingImages?: UploadedCellImage[];
   onUploaded?: (img: UploadedCellImage) => void;
   onDeleted?: (id: number) => void;
+  defaultCellText?: string;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -41,6 +42,7 @@ export default function CellImageUploader({
   existingImages = [],
   onUploaded,
   onDeleted,
+  defaultCellText = "",
 }: Props) {
   const inputRef              = useRef<HTMLInputElement>(null);
   const popoverRef            = useRef<HTMLDivElement>(null);
@@ -52,6 +54,8 @@ export default function CellImageUploader({
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting]   = useState<number | null>(null);
   const [error, setError]         = useState<string | null>(null);
+  const normalizedDefaultText = defaultCellText.trim();
+  const [captionText, setCaptionText] = useState(normalizedDefaultText);
 
   const dismiss = useCallback(() => {
     if (preview) URL.revokeObjectURL(preview);
@@ -59,7 +63,8 @@ export default function CellImageUploader({
     setPending(null);
     setOpen(false);
     setError(null);
-  }, [preview]);
+    setCaptionText(normalizedDefaultText);
+  }, [normalizedDefaultText, preview]);
 
   // Close popover on outside click
   useEffect(() => {
@@ -80,6 +85,12 @@ export default function CellImageUploader({
       URL.revokeObjectURL(preview);
     };
   }, [preview]);
+
+  useEffect(() => {
+    if (!pending) {
+      setCaptionText(normalizedDefaultText);
+    }
+  }, [normalizedDefaultText, pending]);
 
   function openPopover(e: React.MouseEvent) {
     e.stopPropagation();
@@ -118,6 +129,7 @@ export default function CellImageUploader({
     if (preview) URL.revokeObjectURL(preview);
     setPreview(URL.createObjectURL(file));
     setPending(file);
+    setCaptionText(normalizedDefaultText || file.name.replace(/\.[^.]+$/, ""));
     setOpen(true);
   }
 
@@ -135,7 +147,7 @@ export default function CellImageUploader({
           mediaName:  pending.name,
           section,
           fieldLabel,
-          cellText:   pending.name.replace(/\.[^.]+$/, ""),
+          cellText:   captionText.trim() || normalizedDefaultText || pending.name.replace(/\.[^.]+$/, ""),
         }
       );
       const data = res.data as { success: boolean; image: UploadedCellImage };
@@ -162,6 +174,7 @@ export default function CellImageUploader({
   }
 
   const hasImages = existingImages.length > 0;
+  const buttonLabel = hasImages ? `Manage images for ${fieldLabel}` : `Add image to ${fieldLabel}`;
 
   return (
     <div className="relative flex-shrink-0">
@@ -175,15 +188,16 @@ export default function CellImageUploader({
 
       <button
         type="button"
-        title={hasImages ? `${existingImages.length} image(s) attached — click to manage` : "Attach image"}
+        aria-label={buttonLabel}
+        title={buttonLabel}
         ref={buttonRef}
         onClick={openPopover}
         className={[
-          "inline-flex items-center justify-center w-5 h-5 rounded transition-all duration-150",
+          "inline-flex items-center justify-center w-6 h-6 rounded-md border transition-all duration-150",
           hasImages
-            ? "text-blue-500 dark:text-blue-400 opacity-100"
-            : "text-slate-400 dark:text-slate-600 opacity-0 group-hover:opacity-100",
-          "hover:bg-blue-50 dark:hover:bg-blue-500/10 hover:text-blue-600 hover:opacity-100",
+            ? "border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400"
+            : "border-slate-200 bg-white text-slate-500 dark:border-[#2a3147] dark:bg-[#161b2e] dark:text-slate-400",
+          "hover:border-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10 hover:text-blue-600",
         ].join(" ")}
       >
         {hasImages ? (
@@ -220,6 +234,22 @@ export default function CellImageUploader({
           {preview && pending && (
             <div className="p-2 space-y-2 border-b border-slate-100 dark:border-[#2a3147]">
               <BrdImage src={preview} alt="preview" className="w-full max-h-28 object-contain rounded bg-slate-50 dark:bg-[#161b2e]" width={224} height={112} />
+              <label className="block space-y-1">
+                <span className="text-[9px] font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">
+                  Image text
+                </span>
+                <textarea
+                  aria-label="Image text"
+                  rows={2}
+                  value={captionText}
+                  onChange={(e) => setCaptionText(e.target.value)}
+                  placeholder={normalizedDefaultText || "Optional note or caption"}
+                  className="w-full resize-none rounded-md border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#161b2e] px-2 py-1.5 text-[10px] text-slate-700 dark:text-slate-200 outline-none focus:border-blue-400 dark:focus:border-blue-500"
+                />
+              </label>
+              <p className="text-[9px] text-slate-500 dark:text-slate-400">
+                Keep the field text and attach or delete images here.
+              </p>
               <div className="flex items-center gap-1.5">
                 <button onClick={dismiss} disabled={uploading}
                   className="flex-1 py-1 rounded text-[10px] font-medium text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45] disabled:opacity-50 transition-all">

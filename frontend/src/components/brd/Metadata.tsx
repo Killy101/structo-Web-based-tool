@@ -1,5 +1,6 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdImage from "./BrdImage";
+import BrdTableHeaderCell from "./BrdTableHeaderCell";
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -203,6 +204,7 @@ function buildOutgoingMetadata(
     name:                      values.name ?? "",
     related_government_agency: values.relatedGovernmentAgency ?? "",
     content_uri:               values.contentUrl ?? "",
+    content_uri_note:          values.contentUrlNote ?? values.contentUriNote ?? "",
     impacted_citation:         values.impactedCitation ?? "",
     payload_type:              values.payloadType ?? "",
     payload_subtype:           values.payloadSubtype ?? "",
@@ -227,6 +229,7 @@ function buildOutgoingMetadata(
     name:                      values.name ?? "",
     related_government_agency: values.relatedGovernmentAgency ?? "",
     content_uri:               values.contentUri ?? "",
+    content_uri_note:          values.contentUriNote ?? values.contentUrlNote ?? "",
     impacted_citation:         values.impactedCitation ?? "",
     payload_type:              values.payloadType ?? "",
     payload_subtype:           values.payloadSubtype ?? "",
@@ -476,9 +479,9 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
           <table className="w-full min-w-[980px] border-collapse text-[11.5px]">
             <thead>
               <tr className="bg-slate-100 dark:bg-[#181d30] border-b border-slate-200 dark:border-[#2a3147]">
-                <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>Metadata Element</th>
-                <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>Document Location</th>
-                <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>SME Comments</th>
+                <BrdTableHeaderCell title="Metadata Element" greenNote="Innodata only - field name from the BRD template" />
+                <BrdTableHeaderCell title="Document Location" greenNote="Source text, date, image, or URL captured from the BRD" />
+                <BrdTableHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
               </tr>
             </thead>
             <tbody>
@@ -509,6 +512,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                               section="metadata"
                               fieldLabel={field.key}
                               existingImages={getFieldImgsUploaded(field.key)}
+                              defaultCellText={values[field.key] ?? ""}
                               onUploaded={img => onFieldUploaded(field.key, img)}
                               onDeleted={id => onFieldDeleted(field.key, id)}
                             />
@@ -643,6 +647,7 @@ function buildMetadataValues(
       name:                    p("name", "Name", "document_title", "documentTitle", "title"),
       relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
       contentUrl:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      contentUrlNote:          p("content_uri_note", "contentUriNote", "contentUrlNote", "Content URI Note", "content_url_note", "Content URL Note"),
       impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
       payloadType:             p("payload_type", "payloadType", "Payload Type"),
       payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
@@ -669,6 +674,7 @@ function buildMetadataValues(
     name:                    p("name", "Name", "document_title", "documentTitle", "title"),
     relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
     contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    contentUriNote:          p("content_uri_note", "contentUriNote", "contentUrlNote", "Content URI Note", "content_url_note", "Content URL Note"),
     impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
     payloadType:             p("payload_type", "payloadType", "Payload Type"),
     payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),

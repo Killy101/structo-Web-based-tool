@@ -138,6 +138,160 @@ function hasDocumentLocationValue(value: unknown): boolean {
   return normalized !== "" && normalized !== "—" && normalized !== "-";
 }
 
+const METADATA_DATE_KEYS = new Set([
+  "publicationDate",
+  "lastUpdatedDate",
+  "effectiveDate",
+  "commentDueDate",
+  "complianceDate",
+  "processingDate",
+]);
+
+function parseMetadataDateCandidate(rawValue: string): Date | null {
+  const value = (rawValue ?? "").trim();
+  if (!value || /^\{.+\}$/.test(value)) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(value)) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const dmy = value.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (dmy) {
+    const day = Number(dmy[1]);
+    const month = Number(dmy[2]);
+    const year = Number(dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3]);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      return new Date(Date.UTC(year, month - 1, day));
+    }
+  }
+
+  if (/^\d{1,2}\s+[A-Za-z]{3,9}\.?,?\s+\d{4}$/.test(value)) {
+    const parsed = new Date(value.replace(/,/g, ""));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+}
+
+export function formatMetadataDateValue(rawValue: string): string | null {
+  const parsed = parseMetadataDateCandidate(rawValue);
+  if (!parsed) return null;
+
+  const includesTime = /[T\s]\d{2}:\d{2}/.test((rawValue ?? "").trim());
+  if (includesTime) {
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "UTC",
+    }).format(parsed).replace(",", "").concat(" UTC");
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(parsed);
+}
+
+export function buildMetadataDocumentLocationText(
+  fieldKey: string,
+  rawValue: string,
+  metadata?: Record<string, unknown>,
+): string {
+  const cleanValue = (rawValue ?? "").trim();
+  if (!cleanValue) return "";
+
+  if (fieldKey !== "contentUri" && fieldKey !== "contentUrl") {
+    return cleanValue;
+  }
+
+  const explicitNote = [
+    "content_uri_note",
+    "contentUriNote",
+    "content_url_note",
+    "contentUrlNote",
+    "Content URI Note",
+    "Content URL Note",
+  ]
+    .map((key) => asString(metadata?.[key]).trim())
+    .find(Boolean);
+
+  const fallbackNote = /^https?:\/\//i.test(cleanValue)
+    ? "URL of the specific Document (e.g.)"
+    : "";
+
+  const note = explicitNote || fallbackNote;
+  if (!note) return cleanValue;
+
+  const normalizedValue = cleanValue.replace(/\s+/g, " ");
+  const normalizedNote = note.replace(/\s+/g, " ");
+  if (normalizedValue.includes(normalizedNote)) return cleanValue;
+
+  return `${note}\n${cleanValue}`;
+}
+
+function renderTextWithLinks(value: string): React.ReactNode {
+  const trimmed = value.trim();
+  if (!trimmed) return <Nil />;
+
+  const urlPattern = /(https?:\/\/[^\s<]+)/g;
+  return (
+    <div className="space-y-1">
+      {trimmed.split(/\n+/).filter(Boolean).map((line, lineIndex) => (
+        <p key={`${lineIndex}-${line}`} className="whitespace-pre-wrap break-words">
+          {line.split(urlPattern).map((part, partIndex) => {
+            if (!part) return null;
+            if (/^https?:\/\//i.test(part)) {
+              return (
+                <a
+                  key={`${lineIndex}-${partIndex}`}
+                  href={part}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 dark:text-blue-400 hover:underline break-all"
+                  title={part}
+                >
+                  {part}
+                </a>
+              );
+            }
+            return <React.Fragment key={`${lineIndex}-${partIndex}`}>{part}</React.Fragment>;
+          })}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function normalizeMetadataImageLookupKey(value: string): string {
+  return value.toLowerCase().replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+}
+
+export function getMetadataRowImagesForField(
+  field: { label: string; key: string },
+  index: number,
+  images: CellImageMeta[],
+): CellImageMeta[] {
+  const labelKey = normalizeMetadataImageLookupKey(field.label);
+  const fieldKey = normalizeMetadataImageLookupKey(field.key);
+
+  const byLabel = images.filter((img) => {
+    const imageKey = normalizeMetadataImageLookupKey(img.fieldLabel || "");
+    return !!imageKey && (imageKey === labelKey || imageKey === fieldKey);
+  });
+  if (byLabel.length > 0) return byLabel;
+
+  return images.filter(
+    (img) => img.rowIndex === index + 1 && !normalizeMetadataImageLookupKey(img.fieldLabel || ""),
+  );
+}
+
 function deriveTitle(metadata: Record<string, unknown> | undefined, fallback: string | undefined): string {
   if (!metadata) return fallback || "Untitled BRD";
   const t = (k: string) => (typeof metadata[k] === "string" ? (metadata[k] as string).trim() : "");
@@ -179,6 +333,7 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
       name:                    p("name", "Name", "document_title", "documentTitle", "title"),
       relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
       contentUrl:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      contentUrlNote:          p("content_uri_note", "contentUriNote", "contentUrlNote", "Content URI Note", "content_url_note", "Content URL Note"),
       impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
       payloadType:             p("payload_type", "payloadType", "Payload Type"),
       payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
@@ -204,6 +359,7 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
     name:                    p("name", "Name", "document_title", "documentTitle", "title"),
     relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
     contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    contentUriNote:          p("content_uri_note", "contentUriNote", "contentUrlNote", "Content URI Note", "content_url_note", "Content URL Note"),
     impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
     payloadType:             p("payload_type", "payloadType", "Payload Type"),
     payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
@@ -246,17 +402,35 @@ function normalizeAsrbAndSme(asrbRaw?: string, smeRaw?: string) {
 
   return { asrbId, smeComments };
 }
+function repairSplitUrl(url?: string, note?: string): { url: string; note: string } {
+  const cleanUrl = (url ?? "").trim();
+  const cleanNote = (note ?? "").trim();
+  if (!cleanUrl || !cleanNote) return { url: cleanUrl, note: cleanNote };
+
+  const looksLikeRemainder = /^[)\].,:;?&#=%A-Za-z0-9_/-]+$/.test(cleanNote) && !/\s/.test(cleanNote);
+  const openParens = (cleanUrl.match(/\(/g) ?? []).length;
+  const closeParens = (cleanUrl.match(/\)/g) ?? []).length;
+  const looksLikeSuffix = cleanNote.startsWith(").") || /^\.[A-Za-z0-9]{2,8}$/.test(cleanNote) || /\.[A-Za-z0-9]{2,8}$/.test(cleanNote);
+
+  if (looksLikeRemainder && (openParens > closeParens || looksLikeSuffix)) {
+    return { url: `${cleanUrl}${cleanNote}`, note: "" };
+  }
+
+  return { url: cleanUrl, note: cleanNote };
+}
+
 function toScopeRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string): ScopeRow {
   const auth = e.issuing_authority ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
   const { asrbId, smeComments } = normalizeAsrbAndSme(e.asrb_id, e.sme_comments);
+  const { url: contentUrl, note: contentNote } = repairSplitUrl(e.content_url, e.content_note);
   return {
     id,
     stableKey,
     isOutOfScope: oos || !!e.strikethrough,
     title: e.document_title ?? "",
     referenceLink: e.regulator_url ?? "",
-    contentUrl: e.content_url ?? "",
-    contentNote: e.content_note ?? "",
+    contentUrl,
+    contentNote,
     issuingAuth: auth,
     asrbId,
     smeComments,
@@ -614,8 +788,52 @@ function Empty() { return <p className="text-[12px] text-slate-400 dark:text-sla
 function Nil()   { return <span className="text-slate-300 dark:text-slate-600 italic">—</span>; }
 
 const TBL_WRAP = "tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]";
-const TH = "px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] last:border-r-0 bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap";
+const TH = "px-3 py-2 text-left border-b border-r border-slate-200 dark:border-[#2a3147] last:border-r-0 bg-slate-50 dark:bg-[#1e2235] align-top whitespace-normal";
 const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0 text-[11.5px] text-slate-700 dark:text-slate-300";
+
+function BrdHeaderCell({
+  title,
+  greenNote,
+  checkpoint,
+  blueNote,
+  className = "",
+}: {
+  title: string;
+  greenNote?: string | string[];
+  checkpoint?: string | string[];
+  blueNote?: string | string[];
+  className?: string;
+}) {
+  const toLines = (value?: string | string[]) =>
+    Array.isArray(value) ? value.filter(Boolean) : value ? [value] : [];
+
+  const greenLines = toLines(greenNote);
+  const checkpointLines = toLines(checkpoint);
+  const blueLines = toLines(blueNote);
+
+  return (
+    <th className={`${TH} ${className}`.trim()}>
+      <div className="space-y-1 leading-snug">
+        <div className="text-[11px] font-bold text-slate-900 dark:text-slate-100" style={SERIF}>{title}</div>
+        {greenLines.map((line) => (
+          <div key={`g-${line}`} className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+            {line}
+          </div>
+        ))}
+        {checkpointLines.map((line) => (
+          <div key={`c-${line}`} className="text-[10px] font-semibold text-slate-800 dark:text-slate-200" style={MONO}>
+            {line}
+          </div>
+        ))}
+        {blueLines.map((line) => (
+          <div key={`b-${line}`} className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+            {line}
+          </div>
+        ))}
+      </div>
+    </th>
+  );
+}
 
 function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildScopeRows(scopeData); const extra = hasExtraCols(rows);
@@ -688,14 +906,14 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
           {extra.ingestion && <col style={{ width: 100 }} />}
         </colgroup>
         <thead><tr>
-          <th className={TH}>Document Title</th>
-          <th className={TH}>Reference Link</th>
-          <th className={TH}>Content URL</th>
-          <th className={TH}>Issuing Authority</th>
-          <th className={TH}>ASRB ID</th>
-          <th className={TH}>SME Comments</th>
-          {extra.evergreen && <th className={TH}>Initial / Evergreen</th>}
-          {extra.ingestion && <th className={TH}>Date of Ingestion</th>}
+          <BrdHeaderCell title="Document Title" greenNote="Innodata only - Document Title as appearing on regulator weblink" />
+          <BrdHeaderCell title="Reference URL" greenNote="Parent URL for the source" />
+          <BrdHeaderCell title="Content URL" greenNote="URL for the title under the source" />
+          <BrdHeaderCell title="Issuing Authority" greenNote="Authority/source bucket" />
+          <BrdHeaderCell title="ASRB ID" greenNote="Tracking identifier" />
+          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+          {extra.evergreen && <BrdHeaderCell title="Initial / Evergreen" greenNote="Scope ingestion mode" />}
+          {extra.ingestion && <BrdHeaderCell title="Date of Ingestion" greenNote="Recorded ingestion date" />}
         </tr></thead>
         <tbody>
           {rows.map((row, i) => {
@@ -815,40 +1033,23 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
     img.section === "metadata" ||
     ((!img.section || img.section === "unknown") && img.tableIndex === 5)
   );
-  const imagesByLabel = new Map<string, CellImageMeta[]>();
-  const imagesByMetaRow = new Map<number, CellImageMeta[]>();
-  metaImgs.forEach(img => {
-    // New records: keyed by fieldLabel
-    const fl = (img.fieldLabel || "").toLowerCase().trim();
-    if (fl) {
-      const arr = imagesByLabel.get(fl) || [];
-      arr.push(img);
-      imagesByLabel.set(fl, arr);
-    }
-    // Old records: keyed by rowIndex
-    const ri = imagesByMetaRow.get(img.rowIndex) || [];
-    ri.push(img);
-    imagesByMetaRow.set(img.rowIndex, ri);
-  });
 
-  const getRowImages = (field: { label: string; key: string }, index: number): CellImageMeta[] => {
-    const byKey = imagesByLabel.get(field.key.toLowerCase()) || [];
-    const byLabel = imagesByLabel.get(field.label.toLowerCase()) || [];
-    return byKey.length > 0
-      ? byKey
-      : byLabel.length > 0
-        ? byLabel
-        : (imagesByMetaRow.get(index + 1) || []);
-  };
+  const getRowImages = (field: { label: string; key: string }, index: number): CellImageMeta[] =>
+    getMetadataRowImagesForField(field, index, metaImgs);
 
   const visibleFields = fields
-    .map((field, index) => ({
-      field,
-      rowImages: getRowImages(field, index),
-      rowComment: commentMap[normalizeMetadataCommentKey(field.label)] || "",
-    }))
-    .filter(({ field, rowImages, rowComment }) =>
-      hasDocumentLocationValue(values[field.key]) ||
+    .map((field, index) => {
+      const rawValue = values[field.key] ?? "";
+      return {
+        field,
+        rawValue,
+        displayValue: buildMetadataDocumentLocationText(field.key, rawValue, metadata),
+        rowImages: getRowImages(field, index),
+        rowComment: commentMap[normalizeMetadataCommentKey(field.label)] || "",
+      };
+    })
+    .filter(({ displayValue, rowImages, rowComment }) =>
+      hasDocumentLocationValue(displayValue) ||
       hasDocumentLocationValue(rowComment) ||
       rowImages.length > 0
     );
@@ -864,36 +1065,34 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
       <table className="w-full text-[11.5px]" style={{ minWidth: 980 }}>
         <thead>
           <tr>
-            <th className="px-3 py-2 w-44 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>Metadata Element</th>
-            <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>Document Location</th>
-            <th className="px-3 py-2 w-72 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-[#2a3147] bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap" style={MONO}>SME Comments</th>
+            <BrdHeaderCell title="Metadata Element" greenNote="Innodata only - field name from the BRD template" className="w-44" />
+            <BrdHeaderCell title="Document Location" greenNote="Source text, date, image, or URL captured from the BRD" />
+            <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" className="w-72" />
           </tr>
         </thead>
         <tbody>
-        {visibleFields.map(({ field, rowImages, rowComment }, i) => (
+        {visibleFields.map(({ field, rawValue, displayValue, rowImages, rowComment }, i) => (
           <tr key={field.key} data-meta-row="1" className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
             <td className="px-3 py-2 w-44 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{field.label}</td>
             <td data-doc-location="1" className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
               {(() => {
-                const rawValue = values[field.key] ?? "";
                 const trimmedValue = rawValue.trim();
-                if (!trimmedValue) {
+                if (!trimmedValue && !displayValue.trim()) {
                   return <span className="text-slate-300 dark:text-slate-600 italic">—</span>;
                 }
-                if (/^https?:\/\//i.test(trimmedValue)) {
+
+                const formattedDate = METADATA_DATE_KEYS.has(field.key)
+                  ? formatMetadataDateValue(trimmedValue)
+                  : null;
+                if (formattedDate) {
                   return (
-                    <a
-                      href={trimmedValue}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-600 dark:text-blue-400 hover:underline break-all"
-                      title={trimmedValue}
-                    >
-                      {trimmedValue}
-                    </a>
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50 dark:bg-emerald-500/10 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300" style={MONO}>
+                      {formattedDate}
+                    </span>
                   );
                 }
-                return rawValue;
+
+                return renderTextWithLinks(displayValue || rawValue);
               })()}
               {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
             </td>
@@ -985,9 +1184,14 @@ function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown
     <div className={TBL_WRAP}>
       <table className="w-full border-collapse" style={{ minWidth: 1080 }}>
         <thead><tr>
-          {[["Level","w-16"],["Name","w-36"],["Required","w-24"],["Definition","w-52"],["Example","w-44"],["Note","w-40"],["TOC Requirements","w-48"],["SME Comments","w-44"]].map(([h,w])=>(
-            <th key={h} className={`${w} ${TH}`}>{h}</th>
-          ))}
+          <BrdHeaderCell title="Level" greenNote="Innodata only - From regulator website" className="w-16" />
+          <BrdHeaderCell title="Name" greenNote="Innodata only - Identifies Level" className="w-36" />
+          <BrdHeaderCell title="Required" greenNote="True levels must appear / False may or may not appear" className="w-24" />
+          <BrdHeaderCell title="Definition" greenNote="Innodata only - Level value as on regulator weblink" className="w-52" />
+          <BrdHeaderCell title="Example" greenNote="Innodata only - Sample values of respective Levels" className="w-44" />
+          <BrdHeaderCell title="Note" greenNote="Innodata only - Specific instructions for Tech during source configuration" className="w-40" />
+          <BrdHeaderCell title="TOC Requirements" checkpoint="SME Checkpoint" blueNote="For SMEs - To specify on how they want ToC to appear in ELA" className="w-48" />
+          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" className="w-44" />
         </tr></thead>
         <tbody>
           {rows.map((row, i) => {
@@ -1069,7 +1273,12 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
   return (
     <div className={TBL_WRAP}>
       <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 600 }}>
-        <thead><tr>{["Lvl","Citation Rules","Source of Law","SME Comments"].map(h=><th key={h} className={TH}>{h}</th>)}</tr></thead>
+        <thead><tr>
+          <BrdHeaderCell title="Lvl" greenNote="Citation level" />
+          <BrdHeaderCell title="Citation Rules" checkpoint="SME Checkpoint" blueNote="Include the levels and punctuation that should appear in ELA citations" />
+          <BrdHeaderCell title="Source of Law" checkpoint="SME Checkpoint" blueNote="Identify the level that should serve as the Source of Law" />
+          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+        </tr></thead>
         <tbody>
           {citations.map((row, i) => {
             const lvl = `Level ${asString(row.level)}`;
