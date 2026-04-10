@@ -1,6 +1,6 @@
 "use client";
 
-import type { SyntheticEvent } from "react";
+import { useMemo, type SyntheticEvent } from "react";
 
 type BrdImageProps = {
   src: string;
@@ -23,12 +23,22 @@ export default function BrdImage({
   loading = "lazy",
   onError,
 }: BrdImageProps) {
-  if (!src) return null;
+  const resolvedSrc = useMemo(() => {
+    if (!src || typeof window === "undefined") return src;
+    if (!/\/brd\/.*\/images\/.*\/blob(?:\?|$)/.test(src) || /[?&]token=/.test(src)) return src;
+
+    const token = window.localStorage.getItem("token");
+    if (!token) return src;
+
+    return `${src}${src.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+  }, [src]);
+
+  if (!resolvedSrc) return null;
 
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       width={width}
       height={height}
@@ -36,6 +46,9 @@ export default function BrdImage({
       loading={loading}
       decoding="async"
       className={className}
+      onLoad={(event) => {
+        event.currentTarget.style.display = "";
+      }}
       onError={onError}
     />
   );

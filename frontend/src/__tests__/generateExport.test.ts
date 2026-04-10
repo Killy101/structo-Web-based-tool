@@ -98,8 +98,10 @@ describe("buildBrdImageBlobUrl", () => {
     window.localStorage.clear();
   });
 
-  it("uses a harmless placeholder until a client token is available", () => {
-    expect(buildBrdImageBlobUrl("BRD-001", 7, "http://localhost:4000")).toMatch(/^data:image\/gif;base64,/);
+  it("returns the image blob path even before a client token is available", () => {
+    expect(buildBrdImageBlobUrl("BRD-001", 7, "http://localhost:4000")).toBe(
+      "http://localhost:4000/brd/BRD-001/images/7/blob",
+    );
   });
 
   it("appends the auth token for protected image blobs", () => {

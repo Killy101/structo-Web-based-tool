@@ -59,8 +59,11 @@ app.use(
     // CSP is intentionally disabled on the API server; it is enforced by Nginx
     // for the frontend. Enabling it here would break the PDF blob/data URLs.
     contentSecurityPolicy: false,
-    // Required false for PDF.js which uses cross-origin resources
+    // Required false for PDF.js which uses cross-origin resources.
     crossOriginEmbedderPolicy: false,
+    // The dashboard runs on a different origin in development (localhost:3000)
+    // and needs to fetch BRD image blobs/PDFs from the API server.
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
     // Only send HSTS in production (dev runs over HTTP)
     hsts: process.env.NODE_ENV === 'production'
       ? { maxAge: 31536000, includeSubDomains: true }
