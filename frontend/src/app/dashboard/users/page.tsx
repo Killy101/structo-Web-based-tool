@@ -587,7 +587,7 @@ function UserActionsMenu({
     actorRole === "SUPER_ADMIN"
       ? user.role !== "SUPER_ADMIN"
       : actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role);
-  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canManageTeam = actorRole === "SUPER_ADMIN";
   const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
 
   if (
@@ -1123,8 +1123,7 @@ export function UserCard({
   const canManageRole =
     actorRole === "SUPER_ADMIN" ||
     (actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role));
-  // FIX: consistent with UserDetailModal — both SUPER_ADMIN and ADMIN can manage teams
-  const canManageTeam = actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canManageTeam = actorRole === "SUPER_ADMIN";
   const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
   const showRoleChange =
     actorRole === "SUPER_ADMIN" ? user.role !== "SUPER_ADMIN" : canManageRole;
@@ -2280,27 +2279,36 @@ function AssignTeamModal({
   onClose,
   targetUser,
   teams,
+  actorRole,
+  actorTeamId,
   onAssignTeam,
 }: {
   isOpen: boolean;
   onClose: () => void;
   targetUser: User | null;
   teams: { id: number; name: string }[];
+  actorRole: Role;
+  actorTeamId: number | null;
   onAssignTeam: (userId: number, teamId: number | null) => Promise<void>;
 }) {
   const [selectedTeamId, setSelectedTeamId] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // FIX: derive availableTeams cleanly from raw teams (not from render-time derived value)
-  const availableTeams = teams.filter((t) => t.id !== targetUser?.teamId);
+  // For ADMIN: only allow assigning to their own team
+  const availableTeams =
+    actorRole === "ADMIN"
+      ? teams.filter((t) => t.id === actorTeamId && t.id !== targetUser?.teamId)
+      : teams.filter((t) => t.id !== targetUser?.teamId);
 
-  // FIX: reset selection when targetUser or open state changes using raw teams data
   useEffect(() => {
-    const available = teams.filter((t) => t.id !== targetUser?.teamId);
+    const available =
+      actorRole === "ADMIN"
+        ? teams.filter((t) => t.id === actorTeamId && t.id !== targetUser?.teamId)
+        : teams.filter((t) => t.id !== targetUser?.teamId);
     setSelectedTeamId(available[0]?.id ?? 0);
     setError("");
-  }, [targetUser, isOpen, teams]);
+  }, [targetUser, isOpen, teams, actorRole, actorTeamId]);
 
   const handleSubmit = async () => {
     if (!targetUser) return;
@@ -3391,6 +3399,8 @@ export default function UsersPage() {
         }}
         targetUser={targetUser}
         teams={teams}
+        actorRole={actorRole}
+        actorTeamId={actorTeamId}
         onAssignTeam={handleAssignTeam}
       />
 

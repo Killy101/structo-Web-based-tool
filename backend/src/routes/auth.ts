@@ -238,6 +238,13 @@ router.post('/change-password', authenticate, async (req: AuthRequest, res: Resp
     if (!target) return res.status(404).json({ error: 'User not found' })
     if (!allowedTargetRoles.includes(target.role)) return res.status(403).json({ error: `You cannot change passwords for ${target.role} users` })
 
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId || target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+    }
+
     if (await bcrypt.compare(newPassword, target.password)) {
       return res.status(400).json({ error: `New password must not match any of the last ${secPolicy.rememberedCount} passwords.` })
     }
@@ -281,6 +288,13 @@ router.post('/reset-user-password', authenticate, async (req: AuthRequest, res: 
     const target = targetRows[0]
     if (!target) return res.status(404).json({ error: 'User not found' })
     if (!allowedTargetRoles.includes(target.role)) return res.status(403).json({ error: `You cannot reset passwords for ${target.role} users` })
+
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId || target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+    }
 
     const resetPolicy = await getSecurityPolicy()
     const newPassword = generateCompliantPassword(resetPolicy.minPasswordLength)
