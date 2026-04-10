@@ -175,6 +175,52 @@ def _derive_field_label(row, img_col_index: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MIME type helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Supplementary MIME map for formats Python's mimetypes may not know.
+_EXTRA_MIME: dict[str, str] = {
+    ".emf":  "image/x-emf",
+    ".wmf":  "image/x-wmf",
+    ".tif":  "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+
+# Only these MIME types can be rendered by modern browsers as <img> elements.
+# EMF/WMF are vector formats that browsers cannot display; storing them
+# wastes DB space and causes silent failures in the frontend.
+_BROWSER_RENDERABLE: frozenset[str] = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/bmp",
+    "image/webp",
+    "image/svg+xml",
+    "image/tiff",
+    "image/avif",
+})
+
+
+def _resolve_mime(filename: str) -> str | None:
+    """
+    Return the MIME type for *filename*, or None if the image cannot be
+    rendered in a browser.  Falls back to the extra map when the standard
+    mimetypes library returns nothing.
+    """
+    mime, _ = mimetypes.guess_type(filename)
+    if not mime:
+        ext = os.path.splitext(filename)[1].lower()
+        mime = _EXTRA_MIME.get(ext)
+    if not mime:
+        return None
+    return mime if mime in _BROWSER_RENDERABLE else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Core extractor
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -186,14 +232,20 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
     print(f"[DEBUG extract_cell_images] Starting extraction from {docx_path}")
 
     # ── Build rId → (filename, mime) map ─────────────────────────────────────
+    # Only include image relationships whose MIME type can be rendered by
+    # a browser.  EMF/WMF and other vector-only formats are skipped so they
+    # are never stored in the database or served to the frontend.
     part = doc.part
     rId_map: dict[str, tuple[str, str]] = {}
     for rId, rel in part.rels.items():
         if "image" not in rel.reltype:
             continue
         filename = Path(rel.target_ref).name
-        mime, _ = mimetypes.guess_type(filename)
-        rId_map[rId] = (filename, mime or "application/octet-stream")
+        mime = _resolve_mime(filename)
+        if mime is None:
+            print(f"[DEBUG] Skipping non-browser-renderable image: {filename}")
+            continue
+        rId_map[rId] = (filename, mime)
 
     print(f"[DEBUG extract_cell_images] Image relationships: {len(rId_map)}")
 
