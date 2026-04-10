@@ -69,8 +69,35 @@ async function renameTeamPolicies(oldSlug: string, nextSlug: string) {
   }
 }
 
-router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (_req: AuthRequest, res: Response) => {
+router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
+    const actorRole = req.user!.role
+    const actorTeamId = req.user!.teamId
+
+    if (actorRole === 'ADMIN') {
+      if (!actorTeamId) return res.json({ teams: [] })
+      const { rows: teams } = await pool.query(
+        `SELECT t.id, t.name, t.slug, t.created_at as "createdAt", t.updated_at as "updatedAt",
+                (SELECT COUNT(*) FROM users WHERE team_id = t.id)::int as "memberCount",
+                (SELECT COUNT(*) FROM task_assignments WHERE team_id = t.id)::int as "taskCount",
+                COALESCE(
+                  json_agg(json_build_object('id', u.id, 'userId', u.user_id, 'firstName', u.first_name, 'lastName', u.last_name, 'role', u.role, 'status', u.status))
+                  FILTER (WHERE u.id IS NOT NULL), '[]'
+                ) as members
+         FROM teams t
+         LEFT JOIN users u ON u.team_id = t.id
+         WHERE t.id = $1
+         GROUP BY t.id
+         ORDER BY t.created_at ASC`,
+        [actorTeamId],
+      )
+      const teamsFormatted = teams.map((t: any) => ({
+        ...t,
+        _count: { members: t.memberCount, taskAssignments: t.taskCount },
+      }))
+      return res.json({ teams: teamsFormatted })
+    }
+
     const { rows: teams } = await pool.query(
       `SELECT t.id, t.name, t.slug, t.created_at as "createdAt", t.updated_at as "updatedAt",
               (SELECT COUNT(*) FROM users WHERE team_id = t.id)::int as "memberCount",
@@ -175,7 +202,7 @@ router.delete('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: Auth
   }
 })
 
-router.get('/policies', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (_req: AuthRequest, res: Response) => {
+router.get('/policies', authenticate, authorize(['SUPER_ADMIN']), async (_req: AuthRequest, res: Response) => {
   try {
     const { rows: teams } = await pool.query(`SELECT id, name, slug FROM teams ORDER BY created_at ASC`)
 

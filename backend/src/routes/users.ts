@@ -186,6 +186,13 @@ router.patch('/:id/profile', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), 
     const allowedTargets = CAN_EDIT_PROFILE[actorRole] ?? []
     if (!allowedTargets.includes(target.role)) return res.status(403).json({ error: `You cannot edit profile details for ${target.role} users` })
 
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId || target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+    }
+
     const trimmedUserId = String(userId ?? '').trim().toUpperCase()
     if (!/^[a-zA-Z0-9]{3,6}$/.test(trimmedUserId)) return res.status(400).json({ error: 'User ID must be 3 to 6 alphanumeric characters' })
 
@@ -233,6 +240,17 @@ router.patch('/:id/team', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), asy
       return res.status(403).json({ error: "You cannot reassign this user's team" })
     }
 
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId) return res.status(403).json({ error: 'You are not assigned to a team' })
+      if (target.team_id !== null && target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+      if (teamId && teamId !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only assign users to your own team' })
+      }
+    }
+
     if (teamId) {
       const { rows: teamRows } = await pool.query(`SELECT id FROM teams WHERE id = $1`, [teamId])
       if (!teamRows[0]) return res.status(400).json({ error: 'Team not found' })
@@ -259,6 +277,13 @@ router.patch('/:id/role', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), asy
 
     const canChange = CAN_CHANGE_ROLE[actorRole] ?? []
     if (!canChange.includes(target.role)) return res.status(403).json({ error: "You cannot change this user's role" })
+
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId || target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+    }
 
     const allowedTargets = ALLOWED_TARGET_ROLES[actorRole] ?? []
     if (!allowedTargets.includes(role)) return res.status(403).json({ error: `You cannot assign the role ${role}` })
@@ -287,6 +312,13 @@ router.patch('/:id/deactivate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']
     if (!allowed.includes(target.role)) return res.status(403).json({ error: 'You cannot deactivate this user' })
     if (target.id === req.user!.userId) return res.status(400).json({ error: 'You cannot deactivate your own account' })
 
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId || target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+    }
+
     await pool.query(`UPDATE users SET status = 'INACTIVE', updated_at = NOW() WHERE id = $1`, [targetId])
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_DEACTIVATED', $2)`, [req.user!.userId, `Deactivated user ${target.user_id}`])
     res.json({ message: 'User deactivated' })
@@ -307,6 +339,13 @@ router.patch('/:id/activate', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']),
 
     const allowed = CAN_DEACTIVATE[actorRole] ?? []
     if (!allowed.includes(target.role)) return res.status(403).json({ error: 'You cannot activate this user' })
+
+    if (actorRole === 'ADMIN') {
+      const actorTeamId = req.user!.teamId
+      if (!actorTeamId || target.team_id !== actorTeamId) {
+        return res.status(403).json({ error: 'You can only manage users within your own team' })
+      }
+    }
 
     await pool.query(`UPDATE users SET status = 'ACTIVE', updated_at = NOW() WHERE id = $1`, [targetId])
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'USER_ACTIVATED', $2)`, [req.user!.userId, `Activated user ${target.user_id}`])
