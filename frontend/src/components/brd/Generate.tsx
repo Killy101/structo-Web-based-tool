@@ -3,6 +3,12 @@ import api from "@/app/lib/api";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import { sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
+import {
+  normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
+  parseBrdMetadataComments as parseMetadataComments,
+} from "@/utils/brdMetadataComments";
+import { normalizeBrdCitationText } from "@/utils/brdCitationText";
 
 // ── Cell image types ───────────────────────────────────────────────────────────
 interface CellImageMeta {
@@ -362,20 +368,20 @@ const MONO  = { fontFamily: "'DM Mono', monospace" } as const;
 const SERIF = { fontFamily: "'Georgia', 'Times New Roman', serif" } as const;
 
 const SECTION_META = [
-  { num: "I",   label: "Scope",             step: 1, color: "#1e40af" },
-  { num: "II",  label: "Metadata",          step: 2, color: "#5b21b6" },
-  { num: "III", label: "Table of Contents", step: 3, color: "#312e81" },
-  { num: "IV",  label: "Citation Rules",    step: 4, color: "#92400e" },
-  { num: "V",   label: "Content Profiling", step: 5, color: "#065f46" },
+  { num: "I",   label: "Scope",                     step: 1, color: "#1e40af" },
+  { num: "II",  label: "Metadata",                  step: 2, color: "#5b21b6" },
+  { num: "III", label: "Document Structure Levels", step: 3, color: "#312e81" },
+  { num: "IV",  label: "Citation Rules",            step: 4, color: "#92400e" },
+  { num: "V",   label: "Content Profiling",         step: 5, color: "#065f46" },
 ];
 
 const NAV_ITEMS = [
-  { id: "section-scope",           label: "Scope",             icon: "I",   step: 1,    color: "blue"    },
-  { id: "section-metadata",        label: "Metadata",          icon: "II",  step: 2,    color: "violet"  },
-  { id: "section-toc",             label: "Table of Contents", icon: "III", step: 3,    color: "indigo"  },
-  { id: "section-citations",       label: "Citation Rules",    icon: "IV",  step: 4,    color: "amber"   },
-  { id: "section-content-profile", label: "Content Profile",   icon: "V",   step: 5,    color: "emerald" },
-  { id: "section-generate",        label: "Generate",          icon: "▶",   step: null, color: "slate"   },
+  { id: "section-scope",           label: "Scope",                     icon: "I",   step: 1,    color: "blue"    },
+  { id: "section-metadata",        label: "Metadata",                  icon: "II",  step: 2,    color: "violet"  },
+  { id: "section-toc",             label: "Document Structure Levels", icon: "III", step: 3,    color: "indigo"  },
+  { id: "section-citations",       label: "Citation Rules",            icon: "IV",  step: 4,    color: "amber"   },
+  { id: "section-content-profile", label: "Content Profile",           icon: "V",   step: 5,    color: "emerald" },
+  { id: "section-generate",        label: "Generate",                  icon: "▶",   step: null, color: "slate"   },
 ];
 
 const GenBtnIcons: Record<string, React.ReactNode> = {
@@ -607,45 +613,6 @@ function DocBlock({ id, children }: { id?: string; children: React.ReactNode }) 
 function Empty() { return <p className="text-[12px] text-slate-400 dark:text-slate-600 italic py-4 text-center">No data defined</p>; }
 function Nil()   { return <span className="text-slate-300 dark:text-slate-600 italic">—</span>; }
 
-function normalizeMetadataCommentKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function parseMetadataComments(raw?: string, labels: string[] = []): Record<string, string> {
-  const out: Record<string, string> = {};
-  const normalized = (raw ?? "").replace(/\r?\n+/g, " ").trim();
-  if (!normalized) return out;
-
-  if (labels.length > 0) {
-    const escapedLabels = [...labels]
-      .sort((a, b) => b.length - a.length)
-      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const pattern = new RegExp(`(${escapedLabels.join("|")}):\\s*`, "gi");
-    const matches = Array.from(normalized.matchAll(pattern));
-    if (matches.length > 0) {
-      matches.forEach((match, index) => {
-        const label = match[1] ?? "";
-        const start = (match.index ?? 0) + match[0].length;
-        const end = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
-        const comment = normalized.slice(start, end).trim();
-        if (label && comment) out[normalizeMetadataCommentKey(label)] = comment;
-      });
-      return out;
-    }
-  }
-
-  for (const line of (raw ?? "").split(/\r?\n+/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx <= 0) continue;
-    const label = normalizeMetadataCommentKey(trimmed.slice(0, idx));
-    const comment = trimmed.slice(idx + 1).trim();
-    if (label && comment) out[label] = comment;
-  }
-  return out;
-}
-
 const TBL_WRAP = "tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]";
 const TH = "px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 border-b border-r border-slate-200 dark:border-[#2a3147] last:border-r-0 bg-slate-50 dark:bg-[#1e2235] whitespace-nowrap";
 const TD = "px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0 text-[11.5px] text-slate-700 dark:text-slate-300";
@@ -722,7 +689,7 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
           <th className={TH}>Issuing Authority</th>
           <th className={TH}>ASRB ID</th>
           <th className={TH}>SME Comments</th>
-          {extra.evergreen && <th className={TH}>Evergreen</th>}
+          {extra.evergreen && <th className={TH}>Initial / Evergreen</th>}
           {extra.ingestion && <th className={TH}>Date of Ingestion</th>}
         </tr></thead>
         <tbody>
@@ -875,9 +842,17 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
       rowImages: getRowImages(field, index),
       rowComment: commentMap[normalizeMetadataCommentKey(field.label)] || "",
     }))
-    .filter(({ field, rowImages }) => hasDocumentLocationValue(values[field.key]) || rowImages.length > 0);
+    .filter(({ field, rowImages, rowComment }) =>
+      hasDocumentLocationValue(values[field.key]) ||
+      hasDocumentLocationValue(rowComment) ||
+      rowImages.length > 0
+    );
 
-  const visibleCustomRows = customRows.filter((row) => hasDocumentLocationValue(row.value));
+  const visibleCustomRows = customRows.filter(
+    (row) => hasDocumentLocationValue(row.value) || hasDocumentLocationValue(row.comment)
+  );
+
+  if (visibleFields.length === 0 && visibleCustomRows.length === 0) return <Empty />;
 
   return (
     <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
@@ -894,7 +869,27 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
           <tr key={field.key} data-meta-row="1" className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
             <td className="px-3 py-2 w-44 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>{field.label}</td>
             <td data-doc-location="1" className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
-              {values[field.key] || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              {(() => {
+                const rawValue = values[field.key] ?? "";
+                const trimmedValue = rawValue.trim();
+                if (!trimmedValue) {
+                  return <span className="text-slate-300 dark:text-slate-600 italic">—</span>;
+                }
+                if (/^https?:\/\//i.test(trimmedValue)) {
+                  return (
+                    <a
+                      href={trimmedValue}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 dark:text-blue-400 hover:underline break-all"
+                      title={trimmedValue}
+                    >
+                      {trimmedValue}
+                    </a>
+                  );
+                }
+                return rawValue;
+              })()}
               {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
             </td>
             <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
@@ -932,17 +927,29 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
  *   prev  "original value"        ← muted amber label + strikethrough
  *   latest "user's edit"          ← normal weight, current value
  */
+function RichTextInline({ value, className, dataAttr }: { value: string; className: string; dataAttr?: "prev" | "current" }) {
+  if (!value) return <Nil />;
+  const attr = dataAttr === "prev" ? { "data-prev-value": "1" } : dataAttr === "current" ? { "data-current-value": "1" } : {};
+  return (
+    <span
+      {...attr}
+      className={className}
+      dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(value) }}
+    />
+  );
+}
+
 function DraftAndCurrent({ current, prev }: { current: string; prev?: string }) {
-  if (!prev) return <>{current || <Nil />}</>;
+  if (!prev) return <>{current ? <RichTextInline value={current} className="whitespace-pre-wrap break-words" dataAttr="current" /> : <Nil />}</>;
   return (
     <div className="space-y-1" data-draft-current="1">
       <div className="flex items-baseline gap-1.5" data-export-part="prev">
         <span className="text-[9px] font-bold uppercase tracking-wider text-amber-500 dark:text-amber-400 shrink-0" style={MONO}>prev</span>
-        <span className="text-[11px] text-slate-400 dark:text-slate-500 line-through whitespace-pre-wrap break-words" data-prev-value="1">{prev}</span>
+        <RichTextInline value={prev} className="text-[11px] text-slate-400 dark:text-slate-500 line-through whitespace-pre-wrap break-words" dataAttr="prev" />
       </div>
       <div className="flex items-baseline gap-1.5" data-export-part="current">
         <span className="text-[9px] font-bold uppercase tracking-wider text-blue-500 dark:text-blue-400 shrink-0" style={MONO}>latest</span>
-        <span className="text-[11.5px] text-slate-700 dark:text-slate-200 font-medium whitespace-pre-wrap break-words" data-current-value="1">{current || <Nil />}</span>
+        {current ? <RichTextInline value={current} className="text-[11.5px] text-slate-700 dark:text-slate-200 font-medium whitespace-pre-wrap break-words" dataAttr="current" /> : <Nil />}
       </div>
     </div>
   );
@@ -1024,12 +1031,13 @@ function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown
 }
 
 function formatDisplay(value: string) {
-  const normalized = value.replace(/\r\n/g,"\n").replace(/\r/g,"\n").replace(/\s*(Example\s*:)/gi,"\n$1\n").replace(/\s*(Notes?\s*:)/gi,"\n$1\n");
-  const lines = normalized.split("\n").map(l=>l.trim()).filter(Boolean);
-  return lines.map((line, i) => {
-    const match = line.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
-    if (!match) return <React.Fragment key={i}>{i>0?"\n":""}{line}</React.Fragment>;
-    return <React.Fragment key={i}>{i>0?"\n":""}<span className="font-semibold">{match[1]}</span>{match[2]??""}</React.Fragment>;
+  const normalized = normalizeBrdCitationText(value);
+  if (!normalized) return null;
+
+  return normalized.split(/\n{2,}/).map((paragraph, i) => {
+    const match = paragraph.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
+    if (!match) return <React.Fragment key={i}>{i>0?"\n\n":""}{paragraph}</React.Fragment>;
+    return <React.Fragment key={i}>{i>0?"\n\n":""}<span className="font-semibold">{match[1]}</span>{match[2]??""}</React.Fragment>;
   });
 }
 

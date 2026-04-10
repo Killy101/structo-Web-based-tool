@@ -22,7 +22,8 @@ import re
 # ─────────────────────────────────────────────
 
 def _clean(text: str) -> str:
-    return text.replace("\xa0", " ").replace("\n", " ").strip()
+    normalized = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _normalise_level(raw: str) -> str:

@@ -189,7 +189,84 @@ def _table_signature_from_cells(cells: list[str]) -> str:
     return " | ".join(cell for cell in normalized if cell)
 
 
-def _append_table_rows_to_docx(rows: list[list[str]], document) -> bool:
+def _render_html_fragment(node) -> str:
+    rendered = lxml_html.tostring(node, encoding="unicode")
+    if isinstance(rendered, (bytes, bytearray, memoryview)):
+        return bytes(rendered).decode("utf-8", errors="replace")
+    return str(rendered or "")
+
+
+def _inner_html(node) -> str:
+    rendered = _render_html_fragment(node).strip()
+    return re.sub(r"^<[^>]+>|</[^>]+>$", "", rendered, count=1).strip()
+
+
+def _apply_run_style(run, style: dict[str, bool]) -> None:
+    if style.get("bold"):
+        run.bold = True
+    if style.get("italic"):
+        run.italic = True
+    if style.get("underline"):
+        run.underline = True
+    if style.get("strike"):
+        run.font.strike = True
+
+
+def _append_text_to_paragraph(paragraph, text: str, style: dict[str, bool]) -> None:
+    normalized = html.unescape(text.replace("\xa0", " ")).replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized:
+        return
+
+    for idx, chunk in enumerate(normalized.split("\n")):
+        if idx > 0:
+            paragraph.add_run().add_break()
+        if not chunk:
+            continue
+        run = paragraph.add_run(chunk)
+        _apply_run_style(run, style)
+
+
+def _append_inline_html_to_paragraph(paragraph, node, style: dict[str, bool] | None = None) -> None:
+    current_style = dict(style or {"bold": False, "italic": False, "underline": False, "strike": False})
+    tag = getattr(node, "tag", None)
+    if isinstance(tag, str):
+        lowered = tag.lower()
+        if lowered in {"strong", "b"}:
+            current_style["bold"] = True
+        elif lowered in {"em", "i"}:
+            current_style["italic"] = True
+        elif lowered == "u":
+            current_style["underline"] = True
+        elif lowered in {"s", "strike", "del"}:
+            current_style["strike"] = True
+        elif lowered == "br":
+            paragraph.add_run().add_break()
+            if node.tail:
+                _append_text_to_paragraph(paragraph, node.tail, style or current_style)
+            return
+
+    if getattr(node, "text", None):
+        _append_text_to_paragraph(paragraph, node.text, current_style)
+
+    for child in getattr(node, "__iter__", lambda: [])():
+        _append_inline_html_to_paragraph(paragraph, child, current_style)
+        if getattr(child, "tail", None):
+            _append_text_to_paragraph(paragraph, child.tail, current_style)
+
+
+def _set_cell_html(cell, fragment: str) -> None:
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+    wrapper = lxml_html.fragment_fromstring(f"<div>{fragment}</div>", create_parent=True)
+    if wrapper.text:
+        _append_text_to_paragraph(paragraph, wrapper.text, {"bold": False, "italic": False, "underline": False, "strike": False})
+    for child in wrapper:
+        _append_inline_html_to_paragraph(paragraph, child)
+        if child.tail:
+            _append_text_to_paragraph(paragraph, child.tail, {"bold": False, "italic": False, "underline": False, "strike": False})
+
+
+def _append_table_rows_to_docx(rows: list[list[str]], document, rich_html: bool = False) -> bool:
     if not rows:
         return False
     max_cols = max((len(row) for row in rows), default=0)
@@ -200,7 +277,11 @@ def _append_table_rows_to_docx(rows: list[list[str]], document) -> bool:
     table.style = "Table Grid"
     for row_index, row_values in enumerate(rows):
         for col_index, value in enumerate(row_values):
-            table.cell(row_index, col_index).text = value
+            cell = table.cell(row_index, col_index)
+            if rich_html:
+                _set_cell_html(cell, value)
+            else:
+                cell.text = value
     document.add_paragraph("")
     return True
 
@@ -247,13 +328,15 @@ def _append_html_block_to_docx(node, document) -> None:
     if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
         text = _normalize_html_text(" ".join(node.itertext()))
         if text:
-            document.add_heading(text, level=min(int(tag[1]), 6))
+            paragraph = document.add_heading("", level=min(int(tag[1]), 6))
+            _append_inline_html_to_paragraph(paragraph, node)
         return
 
     if tag in {"p", "li"}:
         text = _normalize_html_text(" ".join(node.itertext()))
         if text:
-            document.add_paragraph(text)
+            paragraph = document.add_paragraph()
+            _append_inline_html_to_paragraph(paragraph, node)
         return
 
     if tag in {"ul", "ol"}:
@@ -264,14 +347,12 @@ def _append_html_block_to_docx(node, document) -> None:
     if tag == "table":
         rows: list[list[str]] = []
         for row in node.xpath(".//tr"):
-            cells = [
-                _normalize_html_text(" ".join(cell.itertext()))
-                for cell in row.xpath("./th|./td")
-            ]
-            if any(cells):
-                rows.append(cells)
+            raw_cells = [_inner_html(cell) for cell in row.xpath("./th|./td")]
+            plain_cells = [_normalize_html_text(cell) for cell in raw_cells]
+            if any(plain_cells):
+                rows.append(raw_cells)
 
-        _append_table_rows_to_docx(rows, document)
+        _append_table_rows_to_docx(rows, document, rich_html=True)
         return
 
     text = _normalize_html_text(" ".join(node.itertext()))
@@ -307,19 +388,17 @@ def _convert_mhtml_doc_to_docx(src_path: str, dst_docx_path: str) -> bool:
         for table_html in re.findall(r"<table[^>]*>(.*?)</table>", html_source, flags=re.IGNORECASE | re.DOTALL):
             rows: list[list[str]] = []
             for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.IGNORECASE | re.DOTALL):
-                cells = [
-                    _normalize_html_text(cell)
-                    for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
-                ]
-                if any(cells):
+                cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
+                plain_cells = [_normalize_html_text(cell) for cell in cells]
+                if any(plain_cells):
                     rows.append(cells)
 
             if not rows:
                 continue
-            signature = _table_signature_from_cells(rows[0])
+            signature = _table_signature_from_cells([_normalize_html_text(cell) for cell in rows[0]])
             if signature and signature in existing_signatures:
                 continue
-            if _append_table_rows_to_docx(rows, document) and signature:
+            if _append_table_rows_to_docx(rows, document, rich_html=True) and signature:
                 existing_signatures.add(signature)
 
         after_count = len(document.paragraphs) + len(document.tables)

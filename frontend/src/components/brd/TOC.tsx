@@ -4,6 +4,7 @@ import BrdImage from "./BrdImage";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import { brdRichTextToPlain, sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
 
 interface TocRow {
   id: string;
@@ -293,6 +294,20 @@ function formatTocCellForDisplay(value: string, col: string) {
   return formatted;
 }
 
+function RichTextValue({ value }: { value: string }) {
+  const plain = brdRichTextToPlain(value);
+  if (!plain) {
+    return <span className="text-slate-400 dark:text-slate-600 italic">—</span>;
+  }
+
+  return (
+    <span
+      className="whitespace-pre-wrap break-words"
+      dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(value) }}
+    />
+  );
+}
+
 export default function TOC({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows] = useState<TocRow[]>(INITIAL_ROWS);
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
@@ -520,10 +535,10 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         <div
           onClick={() => setEditingCell({ rowId: row.id, col })}
           className="cursor-pointer min-h-[24px] text-[11.5px] text-slate-700 dark:text-slate-300 leading-snug whitespace-pre-wrap break-words hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
-          title={rawValue}
+          title={brdRichTextToPlain(rawValue)}
         >
           {/* Show the example text */}
-          <div>{value || <span className="text-slate-400 dark:text-slate-600 italic">—</span>}</div>
+          <div><RichTextValue value={value} /></div>
           
 
         </div>
@@ -547,9 +562,9 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
       <div
         onClick={() => setEditingCell({ rowId: row.id, col })}
         className="cursor-pointer min-h-[24px] text-[11.5px] text-slate-700 dark:text-slate-300 leading-snug whitespace-pre-wrap break-words hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
-        title={rawValue}
+        title={brdRichTextToPlain(rawValue)}
       >
-        {value || <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
+        <RichTextValue value={value} />
       </div>
     );
   }
@@ -560,7 +575,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-700/40">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-indigo-800 dark:text-indigo-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-            Table of Contents
+            Document Structure Levels
           </p>
           <p className="text-[11.5px] text-slate-500 dark:text-slate-500 mt-0.5">
             Click any cell to edit · {rows.length} sections

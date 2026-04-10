@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from src.routers.process import router as process_router
 from src.routers.compare import router as compare_router
-from src.services.extractor import convert_doc_to_docx, extract_all_sections, extract_text
+from src.services.extractor import _is_mhtml_doc, convert_doc_to_docx, extract_all_sections, extract_text
+from src.services.extractors.image_extractor import extract_and_store_images_from_mhtml
 
 
 app = FastAPI(title="BRD Processing Service", version="1.0.0")
@@ -73,6 +74,12 @@ async def process_upload(
 
         result = dict(extracted)
         cell_images = result.pop("cell_images", [])
+
+        if not cell_images and suffix == ".doc" and temp_path and _is_mhtml_doc(temp_path):
+            try:
+                cell_images = extract_and_store_images_from_mhtml(temp_path, brd_id or "")
+            except Exception as exc:
+                print(f"[WARN process_upload] MHTML image fallback failed: {exc}")
 
         if "contentProfile" in result and "content_profile" not in result:
             result["content_profile"] = result["contentProfile"]

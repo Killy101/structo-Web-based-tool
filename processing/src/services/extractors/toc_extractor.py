@@ -10,6 +10,7 @@ This maps directly to the frontend TocRow interface:
   { id, level, name, required, definition, example, note, tocRequirements, smeComments }
 """
 
+import html as html_lib
 import re
 
 # Helpers
@@ -79,6 +80,53 @@ def _clean(text: str) -> str:
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.split("\n")]
     lines = [line for line in lines if line]
     return "\n".join(lines)
+
+
+def _clean_rich_text(text: str) -> str:
+    normalized = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    normalized = re.sub(r"\s*(<br\s*/?>)\s*", r"\1", normalized, flags=re.IGNORECASE)
+    return normalized.strip()
+
+
+def _format_run(run) -> str:
+    text = run.text.replace("\xa0", " ")
+    if not text:
+        return ""
+
+    formatted = html_lib.escape(text).replace("\n", "<br/>")
+    if bool(getattr(run, "underline", False)):
+        formatted = f"<u>{formatted}</u>"
+    if bool(getattr(run, "italic", False)):
+        formatted = f"<em>{formatted}</em>"
+
+    font = getattr(run, "font", None)
+    if bool(getattr(font, "strike", False) or getattr(font, "double_strike", False)):
+        formatted = f"<s>{formatted}</s>"
+    if bool(getattr(run, "bold", False)):
+        formatted = f"<strong>{formatted}</strong>"
+    return formatted
+
+
+def _cell_value(cell, rich: bool = False) -> str:
+    if not rich:
+        return _clean(cell.text)
+
+    paragraphs: list[str] = []
+    for paragraph in getattr(cell, "paragraphs", []):
+        run_html = "".join(_format_run(run) for run in paragraph.runs)
+        if run_html.strip():
+            paragraphs.append(run_html)
+            continue
+
+        plain = _clean(paragraph.text)
+        if plain:
+            paragraphs.append(html_lib.escape(plain))
+
+    if not paragraphs:
+        return _clean(cell.text)
+
+    return _clean_rich_text("<br/>".join(paragraphs))
 
 
 def _required_value(raw: str) -> str:
@@ -175,7 +223,8 @@ def extract_toc(doc) -> dict:
                 idx = col.get(field)
                 if idx is None or idx >= n:
                     return ""
-                return _clean(cells[idx].text)
+                rich_fields = {"name", "definition", "example", "note", "tocRequirements", "smeComments"}
+                return _cell_value(cells[idx], rich=field in rich_fields)
 
             level_cell = cell_text("level")
             level_raw = _normalize_level_value(level_cell)

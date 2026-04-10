@@ -12,6 +12,21 @@ import {
 
 const router = Router()
 
+function sniffImageMime(imageData: Buffer): string | null {
+  if (!Buffer.isBuffer(imageData) || imageData.length < 4) return null
+
+  if (imageData.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png'
+  if (imageData.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'image/jpeg'
+  if (imageData.subarray(0, 6).toString('ascii') === 'GIF87a' || imageData.subarray(0, 6).toString('ascii') === 'GIF89a') return 'image/gif'
+  if (imageData.subarray(0, 2).toString('ascii') === 'BM') return 'image/bmp'
+  if (imageData.subarray(0, 4).toString('ascii') === 'RIFF' && imageData.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp'
+
+  const prefix = imageData.subarray(0, 256).toString('utf8').trimStart().toLowerCase()
+  if (prefix.startsWith('<svg') || (prefix.startsWith('<?xml') && prefix.includes('<svg'))) return 'image/svg+xml'
+
+  return null
+}
+
 async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
   const { rows } = await pool.query(
     `SELECT status, deleted_at FROM brds WHERE brd_id = $1`,
@@ -99,10 +114,15 @@ router.get('/:brdId/images/:imageId/blob', async (req: AuthRequest, res: Respons
     if (img.brdId !== String(req.params.brdId)) return res.status(404).json({ error: 'Image not found' })
     if (!img.imageData) return res.status(404).json({ error: 'No image data stored' })
 
-    res.set('Content-Type', img.mimeType || 'image/png')
+    const imageBuffer = Buffer.isBuffer(img.imageData) ? img.imageData : Buffer.from(img.imageData)
+    const effectiveMime = (!img.mimeType || img.mimeType === 'application/octet-stream')
+      ? (sniffImageMime(imageBuffer) || img.mimeType || 'image/png')
+      : img.mimeType
+
+    res.set('Content-Type', effectiveMime)
     res.set('Cache-Control', 'public, max-age=86400')
     res.set('X-Content-Type-Options', 'nosniff')
-    return res.send(img.imageData)
+    return res.send(imageBuffer)
   } catch (err) {
     console.log('[GET /brd/:brdId/images/:imageId/blob]', err)
     return res.status(500).json({ error: 'Internal server error' })

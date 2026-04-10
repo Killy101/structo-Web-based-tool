@@ -367,7 +367,7 @@ export default function ComparePage() {
       const data = await apiDiff(diffFileA, diffFileB, (p: DiffProgress) => {
         setDiffLoadMsg(p.message);
         setDiffLoadPct(p.pct);
-      }, null, diffXmlFile);
+      }, diffXmlFile, null);
       setDiffResult(data);
       // Merge backend xml_sections into allXmlSections for label coverage
       if (data.xml_sections && data.xml_sections.length > 0 && allXmlSections.length === 0) {

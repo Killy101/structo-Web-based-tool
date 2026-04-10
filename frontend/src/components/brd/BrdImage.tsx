@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import type { SyntheticEvent } from "react";
 
 type BrdImageProps = {
@@ -24,15 +23,18 @@ export default function BrdImage({
   loading = "lazy",
   onError,
 }: BrdImageProps) {
+  if (!src) return null;
+
   return (
-    <Image
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
       src={src}
       alt={alt}
       width={width}
       height={height}
       sizes={sizes}
       loading={loading}
-      unoptimized
+      decoding="async"
       className={className}
       onError={onError}
     />

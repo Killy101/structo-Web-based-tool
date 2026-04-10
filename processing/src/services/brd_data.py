@@ -50,6 +50,8 @@ class ScopeEntry:
     geography: str = ""
     asrb_id: str = ""
     sme_comments: str = ""
+    initial_evergreen: str = ""
+    date_of_ingestion: str = ""
     stable_key: str = ""
     strikethrough: bool = False
 
@@ -647,6 +649,8 @@ def _extract_scope_entries(doc) -> tuple[list[ScopeEntry], list[ScopeEntry]]:
             geography=_clean(d.get("geography", "")),
             asrb_id=_clean(d.get("asrb_id", "")),
             sme_comments=_clean(d.get("sme_comments", "")),
+            initial_evergreen=_clean(d.get("initial_evergreen", "")),
+            date_of_ingestion=_clean(d.get("date_of_ingestion", "")),
             stable_key=_clean(d.get("stable_key", d.get("stableKey", ""))),
             strikethrough=bool(d.get("strikethrough", False)),
         )
@@ -1113,6 +1117,8 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
                 "geography":      e.geography,
                 "asrb_id":        e.asrb_id,
                 "sme_comments":   e.sme_comments,
+                "initial_evergreen": e.initial_evergreen,
+                "date_of_ingestion": e.date_of_ingestion,
                 "stable_key":     e.stable_key,
                 "strikethrough":  False,
             }
@@ -1121,6 +1127,17 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
         "out_of_scope": [
             {
                 "document_title": e.document_title,
+                "regulator_url":  e.regulator_url,
+                "content_url":    e.content_url,
+                "content_note":   e.content_note,
+                "issuing_authority": e.issuing_authority,
+                "issuing_authority_code": e.issuing_authority_code,
+                "geography":      e.geography,
+                "asrb_id":        e.asrb_id,
+                "sme_comments":   e.sme_comments,
+                "initial_evergreen": e.initial_evergreen,
+                "date_of_ingestion": e.date_of_ingestion,
+                "stable_key":     e.stable_key,
                 "strikethrough":  True,
             }
             for e in brd.out_of_scope

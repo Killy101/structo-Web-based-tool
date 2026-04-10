@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import BrdImage from "./BrdImage";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import { normalizeBrdCitationText } from "@/utils/brdCitationText";
 
 interface CitationRow {
   id: string;
@@ -111,18 +112,17 @@ function citableBadge(val: string) {
 }
 
 function formatCitationRulesForDisplay(value: string) {
-  return value
-    .replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    .replace(/\s*(Example\s*:)/gi, "\n$1\n")
-    .replace(/\s*(Notes?\s*:)/gi, "\n$1\n")
-    .split("\n").map(l => l.trim()).filter(Boolean).join("\n");
+  return normalizeBrdCitationText(value);
 }
 
 function renderCitationRulesDisplay(value: string) {
-  return value.split("\n").map((line, i) => {
-    const match = line.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
-    if (!match) return <React.Fragment key={i}>{i > 0 ? "\n" : ""}{line}</React.Fragment>;
-    return <React.Fragment key={i}>{i > 0 ? "\n" : ""}<span className="font-semibold">{match[1]}</span>{match[2] ?? ""}</React.Fragment>;
+  const normalized = formatCitationRulesForDisplay(value);
+  if (!normalized) return null;
+
+  return normalized.split(/\n{2,}/).map((paragraph, i) => {
+    const match = paragraph.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
+    if (!match) return <React.Fragment key={i}>{i > 0 ? "\n\n" : ""}{paragraph}</React.Fragment>;
+    return <React.Fragment key={i}>{i > 0 ? "\n\n" : ""}<span className="font-semibold">{match[1]}</span>{match[2] ?? ""}</React.Fragment>;
   });
 }
 
@@ -273,7 +273,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     return (
       <div onClick={() => setEditingCell({ rowId: row.id, col })}
         className="cursor-pointer min-h-[24px] text-[11.5px] text-slate-700 dark:text-slate-300 leading-snug whitespace-pre-wrap break-words hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
-        title={rawValue}>
+        title={value}>
         {value ? (shouldFmt ? renderCitationRulesDisplay(value) : value) : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
         {cellImgs.map(img => (
           <BrdImage key={img.id}

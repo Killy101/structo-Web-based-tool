@@ -1,7 +1,12 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import BrdImage from "./BrdImage";
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import {
+  normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
+  parseBrdMetadataComments as parseMetadataComments,
+} from "@/utils/brdMetadataComments";
 
 type Format = "new" | "old";
 
@@ -120,46 +125,6 @@ function metadataValuesEqual(a: Record<string, string>, b: Record<string, string
     if ((a[key] ?? "") !== (b[key] ?? "")) return false;
   }
   return true;
-}
-
-function normalizeMetadataCommentKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function parseMetadataComments(raw: string, fields: FieldConfig[] = []): Record<string, string> {
-  const out: Record<string, string> = {};
-  const normalized = raw.replace(/\r?\n+/g, " ").trim();
-  if (!normalized) return out;
-
-  if (fields.length > 0) {
-    const escapedLabels = fields
-      .map((field) => field.label)
-      .sort((a, b) => b.length - a.length)
-      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const pattern = new RegExp(`(${escapedLabels.join("|")}):\\s*`, "gi");
-    const matches = Array.from(normalized.matchAll(pattern));
-    if (matches.length > 0) {
-      matches.forEach((match, index) => {
-        const label = match[1] ?? "";
-        const start = (match.index ?? 0) + match[0].length;
-        const end = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
-        const comment = normalized.slice(start, end).trim();
-        if (label && comment) out[normalizeMetadataCommentKey(label)] = comment;
-      });
-      return out;
-    }
-  }
-
-  for (const line of raw.split(/\r?\n+/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx <= 0) continue;
-    const label = normalizeMetadataCommentKey(trimmed.slice(0, idx));
-    const comment = trimmed.slice(idx + 1).trim();
-    if (label && comment) out[label] = comment;
-  }
-  return out;
 }
 
 function serializeMetadataComments(
@@ -304,7 +269,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 
     isInitializing.current = true;
     setValues(nextValues);
-    setCommentValues(parseMetadataComments(nextValues.smeComments ?? "", fields));
+    setCommentValues(parseMetadataComments(nextValues.smeComments ?? "", fields.map((field) => field.label)));
     setCustomRows(nextCustomRows);
     lastAppliedSignatureRef.current = signature;
     setSaved(false);
@@ -553,12 +518,10 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                           )}
                         </div>
                         {fieldImgs.map(img => (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                         {getFieldImgsUploaded(field.key).map(img => (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                       </div>
                     </td>

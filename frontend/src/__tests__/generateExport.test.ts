@@ -1,4 +1,5 @@
 import { buildBrdExportFilename, buildWordDocxBlob, prepareBrdExportElement } from "../components/brd/Generate";
+import { buildBrdImageBlobUrl } from "../utils/brdImageUrl";
 
 function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
@@ -89,6 +90,23 @@ describe("prepareBrdExportElement", () => {
     expect(rows).toHaveLength(1);
     expect(prepared.textContent).toContain("Source Name");
     expect(prepared.textContent).not.toContain("Status");
+  });
+});
+
+describe("buildBrdImageBlobUrl", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("uses a harmless placeholder until a client token is available", () => {
+    expect(buildBrdImageBlobUrl("BRD-001", 7, "http://localhost:4000")).toMatch(/^data:image\/gif;base64,/);
+  });
+
+  it("appends the auth token for protected image blobs", () => {
+    window.localStorage.setItem("token", "abc123");
+    expect(buildBrdImageBlobUrl("BRD-001", 7, "http://localhost:4000")).toBe(
+      "http://localhost:4000/brd/BRD-001/images/7/blob?token=abc123",
+    );
   });
 });
 

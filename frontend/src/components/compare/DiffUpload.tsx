@@ -261,7 +261,7 @@ export default function DiffUpload({
                 2
               </span>
               <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 uppercase tracking-wide">
-                XML Source
+                XML Source (Old / Reference)
               </span>
               <span className="text-[10px] text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-white/5
                 px-1.5 py-0.5 rounded font-normal normal-case">
