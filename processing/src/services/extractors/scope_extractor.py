@@ -419,7 +419,11 @@ def _is_non_data_scope_row(doc_title, ref_url, content_url, sme_comments) -> boo
     if not title_n and not has_url:
         return True
     if any(m in title_n for m in _NON_DATA_MARKERS): return True
-    if any(m in sme_n   for m in _NON_DATA_MARKERS): return True
+    # SME comments often contain phrases like "the following" or template guidance
+    # even on real scope rows. Only let comment boilerplate suppress a row when the
+    # row itself is otherwise blank or lacks any document URL signal.
+    if not title_n and any(m in sme_n for m in _NON_DATA_MARKERS): return True
+    if not has_url and any(m in sme_n for m in _NON_DATA_MARKERS): return True
     if _INTRO_BLOB_RE.search(title_n): return True
     if re.match(r"^\*", title_n.strip()): return True
     if re.search(r"\bsme\s*check[-\s]*point\b", title_n): return True

@@ -9,11 +9,10 @@ export function buildBrdImageBlobUrl(
 
   const base = apiBase.replace(/\/+$/, "");
   const path = `/brd/${encodeURIComponent(String(brdId))}/images/${encodeURIComponent(String(imageId))}/blob`;
+  const baseUrl = `${base}${path}`;
 
-  if (typeof window === "undefined") return `${base}${path}`;
+  if (typeof window === "undefined") return baseUrl;
 
   const token = localStorage.getItem("token");
-  if (!token) return `${base}${path}`;
-
-  return `${base}${path}?token=${encodeURIComponent(token)}`;
+  return token ? `${baseUrl}?token=${encodeURIComponent(token)}` : baseUrl;
 }

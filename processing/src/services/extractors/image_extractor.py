@@ -26,13 +26,19 @@ Section detection strategy
 from __future__ import annotations
 
 import base64
+import html as html_lib
 import mimetypes
 import os
 import re
 import uuid
 import zipfile
 from dataclasses import dataclass, field
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from lxml import html as lxml_html
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,6 +175,52 @@ def _derive_field_label(row, img_col_index: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MIME type helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Supplementary MIME map for formats Python's mimetypes may not know.
+_EXTRA_MIME: dict[str, str] = {
+    ".emf":  "image/x-emf",
+    ".wmf":  "image/x-wmf",
+    ".tif":  "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+
+# Only these MIME types can be rendered by modern browsers as <img> elements.
+# EMF/WMF are vector formats that browsers cannot display; storing them
+# wastes DB space and causes silent failures in the frontend.
+_BROWSER_RENDERABLE: frozenset[str] = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/bmp",
+    "image/webp",
+    "image/svg+xml",
+    "image/tiff",
+    "image/avif",
+})
+
+
+def _resolve_mime(filename: str) -> str | None:
+    """
+    Return the MIME type for *filename*, or None if the image cannot be
+    rendered in a browser.  Falls back to the extra map when the standard
+    mimetypes library returns nothing.
+    """
+    mime, _ = mimetypes.guess_type(filename)
+    if not mime:
+        ext = os.path.splitext(filename)[1].lower()
+        mime = _EXTRA_MIME.get(ext)
+    if not mime:
+        return None
+    return mime if mime in _BROWSER_RENDERABLE else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Core extractor
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -180,14 +232,20 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
     print(f"[DEBUG extract_cell_images] Starting extraction from {docx_path}")
 
     # ── Build rId → (filename, mime) map ─────────────────────────────────────
+    # Only include image relationships whose MIME type can be rendered by
+    # a browser.  EMF/WMF and other vector-only formats are skipped so they
+    # are never stored in the database or served to the frontend.
     part = doc.part
     rId_map: dict[str, tuple[str, str]] = {}
     for rId, rel in part.rels.items():
         if "image" not in rel.reltype:
             continue
         filename = Path(rel.target_ref).name
-        mime, _ = mimetypes.guess_type(filename)
-        rId_map[rId] = (filename, mime or "application/octet-stream")
+        mime = _resolve_mime(filename)
+        if mime is None:
+            print(f"[DEBUG] Skipping non-browser-renderable image: {filename}")
+            continue
+        rId_map[rId] = (filename, mime)
 
     print(f"[DEBUG extract_cell_images] Image relationships: {len(rId_map)}")
 
@@ -352,4 +410,346 @@ def extract_and_store_images(
         )
 
     print(f"[DEBUG extract_and_store_images] Created {len(image_records)} records")
+    return image_records
+
+
+def _decode_mhtml_payload(payload: bytes | bytearray | str | None, charset: str | None = None) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+
+    raw = bytes(payload)
+    normalized = (charset or "").strip().lower()
+    alias_map = {
+        "unicode": "utf-16le",
+        "utf16": "utf-16",
+        "utf16le": "utf-16le",
+        "utf16be": "utf-16be",
+    }
+
+    candidates: list[str] = []
+    if normalized:
+        candidates.append(alias_map.get(normalized, normalized))
+    if b"\x00" in raw:
+        candidates.extend(["utf-16", "utf-16le", "utf-16be"])
+    candidates.extend(["utf-8", "latin-1"])
+
+    seen: set[str] = set()
+    for encoding in candidates:
+        if not encoding or encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if text.strip("\x00\r\n\t "):
+            return text
+
+    return raw.decode("utf-8", errors="replace")
+
+
+def _coerce_mhtml_payload(payload: object) -> bytes | str | None:
+    if payload is None or isinstance(payload, (bytes, bytearray, str)):
+        return payload
+
+    as_bytes = getattr(payload, "as_bytes", None)
+    if callable(as_bytes):
+        try:
+            candidate = as_bytes()
+            if isinstance(candidate, (bytes, bytearray, str)):
+                return candidate
+            return str(candidate)
+        except Exception:
+            pass
+
+    as_string = getattr(payload, "as_string", None)
+    if callable(as_string):
+        try:
+            candidate = as_string()
+            if isinstance(candidate, (bytes, bytearray, str)):
+                return candidate
+            return str(candidate)
+        except Exception:   
+            pass
+
+    return str(payload)
+
+
+def _coerce_mhtml_bytes(payload: object) -> bytes | None:
+    coerced = _coerce_mhtml_payload(payload)
+    if coerced is None:
+        return None
+    if isinstance(coerced, str):
+        return coerced.encode("utf-8", errors="replace")
+    return bytes(coerced)
+
+
+def _render_html_fragment(fragment) -> str:
+    rendered = lxml_html.tostring(fragment, encoding="unicode")
+    if isinstance(rendered, (bytes, bytearray, memoryview)):
+        return bytes(rendered).decode("utf-8", errors="replace")
+    return str(rendered or "")
+
+
+def _extract_mhtml_html_and_assets(path: str) -> tuple[str, dict[str, tuple[bytes, str, str]]]:
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    message = BytesParser(policy=policy.default).parsebytes(raw)
+    html_parts: list[str] = []
+    assets: dict[str, tuple[bytes, str, str]] = {}
+
+    def _register_asset(key: str, payload: bytes, mime_type: str, media_name: str) -> None:
+        normalized = (key or "").strip().strip("<>")
+        if not normalized:
+            return
+        assets[normalized] = (payload, mime_type, media_name)
+        basename = Path(unquote(urlparse(normalized).path or normalized)).name
+        if basename:
+            assets[basename] = (payload, mime_type, media_name)
+            assets[unquote(basename)] = (payload, mime_type, media_name)
+
+    for part in message.walk() if message.is_multipart() else [message]:
+        content_type = part.get_content_type()
+        if content_type == "text/html":
+            payload = _coerce_mhtml_payload(part.get_payload(decode=True))
+            html_text = _decode_mhtml_payload(payload, part.get_content_charset())
+            if html_text.strip():
+                html_parts.append(html_text)
+            continue
+
+        payload_bytes = _coerce_mhtml_bytes(part.get_payload(decode=True))
+        if not payload_bytes:
+            continue
+
+        location = (part.get("Content-Location") or part.get("Content-ID") or part.get_filename() or "").strip()
+        if not location:
+            continue
+
+        mime_type = content_type or mimetypes.guess_type(location)[0] or "application/octet-stream"
+        parsed_name = Path(unquote(urlparse(location).path or location)).name or Path(location).name or "image"
+        ext = Path(parsed_name).suffix
+        if not ext:
+            guessed_ext = mimetypes.guess_extension(mime_type) or ""
+            parsed_name = f"{parsed_name}{guessed_ext}"
+
+        _register_asset(location, payload_bytes, mime_type, parsed_name)
+        stripped = location.strip("<>")
+        if stripped.lower().startswith("cid:"):
+            _register_asset(stripped[4:], payload_bytes, mime_type, parsed_name)
+
+    return "\n".join(html_parts), assets
+
+
+def _strip_html_text(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    text = html_lib.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _classify_html_table(table_el, heading_hint: str) -> str:
+    rows = table_el.xpath(".//tr")
+    if not rows:
+        return heading_hint or "unknown"
+
+    header_cells = rows[0].xpath("./th|./td")
+    header_text = " ".join(_strip_html_text(_render_html_fragment(cell)).lower() for cell in header_cells)
+    for section, keywords in _SECTION_FINGERPRINTS.items():
+        if any(kw in header_text for kw in keywords):
+            return section
+    return heading_hint or "unknown"
+
+
+def _derive_html_field_label(cells, img_col_index: int) -> str:
+    for ci, cell in enumerate(cells):
+        if ci == img_col_index:
+            continue
+        text = _strip_html_text(_render_html_fragment(cell))
+        if text:
+            return text
+    return _strip_html_text(_render_html_fragment(cells[img_col_index]))
+
+
+def _resolve_mhtml_asset(
+    assets: dict[str, tuple[bytes, str, str]],
+    *candidates: str,
+) -> tuple[bytes, str, str] | None:
+    tried: set[str] = set()
+    for raw in candidates:
+        candidate = (raw or "").strip().strip("<>")
+        if not candidate:
+            continue
+        expanded = [candidate, unquote(candidate)]
+        if candidate.lower().startswith("cid:"):
+            expanded.append(candidate[4:])
+        parsed_name = Path(unquote(urlparse(candidate).path or candidate)).name
+        if parsed_name:
+            expanded.extend([parsed_name, unquote(parsed_name)])
+        for key in expanded:
+            if not key or key in tried:
+                continue
+            tried.add(key)
+            if key in assets:
+                return assets[key]
+    return None
+
+
+def _sniff_image_mime(image_bytes: bytes) -> str | None:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"BM"):
+        return "image/bmp"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    prefix = image_bytes[:256].lstrip().lower()
+    if prefix.startswith(b"<svg") or (prefix.startswith(b"<?xml") and b"<svg" in prefix):
+        return "image/svg+xml"
+    return None
+
+
+def _normalise_mhtml_image_asset(
+    image_bytes: bytes,
+    mime_type: str,
+    media_name: str,
+    *hints: str,
+) -> tuple[str, str]:
+    normalized_mime = (mime_type or "").strip().lower()
+    hint_values = [hint for hint in hints if hint]
+
+    def _guess_from_hint(hint: str) -> str | None:
+        content_type_hint = hint.strip().lower()
+        if content_type_hint.startswith("image/"):
+            return content_type_hint
+        guessed, _ = mimetypes.guess_type(hint.split("?", 1)[0])
+        if guessed and guessed.startswith("image/"):
+            return guessed.lower()
+        return None
+
+    if not normalized_mime.startswith("image/"):
+        for hint in hint_values:
+            guessed = _guess_from_hint(hint)
+            if guessed:
+                normalized_mime = guessed
+                break
+
+    if not normalized_mime.startswith("image/"):
+        sniffed = _sniff_image_mime(image_bytes)
+        if sniffed:
+            normalized_mime = sniffed
+
+    normalized_name = media_name or "image"
+    current_ext = Path(normalized_name).suffix.lower()
+    if (not current_ext or current_ext == ".bin") and normalized_mime.startswith("image/"):
+        preferred_name = next(
+            (
+                Path(unquote(urlparse(hint).path or hint.split("?", 1)[0])).name
+                for hint in hint_values
+                if Path(unquote(urlparse(hint).path or hint.split("?", 1)[0])).name
+            ),
+            normalized_name,
+        )
+        preferred_stem = Path(preferred_name).stem or Path(normalized_name).stem or "image"
+        guessed_ext = mimetypes.guess_extension(normalized_mime) or ".img"
+        normalized_name = f"{preferred_stem}{guessed_ext}"
+
+    return normalized_mime or "application/octet-stream", normalized_name
+
+
+def extract_and_store_images_from_mhtml(path: str, brd_id: str) -> list[dict]:
+    """Extract cell images directly from Confluence-exported MHTML `.doc` files."""
+    print(f"[DEBUG extract_and_store_images_from_mhtml] Starting for brd_id: {brd_id}")
+
+    html_text, assets = _extract_mhtml_html_and_assets(path)
+    if not html_text.strip() or not assets:
+        print("[DEBUG extract_and_store_images_from_mhtml] No HTML/assets found")
+        return []
+
+    try:
+        root = lxml_html.fromstring(html_text)
+    except Exception as exc:
+        print(f"[WARN extract_and_store_images_from_mhtml] HTML parse failed: {exc}")
+        return []
+
+    body = root.find("body")
+    if body is None:
+        body = root
+    current_heading_section = ""
+    table_index = -1
+    seen: set[tuple[int, int, int, str, str]] = set()
+    image_records: list[dict] = []
+
+    for el in body.iter():
+        if not isinstance(el.tag, str):
+            continue
+        tag = el.tag.lower()
+
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            hint = _heading_section(" ".join(el.itertext()).strip())
+            if hint:
+                current_heading_section = hint
+            continue
+
+        if tag != "table":
+            continue
+
+        table_index += 1
+        section = _classify_html_table(el, current_heading_section)
+        rows = el.xpath(".//tr")
+        for ri, row in enumerate(rows):
+            cells = row.xpath("./th|./td")
+            for ci, cell in enumerate(cells):
+                imgs = cell.xpath(".//img")
+                if not imgs:
+                    continue
+
+                field_label = _derive_html_field_label(cells, ci)
+                cell_text = _strip_html_text(_render_html_fragment(cell))
+
+                for img_idx, img in enumerate(imgs):
+                    src = (img.get("src") or "").strip()
+                    data_src = (img.get("data-image-src") or "").strip()
+                    asset = _resolve_mhtml_asset(assets, src, data_src)
+                    if not asset:
+                        continue
+
+                    image_bytes, mime_type, media_name = asset
+                    mime_type, media_name = _normalise_mhtml_image_asset(
+                        image_bytes,
+                        mime_type,
+                        media_name,
+                        src,
+                        data_src,
+                        img.get("data-linked-resource-default-alias") or "",
+                        img.get("data-linked-resource-content-type") or "",
+                    )
+                    dedupe_key = (table_index, ri, ci, field_label, media_name)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+
+                    image_records.append({
+                        "tableIndex": table_index,
+                        "rowIndex": ri,
+                        "colIndex": ci,
+                        "rid": src or data_src or f"mhtml-{table_index}-{ri}-{ci}-{img_idx}",
+                        "mediaName": media_name,
+                        "mimeType": mime_type,
+                        "cellText": cell_text,
+                        "section": section,
+                        "fieldLabel": field_label,
+                        "imageData": base64.b64encode(image_bytes).decode("utf-8"),
+                    })
+
+                    print(
+                        f"[DEBUG extract_and_store_images_from_mhtml] image={media_name!r} "
+                        f"section={section!r} field={field_label!r} row={ri} col={ci}"
+                    )
+
+    print(f"[DEBUG extract_and_store_images_from_mhtml] Created {len(image_records)} records")
     return image_records

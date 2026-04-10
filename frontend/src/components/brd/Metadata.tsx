@@ -1,7 +1,13 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
+import BrdImage from "./BrdImage";
+import BrdTableHeaderCell from "./BrdTableHeaderCell";
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import {
+  normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
+  parseBrdMetadataComments as parseMetadataComments,
+} from "@/utils/brdMetadataComments";
 
 type Format = "new" | "old";
 
@@ -122,46 +128,6 @@ function metadataValuesEqual(a: Record<string, string>, b: Record<string, string
   return true;
 }
 
-function normalizeMetadataCommentKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function parseMetadataComments(raw: string, fields: FieldConfig[] = []): Record<string, string> {
-  const out: Record<string, string> = {};
-  const normalized = raw.replace(/\r?\n+/g, " ").trim();
-  if (!normalized) return out;
-
-  if (fields.length > 0) {
-    const escapedLabels = fields
-      .map((field) => field.label)
-      .sort((a, b) => b.length - a.length)
-      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const pattern = new RegExp(`(${escapedLabels.join("|")}):\\s*`, "gi");
-    const matches = Array.from(normalized.matchAll(pattern));
-    if (matches.length > 0) {
-      matches.forEach((match, index) => {
-        const label = match[1] ?? "";
-        const start = (match.index ?? 0) + match[0].length;
-        const end = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
-        const comment = normalized.slice(start, end).trim();
-        if (label && comment) out[normalizeMetadataCommentKey(label)] = comment;
-      });
-      return out;
-    }
-  }
-
-  for (const line of raw.split(/\r?\n+/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx <= 0) continue;
-    const label = normalizeMetadataCommentKey(trimmed.slice(0, idx));
-    const comment = trimmed.slice(idx + 1).trim();
-    if (label && comment) out[label] = comment;
-  }
-  return out;
-}
-
 function serializeMetadataComments(
   fields: FieldConfig[],
   comments: Record<string, string>,
@@ -238,6 +204,7 @@ function buildOutgoingMetadata(
     name:                      values.name ?? "",
     related_government_agency: values.relatedGovernmentAgency ?? "",
     content_uri:               values.contentUrl ?? "",
+    content_uri_note:          values.contentUrlNote ?? values.contentUriNote ?? "",
     impacted_citation:         values.impactedCitation ?? "",
     payload_type:              values.payloadType ?? "",
     payload_subtype:           values.payloadSubtype ?? "",
@@ -262,6 +229,7 @@ function buildOutgoingMetadata(
     name:                      values.name ?? "",
     related_government_agency: values.relatedGovernmentAgency ?? "",
     content_uri:               values.contentUri ?? "",
+    content_uri_note:          values.contentUriNote ?? values.contentUrlNote ?? "",
     impacted_citation:         values.impactedCitation ?? "",
     payload_type:              values.payloadType ?? "",
     payload_subtype:           values.payloadSubtype ?? "",
@@ -304,7 +272,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 
     isInitializing.current = true;
     setValues(nextValues);
-    setCommentValues(parseMetadataComments(nextValues.smeComments ?? "", fields));
+    setCommentValues(parseMetadataComments(nextValues.smeComments ?? "", fields.map((field) => field.label)));
     setCustomRows(nextCustomRows);
     lastAppliedSignatureRef.current = signature;
     setSaved(false);
@@ -511,9 +479,9 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
           <table className="w-full min-w-[980px] border-collapse text-[11.5px]">
             <thead>
               <tr className="bg-slate-100 dark:bg-[#181d30] border-b border-slate-200 dark:border-[#2a3147]">
-                <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>Metadata Element</th>
-                <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>Document Location</th>
-                <th className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>SME Comments</th>
+                <BrdTableHeaderCell title="Metadata Element" greenNote="Innodata only - field name from the BRD template" />
+                <BrdTableHeaderCell title="Document Location" greenNote="Source text, date, image, or URL captured from the BRD" />
+                <BrdTableHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
               </tr>
             </thead>
             <tbody>
@@ -544,6 +512,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                               section="metadata"
                               fieldLabel={field.key}
                               existingImages={getFieldImgsUploaded(field.key)}
+                              defaultCellText={values[field.key] ?? ""}
                               onUploaded={img => onFieldUploaded(field.key, img)}
                               onDeleted={id => onFieldDeleted(field.key, id)}
                             />
@@ -553,12 +522,10 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                           )}
                         </div>
                         {fieldImgs.map(img => (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                         {getFieldImgsUploaded(field.key).map(img => (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
                       </div>
                     </td>
@@ -680,6 +647,7 @@ function buildMetadataValues(
       name:                    p("name", "Name", "document_title", "documentTitle", "title"),
       relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
       contentUrl:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+      contentUrlNote:          p("content_uri_note", "contentUriNote", "contentUrlNote", "Content URI Note", "content_url_note", "Content URL Note"),
       impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
       payloadType:             p("payload_type", "payloadType", "Payload Type"),
       payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),
@@ -706,6 +674,7 @@ function buildMetadataValues(
     name:                    p("name", "Name", "document_title", "documentTitle", "title"),
     relatedGovernmentAgency: p("related_government_agency", "relatedGovernmentAgency", "Related Government Agency"),
     contentUri:              p("content_uri", "contentUri", "content_url", "contentUrl", "Content URI", "Content URL"),
+    contentUriNote:          p("content_uri_note", "contentUriNote", "contentUrlNote", "Content URI Note", "content_url_note", "Content URL Note"),
     impactedCitation:        p("impacted_citation", "impactedCitation", "Impacted Citation"),
     payloadType:             p("payload_type", "payloadType", "Payload Type"),
     payloadSubtype:          p("payload_subtype", "payloadSubtype", "Payload Subtype"),

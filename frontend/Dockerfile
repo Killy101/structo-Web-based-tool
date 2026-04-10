@@ -21,6 +21,12 @@ RUN npm ci
 
 COPY . .
 
+# NEXT_PUBLIC_* variables are baked into the JS bundle at build time by Next.js.
+# They cannot be changed at container runtime — pass the correct URL here.
+# Usage: docker build --build-arg NEXT_PUBLIC_API_URL=https://yourdomain.com/api .
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
 # Build the optimised Next.js output (standalone mode must be enabled in next.config.ts)
 RUN npm run build
 

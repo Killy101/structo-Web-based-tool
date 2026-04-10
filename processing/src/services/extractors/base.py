@@ -34,7 +34,7 @@ def heading_level(para) -> int | None:
 def section_content(doc, heading_text: str) -> list[str]:
     """Return paragraph texts under a named heading until the next same-level heading."""
     collecting = False
-    target_level = None
+    target_level: int | None = None
     texts = []
     for para in iter_paragraphs(doc):
         lvl = heading_level(para)
@@ -44,14 +44,36 @@ def section_content(doc, heading_text: str) -> list[str]:
                 collecting = True
                 target_level = lvl
                 continue
-            if collecting and lvl <= target_level:
+            if collecting and target_level is not None and lvl <= target_level:
                 break
         if collecting and text:
             texts.append(text)
     return texts
 
 
-_URL_RE = re.compile(r"https?://[^\s\)\]」）]+")
+_URL_RE = re.compile(r"https?://[^\s\]\[\{\}<>'\"」）]+")
+
+
+def _clean_extracted_url(url: str) -> str:
+    candidate = (url or "").strip()
+    if not candidate:
+        return ""
+
+    while candidate and candidate[-1] in ".,;:":
+        candidate = candidate[:-1]
+
+    unmatched_pairs = {")": "(", "]": "[", "}": "{", "）": "（", "」": "「"}
+    while candidate and candidate[-1] in unmatched_pairs:
+        closing = candidate[-1]
+        opening = unmatched_pairs[closing]
+        if candidate.count(closing) > candidate.count(opening):
+            candidate = candidate[:-1]
+            while candidate and candidate[-1] in ".,;:":
+                candidate = candidate[:-1]
+            continue
+        break
+
+    return candidate
 
 
 def _rank_url(url: str) -> tuple[int, int, int]:
@@ -65,9 +87,13 @@ def extract_url_and_note_from_text(text: str, extra_candidates: list[str] | None
     raw_text = (text or "").replace("\xa0", " ").strip()
     candidates: list[str] = []
     if extra_candidates:
-        candidates.extend(url.strip() for url in extra_candidates if isinstance(url, str) and url.strip())
+        candidates.extend(
+            _clean_extracted_url(url) for url in extra_candidates if isinstance(url, str) and url.strip()
+        )
     for match in _URL_RE.finditer(raw_text):
-        candidates.append(match.group(0).rstrip(".,;"))
+        cleaned_url = _clean_extracted_url(match.group(0))
+        if cleaned_url:
+            candidates.append(cleaned_url)
 
     if not candidates:
         return raw_text, ""

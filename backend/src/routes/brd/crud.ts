@@ -105,7 +105,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
     const visibleStatuses = getBrdVisibilityStatuses(accessPolicy)
 
     const statusFilter = visibleStatuses && visibleStatuses.length > 0
-      ? `AND b.status = ANY($1::text[])`
+      ? `AND b.status::text = ANY($1::text[])`
       : ''
     const params = visibleStatuses && visibleStatuses.length > 0 ? [visibleStatuses] : []
 

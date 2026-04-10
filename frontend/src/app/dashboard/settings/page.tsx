@@ -98,10 +98,9 @@ function buildPolicyPresetFeatures(
           "brd-process",
           "user-management",
           "compare-basic",
-          "compare-pdf-xml-only",
           "user-logs",
         ]
-      : ["dashboard", "brd-process", "compare-basic", "compare-pdf-xml-only"];
+      : ["dashboard", "brd-process", "compare-basic"];
   }
 
   if (slug === "production") {

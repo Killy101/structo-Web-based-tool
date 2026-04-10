@@ -1,5 +1,6 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdImage from "./BrdImage";
+import BrdTableHeaderCell from "./BrdTableHeaderCell";
 import React, { useEffect, useRef, useState } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -65,14 +66,32 @@ function normalizeAsrbAndSme(asrbRaw?: string, smeRaw?: string) {
   return { asrbId, smeComments };
 }
 
+function repairSplitUrl(url?: string, note?: string): { url: string; note: string } {
+  const cleanUrl = (url ?? "").trim();
+  const cleanNote = (note ?? "").trim();
+  if (!cleanUrl || !cleanNote) return { url: cleanUrl, note: cleanNote };
+
+  const looksLikeRemainder = /^[)\].,:;?&#=%A-Za-z0-9_/-]+$/.test(cleanNote) && !/\s/.test(cleanNote);
+  const openParens = (cleanUrl.match(/\(/g) ?? []).length;
+  const closeParens = (cleanUrl.match(/\)/g) ?? []).length;
+  const looksLikeSuffix = cleanNote.startsWith(").") || /^\.[A-Za-z0-9]{2,8}$/.test(cleanNote) || /\.[A-Za-z0-9]{2,8}$/.test(cleanNote);
+
+  if (looksLikeRemainder && (openParens > closeParens || looksLikeSuffix)) {
+    return { url: `${cleanUrl}${cleanNote}`, note: "" };
+  }
+
+  return { url: cleanUrl, note: cleanNote };
+}
+
 function toRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string): ScopeRow {
   const authLabel = e.issuing_authority
     ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
   const { asrbId, smeComments } = normalizeAsrbAndSme(e.asrb_id, e.sme_comments);
+  const { url: contentUrl, note: contentNote } = repairSplitUrl(e.content_url, e.content_note);
   return {
     id, stableKey, isOutOfScope: oos || !!e.strikethrough,
     title: e.document_title ?? "", referenceLink: e.regulator_url ?? "",
-    contentUrl: e.content_url ?? "", contentNote: e.content_note ?? "", issuingAuth: authLabel,
+    contentUrl, contentNote, issuingAuth: authLabel,
     asrbId, smeComments,
     initialEvergreen: e.initial_evergreen ?? "", dateOfIngestion: e.date_of_ingestion ?? "",
   };
@@ -578,7 +597,6 @@ function downloadExcelReport(issues: ValidationIssue[], totalLinks: number, allR
 
 /* ─────────────── style constants ─────────────── */
 const MONO = { fontFamily: "'DM Mono', monospace" } as const;
-const TH = "px-3 py-2 text-left font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147]";
 const CELL = "px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] align-top";
 
 /* ─────────────── inline editable cell ─────────────── */
@@ -1062,18 +1080,18 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
             <table className="w-full text-[11.5px]">
               <thead>
                 <tr className="bg-slate-100 dark:bg-[#1e2235]">
-                  <th rowSpan={2} className={`${TH} w-[180px]`} style={MONO}>Document Title</th>
-                  <th rowSpan={2} className={`${TH} w-[120px]`} style={MONO}>Reference Link</th>
-                  <th rowSpan={2} className={`${TH} w-[160px]`} style={MONO}>Content URL</th>
-                  <th colSpan={2} className={`${TH} text-center bg-slate-200/60 dark:bg-[#252d45]`} style={MONO}>Issuing Agency</th>
-                  <th rowSpan={2} className={`${TH} w-[130px]`} style={MONO}>SME Comments</th>
-                  {extra.evergreen && <th rowSpan={2} className={`${TH} w-[90px]`} style={MONO}>Initial / Evergreen</th>}
-                  {extra.ingestion && <th rowSpan={2} className={`${TH} w-[110px]`} style={MONO}>Date of Ingestion</th>}
-                  <th rowSpan={2} className="px-3 py-2 text-center font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-slate-200 dark:border-[#2a3147] w-[60px]" style={MONO}>···</th>
+                  <BrdTableHeaderCell rowSpan={2} className="w-[180px]" title="Document Title" greenNote="Innodata only - Document Title as appearing on regulator weblink" />
+                  <BrdTableHeaderCell rowSpan={2} className="w-[120px]" title="Reference Link" greenNote="Parent URL for the source" />
+                  <BrdTableHeaderCell rowSpan={2} className="w-[160px]" title="Content URL" greenNote="URL for the title under the source" />
+                  <BrdTableHeaderCell colSpan={2} className="text-center bg-slate-200/60 dark:bg-[#252d45]" title="Issuing Agency" greenNote="Authority/source bucket" />
+                  <BrdTableHeaderCell rowSpan={2} className="w-[130px]" title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+                  {extra.evergreen && <BrdTableHeaderCell rowSpan={2} className="w-[90px]" title="Initial / Evergreen" greenNote="Scope ingestion mode" />}
+                  {extra.ingestion && <BrdTableHeaderCell rowSpan={2} className="w-[110px]" title="Date of Ingestion" greenNote="Recorded ingestion date" />}
+                  <th rowSpan={2} className="px-3 py-2 text-center font-bold text-[10px] uppercase tracking-[0.1em] text-black dark:text-slate-300 border-b border-slate-200 dark:border-[#2a3147] w-[60px] bg-slate-50 dark:bg-[#1e2235]" style={MONO}>···</th>
                 </tr>
                 <tr className="bg-slate-100 dark:bg-[#1e2235]">
-                  <th className="px-3 py-1.5 text-left font-bold text-[10px] uppercase tracking-[0.08em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147] w-[140px] bg-slate-200/60 dark:bg-[#252d45]/70" style={MONO}>Issuing Authority</th>
-                  <th className="px-3 py-1.5 text-left font-bold text-[10px] uppercase tracking-[0.08em] text-black dark:text-slate-300 border-b border-r border-slate-200 dark:border-[#2a3147] w-[100px] bg-slate-200/60 dark:bg-[#252d45]/70" style={MONO}>ASRB ID</th>
+                  <BrdTableHeaderCell className="w-[140px] bg-slate-200/60 dark:bg-[#252d45]/70" title="Issuing Authority" greenNote="Authority name" />
+                  <BrdTableHeaderCell className="w-[100px] bg-slate-200/60 dark:bg-[#252d45]/70" title="ASRB ID" greenNote="Tracking identifier" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]">
@@ -1113,7 +1131,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.stableKey, "title").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} existingImages={getCellImgs(row.stableKey, "title")} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} existingImages={getCellImgs(row.stableKey, "title")} defaultCellText={row.title} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 160, width: 160 }}>
@@ -1122,7 +1140,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.stableKey, "referenceLink").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} existingImages={getCellImgs(row.stableKey, "referenceLink")} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} existingImages={getCellImgs(row.stableKey, "referenceLink")} defaultCellText={row.referenceLink} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 180, width: 180 }}>
@@ -1136,7 +1154,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.stableKey, "contentUrl").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} existingImages={getCellImgs(row.stableKey, "contentUrl")} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} existingImages={getCellImgs(row.stableKey, "contentUrl")} defaultCellText={row.contentUrl || row.contentNote} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
@@ -1145,7 +1163,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.stableKey, "issuingAuth").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} existingImages={getCellImgs(row.stableKey, "issuingAuth")} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} existingImages={getCellImgs(row.stableKey, "issuingAuth")} defaultCellText={row.issuingAuth} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
@@ -1154,7 +1172,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.stableKey, "asrbId").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} existingImages={getCellImgs(row.stableKey, "asrbId")} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} existingImages={getCellImgs(row.stableKey, "asrbId")} defaultCellText={row.asrbId} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
@@ -1163,7 +1181,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.stableKey, "smeComments").map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} existingImages={getCellImgs(row.stableKey, "smeComments")} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} existingImages={getCellImgs(row.stableKey, "smeComments")} defaultCellText={row.smeComments} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
                         </div>
                       </td>
                       {extra.evergreen && <td className={CELL}><InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} onChange={val => updateRow(row.id, "initialEvergreen", val)}/></td>}

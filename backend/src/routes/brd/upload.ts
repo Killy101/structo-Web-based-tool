@@ -175,11 +175,12 @@ router.post(
       // ── 4. Persist everything in a transaction ────────────────────────────
       await withTransaction(async (client) => {
         // Create or update BRD record
+        const creatorId = (req as any).user?.userId ?? 1
         await client.query(
           `INSERT INTO brds (brd_id, title, format, status, created_by_id)
-           VALUES ($1, $2, $3, 'DRAFT', 1)
+           VALUES ($1, $2, $3, 'DRAFT', $4)
            ON CONFLICT (brd_id) DO UPDATE SET title = $2, format = $3`,
-          [brdId, title, detectedFormat === 'old' ? 'OLD' : 'NEW'],
+          [brdId, title, detectedFormat === 'old' ? 'OLD' : 'NEW', creatorId],
         )
 
         // Store all sections as JSONB directly
@@ -238,6 +239,7 @@ router.post(
       return res.json({
         brdId,
         title,
+        status: 'DRAFT',
         format: detectedFormat,
         filename: extracted.filename,
         scope: extracted.scope,
@@ -279,12 +281,13 @@ router.post(
     try {
       // Confirm BRD exists and is not deleted
       const { rows } = await pool.query(
-        `SELECT brd_id, deleted_at FROM brds WHERE brd_id = $1`,
+        `SELECT brd_id, status, deleted_at FROM brds WHERE brd_id = $1`,
         [brdId],
       )
       if (!rows[0] || rows[0].deleted_at !== null) {
         return res.status(404).json({ error: 'BRD not found' })
       }
+      const currentStatus: string = rows[0].status ?? 'DRAFT'
 
       // Fetch existing sections as fallback
       const { rows: existingRows } = await pool.query(
@@ -353,7 +356,8 @@ router.post(
 
       return res.json({
         brdId,
-        format: extracted.detected_format === 'old' ? 'old' : 'new',
+        status:         currentStatus,
+        format:         extracted.detected_format === 'old' ? 'old' : 'new',
         scope:          extracted.scope,
         metadata:       extracted.metadata,
         toc:            extracted.toc,

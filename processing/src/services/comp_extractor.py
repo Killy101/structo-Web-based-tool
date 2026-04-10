@@ -1412,6 +1412,27 @@ def _is_f_cluster(text: str) -> bool:
     return False
 
 
+def _is_legal_leader_line(t: str) -> bool:
+    """True for amendment/provision leader lines like ``F278(2) ........``.
+
+    These are structural legal markers, not table-of-contents noise, so they
+    should survive extraction and alignment even when followed by dot leaders.
+    Plain provision-only leaders like ``(2) ........`` are still treated as
+    noise elsewhere.
+    """
+    if not t:
+        return False
+    raw = t.strip()
+    if not re.search(r'[.\xb7]{6,}\s*$', raw):
+        return False
+    prefix = re.sub(r'[.\xb7\s]+$', '', raw)
+    return bool(re.match(
+        r'^\[?\s*[FCEMSX]\d+[A-Za-z]?\s*\]?\s*(?:\(\s*[A-Za-z0-9]{1,4}\s*\))*$',
+        prefix,
+        re.I,
+    ))
+
+
 def _is_noise(t: str) -> bool:
     """
     True only for lines that carry no semantic content:
@@ -1423,8 +1444,9 @@ def _is_noise(t: str) -> bool:
     t = t.strip()
     if not t:
         return True
-    # Bare amendment markers must survive to be paired with body text
-    if re.match(r'^[FCEMSX]\d+[A-Za-z]?$', t, re.I):
+    # Bare amendment markers and legal leader lines must survive to be paired
+    # with nearby body text during segmentation/alignment.
+    if re.match(r'^[FCEMSX]\d+[A-Za-z]?$', t, re.I) or _is_legal_leader_line(t):
         return False
     if len(t) <= 1:
         return not _is_bare_provision_marker_text(t)
@@ -3341,23 +3363,75 @@ def _normalise_spaced_anchor(anchor: str) -> str:
     if m: return f"{m.group(1).lower()}:{m.group(2)}"
     return anchor
 
+def _guide_head_text(norm_anchor: str, cmp_text: str) -> str:
+    """Return a stable guide-head preview for structural blocks.
+
+    Section/chapter/part blocks sometimes arrive with leading amendment or
+    citation residue from the previous extracted line, e.g.:
+      "Act 2017 ..., Sch. 2 para. 15 104 General rule ..."
+      "F2815. 103A inserted ... 104 General rule ..."
+
+    If that residue is left in place, the `GUIDE::sec:104::...` key differs
+    across old/new PDFs and the alignment drifts, producing false ADD/DEL hits
+    for otherwise unchanged sections. This helper trims back to the true
+    structural heading when possible.
+    """
+    s = re.sub(r'^(?:[a-z]\d+[a-z]?\s+)+', '', cmp_text).strip()
+    if not s:
+        return ""
+
+    if norm_anchor == 'textual_amendments':
+        return 'textual amendments'
+
+    if norm_anchor.startswith('sec:'):
+        ident = norm_anchor.split(':', 1)[1]
+        m = re.search(rf'\b{re.escape(ident)}\b', s, re.I)
+        if not m:
+            m = re.search(rf'\b{re.escape(ident)}(?=[a-z])', s, re.I)
+        if m:
+            s = s[m.start():].lstrip()
+    elif norm_anchor.startswith(('part:', 'chapter:', 'schedule:')):
+        fam, ident = norm_anchor.split(':', 1)
+        m = re.search(rf'\b{re.escape(fam)}\s+{re.escape(ident)}\b', s, re.I)
+        if m:
+            s = s[m.start():].lstrip()
+    elif norm_anchor.startswith('head:'):
+        label = norm_anchor.split(':', 1)[1]
+        if label:
+            m = re.search(re.escape(label[:40]), s, re.I)
+            if m:
+                s = s[m.start():].lstrip()
+
+    # Fallback: if the block still starts with citation residue, trim to the
+    # first later structural marker or numbered section heading.
+    for pat in (
+        r'\b(?:part|chapter|schedule|section)\s+\d+[a-z]?\b',
+        r'\b\d{1,3}[a-z]?(?=\s+[a-z])',
+    ):
+        m = re.search(pat, s, re.I)
+        if m and m.start() > 0:
+            s = s[m.start():].lstrip()
+            break
+
+    return ' '.join(s.split()[:8])
+
+
 def _seq_key(block: Block) -> str:
     """SequenceMatcher key.
 
     Strong structural anchors use anchor identity rather than raw text so one
     early mismatch does not cause the rest of a long document to drift.
-    The head text is sanitised to remove leading F-number tokens that can
-    bleed into heading lines from adjacent annotation clusters in the PDF.
+    The head text is sanitised to remove leading amendment/citation residue that
+    can bleed into heading lines from adjacent annotation clusters in the PDF.
     """
     _clean_cmp = re.sub(r'^(?:[a-z]\d+[a-z]?\s+)+', '', block.cmp).strip()
     # Normalise spaced-letter artefact anchors for consistent GUIDE keys
     norm_anchor = _normalise_spaced_anchor(block.anchor)
+    head = _guide_head_text(norm_anchor, _clean_cmp)
 
     if _is_guide_anchor(norm_anchor):
-        head = ' '.join(_clean_cmp.split()[:8])
         return f"GUIDE::{norm_anchor}::{head}"
     if norm_anchor and not norm_anchor.startswith('txt:'):
-        head = ' '.join(_clean_cmp.split()[:8])
         return f"ANCH::{norm_anchor}::{head}"
     return block.cmp
 
@@ -4568,6 +4642,8 @@ def compute_diff(
     for ci, ch in enumerate(chunks):
         if ch.kind in (KIND_DEL, KIND_ADD):
             text = (ch.text_a if ch.kind == KIND_DEL else ch.text_b).strip()
+            if _is_legal_leader_line(text):
+                continue
             if text and _is_noise(text):
                 noise_suppress.add(ci)
                 continue

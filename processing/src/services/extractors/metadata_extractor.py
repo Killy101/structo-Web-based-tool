@@ -9,7 +9,7 @@ Format is auto-detected:
 """
 
 import re
-from .base import heading_level, para_text
+from .base import extract_url_and_note_from_text, heading_level, para_text
 
 
 # ─── US States (for language inference) ──────────────────────────────────────
@@ -142,6 +142,7 @@ def _extract_metadata_new(doc) -> dict:
         "issuing_agency":            "",
         "related_government_agency": "",
         "content_uri":               "",
+        "content_uri_note":          "",
         "geography":                 "",
         "language":                  "",
         "document_title":            "",
@@ -232,8 +233,10 @@ def _extract_metadata_new(doc) -> dict:
                         parts = re.split(r"[\n,]+", value)
                         metadata["contributors"] = [p.strip() for p in parts if p.strip()]
                     elif field == "content_uri":
-                        url_m = re.search(r"https?://[^\s\)\]」）,]+", value)
-                        metadata["content_uri"] = url_m.group(0).rstrip(".,;") if url_m else value
+                        url, note = extract_url_and_note_from_text(value)
+                        metadata["content_uri"] = url or value
+                        if note:
+                            metadata["content_uri_note"] = note
                     else:
                         if not metadata[field]:
                             metadata[field] = value
@@ -299,6 +302,7 @@ def extract_metadata_legacy(doc) -> dict:
         "issuing_agency":            "",
         "related_government_agency": "",
         "content_uri":               "",
+        "content_uri_note":          "",
         "geography":                 "",
         "language":                  "",
         "document_title":            "",
@@ -362,7 +366,6 @@ def extract_metadata_legacy(doc) -> dict:
         "sme":                       "sme",
     }
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
-    url_re = re.compile(r"https?://[^\s\)\]」）,]+")
     sme_comment_lines: list[str] = []
 
     for table in doc.tables:
@@ -396,8 +399,10 @@ def extract_metadata_legacy(doc) -> dict:
                         parts = re.split(r"[\n,]+", value)
                         metadata["contributors"] = [p.strip() for p in parts if p.strip()]
                     elif field == "content_uri":
-                        m = url_re.search(value)
-                        metadata["content_uri"] = m.group(0).rstrip(".,;") if m else value
+                        url, note = extract_url_and_note_from_text(value)
+                        metadata["content_uri"] = url or value
+                        if note:
+                            metadata["content_uri_note"] = note
                     else:
                         if not metadata[field]:
                             metadata[field] = value

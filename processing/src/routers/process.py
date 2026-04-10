@@ -45,9 +45,9 @@ from src.services.pdf_layout_diff import compare_pdfs_layout
 
 router = APIRouter(prefix="/compare", tags=["compare"])
 
-# ── In-memory job store (replace with Redis/PostgreSQL in production) ─────────
-# Structure: { job_id: { status, files, chunks, source_name, ... } }
-_jobs: dict[str, dict] = {}
+# ── Persistent job store: SQLite + disk bytes, write-through in-memory cache ──
+from src.services.job_store import _store as _job_store
+_jobs = _job_store.mem   # existing _jobs.get / _jobs[id] calls work unchanged
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,21 +81,18 @@ async def upload_endpoint(
 
     job_id = str(uuid.uuid4())
 
-    _jobs[job_id] = {
+    _job_store.create(job_id, {
         "job_id":       job_id,
         "status":       "uploaded",
         "source_name":  source_name.strip(),
         "old_filename": old_pdf.filename,
         "new_filename": new_pdf.filename,
         "xml_filename": xml_filename,
-        "_old_bytes":   old_bytes,
-        "_new_bytes":   new_bytes,
-        "_xml_bytes":   xml_bytes,  # None when no XML uploaded
         "chunks":       [],
         "summary":      None,
         "progress":     0,
         "error":        None,
-    }
+    }, old_bytes, new_bytes, xml_bytes)
 
     return {
         "success":      True,
@@ -133,9 +130,10 @@ async def start_chunking_endpoint(payload: StartChunkingRequest):
     import asyncio
     from fastapi.concurrency import run_in_threadpool
 
-    job = _jobs.get(payload.job_id)
+    _job_id = payload.job_id  # captured by closures for persistence calls
+    job = _jobs.get(_job_id)
     if not job:
-        raise HTTPException(status_code=404, detail=f"Job {payload.job_id} not found")
+        raise HTTPException(status_code=404, detail=f"Job {_job_id} not found")
 
     if job["status"] == "processing":
         raise HTTPException(status_code=409, detail="Job is already processing")
@@ -143,6 +141,7 @@ async def start_chunking_endpoint(payload: StartChunkingRequest):
     job["status"]   = "processing"
     job["progress"] = 0
     job["stage"]    = "Extracting text from PDFs"
+    _job_store.persist(_job_id)
 
     raw_xml = job.get("_xml_bytes")
     xml_str = raw_xml.decode("utf-8") if raw_xml else ""
@@ -150,6 +149,7 @@ async def start_chunking_endpoint(payload: StartChunkingRequest):
     def _progress(pct: int, stage: str) -> None:
         job["progress"] = min(pct, 99)
         job["stage"]    = stage
+        # Note: progress/stage are transient; we only persist on terminal states.
 
     def _run() -> dict:
         return chunk_pdfs_and_xml(
@@ -174,11 +174,14 @@ async def start_chunking_endpoint(payload: StartChunkingRequest):
             job["stage"]    = "Complete"
             job["chunks"]   = result.get("pdf_chunks", [])
             job["summary"]  = result.get("summary", {})
+            _job_store.remove_bytes(_job_id, "xml")
             job.pop("_xml_bytes", None)
+            _job_store.persist(_job_id)
         except Exception as exc:
             job["status"] = "error"
             job["stage"]  = "Failed"
             job["error"]  = str(exc)
+            _job_store.persist(_job_id)
 
     # Fire and forget — returns immediately, processing continues in background
     asyncio.create_task(_background())
@@ -226,20 +229,18 @@ async def chunk_direct_endpoint(
             raise HTTPException(status_code=422, detail="XML file must be valid UTF-8")
 
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {
+    _job_store.create(job_id, {
         "job_id":       job_id,
         "status":       "processing",
         "source_name":  source_name.strip(),
         "old_filename": old_pdf.filename,
         "new_filename": new_pdf.filename,
-        "_old_bytes":   old_bytes,
-        "_new_bytes":   new_bytes,
         "chunks":       [],
         "summary":      None,
         "progress":     0,
         "stage":        "Starting…",
         "error":        None,
-    }
+    }, old_bytes, new_bytes)
 
     def _progress(pct: int, stage: str) -> None:
         _jobs[job_id]["progress"] = min(pct, 99)
@@ -281,6 +282,7 @@ async def chunk_direct_endpoint(
             "chunks":   full_chunks,   # full data kept server-side for /detect-chunk
             "summary":  final_summary,
         })
+        _job_store.persist(job_id)
 
         # ── Attach word counts before stripping text fields ───────────────────
         # Count words from old_text/new_text while they're still present.
@@ -316,6 +318,7 @@ async def chunk_direct_endpoint(
         }
     except Exception as exc:
         _jobs[job_id].update({"status": "error", "stage": "Failed", "error": str(exc)})
+        _job_store.persist(job_id)
         raise HTTPException(status_code=422, detail=str(exc))
 
 
@@ -1176,6 +1179,7 @@ async def save_xml_endpoint(payload: SaveXmlRequest):
     chunk["xml_content"]    = payload.xml_content
     if payload.has_changes is not None:
         chunk["has_changes"] = payload.has_changes
+    _job_store.persist(payload.job_id)
 
     return {
         "success":    True,
