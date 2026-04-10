@@ -12,6 +12,59 @@ import {
 
 const router = Router()
 
+// ── MIME type helpers ────────────────────────────────────────────────────────
+
+/** Browser-renderable image MIME types. */
+const BROWSER_IMAGE_MIMES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/bmp',
+  'image/webp', 'image/svg+xml', 'image/tiff', 'image/avif',
+])
+
+/**
+ * Detect a browser-renderable MIME type from the first few bytes of binary
+ * image data (magic numbers).  Returns null if the format is unrecognised or
+ * cannot be rendered in a browser.
+ */
+function detectMimeFromBytes(buf: Buffer): string | null {
+  if (buf.length < 4) return null
+
+  // PNG:  89 50 4E 47 0D 0A 1A 0A
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png'
+
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg'
+
+  // GIF:  47 49 46 38 (GIF8)
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return 'image/gif'
+
+  // BMP:  42 4D
+  if (buf[0] === 0x42 && buf[1] === 0x4D) return 'image/bmp'
+
+  // WEBP: 52 49 46 46 ?? ?? ?? ?? 57 45 42 50
+  if (buf.length >= 12 &&
+      buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp'
+
+  // TIFF: 49 49 2A 00 (little-endian) or 4D 4D 00 2A (big-endian)
+  if ((buf[0] === 0x49 && buf[1] === 0x49 && buf[2] === 0x2A && buf[3] === 0x00) ||
+      (buf[0] === 0x4D && buf[1] === 0x4D && buf[2] === 0x00 && buf[3] === 0x2A)) return 'image/tiff'
+
+  return null
+}
+
+/**
+ * Resolve the final MIME type for a stored image.  If the stored type is
+ * already a browser-renderable image type, return it unchanged.  Otherwise
+ * fall back to magic-byte detection so that images uploaded before the MIME-
+ * type fix can still be served correctly.
+ */
+function resolveImageMime(storedMime: string | undefined, data: Buffer): string {
+  if (storedMime && BROWSER_IMAGE_MIMES.has(storedMime)) return storedMime
+  return detectMimeFromBytes(data) ?? storedMime ?? 'application/octet-stream'
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boolean> {
   const { rows } = await pool.query(
     `SELECT status, deleted_at FROM brds WHERE brd_id = $1`,
@@ -99,7 +152,8 @@ router.get('/:brdId/images/:imageId/blob', async (req: AuthRequest, res: Respons
     if (img.brdId !== String(req.params.brdId)) return res.status(404).json({ error: 'Image not found' })
     if (!img.imageData) return res.status(404).json({ error: 'No image data stored' })
 
-    res.set('Content-Type', img.mimeType || 'image/png')
+    const mimeType = resolveImageMime(img.mimeType, img.imageData)
+    res.set('Content-Type', mimeType)
     res.set('Cache-Control', 'public, max-age=86400')
     res.set('X-Content-Type-Options', 'nosniff')
     return res.send(img.imageData)

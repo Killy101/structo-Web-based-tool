@@ -666,7 +666,12 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
     map.set(key, current);
   };
 
-  images.filter(img => img.section === "scope").forEach(img => {
+  // Include section="scope" (new records) OR tableIndex=3 with unknown/missing
+  // section (legacy records uploaded before section tagging was introduced).
+  images.filter(img =>
+    img.section === "scope" ||
+    ((!img.section || img.section === "unknown") && img.tableIndex === 3)
+  ).forEach(img => {
     pushImage(imagesByLabel, normalizeScopeImageKey(img.fieldLabel || ""), img);
     pushImage(imagesByCellText, normalizeScopeImageKey(img.cellText || ""), img);
   });
