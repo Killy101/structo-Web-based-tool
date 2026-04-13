@@ -64,20 +64,33 @@ export async function apiDiff(
         const msg = JSON.parse(line);
         if (msg.t === "p" && onProgress) {
           if (msg.s === "old") {
+            // Interpolate within 10–40% based on pages processed.
+            // p=0 → 10%, p=n → 40%. Clamp to avoid going backwards.
+            const n = msg.n || 1;
+            const pct = Math.min(40, Math.round(10 + (msg.p / n) * 30));
             onProgress({
               stage: "old",
               page: msg.p,
-              totalPages: msg.n,
-              pct: msg.p === 0 ? 10 : 40,
-              message: msg.p === 0 ? "Extracting text from old PDF…" : "Old PDF loaded",
+              totalPages: n,
+              pct,
+              message: msg.p === 0
+                ? `Extracting old PDF… (${n} pages)`
+                : msg.p >= n
+                  ? "Old PDF extracted"
+                  : `Extracting old PDF… page ${msg.p}/${n}`,
             });
           } else if (msg.s === "new") {
+            // Interpolate within 40–55% based on pages processed.
+            const n = msg.n || 1;
+            const pct = Math.min(55, Math.round(40 + (msg.p / n) * 15));
             onProgress({
               stage: "new",
               page: msg.p,
-              totalPages: msg.n,
-              pct: 55,
-              message: "Both PDFs loaded — starting diff…",
+              totalPages: n,
+              pct,
+              message: msg.p >= n
+                ? "Both PDFs extracted — starting diff…"
+                : `Extracting new PDF… page ${msg.p}/${n}`,
             });
           } else if (msg.s === "diff") {
             const sub = msg.sub as string | undefined;

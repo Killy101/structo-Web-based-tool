@@ -16,6 +16,8 @@ interface Props {
 
 type FilterKind = "all" | ChunkKind;
 
+const CONFIDENCE_THRESHOLD = 0.80; // hide MOD chunks with confidence below this
+
 // ── Section group type ────────────────────────────────────────────────────────
 interface SectionGroup {
   label: string;
@@ -178,8 +180,15 @@ export default function ChunkList({
   chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions,
 }: Props) {
   const [filter, setFilter] = useState<FilterKind>("all");
+  const [hideLoConfidence, setHideLoConfidence] = useState(false);
 
-  const filtered = filter === "all" ? chunks : chunks.filter((c) => c.kind === filter);
+  const filtered = useMemo(() => {
+    let result = filter === "all" ? chunks : chunks.filter((c) => c.kind === filter);
+    if (hideLoConfidence) {
+      result = result.filter((c) => c.kind !== "mod" || c.confidence >= CONFIDENCE_THRESHOLD);
+    }
+    return result;
+  }, [chunks, filter, hideLoConfidence]);
 
   const hasSections = chunks.some((c) => c.section);
   const groups = useMemo(
@@ -260,6 +269,23 @@ export default function ChunkList({
           {filterBtn("mod", "~", stats.modifications, "bg-amber-600")}
           {filterBtn("emp", "○", stats.emphasis, "bg-violet-600")}
         </div>
+        {/* Confidence filter toggle — hides low-confidence MOD chunks */}
+        {stats.modifications > 0 && (
+          <button
+            onClick={() => setHideLoConfidence((v) => !v)}
+            className={`mt-1.5 w-full flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-semibold transition-all
+              ${hideLoConfidence
+                ? "bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30"
+                : "text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 border border-transparent"
+              }`}
+            title="Hide modifications flagged as low-confidence (likely formatting differences)"
+          >
+            <span className="w-2.5 h-2.5 rounded-full border border-current flex-shrink-0 flex items-center justify-center">
+              {hideLoConfidence && <span className="w-1 h-1 rounded-full bg-current" />}
+            </span>
+            Hide low-confidence changes
+          </button>
+        )}
       </div>
 
       {/* List */}

@@ -4700,6 +4700,32 @@ def compute_diff(
         print(f"  [compute_diff] noise-suppress: {len(noise_suppress)} chunks", flush=True)
         chunks = [ch for ci, ch in enumerate(chunks) if ci not in noise_suppress]
 
+    # ── ALL-PUNCTUATION MICRO-FRAGMENT SUPPRESSION ────────────────────────────
+    # ADD/DEL chunks whose text contains NO alphanumeric characters (letters or
+    # digits) are almost certainly PDF artefacts: line-end hyphens, stray em
+    # dashes, orphan commas from reflow, bracket fragments from citation breaks.
+    # Real legal changes always contain at least one word or number, so
+    # suppressing pure-symbol chunks is safe and eliminates a common class of
+    # false positives that are too short for the fuzzy-block pass (len < 3).
+    _RE_ALNUM_CHECK = re.compile(r'[a-z0-9]', re.I)
+    punct_frag_suppress = set()
+    for ci, ch in enumerate(chunks):
+        if ch.kind not in (KIND_ADD, KIND_DEL):
+            continue
+        raw = ((ch.text_b if ch.kind == KIND_ADD else ch.text_a) or '').strip()
+        if not raw:
+            punct_frag_suppress.add(ci)
+            continue
+        # Only consider short strings — long punctuation-rich text may be real
+        if len(raw) > 12:
+            continue
+        # Suppress if no alphanumeric characters at all
+        if not _RE_ALNUM_CHECK.search(raw):
+            punct_frag_suppress.add(ci)
+    if punct_frag_suppress:
+        print(f"  [compute_diff] all-punct-suppress: {len(punct_frag_suppress)} chunks", flush=True)
+        chunks = [ch for ci, ch in enumerate(chunks) if ci not in punct_frag_suppress]
+
     # ── XML CROSS-VALIDATION (tri-source) ────────────────────────────────────
     # When XML ground truth is provided, build an index from each XML document
     # and suppress diff chunks that are contradicted by the XML content.
