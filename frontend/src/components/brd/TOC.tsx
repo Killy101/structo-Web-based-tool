@@ -6,6 +6,7 @@ import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 import { brdRichTextToPlain, sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
+import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 interface TocRow {
   id: string;
@@ -319,7 +320,10 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
   function getCellImgs(a: string, b: string): UploadedCellImage[] { return cellImages[cellKey(a, b)] ?? []; }
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
-  function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
+  function onCellDeleted(_a: string, _b: string, id: number) {
+    setImages(prev => prev.filter(img => img.id !== id));
+    setCellImages(prev => removeUploadedImageFromMap(prev, id));
+  }
   const isInitializing = useRef(false);
   const rowsRef = useRef<TocRow[]>(INITIAL_ROWS);
 
@@ -640,7 +644,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
                           {getCellImgs(row.level, col.key).map(img => (
                             <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={mergeUploadedImageLists(getCellImgs(row.level, col.key), (rowImgsByCol[col.key] ?? []).map(toUploadedCellImage) as UploadedCellImage[])} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                         </div>
                         </td>
                       ))}

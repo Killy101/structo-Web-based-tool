@@ -114,7 +114,7 @@ router.post('/:brdId/versions', requireBrdEdit, async (req: Request, res: Respon
     // Capture the current image IDs for this BRD so version views show only
     // the images that existed at the time of the snapshot (not future uploads).
     const { rows: imgRows } = await pool.query(
-      `SELECT id FROM brd_cell_images WHERE brd_id = $1 ORDER BY id`,
+      `SELECT id FROM brd_cell_images WHERE brd_id = $1 AND deleted_at IS NULL ORDER BY id`,
       [brdId],
     )
     const imageIds = imgRows.map((r: { id: number }) => r.id)

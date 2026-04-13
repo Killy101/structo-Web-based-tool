@@ -15,7 +15,6 @@ import { useUsers, useTeams, useRoles, useToast, usePasswordPolicy } from "../..
 import { useAuth } from "../../../context/AuthContext";
 import {
   ROLE_LABELS,
-  CAN_CREATE_ROLES,
   ALLOWED_TARGET_ROLES,
   FEATURE_LABELS,
   canDeactivate,
@@ -567,6 +566,7 @@ function UserActionsMenu({
   onChangePassword,
   onChangeRole,
   onAssignTeam,
+  onAssignCustomRole,
   onToggleStatus,
 }: {
   user: User;
@@ -576,6 +576,7 @@ function UserActionsMenu({
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
+  onAssignCustomRole: (u: User) => void;
   onToggleStatus: (u: User) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -588,12 +589,14 @@ function UserActionsMenu({
       ? user.role !== "SUPER_ADMIN"
       : actorRole === "ADMIN" && canChangeRoleTo(actorRole, user.role);
   const canManageTeam = actorRole === "SUPER_ADMIN";
+  const canManageCustomRole = actorRole === "SUPER_ADMIN" && user.role !== "SUPER_ADMIN";
   const canToggle = canDeactivate(actorRole, user.role) && !isSelf;
 
   if (
     !canManagePassword &&
     !canManageRole &&
     !canManageTeam &&
+    !canManageCustomRole &&
     !canToggle
   )
     return null;
@@ -641,6 +644,14 @@ function UserActionsMenu({
                 className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
               >
                 <UsersGroupIcon /> Assign Team
+              </button>
+            )}
+            {canManageCustomRole && (
+              <button
+                onClick={() => { setOpen(false); onAssignCustomRole(user); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+              >
+                <ShieldIcon /> Assign Custom Role
               </button>
             )}
             {canToggle && (
@@ -755,6 +766,7 @@ function SortableTable({
   onChangePassword,
   onChangeRole,
   onAssignTeam,
+  onAssignCustomRole,
   onToggleStatus,
   actorRole,
 }: {
@@ -769,6 +781,7 @@ function SortableTable({
   onChangePassword: (u: User) => void;
   onChangeRole: (u: User) => void;
   onAssignTeam: (u: User) => void;
+  onAssignCustomRole: (u: User) => void;
   onToggleStatus: (u: User) => void;
   actorRole: Role;
 }) {
@@ -941,6 +954,7 @@ function SortableTable({
                         onChangePassword={onChangePassword}
                         onChangeRole={onChangeRole}
                         onAssignTeam={onAssignTeam}
+                        onAssignCustomRole={onAssignCustomRole}
                         onToggleStatus={onToggleStatus}
                       />
                     </div>
@@ -2555,6 +2569,8 @@ export default function UsersPage() {
 
   const actorRole = (currentUser?.role ?? "USER") as Role;
   const actorTeamId = currentUser?.teamId ?? null;
+  const isSuperAdmin = actorRole === "SUPER_ADMIN";
+  const isAdmin = actorRole === "ADMIN";
 
   // NEW: sort handler — toggles direction if same key, resets to asc for new key
   const handleSort = (key: SortKey) => {
@@ -2695,8 +2711,7 @@ export default function UsersPage() {
     [users, selectedUserIds],
   );
 
-  const canBulkAssignTeam =
-    actorRole === "SUPER_ADMIN" || actorRole === "ADMIN";
+  const canBulkAssignTeam = isSuperAdmin || isAdmin;
 
   useEffect(() => {
     const next = new URLSearchParams();
@@ -2899,6 +2914,10 @@ export default function UsersPage() {
     setTargetUser(u);
     setShowAssignTeam(true);
   };
+  const handleOpenAssignCustomRole = (u: User) => {
+    setTargetUser(u);
+    setShowAssignCustomRole(true);
+  };
   const handleChangePassword = async (userId: number, newPassword: string) => {
     await changePassword(userId, newPassword);
     show("Password changed successfully", "success");
@@ -3043,7 +3062,7 @@ export default function UsersPage() {
               {isFiltering && ` • ${filtered.length} match your filters`}
             </p>
           </div>
-          {(CAN_CREATE_ROLES[actorRole]?.length ?? 0) > 0 && (
+          {(isSuperAdmin || isAdmin) && (
             <Button onClick={() => setShowCreate(true)} className="shrink-0">
               <PlusIcon /> Add New User
             </Button>
@@ -3277,6 +3296,7 @@ export default function UsersPage() {
             onChangePassword={handleOpenChangePassword}
             onChangeRole={handleOpenChangeRole}
             onAssignTeam={handleOpenAssignTeam}
+            onAssignCustomRole={handleOpenAssignCustomRole}
             onToggleStatus={handleToggle}
             actorRole={actorRole}
           />

@@ -8,6 +8,7 @@ import {
   normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
   parseBrdMetadataComments as parseMetadataComments,
 } from "@/utils/brdMetadataComments";
+import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 type Format = "new" | "old";
 
@@ -259,7 +260,10 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   function getFieldImgsUploaded(key: string): UploadedCellImage[] { return cellImages[key] ?? []; }
   function onFieldUploaded(key: string, img: UploadedCellImage) { setCellImages(prev => ({ ...prev, [key]: [...(prev[key] ?? []), img] })); }
-  function onFieldDeleted(key: string, id: number) { setCellImages(prev => ({ ...prev, [key]: (prev[key] ?? []).filter(i => i.id !== id) })); }
+  function onFieldDeleted(_key: string, id: number) {
+    setImages(prev => prev.filter(img => img.id !== id));
+    setCellImages(prev => removeUploadedImageFromMap(prev, id));
+  }
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -487,6 +491,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
             <tbody>
               {fields.map((field, fieldIdx) => {
                 const fieldImgs = brdId ? getFieldImages(field, fieldIdx) : [];
+                const editableFieldImages = mergeUploadedImageLists(getFieldImgsUploaded(field.key), fieldImgs.map(toUploadedCellImage) as UploadedCellImage[]);
                 const commentKey = normalizeMetadataCommentKey(field.label);
                 return (
                   <tr key={field.key} className={fieldIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
@@ -511,7 +516,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                               brdId={brdId}
                               section="metadata"
                               fieldLabel={field.key}
-                              existingImages={getFieldImgsUploaded(field.key)}
+                              existingImages={editableFieldImages}
                               defaultCellText={values[field.key] ?? ""}
                               onUploaded={img => onFieldUploaded(field.key, img)}
                               onDeleted={id => onFieldDeleted(field.key, id)}

@@ -515,9 +515,9 @@ export default function BrdPage() {
   const isAdmin = user?.role === "ADMIN";
   const isPreProductionTeam = teamSlug === "pre-production";
 
-  const canCreateBrd = isSuperAdmin || isPreProductionTeam;
-  const canEditBrd = isSuperAdmin || isPreProductionTeam;
-  const canChangeBrdStatus = isSuperAdmin || isPreProductionTeam;
+  const canCreateBrd = isSuperAdmin || (isPreProductionTeam && isAdmin);
+  const canEditBrd = isSuperAdmin || (isPreProductionTeam && isAdmin);
+  const canChangeBrdStatus = isSuperAdmin || (isPreProductionTeam && isAdmin);
   const canDeleteBrd = isSuperAdmin || (isPreProductionTeam && isAdmin);
   const canUseTrash = canDeleteBrd;
 

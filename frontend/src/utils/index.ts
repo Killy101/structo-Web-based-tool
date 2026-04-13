@@ -48,11 +48,14 @@ export const teamHasAccess = (
 
 // ─── TEAM FEATURE LABELS ──────────────────────────────────
 export const FEATURE_LABELS: Record<string, string> = {
+  "dashboard": "Dashboard",
   "brd-process": "BRD Process",
-  "view-brd": "View BRD Sources",
-  compare: "Compare",
-  "generate-reports": "Generate Reports",
-  "user-logs": "User Logs",
+  "brd-view-generate": "BRD View and Generate Sources",
+  "compare-basic": "Direct Comparison",
+  "compare-merge": "Chunk & Compare",
+  "compare-pdf-xml-only": "Compare & Apply",
+  "user-logs": "History",
+  "user-management": "User Management",
 };
 
 // ─── DYNAMIC ROLE DISPLAY ─────────────────────────────────

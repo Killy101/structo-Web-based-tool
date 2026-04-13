@@ -201,16 +201,19 @@ router.post(
           ],
         )
 
-        // Delete old images and insert new ones as BYTEA
-        await client.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
+        // Soft-delete active images so previous versions remain immutable.
+        await client.query(`UPDATE brd_cell_images SET deleted_at = NOW() WHERE brd_id = $1 AND deleted_at IS NULL`, [brdId])
 
-        for (const img of (extracted.image_metadata ?? [])) {
+        const revisionTag = Date.now().toString(36)
+        for (let i = 0; i < (extracted.image_metadata ?? []).length; i++) {
+          const img = extracted.image_metadata![i]
           const imageBytes = Buffer.from(img.imageData, 'base64')
+          const snapshotRid = `${img.rid || 'img'}-rev-${revisionTag}-${i}`
           await client.query(
             `INSERT INTO brd_cell_images
                (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, snapshotRid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
           )
         }
       })
@@ -340,14 +343,17 @@ router.post(
           [brdId, newScope, newMetadata, newToc, newCitations, newContentProfile, newBrdConfig],
         )
 
-        await client.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
-        for (const img of (extracted.image_metadata ?? [])) {
+        await client.query(`UPDATE brd_cell_images SET deleted_at = NOW() WHERE brd_id = $1 AND deleted_at IS NULL`, [brdId])
+        const revisionTag = Date.now().toString(36)
+        for (let i = 0; i < (extracted.image_metadata ?? []).length; i++) {
+          const img = extracted.image_metadata![i]
           const imageBytes = Buffer.from(img.imageData, 'base64')
+          const snapshotRid = `${img.rid || 'img'}-rev-${revisionTag}-${i}`
           await client.query(
             `INSERT INTO brd_cell_images
                (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, snapshotRid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
           )
         }
       })

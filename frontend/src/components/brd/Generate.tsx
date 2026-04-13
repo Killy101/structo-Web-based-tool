@@ -26,13 +26,16 @@ interface CellImageMeta {
 }
 
 // ── useCellImages hook ─────────────────────────────────────────────────────────
-function useCellImages(brdId?: string, enabled = true) {
+function useCellImages(brdId?: string, enabled = true, includeIds?: number[] | null) {
   const [images, setImages] = useState<CellImageMeta[]>([]);
 
   useEffect(() => {
     if (!enabled || !brdId) return;
+    const includeIdsParam = Array.isArray(includeIds) && includeIds.length > 0
+      ? `?includeIds=${includeIds.join(',')}`
+      : "";
     api
-      .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 })
+      .get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images${includeIdsParam}`, { timeout: 30000 })
       .then(r => {
         console.log(`[useCellImages] Fetched ${r.data.images?.length || 0} images for BRD ${brdId}`);
         setImages(r.data.images ?? []);
@@ -40,7 +43,7 @@ function useCellImages(brdId?: string, enabled = true) {
       .catch((err) => {
         console.log("[useCellImages] Error fetching images:", err);
       });
-  }, [brdId, enabled]);
+  }, [brdId, enabled, includeIds]);
 
   return { images };
 }
@@ -1683,7 +1686,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const docPageRef        = useRef<HTMLDivElement>(null);
   const contentProfileRef = useRef<HTMLDivElement>(null);
   
-  const { images: allImages } = useCellImages(brdId, showCellImages);
+  const { images: allImages } = useCellImages(brdId, showCellImages, imageIds);
   // Filter to only images that existed at the time this version was saved.
   // If imageIds is null/undefined (e.g. current edit view), show all images.
   const allowedIds = imageIds != null ? new Set(imageIds) : null;

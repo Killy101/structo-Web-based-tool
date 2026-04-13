@@ -37,8 +37,10 @@ function buildPolicy(params: { userId: number; role: string; teamSlug: string | 
 
   if (role === 'ADMIN' || role === 'USER') {
     if (preProduction) {
-      const canDelete = role === 'ADMIN'
-      return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: true, canEdit: true, canChangeStatus: true, canDelete, canUseTrash: canDelete, visibleStatuses: null }
+      if (role === 'ADMIN') {
+        return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: true, canEdit: true, canChangeStatus: true, canDelete: true, canUseTrash: true, visibleStatuses: null }
+      }
+      return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: false, canEdit: false, canChangeStatus: false, canDelete: false, canUseTrash: false, visibleStatuses: null }
     }
     return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: false, canEdit: false, canChangeStatus: false, canDelete: false, canUseTrash: false, visibleStatuses: RESTRICTED_STATUSES }
   }
@@ -85,19 +87,19 @@ export function canReadBrdStatus(policy: BrdAccessPolicy, status: unknown): bool
 
 export function requireBrdCreate(req: AuthRequest, res: Response, next: NextFunction) {
   const policy = getBrdAccessPolicy(res)
-  if (!policy.canCreate) return forbidden(res, 'Only Pre-Production team (Admin/User) can create BRDs. Other teams are view and generate only.')
+  if (!policy.canCreate) return forbidden(res, 'Only Super Admin and Pre-Production Admin can create BRDs.')
   return next()
 }
 
 export function requireBrdEdit(req: AuthRequest, res: Response, next: NextFunction) {
   const policy = getBrdAccessPolicy(res)
-  if (!policy.canEdit) return forbidden(res, 'Only Pre-Production team (Admin/User) can edit BRDs. Other teams are view and generate only.')
+  if (!policy.canEdit) return forbidden(res, 'Only Super Admin and Pre-Production Admin can edit BRDs.')
   return next()
 }
 
 export function requireBrdStatusChange(req: AuthRequest, res: Response, next: NextFunction) {
   const policy = getBrdAccessPolicy(res)
-  if (!policy.canChangeStatus) return forbidden(res, 'Only Pre-Production team (Admin/User) can change BRD status.')
+  if (!policy.canChangeStatus) return forbidden(res, 'Only Super Admin and Pre-Production Admin can change BRD status.')
   return next()
 }
 

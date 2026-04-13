@@ -25,7 +25,7 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<'ADMIN' | 'USER', str
   }
   if (slug === 'production') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic'],
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
@@ -35,6 +35,23 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<'ADMIN' | 'USER', str
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],
     USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
+}
+
+function applyTeamRoleFeatureGuards(teamSlug: string | null, role: string, features: string[]): string[] {
+  const slug = String(teamSlug ?? '').toLowerCase()
+  let next = Array.from(new Set(features))
+
+  // Team Pre-Production USER: read-only BRD sources, no History, direct compare only.
+  if (slug === 'pre-production' && role === 'USER') {
+    next = next.filter((f) => f !== '*' && f !== 'user-logs' && f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
+  }
+
+  // Production USER: direct compare only.
+  if (slug === 'production' && role === 'USER') {
+    next = next.filter((f) => f !== '*' && f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
+  }
+
+  return next
 }
 
 function resolvePolicyRole(role: string): 'ADMIN' | 'USER' | null {
@@ -169,6 +186,8 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
       if (user.userRole && !user.userRole.slug.startsWith(TEAM_POLICY_PREFIX)) {
         effectiveFeatures = Array.from(new Set([...effectiveFeatures, ...user.userRole.features]))
       }
+
+      effectiveFeatures = applyTeamRoleFeatureGuards(user.team.slug, user.role, effectiveFeatures)
     }
 
     res.json({ user: { ...user, effectiveFeatures } })

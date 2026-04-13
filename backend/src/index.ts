@@ -111,6 +111,10 @@ async function runStartupMigrations() {
     await pool.query(`ALTER TABLE brd_versions ADD COLUMN IF NOT EXISTS image_ids JSONB`)
     console.log('[migrations] brd_versions.image_ids OK')
 
+    await pool.query(`ALTER TABLE brd_cell_images ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id_deleted ON brd_cell_images (brd_id, deleted_at)`)
+    console.log('[migrations] brd_cell_images.deleted_at OK')
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS inbound_emails (
         id               SERIAL PRIMARY KEY,

@@ -5,6 +5,7 @@ import api from "@/app/lib/api";
 import BrdImage from "./BrdImage";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 import { normalizeBrdCitationText } from "@/utils/brdCitationText";
+import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 interface CitationRow {
   id: string;
@@ -137,7 +138,10 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
   function getCellImgs(a: string, b: string): UploadedCellImage[] { return cellImages[cellKey(a, b)] ?? []; }
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
-  function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
+  function onCellDeleted(_a: string, _b: string, id: number) {
+    setImages(prev => prev.filter(img => img.id !== id));
+    setCellImages(prev => removeUploadedImageFromMap(prev, id));
+  }
   const isInitializing = useRef(false);
   const rowsRef = useRef<CitationRow[]>(INITIAL_ROWS);
 
@@ -332,7 +336,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
                         {getCellImgs(row.level, col.key).map(img => (
                           <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" width={320} height={180} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
-                        {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} defaultCellText={String(row[col.key as keyof CitationRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
+                        {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={mergeUploadedImageLists(getCellImgs(row.level, col.key), getCellImages(row, col.key, idx).map(toUploadedCellImage) as UploadedCellImage[])} defaultCellText={String(row[col.key as keyof CitationRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
                       </div>
                     </td>
                   ))}
