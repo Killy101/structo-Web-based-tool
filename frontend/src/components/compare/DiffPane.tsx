@@ -167,45 +167,64 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
 
     const sideBadge = side === "a" ? "bg-rose-500 text-white" : "bg-emerald-500 text-white";
 
-    /* ── Pre-build all line nodes, only recompute when data or active chunk changes ── */
+    /* ── Pre-build all line nodes.
+     *
+     * IMPORTANT: activeChunkId is intentionally NOT in the dependency array.
+     * Rebuilding 5 000–50 000 React nodes on every chunk click was extremely
+     * slow for large documents. Instead, the active-chunk highlight is applied
+     * via a tiny injected <style> rule (see activeChunkCSS below) so only a
+     * string update happens on selection changes, not a full node rebuild.
+     *
+     * Every span that belongs to a chunk carries data-chunk-id so the CSS
+     * selector can target all of them at once. The first span of each chunk
+     * also serves as the DOM anchor for scrollToChunk().
+     * ── */
     const renderedNodes = useMemo(() => {
       const nodes: React.ReactNode[] = [];
-      const anchoredChunks = new Set<number>();
 
       for (let li = 0; li < lines.length; li++) {
         const segs = lines[li];
         const lineNodes: React.ReactNode[] = [];
         for (let si = 0; si < segs.length; si++) {
           const seg = segs[si];
-          const baseStyle = tagStyles[seg.tagName] ?? {};
-          const isActive = seg.chunkId !== null && seg.chunkId === activeChunkId;
-          const kind = seg.chunkId !== null ? kindMap.get(seg.chunkId) : undefined;
-          const ahl = isActive && kind ? ACTIVE_HL[kind] : undefined;
-
-          const style: React.CSSProperties = ahl
-            ? {
-                ...baseStyle,
-                backgroundColor: baseStyle.backgroundColor || ahl.bg,
-                borderRadius: "2px",
-                outline: `2px solid ${ahl.border}`,
-                outlineOffset: "0px",
-              }
-            : baseStyle;
-
-          const attrs: Record<string, string> = {};
-          if (seg.chunkId !== null && !anchoredChunks.has(seg.chunkId)) {
-            attrs["data-chunk-id"] = String(seg.chunkId);
-            anchoredChunks.add(seg.chunkId);
-          }
+          const style = tagStyles[seg.tagName] ?? {};
 
           lineNodes.push(
-            <span key={si} style={style} {...attrs}>{seg.text}</span>
+            seg.chunkId !== null
+              ? <span key={si} style={style} data-chunk-id={String(seg.chunkId)}>{seg.text}</span>
+              : <span key={si} style={style}>{seg.text}</span>
           );
         }
-        nodes.push(<div key={li}>{lineNodes}</div>);
+        /* content-visibility:auto tells the browser to skip layout/paint for
+         * lines outside the viewport, giving near-virtual-scroll performance
+         * without a JS virtualization library. containIntrinsicHeight provides
+         * a size hint so the scrollbar stays stable. */
+        nodes.push(
+          <div key={li} style={{ contentVisibility: "auto", containIntrinsicHeight: "auto 1.6em" }}>
+            {lineNodes}
+          </div>
+        );
       }
       return nodes;
-    }, [lines, tagStyles, activeChunkId, kindMap]);
+    }, [lines, tagStyles]); // ← activeChunkId removed; kindMap no longer needed here
+
+    /* Active-chunk highlight as an injected CSS rule.
+     * Only this tiny string regenerates on every chunk click — not the full
+     * node tree. The selector targets all data-chunk-id spans of that chunk. */
+    const activeChunkCSS = useMemo(() => {
+      if (activeChunkId === null) return "";
+      const kind = kindMap.get(activeChunkId);
+      if (!kind) return "";
+      const ahl = ACTIVE_HL[kind];
+      return (
+        `[data-chunk-id="${activeChunkId}"] {` +
+        ` background-color: ${ahl.bg} !important;` +
+        ` border-radius: 2px;` +
+        ` outline: 2px solid ${ahl.border};` +
+        ` outline-offset: 0px;` +
+        ` }`
+      );
+    }, [activeChunkId, kindMap]);
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
@@ -220,6 +239,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           ref={scrollRef}
           className="flex-1 min-h-0 overflow-auto"
         >
+          {activeChunkCSS && <style>{activeChunkCSS}</style>}
           <pre
             className="text-[11.5px] whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-[#c8d8e8] px-3 py-1"
             style={{ lineHeight: "1.6", overflowWrap: "break-word", wordBreak: "break-word" }}

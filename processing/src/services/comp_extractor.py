@@ -988,128 +988,172 @@ def _promote_isolated_provision_markers(lines: List[PdfLine]) -> None:
 
 def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     """Returns list[PdfLine] for the whole document (all pages concatenated).
-    Strips repeating page headers and footers to reduce false positives."""
+    Strips repeating page headers and footers to reduce false positives.
+
+    Pages are processed in parallel (ThreadPoolExecutor, separate fitz.Document
+    per worker) for a 2-4x speedup on documents with 20+ pages.
+    Cross-page post-processing runs sequentially after all pages are collected.
+    """
     import time as _time
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
     _t_start = _time.perf_counter()
 
-    doc   = fitz.open(path)
+    # Open once to count pages and detect headers/footers, then close.
+    doc = fitz.open(path)
     total = len(doc)
 
-    # Detect repeating header/footer patterns sampled across the whole document
-    hf_noise = _detect_header_footer_patterns(doc)
+    # Skip header/footer sampling for very small PDFs (no repeated patterns).
+    if total >= 6:
+        hf_noise = _detect_header_footer_patterns(doc)
+    else:
+        hf_noise = set()
+    doc.close()
+
     _t_hf = _time.perf_counter()
     print(f"  [load_pdf] header/footer detect: {_t_hf - _t_start:.2f}s  ({total} pages)", flush=True)
 
-    lines = []
+    # Read bytes once — each worker opens its own fitz.Document from this
+    # immutable buffer so no document handle is shared between threads.
+    with open(path, "rb") as _f:
+        _pdf_bytes = _f.read()
+
     page_gap = 80.0
 
-    # Aggregate timing accumulators
-    _acc_text = 0.0
-    _acc_tables = 0.0
-    _acc_parse = 0.0
-    _acc_merge = 0.0
+    # Determine text-extraction flags once (same for every page).
+    _flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
+    try:
+        _flags |= fitz.TEXT_DEHYPHENATE
+    except AttributeError:
+        pass  # older PyMuPDF without TEXT_DEHYPHENATE
 
-    for i in range(total):
-        fz  = doc[i]
-        h   = fz.rect.height or 1
-        page_y_offset = i * (h + page_gap)
-        # TEXT_DEHYPHENATE: join soft-hyphenated words across lines automatically
-        flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
-        try:
-            flags |= fitz.TEXT_DEHYPHENATE
-        except AttributeError:
-            pass  # older PyMuPDF without TEXT_DEHYPHENATE
-        _pt0 = _time.perf_counter()
-        raw = fz.get_text("dict", flags=flags)
-        _pt1 = _time.perf_counter()
-        _acc_text += _pt1 - _pt0
+    # ── Per-page extraction (called from worker threads) ──────────────────────
+    def _extract_pages(page_indices: list) -> List[Tuple[int, List[PdfLine]]]:
+        """Open a private fitz.Document and process the given page indices.
+        Returns [(page_idx, merged_lines), ...] in the order they were processed.
+        """
+        local_doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
+        results: List[Tuple[int, List[PdfLine]]] = []
 
-        # Skip table detection — find_tables() is extremely slow on large PDFs
-        # (267s for 767 pages). Regular text extraction already captures table
-        # content, which is sufficient for diffing.
-        table_lines, table_boxes = [], []
-        _pt2 = _time.perf_counter()
-        _acc_tables += _pt2 - _pt1
+        for i in page_indices:
+            fz = local_doc[i]
+            h  = fz.rect.height or 1
+            page_y_offset = i * (h + page_gap)
 
-        _pt3 = _time.perf_counter()
-        all_lines = []
-        for block in raw["blocks"]:
-            if block.get("type") != 0:
-                continue
-            for line in block["lines"]:
-                line_bbox = tuple(round(v, 1) for v in line.get("bbox", (0, 0, 0, 0)))
-                if table_boxes and any(_rect_intersects(line_bbox, tb) for tb in table_boxes):
+            raw = fz.get_text("dict", flags=_flags)
+
+            all_lines: List[PdfLine] = []
+            for block in raw["blocks"]:
+                if block.get("type") != 0:
                     continue
-                spans = [_parse_span(s) for s in line["spans"] if s["text"].strip()]
-                if not spans:
-                    continue
-                local_y = round(line["bbox"][1], 1)
-                y    = round(page_y_offset + local_y, 1)
-                xmin = round(min(s.x for s in spans), 1)
-
-                # Skip header/footer lines (top or bottom 12% of page)
-                rel_top = local_y / h
-                rel_bot = (h - local_y) / h
-                if rel_top <= 0.12 or rel_bot <= 0.12:
-                    line_txt = _norm_cmp(' '.join(s.text for s in spans))
-                    marker_like = (
-                        bool(_RE_HF_PAREN.search(line_txt)) or
-                        bool(_RE_HF_BRACKET.search(line_txt)) or
-                        bool(_RE_HF_MARKER.search(line_txt)) or
-                        bool(_RE_HF_BARE.match(line_txt)) or
-                        bool(_RE_HF_SECREF.search(line_txt)) or
-                        bool(_RE_HF_BODYSTART.search(line_txt))
-                    )
-                    if line_txt in hf_noise and not marker_like:
+                for line in block["lines"]:
+                    spans = [_parse_span(s) for s in line["spans"] if s["text"].strip()]
+                    if not spans:
                         continue
+                    local_y = round(line["bbox"][1], 1)
+                    y    = round(page_y_offset + local_y, 1)
+                    xmin = round(min(s.x for s in spans), 1)
 
-                all_lines.append(PdfLine(y=y, x_min=xmin, spans=spans))
+                    # Skip header/footer lines (top or bottom 12% of page).
+                    rel_top = local_y / h
+                    rel_bot = (h - local_y) / h
+                    if rel_top <= 0.12 or rel_bot <= 0.12:
+                        line_txt = _norm_cmp(" ".join(s.text for s in spans))
+                        marker_like = (
+                            bool(_RE_HF_PAREN.search(line_txt)) or
+                            bool(_RE_HF_BRACKET.search(line_txt)) or
+                            bool(_RE_HF_MARKER.search(line_txt)) or
+                            bool(_RE_HF_BARE.match(line_txt)) or
+                            bool(_RE_HF_SECREF.search(line_txt)) or
+                            bool(_RE_HF_BODYSTART.search(line_txt))
+                        )
+                        if line_txt in hf_noise and not marker_like:
+                            continue
 
-        all_lines.extend(table_lines)
-        _pt4 = _time.perf_counter()
-        _acc_parse += _pt4 - _pt3
+                    all_lines.append(PdfLine(y=y, x_min=xmin, spans=spans))
 
-        # Sort by y first with 2pt bucket (finer than old 4pt to avoid
-        # interleaving rows that sit close together), then by x within a row.
-        all_lines.sort(key=lambda l: (round(l.y / 2) * 2, l.x_min))
+            # Sort by y-bucket then x (same logic as before).
+            all_lines.sort(key=lambda l: (round(l.y / 2) * 2, l.x_min))
 
-        # Merge spans that sit on the same physical line (y within 6pt).
-        # 6pt catches lines where superscripts/different font sizes shift
-        # the reported y baseline by 1-5pt (common with small annotation fonts).
-        merged = []
-        for pl in all_lines:
-            if merged and abs(pl.y - merged[-1].y) <= 6:
-                merged[-1].spans.extend(pl.spans)
-                merged[-1].x_min = min(merged[-1].x_min, pl.x_min)
-                # Re-sort by x to maintain left-to-right reading order
-                merged[-1].spans.sort(key=lambda s: s.x)
-            else:
-                merged.append(PdfLine(y=pl.y, x_min=pl.x_min,
-                                      spans=sorted(pl.spans, key=lambda s: s.x)))
+            # Merge spans on the same physical line (y within 6pt).
+            merged: List[PdfLine] = []
+            for pl in all_lines:
+                if merged and abs(pl.y - merged[-1].y) <= 6:
+                    merged[-1].spans.extend(pl.spans)
+                    merged[-1].x_min = min(merged[-1].x_min, pl.x_min)
+                    merged[-1].spans.sort(key=lambda s: s.x)
+                else:
+                    merged.append(PdfLine(y=pl.y, x_min=pl.x_min,
+                                          spans=sorted(pl.spans, key=lambda s: s.x)))
 
-        _merge_two_column_amendment_markers(merged)
-        _merge_amendment_section_blocks(merged)  # Aggressive section-aware merger
-        _promote_isolated_provision_markers(merged)
-        _promote_section_number_headings(merged)
-        _pt5 = _time.perf_counter()
-        _acc_merge += _pt5 - _pt4
-        lines.extend(merged)
+            _merge_two_column_amendment_markers(merged)
+            _merge_amendment_section_blocks(merged)
+            _promote_isolated_provision_markers(merged)
+            _promote_section_number_headings(merged)
 
-        if progress_cb:
-            progress_cb(i + 1, total)
+            results.append((i, merged))
+
+            if progress_cb:
+                progress_cb(i + 1, total)
+
+        local_doc.close()
+        return results
+
+    # ── Determine worker count and split pages into chunks ────────────────────
+    # Use 1 worker per ~25 pages, capped at 4 to bound memory pressure.
+    # Sequential fallback for tiny documents (overhead not worth it).
+    if total <= 15:
+        n_workers = 1
+    elif total <= 60:
+        n_workers = 2
+    elif total <= 150:
+        n_workers = 3
+    else:
+        n_workers = 4
+
+    chunk_size = (total + n_workers - 1) // n_workers
+    page_chunks = [
+        list(range(i, min(i + chunk_size, total)))
+        for i in range(0, total, chunk_size)
+    ]
+
+    _t_pre = _time.perf_counter()
+
+    if n_workers > 1:
+        with _TPE(max_workers=n_workers) as pool:
+            chunk_results = list(pool.map(_extract_pages, page_chunks))
+    else:
+        chunk_results = [_extract_pages(page_chunks[0])]
 
     _t_loop = _time.perf_counter()
-    print(f"  [load_pdf] page loop: text={_acc_text:.2f}s  tables={_acc_tables:.2f}s  parse={_acc_parse:.2f}s  merge={_acc_merge:.2f}s  loop_total={_t_loop - _t_hf:.2f}s", flush=True)
+    print(
+        f"  [load_pdf] parallel extract ({n_workers} workers, {total} pages): "
+        f"{_t_loop - _t_pre:.2f}s",
+        flush=True,
+    )
 
-    # Cross-page attachment: run AFTER all pages concatenated so F-markers at
-    # page bottom can find body text at the top of the next page.
+    # Flatten and sort by page index to restore document order.
+    all_page_results: List[Tuple[int, List[PdfLine]]] = []
+    for chunk_result in chunk_results:
+        all_page_results.extend(chunk_result)
+    all_page_results.sort(key=lambda x: x[0])
+
+    lines: List[PdfLine] = []
+    for _, page_lines in all_page_results:
+        lines.extend(page_lines)
+
+    # ── Cross-page post-processing (must remain sequential) ───────────────────
+    # _attach_isolated_amendment_markers needs to see page-boundary neighbours.
     _attach_isolated_amendment_markers(lines)
     _sanitize_hybrid_ocr_lines(lines)
 
     _t_end = _time.perf_counter()
-    print(f"  [load_pdf] post-process: {_t_end - _t_loop:.2f}s  TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines)", flush=True)
+    print(
+        f"  [load_pdf] post-process: {_t_end - _t_loop:.2f}s  "
+        f"TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines)",
+        flush=True,
+    )
 
-    doc.close()
     return lines
 
 
