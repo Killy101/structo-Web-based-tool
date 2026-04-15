@@ -298,9 +298,21 @@ export default function BrdFlow({
     setShowExitConfirm(true);
   }
 
-  function handleDiscardAndExit() {
+  async function handleDiscardAndExit() {
     setIsSaving(true);
     setShowExitConfirm(false);
+    // For new (non-edit) uploads that were already persisted to the DB during
+    // the upload step, permanently delete the BRD so it doesn't appear on the
+    // dashboard after the user discards.
+    if (!isEditMode && uploadMeta?.brdId) {
+      try {
+        await api.delete(`/brd/${uploadMeta.brdId}`);
+        await api.delete(`/brd/${uploadMeta.brdId}/permanent`);
+      } catch (err) {
+        console.warn("[BrdFlow] Failed to delete discarded BRD:", err);
+      }
+    }
+    setIsSaving(false);
     onClose?.();
   }
 
