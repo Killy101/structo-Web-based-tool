@@ -189,6 +189,11 @@ export default function BrdFlow({
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError,   setViewError]   = useState<string | null>(null);
 
+  // Tracks the BRD id as soon as Upload creates it in the DB — before the user
+  // clicks "Continue".  Lets us discard the BRD on exit even when uploadMeta is
+  // still null (step-0 exit before clicking Continue).
+  const pendingUploadBrdId = useRef<string | null>(null);
+
   // ── FIX: per-section draft buffers ────────────────────────────────────────
   // These refs accumulate onDataChange updates WITHOUT triggering re-renders
   // or feeding back into initialData. They are flushed into uploadMeta only
@@ -346,8 +351,12 @@ export default function BrdFlow({
 
   function requestClose() {
     const pending = getPendingUploadMeta();
-    const isBlankUpload = !isEditMode && step === 0 && !pending;
-    if (isGenerateStep || isBlankUpload || !hasPendingChanges()) {
+    // If the user processed a file on step 0 but hasn't clicked Continue yet,
+    // a BRD already exists in the DB — treat it as "has changes" so the
+    // confirmation modal is shown and handleDiscardAndExit can delete it.
+    const hasPendingUpload = !isEditMode && step === 0 && pendingUploadBrdId.current !== null;
+    const isBlankUpload = !isEditMode && step === 0 && !pending && !hasPendingUpload;
+    if (isGenerateStep || isBlankUpload || (!hasPendingUpload && !hasPendingChanges())) {
       onClose?.();
       return;
     }
@@ -357,17 +366,20 @@ export default function BrdFlow({
   async function handleDiscardAndExit() {
     setIsSaving(true);
     setShowExitConfirm(false);
-    // For new (non-edit) uploads that were already persisted to the DB during
-    // the upload step, permanently delete the BRD so it doesn't appear on the
-    // dashboard after the user discards.
-    if (!isEditMode && uploadMeta?.brdId) {
+    // For new (non-edit) uploads, hard-delete the BRD so it never appears on
+    // the dashboard.  The /discard endpoint works for any authenticated user
+    // who is the creator of a DRAFT BRD — no admin role required.
+    // pendingUploadBrdId covers the step-0 case where uploadMeta is still null
+    // (file processed but "Continue" not yet clicked).
+    const brdId = uploadMeta?.brdId ?? pendingUploadBrdId.current;
+    if (!isEditMode && brdId) {
       try {
-        await api.delete(`/brd/${uploadMeta.brdId}`);
-        await api.delete(`/brd/${uploadMeta.brdId}/permanent`);
+        await api.delete(`/brd/${brdId}/discard`);
       } catch (err) {
-        console.warn("[BrdFlow] Failed to delete discarded BRD:", err);
+        console.warn("[BrdFlow] Failed to discard BRD:", err);
       }
     }
+    pendingUploadBrdId.current = null;
     setIsSaving(false);
     onClose?.();
   }
@@ -400,7 +412,10 @@ function renderStepContent() {
     case 0:
       return (
         <Upload
+          onBrdCreated={(id) => { pendingUploadBrdId.current = id; }}
           onComplete={(data) => {
+            // BRD is now tracked in uploadMeta — clear the early ref
+            pendingUploadBrdId.current = null;
             setUploadMeta(data as UploadFlowData);
             next();
           }}

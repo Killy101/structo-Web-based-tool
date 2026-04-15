@@ -421,6 +421,47 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
   }
 })
 
+// ── DELETE /brd/:brdId/discard — creator-only hard-delete for DRAFT uploads ──
+// Called by the frontend "Discard & Exit" action.  Any authenticated user may
+// discard their OWN DRAFT BRD without needing admin/delete permissions.
+// Preconditions:
+//   • BRD exists and is not already soft-deleted
+//   • BRD status is DRAFT (never saved / confirmed by the user)
+//   • Requesting user is the creator  OR  has canDelete permission (admins)
+router.delete('/:brdId/discard', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const brdId   = String(req.params.brdId)
+    const userId  = req.user?.userId
+    const policy  = getBrdAccessPolicy(res)
+
+    const { rows } = await pool.query(
+      `SELECT brd_id, status, deleted_at, created_by_id FROM brds WHERE brd_id = $1`,
+      [brdId],
+    )
+    if (!rows[0] || rows[0].deleted_at !== null) {
+      return res.status(404).json({ error: 'BRD not found' })
+    }
+
+    const isOwner  = String(rows[0].created_by_id) === String(userId)
+    const isDraft  = rows[0].status === 'DRAFT'
+    const canForce = policy.canDelete  // admins can discard any BRD
+
+    if (!isDraft && !canForce) {
+      return res.status(400).json({ error: 'Only DRAFT BRDs can be discarded' })
+    }
+    if (!isOwner && !canForce) {
+      return res.status(403).json({ error: 'You can only discard your own BRDs' })
+    }
+
+    // Hard-delete — cascades to brd_sections, brd_cell_images, brd_versions
+    await pool.query(`DELETE FROM brds WHERE brd_id = $1`, [brdId])
+    return res.json({ success: true })
+  } catch (err) {
+    console.log('[DELETE /brd/:brdId/discard]', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
 router.delete('/:brdId', requireBrdDelete, async (req: Request, res: Response) => {
   try {
