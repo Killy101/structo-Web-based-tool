@@ -81,7 +81,10 @@ function getMetaString(meta: Record<string, unknown> | null, keys: string[]): st
   return ''
 }
 
-function derivedFormat(format: string, meta: Record<string, unknown> | null): 'old' | 'new' {
+export function derivedFormat(format: string, meta: Record<string, unknown> | null): 'old' | 'new' {
+  const normalizedFormat = String(format ?? '').toLowerCase()
+  if (normalizedFormat === 'old' || normalizedFormat === 'new') return normalizedFormat as 'old' | 'new'
+
   const storedFmt = String(meta?._format ?? '').toLowerCase()
   const sourceName = getMetaString(meta, ['source_name', 'sourceName', 'Source Name'])
   const sourceType = getMetaString(meta, ['source_type', 'sourceType', 'Source Type'])
@@ -92,10 +95,43 @@ function derivedFormat(format: string, meta: Record<string, unknown> | null): 'o
     'Content Category',
   ])
 
+  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
   if (contentCategory) return 'new'
   if (sourceName && sourceType) return 'old'
-  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
-  return format === 'OLD' ? 'old' : 'new'
+  return 'new'
+}
+
+const PROCESS_TYPE_OPTIONS = new Set([
+  'New source - Initial',
+  'Updating - Initial',
+  'New source - Evergreen',
+  'Updating - Evergreen',
+])
+
+export function resolveProcessType(format: 'old' | 'new', scope: Record<string, unknown> | null): string {
+  const explicitType = getMetaString(scope, [
+    'process_type',
+    'processType',
+    'process_type_override',
+    'processTypeOverride',
+    'brd_process_type',
+    'brdProcessType',
+  ])
+  const normalizedExplicit = [...PROCESS_TYPE_OPTIONS].find(
+    (option) => option.toLowerCase() === explicitType.toLowerCase(),
+  )
+  if (normalizedExplicit) return normalizedExplicit
+
+  const inScope = Array.isArray(scope?.in_scope) ? scope.in_scope : []
+  const outOfScope = Array.isArray(scope?.out_of_scope) ? scope.out_of_scope : []
+  const allRows = [...inScope, ...outOfScope] as Array<Record<string, unknown>>
+  const cadenceValues = allRows
+    .map((row) => String(row.initial_evergreen ?? row.initialEvergreen ?? '').trim())
+    .filter(Boolean)
+
+  const cadence = cadenceValues.some((value) => /\bevergreen\b/i.test(value)) ? 'Evergreen' : 'Initial'
+  const sourceType = format === 'old' ? 'Updating' : 'New source'
+  return `${sourceType} - ${cadence}`
 }
 
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
@@ -112,7 +148,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
     const { rows } = await pool.query(
       `SELECT b.brd_id as "brdId", b.title, b.format, b.status,
               b.updated_at as "updatedAt",
-              s.metadata,
+              s.metadata, s.scope,
               v.version_num as "latestVersionNum", v.label as "latestVersionLabel"
        FROM brds b
        LEFT JOIN brd_sections s ON s.brd_id = b.brd_id
@@ -129,6 +165,11 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
       const meta = (b.metadata ?? null) as Record<string, unknown> | null
       const geography = (meta?.geography as string) || (meta?.Geography as string) || resolveGeography(meta)
       const fmt = derivedFormat(b.format, meta)
+      const processTypeContext = {
+        ...((b.scope ?? {}) as Record<string, unknown>),
+        ...((meta ?? {}) as Record<string, unknown>),
+      }
+      const processType = resolveProcessType(fmt, processTypeContext)
       const displayName = b.title.charAt(0).toUpperCase() + b.title.slice(1)
       const latestVersion =
         (typeof b.latestVersionLabel === 'string' && b.latestVersionLabel.trim())
@@ -139,6 +180,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
         title:       displayName,
         format:      fmt,
         status:      b.status,
+        processType,
         version:     latestVersion,
         lastUpdated: new Date(b.updatedAt).toISOString().split('T')[0],
         geography,
@@ -369,13 +411,16 @@ router.post('/:brdId/query', authenticate, async (req: AuthRequest, res: Respons
 router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
   try {
     const accessPolicy = getBrdAccessPolicy(res)
-    const { status, title, format } = req.body
+    const { status, title, format, processType } = req.body
     const normalizedStatus = status ? normalizeBrdStatus(status) : undefined
+    const normalizedProcessType = typeof processType === 'string'
+      ? [...PROCESS_TYPE_OPTIONS].find((option) => option.toLowerCase() === processType.trim().toLowerCase())
+      : undefined
 
     if (normalizedStatus && !accessPolicy.canChangeStatus) {
       return res.status(403).json({ error: 'Only Pre-Production team can change BRD status.' })
     }
-    if ((title !== undefined || format !== undefined) && !accessPolicy.canEdit) {
+    if ((title !== undefined || format !== undefined || processType !== undefined) && !accessPolicy.canEdit) {
       return res.status(403).json({ error: 'Only Pre-Production team can edit BRDs.' })
     }
 
@@ -400,6 +445,9 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
     if (dbFormat && dbFormat !== 'NEW' && dbFormat !== 'OLD') {
       return res.status(400).json({ error: `Invalid format: "${format}". Must be new or old.` })
     }
+    if (processType !== undefined && !normalizedProcessType) {
+      return res.status(400).json({ error: `Invalid process type: "${processType}".` })
+    }
 
     const sets: string[] = ['updated_at = NOW()']
     const params: unknown[] = []
@@ -410,12 +458,24 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
     if (dbFormat)          { sets.push(`format = $${idx++}`); params.push(dbFormat) }
 
     params.push(String(req.params.brdId))
+    const brdId = String(req.params.brdId)
     await pool.query(
       `UPDATE brds SET ${sets.join(', ')} WHERE brd_id = $${idx}`,
       params,
     )
 
-    return res.json({ success: true, brdId: String(req.params.brdId) })
+    if (normalizedProcessType) {
+      await pool.query(
+        `INSERT INTO brd_sections (brd_id, metadata)
+         VALUES ($1, $2::jsonb)
+         ON CONFLICT (brd_id) DO UPDATE
+           SET metadata = COALESCE(brd_sections.metadata, '{}'::jsonb) || $2::jsonb,
+               updated_at = NOW()`,
+        [brdId, JSON.stringify({ process_type: normalizedProcessType })],
+      )
+    }
+
+    return res.json({ success: true, brdId })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
   }

@@ -1,51 +1,57 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// api.ts — HTTP client for the FastAPI compare service
+// ─────────────────────────────────────────────────────────────────────────────
+
 import type { ApplyResult, Chunk, DiffResult, LocateResult, XmlSection } from "./types";
 
-// Base URL — points to the FastAPI processing service
 const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
   ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
   : "http://localhost:8000/compare";
 
-// ── Progress types for streaming diff ─────────────────────────────────────────
+// ── Progress reporting ────────────────────────────────────────────────────────
 
 export interface DiffProgress {
-  /** "old" | "new" | "diff" | "render" */
-  stage: string;
-  /** Current page (for old/new) */
-  page?: number;
-  /** Total pages (for old/new) */
+  stage:       "old" | "new" | "diff" | "render";
+  page?:       number;
   totalPages?: number;
-  /** Number of chunks found (for render) */
-  chunks?: number;
-  /** 0-100 */
-  pct: number;
-  /** Human-readable message */
-  message: string;
+  chunks?:     number;
+  pct:         number;   // 0–100
+  message:     string;
 }
 
-// ── Streaming diff with real-time progress ────────────────────────────────────
+// ── Streaming diff ────────────────────────────────────────────────────────────
 
+/**
+ * Run a diff between two PDFs, optionally with an XML baseline.
+ *
+ * The XML file is used in BOTH workflows:
+ *  wf2 — XML feeds the 8-gram anchor filter (hidden from user, loads into Panel D read-only)
+ *  wf3 — Same, plus Panel D is editable and the user can apply changes back to it
+ *
+ * Reports real-time progress via onProgress callback.
+ */
 export async function apiDiff(
-  fileA: File,
-  fileB: File,
+  oldFile:  File,
+  newFile:  File,
   onProgress?: (p: DiffProgress) => void,
-  xmlFileA?: File | null,
-  xmlFileB?: File | null,
+  xmlFile?: File | null,
 ): Promise<DiffResult> {
   const form = new FormData();
-  form.append("old_file", fileA);
-  form.append("new_file", fileB);
-  if (xmlFileA) form.append("xml_file_a", xmlFileA);
-  if (xmlFileB) form.append("xml_file_b", xmlFileB);
+  form.append("old_file", oldFile);
+  form.append("new_file", newFile);
+  if (xmlFile) form.append("xml_file_a", xmlFile);
 
   const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    const msg = typeof err.detail === "object" ? err.detail.error : (err.detail ?? "Diff failed");
+    const msg = typeof err.detail === "object"
+      ? err.detail.error
+      : (err.detail ?? "Diff failed");
     throw new Error(msg);
   }
 
-  const reader = res.body!.getReader();
+  const reader  = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let result: DiffResult | null = null;
@@ -56,74 +62,15 @@ export async function apiDiff(
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
-    buffer = lines.pop()!; // keep incomplete last line in buffer
+    buffer = lines.pop()!;
 
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        if (msg.t === "p" && onProgress) {
-          if (msg.s === "old") {
-            // Interpolate within 10–40% based on pages processed.
-            // p=0 → 10%, p=n → 40%. Clamp to avoid going backwards.
-            const n = msg.n || 1;
-            const pct = Math.min(40, Math.round(10 + (msg.p / n) * 30));
-            onProgress({
-              stage: "old",
-              page: msg.p,
-              totalPages: n,
-              pct,
-              message: msg.p === 0
-                ? `Extracting old PDF… (${n} pages)`
-                : msg.p >= n
-                  ? "Old PDF extracted"
-                  : `Extracting old PDF… page ${msg.p}/${n}`,
-            });
-          } else if (msg.s === "new") {
-            // Interpolate within 40–55% based on pages processed.
-            const n = msg.n || 1;
-            const pct = Math.min(55, Math.round(40 + (msg.p / n) * 15));
-            onProgress({
-              stage: "new",
-              page: msg.p,
-              totalPages: n,
-              pct,
-              message: msg.p >= n
-                ? "Both PDFs extracted — starting diff…"
-                : `Extracting new PDF… page ${msg.p}/${n}`,
-            });
-          } else if (msg.s === "diff") {
-            const sub = msg.sub as string | undefined;
-            const sp = typeof msg.sp === "number" ? msg.sp : 0;
-            const subLabels: Record<string, string> = {
-              segmenting: "Segmenting blocks…",
-              aligning: "Aligning document structure…",
-              matching: "Matching blocks across documents…",
-              refining: "Refining change detection…",
-              "xml-validate": "Cross-validating with XML…",
-              context: "Building context for changes…",
-            };
-            const label = sub ? (subLabels[sub] || `Diff: ${sub}…`) : "Computing anchor-keyed diff…";
-            // Map sub-pct (0-100 within diff) to overall 65-90 range
-            const overallPct = sub ? Math.round(65 + sp * 0.25) : 65;
-            onProgress({
-              stage: "diff",
-              pct: overallPct,
-              message: label,
-            });
-          } else if (msg.s === "render") {
-            onProgress({
-              stage: "render",
-              chunks: msg.chunks,
-              pct: 92,
-              message: `Rendering ${msg.chunks} changes…`,
-            });
-          }
-        } else if (msg.t === "r") {
-          result = msg.d;
-        } else if (msg.t === "e") {
-          throw new Error(msg.msg || "Diff failed");
-        }
+        if      (msg.t === "p" && onProgress) onProgress(_parseProgress(msg));
+        else if (msg.t === "r")               result = msg.d as DiffResult;
+        else if (msg.t === "e")               throw new Error(msg.msg || "Diff failed");
       } catch (e) {
         if (e instanceof SyntaxError) continue;
         throw e;
@@ -131,11 +78,10 @@ export async function apiDiff(
     }
   }
 
-  // Handle any remaining buffer
   if (buffer.trim()) {
     try {
       const msg = JSON.parse(buffer);
-      if (msg.t === "r") result = msg.d;
+      if (msg.t === "r") result = msg.d as DiffResult;
       if (msg.t === "e") throw new Error(msg.msg || "Diff failed");
     } catch { /* ignore parse error on trailing data */ }
   }
@@ -144,10 +90,66 @@ export async function apiDiff(
   return result;
 }
 
-export async function apiApply(
-  xmlText: string,
-  chunk: Chunk
-): Promise<ApplyResult> {
+function _parseProgress(msg: Record<string, unknown>): DiffProgress {
+  const s = msg.s as string;
+
+  if (s === "old") {
+    const n   = (msg.n as number) || 1;
+    const p   = (msg.p as number) || 0;
+    const pct = Math.min(40, Math.round(10 + (p / n) * 30));
+    return {
+      stage: "old", page: p, totalPages: n, pct,
+      message: p === 0
+        ? `Extracting old PDF… (${n} pages)`
+        : p >= n ? "Old PDF extracted"
+        : `Extracting old PDF… page ${p}/${n}`,
+    };
+  }
+
+  if (s === "new") {
+    const n   = (msg.n as number) || 1;
+    const p   = (msg.p as number) || 0;
+    const pct = Math.min(55, Math.round(40 + (p / n) * 15));
+    return {
+      stage: "new", page: p, totalPages: n, pct,
+      message: p >= n
+        ? "Both PDFs extracted — starting diff…"
+        : `Extracting new PDF… page ${p}/${n}`,
+    };
+  }
+
+  if (s === "diff") {
+    const sub = msg.sub as string | undefined;
+    const sp  = typeof msg.sp === "number" ? msg.sp : 0;
+    const SUB_LABELS: Record<string, string> = {
+      segmenting:     "Segmenting blocks…",
+      aligning:       "Aligning document structure…",
+      matching:       "Matching blocks across documents…",
+      refining:       "Refining change detection…",
+      "xml-validate": "Cross-validating with XML…",
+      context:        "Building context for changes…",
+    };
+    return {
+      stage:   "diff",
+      pct:     sub ? Math.round(65 + sp * 0.25) : 65,
+      message: sub ? (SUB_LABELS[sub] ?? `Diff: ${sub}…`) : "Computing anchor-keyed diff…",
+    };
+  }
+
+  if (s === "render") {
+    return { stage: "render", chunks: msg.chunks as number, pct: 92, message: `Rendering ${msg.chunks} changes…` };
+  }
+
+  return { stage: "diff", pct: 50, message: "Processing…" };
+}
+
+// ── XML operations ────────────────────────────────────────────────────────────
+
+/**
+ * Apply one chunk change into the XML text.
+ * Called in wf3 only — never in wf2.
+ */
+export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
   const res = await fetch(`${BASE}/xml/apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -157,13 +159,14 @@ export async function apiApply(
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Apply failed");
   }
-  return res.json();
+  return res.json() as Promise<ApplyResult>;
 }
 
-export async function apiLocate(
-  xmlText: string,
-  chunk: Chunk
-): Promise<LocateResult | null> {
+/**
+ * Locate where a chunk appears in the XML (read-only highlight).
+ * Called in BOTH wf2 (XML navigation) and wf3 (before apply).
+ */
+export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateResult | null> {
   try {
     const res = await fetch(`${BASE}/xml/locate`, {
       method: "POST",
@@ -171,70 +174,49 @@ export async function apiLocate(
       body: JSON.stringify({ xml_text: xmlText, chunk }),
     });
     if (!res.ok) return null;
-    return res.json();
+    return res.json() as Promise<LocateResult>;
   } catch {
     return null;
   }
 }
 
-export async function apiParseSections(
-  xmlText: string,
-): Promise<XmlSection[]> {
-  try {
-    const res = await fetch(`${BASE}/xml/sections`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ xml_text: xmlText }),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.sections ?? [];
-  } catch {
-    return [];
-  }
-}
+// ── XML section parsing ───────────────────────────────────────────────────────
 
 /**
  * Fast client-side XML section parser using DOMParser.
- * Extracts innodLevel tags with their headings — instant on even large files.
+ * Extracts innodLevel tags with their headings — instant even on large files.
+ * No network round-trip. Works for all tested documents (ES, FR, KO, EN).
  */
 export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
   if (!xmlText) return [];
   try {
     const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlText, "text/xml");
+    const doc    = parser.parseFromString(xmlText, "text/xml");
     const levels = doc.querySelectorAll("innodLevel");
     const sections: XmlSection[] = [];
-
-    // Label lookup map for fast parent-finding
     const labelToIdx = new Map<string, number>();
-
-    // Collect all innodLevel headings first
     let minLevel = 99;
+
     levels.forEach((el) => {
-      const lvl = parseInt(el.getAttribute("level") ?? "99", 10);
-
-      // Find heading → title within this innodLevel (direct children first)
+      const lvl     = parseInt(el.getAttribute("level") ?? "99", 10);
       const heading = el.querySelector("innodHeading > title") ?? el.querySelector("innodHeading title");
-      let label = (heading?.textContent ?? "").trim();
+      let label     = (heading?.textContent ?? "").trim();
 
-      // Fallback: use last-path attribute when no heading title exists
-      if (!label || label.length < 2) {
+      if (!label || label.length < 2)
         label = (el.getAttribute("last-path") ?? "").trim();
-      }
       if (!label || label.length < 2) return;
 
       if (lvl < minLevel) minLevel = lvl;
 
-      // Find parent: walk up DOM to find enclosing innodLevel
-      let parentId = -1;
-      let parentEl = el.parentElement;
+      let parentId  = -1;
+      let parentEl  = el.parentElement;
       while (parentEl) {
         if (parentEl.tagName === "innodLevel") {
-          const pH = parentEl.querySelector("innodHeading > title") ?? parentEl.querySelector("innodHeading title");
-          let pLabel = (pH?.textContent ?? "").trim();
-          if (!pLabel || pLabel.length < 2) pLabel = (parentEl.getAttribute("last-path") ?? "").trim();
-          const pIdx = labelToIdx.get(pLabel);
+          const pH    = parentEl.querySelector("innodHeading > title") ?? parentEl.querySelector("innodHeading title");
+          let pLabel  = (pH?.textContent ?? "").trim();
+          if (!pLabel || pLabel.length < 2)
+            pLabel = (parentEl.getAttribute("last-path") ?? "").trim();
+          const pIdx  = labelToIdx.get(pLabel);
           if (pIdx !== undefined) { parentId = pIdx; break; }
         }
         parentEl = parentEl.parentElement;
@@ -245,35 +227,26 @@ export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
       labelToIdx.set(label, idx);
     });
 
-    // When all sections share the same numeric level value, derive synthetic
-    // levels from the structural prefix of each label (e.g. "art.", "titre")
-    // so the chip picker shows meaningful groupings.
-    const distinctLvls = new Set(sections.map(s => s.level));
+    // When all sections share the same numeric level, derive synthetic levels
+    // from the label prefix so the chip picker shows meaningful groupings.
+    const distinctLvls = new Set(sections.map((s) => s.level));
     if (distinctLvls.size === 1 && sections.length > 1) {
       const prefixOrder = new Map<string, number>();
-      let nextSynthLevel = minLevel;
+      let nextSynth     = minLevel;
       for (const s of sections) {
         const pfx = s.label.match(/^([a-zà-ÿÀ-ÿ\u0100-\u024F]+\.?)/i)?.[1]?.toLowerCase() ?? "";
-        if (pfx && pfx.length >= 2 && !prefixOrder.has(pfx)) {
-          prefixOrder.set(pfx, nextSynthLevel++);
-        }
-        if (pfx && prefixOrder.has(pfx)) {
+        if (pfx && pfx.length >= 2 && !prefixOrder.has(pfx))
+          prefixOrder.set(pfx, nextSynth++);
+        if (pfx && prefixOrder.has(pfx))
           s.level = prefixOrder.get(pfx)!;
-        }
       }
-      if (prefixOrder.size > 0) {
-        minLevel = Math.min(...sections.map(s => s.level));
-      }
+      if (prefixOrder.size > 0)
+        minLevel = Math.min(...sections.map((s) => s.level));
     }
 
-    // Prepend a "Preamble" entry for pages before the first structural section
-    // Use the same level as the shallowest sections so it appears in every level filter
+    // Prepend a Preamble entry for content before the first structural section
     if (sections.length > 0) {
-      // Shift all existing ids by 1
-      for (const s of sections) {
-        s.id += 1;
-        if (s.parent_id >= 0) s.parent_id += 1;
-      }
+      for (const s of sections) { s.id += 1; if (s.parent_id >= 0) s.parent_id += 1; }
       sections.unshift({ id: 0, label: "Preamble", level: minLevel, parent_id: -1 });
     }
 

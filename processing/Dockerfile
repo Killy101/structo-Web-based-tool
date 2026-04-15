@@ -1,11 +1,12 @@
 # ── Stage 1: Development (hot reload via volume mount) ────────────────────────
-FROM python:3.11-slim AS development
+ARG PYTHON_IMAGE=python:3.11.12-slim-bookworm
+FROM ${PYTHON_IMAGE} AS development
 
 WORKDIR /app
 
 # System deps for PDF/image processing libraries (PyMuPDF, lxml, etc.)
 # libreoffice provides the `soffice` binary used to convert .doc → .docx
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
     libreoffice \
@@ -16,16 +17,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 # Source code is bind-mounted at runtime; --reload watches for file changes.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 
 # ── Stage 2: Production ────────────────────────────────────────────────────────
-FROM python:3.11-slim AS production
+FROM ${PYTHON_IMAGE} AS production
 
 WORKDIR /app
 
 # libreoffice provides the `soffice` binary used to convert .doc → .docx
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
     libreoffice \
@@ -38,4 +39,4 @@ COPY . .
 
 EXPOSE 8000
 # Use multiple workers in production for concurrency
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

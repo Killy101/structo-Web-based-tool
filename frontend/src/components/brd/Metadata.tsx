@@ -18,6 +18,7 @@ interface Props {
   title?: string;
   onComplete?: () => void;
   initialData?: Record<string, unknown>;
+  scopeData?: Record<string, unknown>;
   onDataChange?: (data: Record<string, unknown>) => void;
 }
 
@@ -98,6 +99,15 @@ const NEW_FIELDS: FieldConfig[] = [
   { key: "language",                label: "Language",                   type: "text", placeholder: "e.g., English, Chinese",                 icon: "≡" },
   { key: "status",                  label: "Status",                     type: "text", placeholder: "Status",                                 icon: "◈" },
 ];
+
+function normalizeLookupKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
 
 function FieldInput({
   field,
@@ -210,6 +220,7 @@ function buildOutgoingMetadata(
     payload_type:              values.payloadType ?? "",
     payload_subtype:           values.payloadSubtype ?? "",
     summary:                   values.summary ?? "",
+    process_type:              values.processType ?? "",
     sme_comments:              smeComments,
     geography:                 values.geography ?? "",
     language:                  values.language ?? "",
@@ -235,6 +246,7 @@ function buildOutgoingMetadata(
     payload_type:              values.payloadType ?? "",
     payload_subtype:           values.payloadSubtype ?? "",
     summary:                   values.summary ?? "",
+    process_type:              values.processType ?? "",
     sme_comments:              smeComments,
     geography:                 values.geography ?? "",
     language:                  values.language ?? "",
@@ -248,6 +260,14 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     () => (format === "old" ? OLD_FIELDS : NEW_FIELDS).filter((field) => field.key !== "smeComments"),
     [format]
   );
+  const metadataImageKeys = useMemo(() => {
+    const keys = new Set<string>();
+    fields.forEach((field) => {
+      keys.add(normalizeLookupKey(field.label));
+      keys.add(normalizeLookupKey(field.key));
+    });
+    return keys;
+  }, [fields]);
   const [values, setValues]               = useState<Record<string, string>>({});
   const [commentValues, setCommentValues] = useState<Record<string, string>>({});
   const [customRows, setCustomRows]       = useState<CustomMetadataRow[]>([]);
@@ -304,22 +324,26 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     if (!brdId) return;
     const fetchImages = async () => {
       try {
-        const response = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images?section=metadata`, { timeout: 30000 });
-        let all: CellImageMeta[] = response.data.images ?? [];
-        if (all.length === 0) {
-          const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
-          all = fallback.data.images ?? [];
-        }
-        // section="metadata" for new records; tableIndex=5 fallback for stale DB records
-        setImages(all.filter(img =>
-          img.section === "metadata" ||
-          img.section === "unknown" && img.tableIndex === 5 ||
-          !img.section && img.tableIndex === 5
-        ));
-        // Restore manually uploaded images keyed by fieldLabel (= field.key)
-        const manualImgs = all.filter(img => img.section === "metadata" && img.rid?.startsWith("manual-"));
+        const response = await api.get<{ images?: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
+        const all: CellImageMeta[] = Array.isArray(response?.data?.images) ? response.data.images : [];
+
+        const visibleImages = all.filter((img) => {
+          const section = normalizeLookupKey(img.section || "");
+          const fieldKey = normalizeLookupKey(img.fieldLabel || "");
+          const cellTextKey = normalizeLookupKey(img.cellText || "");
+
+          return section === "metadata"
+            || metadataImageKeys.has(fieldKey)
+            || metadataImageKeys.has(cellTextKey)
+            || ((!section || section === "unknown") && img.tableIndex === 5)
+            || (!!img.rid?.startsWith("manual-") && (section === "metadata" || metadataImageKeys.has(fieldKey)));
+        });
+
+        setImages(visibleImages);
+
+        const manualImgs = visibleImages.filter((img) => img.rid?.startsWith("manual-"));
         const restored: Record<string, UploadedCellImage[]> = {};
-        manualImgs.forEach(img => {
+        manualImgs.forEach((img) => {
           const key = img.fieldLabel ?? "";
           if (!key) return;
           if (!restored[key]) restored[key] = [];
@@ -331,18 +355,31 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       }
     };
     fetchImages();
-  }, [brdId]);
+  }, [brdId, metadataImageKeys]);
 
   // Returns images for a specific field row.
   // Primary: fieldLabel match (e.g. "Last Updated Date") — new DB records.
   // Fallback: rowIndex match (1-based, row 0 = header) — stale DB records.
   function getFieldImages(field: FieldConfig, fieldArrayIndex: number): CellImageMeta[] {
-    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-    const labelNorm = norm(field.label);
+    const labelNorm = normalizeLookupKey(field.label);
+    const keyNorm = normalizeLookupKey(field.key);
 
-    const byLabel = images.filter(img => {
-      const fl = norm(img.fieldLabel || "");
-      return fl && (fl === labelNorm || fl.includes(labelNorm) || labelNorm.includes(fl));
+    const byLabel = images.filter((img) => {
+      const section = normalizeLookupKey(img.section || "");
+      if (section && section !== "metadata" && section !== "unknown") return false;
+
+      const fieldLabelNorm = normalizeLookupKey(img.fieldLabel || "");
+      const cellTextNorm = normalizeLookupKey(img.cellText || "");
+      const candidates = [fieldLabelNorm, cellTextNorm].filter(Boolean);
+
+      return candidates.some((candidate) =>
+        candidate === labelNorm
+        || candidate === keyNorm
+        || candidate.includes(labelNorm)
+        || candidate.includes(keyNorm)
+        || labelNorm.includes(candidate)
+        || keyNorm.includes(candidate),
+      );
     });
     if (byLabel.length > 0) return byLabel;
 
@@ -526,12 +563,25 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                             <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/30">✓</span>
                           )}
                         </div>
-                        {fieldImgs.map(img => (
-                          <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                        ))}
-                        {getFieldImgsUploaded(field.key).map(img => (
-                          <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                        ))}
+                        {editableFieldImages.length > 0 && (
+                          <div className="rounded-lg border border-slate-200 dark:border-[#2a3147] bg-slate-50/70 dark:bg-[#161b2e] p-2.5">
+                            <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                              Attached image{editableFieldImages.length > 1 ? "s" : ""}
+                            </p>
+                            <div className="grid gap-2">
+                              {editableFieldImages.map((img) => (
+                                <BrdImage
+                                  key={`preview-${img.id}`}
+                                  src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
+                                  alt={img.cellText || img.mediaName}
+                                  className="max-h-56 w-auto max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]"
+                                  loading="lazy"
+                                  onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
@@ -661,6 +711,7 @@ function buildMetadataValues(
       geography:               p("geography", "Geography"),
       language:                p("language", "Language"),
       status:                  p("status", "Status"),
+      processType:             p("process_type", "processType", "process_type_override", "processTypeOverride", "brd_process_type", "brdProcessType"),
     };
   }
 
@@ -687,6 +738,5 @@ function buildMetadataValues(
     smeComments:             p("sme_comments", "smeComments", "SME Comments"),
     geography:               p("geography", "Geography"),
     language:                p("language", "Language"),
-    status:                  p("status", "Status"),
-  };
+    status:                  p("status", "Status"),    processType:               p("process_type", "processType", "process_type_override", "processTypeOverride", "brd_process_type", "brdProcessType"),  };
 }

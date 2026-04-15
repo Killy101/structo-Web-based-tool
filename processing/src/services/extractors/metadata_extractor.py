@@ -69,6 +69,37 @@ def _append_named_comment(target: list[str], label: str, comment: str) -> None:
         target.append(entry)
 
 
+def _split_contributors(value: str) -> list[str]:
+    text = (value or "").replace("\xa0", " ").strip()
+    if not text:
+        return []
+
+    newline_or_semicolon_parts = [
+        _clean(part) for part in re.split(r"(?:\r?\n)+|\s*;\s*", text) if _clean(part)
+    ]
+    if len(newline_or_semicolon_parts) > 1:
+        return newline_or_semicolon_parts
+
+    named_entries = [
+        _clean(match)
+        for match in re.findall(r"[^,;\n]+,\s*[^,(;\n]+(?:\s*\([^)]*\))?", text)
+        if _clean(match)
+    ]
+    if named_entries and len(named_entries) > 1:
+        return named_entries
+
+    paired_parts = [_clean(part) for part in re.split(r"\s*,\s*", text) if _clean(part)]
+    if len(paired_parts) >= 4 and len(paired_parts) % 2 == 0:
+        paired_names = [
+            _clean(f"{paired_parts[idx]}, {paired_parts[idx + 1]}")
+            for idx in range(0, len(paired_parts), 2)
+        ]
+        if len(paired_names) > 1:
+            return paired_names
+
+    return [_clean(text)]
+
+
 def _is_legacy_format(doc) -> bool:
     """
     Returns True when the document uses the legacy BRD metadata format.
@@ -230,8 +261,7 @@ def _extract_metadata_new(doc) -> dict:
                 if pattern in label:
                     matched = True
                     if field == "contributors":
-                        parts = re.split(r"[\n,]+", value)
-                        metadata["contributors"] = [p.strip() for p in parts if p.strip()]
+                        metadata["contributors"] = _split_contributors(value)
                     elif field == "content_uri":
                         url, note = extract_url_and_note_from_text(value)
                         metadata["content_uri"] = url or value
@@ -396,8 +426,7 @@ def extract_metadata_legacy(doc) -> dict:
             for pattern, field in sorted_key_map:
                 if pattern in label:
                     if field == "contributors":
-                        parts = re.split(r"[\n,]+", value)
-                        metadata["contributors"] = [p.strip() for p in parts if p.strip()]
+                        metadata["contributors"] = _split_contributors(value)
                     elif field == "content_uri":
                         url, note = extract_url_and_note_from_text(value)
                         metadata["content_uri"] = url or value

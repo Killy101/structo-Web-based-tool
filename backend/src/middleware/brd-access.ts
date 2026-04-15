@@ -1,6 +1,7 @@
 import { NextFunction, Response } from 'express'
 import pool from '../lib/db'
 import { AuthRequest } from './authenticate'
+import { isSuperAdminRole, normalizeRole } from './authorize'
 
 export type BrdStatus = 'DRAFT' | 'PAUSED' | 'COMPLETED' | 'APPROVED' | 'ON_HOLD'
 
@@ -28,10 +29,10 @@ function isPreProductionTeam(teamSlug: string | null): boolean {
 }
 
 function buildPolicy(params: { userId: number; role: string; teamSlug: string | null }): BrdAccessPolicy {
-  const role = params.role
+  const role = normalizeRole(params.role)
   const preProduction = isPreProductionTeam(params.teamSlug)
 
-  if (role === 'SUPER_ADMIN') {
+  if (isSuperAdminRole(role)) {
     return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: true, canEdit: true, canChangeStatus: true, canDelete: true, canUseTrash: true, visibleStatuses: null }
   }
 

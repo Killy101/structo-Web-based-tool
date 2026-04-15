@@ -32,6 +32,10 @@ async function ensureReadableBrd(req: AuthRequest, res: Response): Promise<boole
     res.status(403).json({ error: 'You can only view BRDs with APPROVED or ON_HOLD status.' })
     return false
   }
+  if (!accessPolicy.canEdit) {
+    res.status(403).json({ error: 'Only Super Admin and Pre-Production Admin can access version history.' })
+    return false
+  }
   return true
 }
 

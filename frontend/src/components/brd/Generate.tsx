@@ -1,9 +1,10 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
 import api from "@/app/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
-import { sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
+import { brdRichTextToPlain, sanitizeBrdRichTextHtml, stripLeadingBrdLabel } from "@/utils/brdRichText";
 import {
   normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
   parseBrdMetadataComments as parseMetadataComments,
@@ -115,6 +116,14 @@ interface TocRow {
   // Original values captured on first user edit — shown alongside current in the view
   _prevName?: string; _prevDefinition?: string; _prevExample?: string;
   _prevNote?: string; _prevTocRequirements?: string; _prevSmeComments?: string;
+}
+interface CitationStyleGuideRow {
+  label: string;
+  value: string;
+}
+interface CitationStyleGuideData {
+  description: string;
+  rows: CitationStyleGuideRow[];
 }
 interface CustomMetadataRow { id: string; label: string; value: string; comment: string; }
 interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; remarksNotes: string; }
@@ -243,37 +252,21 @@ function renderTextWithLinks(value: string): React.ReactNode {
   const trimmed = value.trim();
   if (!trimmed) return <Nil />;
 
-  const urlPattern = /(https?:\/\/[^\s<]+)/g;
   return (
-    <div className="space-y-1">
-      {trimmed.split(/\n+/).filter(Boolean).map((line, lineIndex) => (
-        <p key={`${lineIndex}-${line}`} className="whitespace-pre-wrap break-words">
-          {line.split(urlPattern).map((part, partIndex) => {
-            if (!part) return null;
-            if (/^https?:\/\//i.test(part)) {
-              return (
-                <a
-                  key={`${lineIndex}-${partIndex}`}
-                  href={part}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-600 dark:text-blue-400 hover:underline break-all"
-                  title={part}
-                >
-                  {part}
-                </a>
-              );
-            }
-            return <React.Fragment key={`${lineIndex}-${partIndex}`}>{part}</React.Fragment>;
-          })}
-        </p>
-      ))}
-    </div>
+    <span
+      className="whitespace-pre-wrap break-words"
+      dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(trimmed) }}
+    />
   );
 }
 
 function normalizeMetadataImageLookupKey(value: string): string {
-  return value.toLowerCase().replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+  return value
+    .toLowerCase()
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 export function getMetadataRowImagesForField(
@@ -285,8 +278,18 @@ export function getMetadataRowImagesForField(
   const fieldKey = normalizeMetadataImageLookupKey(field.key);
 
   const byLabel = images.filter((img) => {
-    const imageKey = normalizeMetadataImageLookupKey(img.fieldLabel || "");
-    return !!imageKey && (imageKey === labelKey || imageKey === fieldKey);
+    const fieldLabelKey = normalizeMetadataImageLookupKey(img.fieldLabel || "");
+    const cellTextKey = normalizeMetadataImageLookupKey(img.cellText || "");
+    const candidates = [fieldLabelKey, cellTextKey].filter(Boolean);
+
+    return candidates.some((candidate) =>
+      candidate === labelKey
+      || candidate === fieldKey
+      || candidate.includes(labelKey)
+      || candidate.includes(fieldKey)
+      || labelKey.includes(candidate)
+      || fieldKey.includes(candidate),
+    );
   });
   if (byLabel.length > 0) return byLabel;
 
@@ -492,6 +495,28 @@ function buildTocRows(d?: Record<string, unknown>): TocRow[] {
     .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
 }
 
+function hasMeaningfulRichText(value: string): boolean {
+  return brdRichTextToPlain(value).trim().length > 0;
+}
+
+function normalizeMeaningfulRichText(value: unknown): string {
+  const raw = asString(value).trim();
+  return raw && hasMeaningfulRichText(raw) ? raw : "";
+}
+
+function parseCitationStyleGuide(tocData?: Record<string, unknown>): CitationStyleGuideData | null {
+  const raw = asRecord(tocData?.citationStyleGuide);
+  if (!raw) return null;
+
+  const description = stripLeadingBrdLabel(normalizeMeaningfulRichText(raw.description), "SME Checkpoint");
+  const rows = asRecordArray(raw.rows)
+    .map((row) => ({ label: asString(row.label).trim(), value: normalizeMeaningfulRichText(row.value) }))
+    .filter((row) => row.value || (row.label && hasMeaningfulRichText(row.label)));
+
+  if (!description && rows.length === 0) return null;
+  return { description, rows };
+}
+
 function extractExample(desc: string): string { const m = desc.match(/^Example:\s*(.+)$/m); return m ? m[1].trim() : ""; }
 function extractDefinition(desc: string): string { const m = desc.match(/^Definition:\s*(.+)$/m); return m ? m[1].trim() : ""; }
 function isPlaceholderLevelToken(v: string): boolean { return /^level\s*\d+$/.test(v.trim().replace(/^\/+/, "").replace(/[_\-]+/g, " ").toLowerCase()); }
@@ -545,19 +570,21 @@ const MONO  = { fontFamily: "'DM Mono', monospace" } as const;
 const SERIF = { fontFamily: "'Georgia', 'Times New Roman', serif" } as const;
 
 const SECTION_META = [
-  { num: "I",   label: "Scope",                     step: 1, color: "#1e40af" },
-  { num: "II",  label: "Metadata",                  step: 2, color: "#5b21b6" },
-  { num: "III", label: "Document Structure Levels", step: 3, color: "#312e81" },
-  { num: "IV",  label: "Citation Rules",            step: 4, color: "#92400e" },
-  { num: "V",   label: "Content Profiling",         step: 5, color: "#065f46" },
+  { num: "I",   label: "Citation Guide Link",       step: 1, color: "#0f766e" },
+  { num: "II",  label: "Scope",                     step: 2, color: "#1e40af" },
+  { num: "III", label: "Metadata",                  step: 3, color: "#5b21b6" },
+  { num: "IV",  label: "TOC with Document Structure", step: 4, color: "#312e81" },
+  { num: "V",   label: "Citation Rules",            step: 5, color: "#92400e" },
+  { num: "VI",  label: "Content Profiling",         step: 6, color: "#065f46" },
 ];
 
 const NAV_ITEMS = [
-  { id: "section-scope",           label: "Scope",                     icon: "I",   step: 1,    color: "blue"    },
-  { id: "section-metadata",        label: "Metadata",                  icon: "II",  step: 2,    color: "violet"  },
-  { id: "section-toc",             label: "Document Structure Levels", icon: "III", step: 3,    color: "indigo"  },
-  { id: "section-citations",       label: "Citation Rules",            icon: "IV",  step: 4,    color: "amber"   },
-  { id: "section-content-profile", label: "Content Profile",           icon: "V",   step: 5,    color: "emerald" },
+  { id: "section-citation-guide",  label: "Citation Guide Link",       icon: "I",   step: 1,    color: "emerald" },
+  { id: "section-scope",           label: "Scope",                     icon: "II",  step: 2,    color: "blue"    },
+  { id: "section-metadata",        label: "Metadata",                  icon: "III", step: 3,    color: "violet"  },
+  { id: "section-toc",             label: "TOC with Document Structure", icon: "IV", step: 4,  color: "indigo"  },
+  { id: "section-citations",       label: "Citation Rules",            icon: "V",   step: 5,    color: "amber"   },
+  { id: "section-content-profile", label: "Content Profile",           icon: "VI",  step: 6,    color: "emerald" },
   { id: "section-generate",        label: "Generate",                  icon: "▶",   step: null, color: "slate"   },
 ];
 
@@ -592,7 +619,11 @@ function getScrollContainer(): HTMLElement {
   return document.scrollingElement as HTMLElement || document.documentElement;
 }
 
-function AssistiveTouch() {
+function AssistiveTouch({ showCitationGuide = true }: { showCitationGuide?: boolean }) {
+  const navItems = useMemo(
+    () => NAV_ITEMS.filter((item) => showCitationGuide || item.id !== "section-citation-guide"),
+    [showCitationGuide],
+  );
   const [open, setOpen]             = useState(false);
   const [activeId, setActiveId]     = useState<string>("");
   const [pos, setPos]               = useState(() => ({ x: Math.max(12, window.innerWidth - 72), y: Math.max(12, window.innerHeight / 2) }));
@@ -626,7 +657,7 @@ function AssistiveTouch() {
   }, []);
 
   useEffect(() => {
-    const ids = NAV_ITEMS.map(n => n.id);
+    const ids = navItems.map(n => n.id);
     const visibleMap: Record<string, number> = {};
     const scrollEl = getScrollContainer();
     const root = scrollEl === document.documentElement || scrollEl === document.body
@@ -644,7 +675,7 @@ function AssistiveTouch() {
       return obs;
     });
     return () => observers.forEach(o => o?.disconnect());
-  }, []);
+  }, [navItems]);
 
   function onPointerDown(e: React.PointerEvent) { if (open) return; e.currentTarget.setPointerCapture(e.pointerId); dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }; setDragging(true); setDidDrag(false); }
   function onPointerMove(e: React.PointerEvent) {
@@ -726,7 +757,7 @@ function AssistiveTouch() {
               <span className="text-[11px] font-semibold flex-1" style={{...MONO,color:showScrollTop?"#ffffff":"#475569"}}>Back to Top</span>
             </button>
             <div className="py-1">
-              {NAV_ITEMS.map((item, idx) => {
+              {navItems.map((item, idx) => {
                 const isActive = activeId === item.id; const isGen = item.id === "section-generate"; const c = colorMap[item.color ?? "slate"];
                 return (
                   <React.Fragment key={item.id}>
@@ -838,12 +869,70 @@ function BrdHeaderCell({
   );
 }
 
+function CitationGuideTable({ tocData }: { tocData?: Record<string, unknown> }) {
+  const citationGuide = parseCitationStyleGuide(tocData);
+  if (!citationGuide) return <Empty />;
+
+  return (
+    <div className="space-y-3">
+      {citationGuide.description && (
+        <div className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-blue-50 dark:bg-blue-500/10">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citation Guide · SME Checkpoint</p>
+          </div>
+          <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
+            <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(citationGuide.description) }} />
+          </div>
+        </div>
+      )}
+
+      {citationGuide.rows.length > 0 && (
+        <div className={TBL_WRAP}>
+          <table className="w-full text-[11.5px]" style={{ minWidth: 620 }}>
+            <thead>
+              <tr>
+                <BrdHeaderCell title="Citation Style Guide Link" checkpoint="SME Checkpoint" blueNote="Reference details captured from the BRD source" className="w-1/3" />
+                <BrdHeaderCell title="Value" checkpoint="SME Checkpoint" blueNote="Source-aligned values used by the delivery team" className="w-2/3" />
+              </tr>
+            </thead>
+            <tbody>
+              {citationGuide.rows.map((row, index) => (
+                <tr key={`${row.label}-${index}`} className={index % 2 === 0 ? "bg-slate-50/40 dark:bg-[#1a1f35]" : "bg-white dark:bg-[#161b2e]"}>
+                  <td className={`${TD} font-semibold`}>{row.label || "—"}</td>
+                  <td className={`${TD} whitespace-pre-wrap break-words`}>
+                    {row.value ? <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.value) }} /> : <Nil />}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const rows = buildScopeRows(scopeData); const extra = hasExtraCols(rows);
-  if (rows.length === 0) return <Empty />;
+  const scopeSmeCheckpoint = stripLeadingBrdLabel(
+    normalizeMeaningfulRichText(scopeData?.smeCheckpoint ?? scopeData?.scopeSmeCheckpoint ?? scopeData?.scope_sme_checkpoint),
+    "SME Checkpoint",
+  );
 
   const normalizeScopeImageKey = (value: string) =>
     value.toLowerCase().replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[^a-z0-9]+/g, "");
+
+  const isScopeImage = (img: CellImageMeta) => {
+    if (img.section === "scope") return true;
+    const section = (img.section || "").toLowerCase();
+    const labelKey = normalizeScopeImageKey(img.fieldLabel || "");
+    const textKey = normalizeScopeImageKey(img.cellText || "");
+    return (!section || section === "unknown") && (
+      img.tableIndex === 3 ||
+      labelKey.includes("smecheckpoint") ||
+      textKey.includes("smecheckpoint")
+    );
+  };
 
   const imagesByLabel = new Map<string, CellImageMeta[]>();
   const imagesByCellText = new Map<string, CellImageMeta[]>();
@@ -854,12 +943,9 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
     map.set(key, current);
   };
 
-  // Include section="scope" (new records) OR tableIndex=3 with unknown/missing
-  // section (legacy records uploaded before section tagging was introduced).
-  images.filter(img =>
-    img.section === "scope" ||
-    ((!img.section || img.section === "unknown") && img.tableIndex === 3)
-  ).forEach(img => {
+  // Include semantic scope images first, plus legacy/unknown records that still
+  // clearly belong to the Scope section or its SME checkpoint.
+  images.filter(isScopeImage).forEach(img => {
     pushImage(imagesByLabel, normalizeScopeImageKey(img.fieldLabel || ""), img);
     pushImage(imagesByCellText, normalizeScopeImageKey(img.cellText || ""), img);
   });
@@ -895,87 +981,163 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
     return result;
   };
 
-  return (
-    <div className={TBL_WRAP}>
-      <table className="w-full text-[11.5px]" style={{ minWidth: 860, tableLayout: "fixed" }}>
-        <colgroup>
-          <col style={{ width: 180 }} />
-          <col style={{ width: 110 }} />
-          <col style={{ width: 130 }} />
-          <col style={{ width: 160 }} />
-          <col style={{ width: 80 }} />
-          <col style={{ width: 200 }} />
-          {extra.evergreen && <col style={{ width: 80 }} />}
-          {extra.ingestion && <col style={{ width: 100 }} />}
-        </colgroup>
-        <thead><tr>
-          <BrdHeaderCell title="Document Title" greenNote="Innodata only - Document Title as appearing on regulator weblink" />
-          <BrdHeaderCell title="Reference URL" greenNote="Parent URL for the source" />
-          <BrdHeaderCell title="Content URL" greenNote="URL for the title under the source" />
-          <BrdHeaderCell title="Issuing Authority" greenNote="Authority/source bucket" />
-          <BrdHeaderCell title="ASRB ID" greenNote="Tracking identifier" />
-          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
-          {extra.evergreen && <BrdHeaderCell title="Initial / Evergreen" greenNote="Scope ingestion mode" />}
-          {extra.ingestion && <BrdHeaderCell title="Date of Ingestion" greenNote="Recorded ingestion date" />}
-        </tr></thead>
-        <tbody>
-          {rows.map((row, i) => {
-            const oos = row.isOutOfScope;
-            const titleImages = getScopeImgs(row, "title", row.title);
-            const referenceImages = getScopeImgs(row, "referenceLink", row.referenceLink);
-            const contentImages = getScopeImgs(row, "contentUrl", row.contentUrl);
-            const authorityImages = getScopeImgs(row, "issuingAuth", row.issuingAuth);
-            const asrbImages = getScopeImgs(row, "asrbId", row.asrbId);
-            const smeImages = getScopeImgs(row, "smeComments", row.smeComments);
+  const checkpointImages = (() => {
+    const result: CellImageMeta[] = [];
+    const seen = new Set<number>();
+    const aliases = [
+      "SME Checkpoint",
+      "Scope SME Checkpoint",
+      "Scope Checkpoint",
+      "scope-smeCheckpoint",
+      "scope-sme checkpoint",
+      "scope-smecheckpoint",
+    ];
 
-            return (
-              <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"} style={{opacity:oos?0.55:1}}>
-                <td className={TD} style={{wordBreak:"break-word"}}>
-                  <span className={oos?"line-through":""}>{row.title||<Nil/>}</span>
-                  {titleImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={TD}>
-                  {row.referenceLink
-                    ? <a href={row.referenceLink} target="_blank" rel="noreferrer"
-                        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
-                        title={row.referenceLink}>{row.referenceLink}</a>
-                    : <Nil/>}
-                  {referenceImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
-                  {row.contentUrl
-                    ? <a href={row.contentUrl} target="_blank" rel="noreferrer"
-                        className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] block truncate ${oos?"line-through":""}`}
-                        title={row.contentUrl}>{row.contentUrl}</a>
-                    : <Nil/>}
-                  {row.contentNote && <div className={`mt-1 text-[10.5px] leading-relaxed text-slate-500 dark:text-slate-400 ${oos?"line-through":""}`}>{row.contentNote}</div>}
-                  {contentImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={TD} style={{wordBreak:"break-word"}}>
-                  <span className={oos?"line-through":""}>{row.issuingAuth||<Nil/>}</span>
-                  {authorityImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
-                  {row.asrbId
-                    ? <span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>
-                    : <Nil/>}
-                  {asrbImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
-                  <span className={oos?"line-through":""}>{row.smeComments||<Nil/>}</span>
-                  {smeImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                {extra.evergreen && <td className={TD}>{row.initialEvergreen||"—"}</td>}
-                {extra.ingestion && <td className={TD}>{row.dateOfIngestion||"—"}</td>}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147] flex justify-between items-center">
-        <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} document{rows.length!==1?"s":""}{rows.filter(r=>r.isOutOfScope).length>0&&` · ${rows.filter(r=>r.isOutOfScope).length} out of scope`}</span>
-        {rows.filter(r=>r.isOutOfScope).length>0&&<span className="text-[9.5px] italic text-slate-400" style={MONO}>Strikethrough = out of scope</span>}
-      </div>
+    aliases.forEach((rawKey) => {
+      const key = normalizeScopeImageKey(rawKey);
+      for (const image of imagesByLabel.get(key) ?? []) {
+        if (seen.has(image.id)) continue;
+        seen.add(image.id);
+        result.push(image);
+      }
+    });
+
+    [scopeSmeCheckpoint, brdRichTextToPlain(scopeSmeCheckpoint)].forEach((value) => {
+      const key = normalizeScopeImageKey(value || "");
+      if (!key) return;
+      for (const image of imagesByCellText.get(key) ?? []) {
+        if (seen.has(image.id)) continue;
+        seen.add(image.id);
+        result.push(image);
+      }
+    });
+
+    return result.sort((a, b) => (a.rowIndex - b.rowIndex) || (a.colIndex - b.colIndex) || (a.id - b.id));
+  })();
+
+  if (rows.length === 0 && !scopeSmeCheckpoint && checkpointImages.length === 0) return <Empty />;
+
+  return (
+    <div className="space-y-3">
+      {(scopeSmeCheckpoint || checkpointImages.length > 0) && (
+        <div className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-blue-50 dark:bg-blue-500/10">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Scope · SME Checkpoint</p>
+          </div>
+          <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words space-y-2">
+            {scopeSmeCheckpoint && (
+              <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(scopeSmeCheckpoint) }} />
+            )}
+            {checkpointImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+          </div>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className={TBL_WRAP}>
+          <table className="w-full text-[11.5px]" style={{ minWidth: 860, tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: 180 }} />
+              <col style={{ width: 110 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 160 }} />
+              <col style={{ width: 80 }} />
+              <col style={{ width: 200 }} />
+              {extra.evergreen && <col style={{ width: 80 }} />}
+              {extra.ingestion && <col style={{ width: 100 }} />}
+            </colgroup>
+            <thead><tr>
+              <BrdHeaderCell title="Document Title" greenNote="Innodata only - Document Title as appearing on regulator weblink" />
+              <BrdHeaderCell title="Reference URL" greenNote="Parent URL for the source" />
+              <BrdHeaderCell title="Content URL" greenNote="URL for the title under the source" />
+              <BrdHeaderCell title="Issuing Authority" greenNote="Authority/source bucket" />
+              <BrdHeaderCell title="ASRB ID" greenNote="Tracking identifier" />
+              <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+              {extra.evergreen && <BrdHeaderCell title="Initial / Evergreen" greenNote="Scope ingestion mode" />}
+              {extra.ingestion && <BrdHeaderCell title="Date of Ingestion" greenNote="Recorded ingestion date" />}
+            </tr></thead>
+            <tbody>
+              {rows.map((row, i) => {
+                const oos = row.isOutOfScope;
+                const titleImages = getScopeImgs(row, "title", row.title);
+                const referenceImages = getScopeImgs(row, "referenceLink", row.referenceLink);
+                const contentImages = getScopeImgs(row, "contentUrl", row.contentUrl);
+                const authorityImages = getScopeImgs(row, "issuingAuth", row.issuingAuth);
+                const asrbImages = getScopeImgs(row, "asrbId", row.asrbId);
+                const smeImages = getScopeImgs(row, "smeComments", row.smeComments);
+
+                return (
+                  <tr key={row.id} className={oos ? "bg-red-50/70 dark:bg-red-500/10" : i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                    <td className={TD} style={{wordBreak:"break-word"}}>
+                      {row.title
+                        ? <span
+                            className={oos ? "line-through text-red-600 dark:text-red-400" : ""}
+                            title={brdRichTextToPlain(row.title)}
+                            dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.title) }}
+                          />
+                        : <Nil/>}
+                      {titleImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={TD}>
+                      {row.referenceLink
+                        ? <a href={row.referenceLink} target="_blank" rel="noreferrer"
+                            className={`hover:underline text-[11px] block truncate ${oos ? "line-through text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}
+                            title={row.referenceLink}>{row.referenceLink}</a>
+                        : <Nil/>}
+                      {referenceImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
+                      {row.contentUrl
+                        ? <a href={row.contentUrl} target="_blank" rel="noreferrer"
+                            className={`hover:underline text-[11px] block truncate ${oos ? "line-through text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}
+                            title={row.contentUrl}>{row.contentUrl}</a>
+                        : <Nil/>}
+                      {row.contentNote && (
+                        <div className={`mt-1 text-[10.5px] leading-relaxed ${oos ? "line-through text-red-500 dark:text-red-400" : "text-slate-500 dark:text-slate-400"}`}>
+                          <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.contentNote) }} />
+                        </div>
+                      )}
+                      {contentImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={TD} style={{wordBreak:"break-word"}}>
+                      {row.issuingAuth
+                        ? <span
+                            className={oos ? "line-through text-red-600 dark:text-red-400" : ""}
+                            title={brdRichTextToPlain(row.issuingAuth)}
+                            dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.issuingAuth) }}
+                          />
+                        : <Nil/>}
+                      {authorityImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
+                      {row.asrbId
+                        ? <span className="font-mono text-[10.5px] bg-slate-100 dark:bg-[#1e2235] px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2a3147]">{row.asrbId}</span>
+                        : <Nil/>}
+                      {asrbImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
+                      {row.smeComments
+                        ? <span
+                            className={oos ? "line-through text-red-600 dark:text-red-400" : ""}
+                            title={brdRichTextToPlain(row.smeComments)}
+                            dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.smeComments) }}
+                          />
+                        : <Nil/>}
+                      {smeImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    {extra.evergreen && <td className={TD}>{row.initialEvergreen||"—"}</td>}
+                    {extra.ingestion && <td className={TD}>{row.dateOfIngestion||"—"}</td>}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147] flex justify-between items-center">
+            <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} document{rows.length!==1?"s":""}{rows.filter(r=>r.isOutOfScope).length>0&&` · ${rows.filter(r=>r.isOutOfScope).length} out of scope`}</span>
+            {rows.filter(r=>r.isOutOfScope).length>0&&<span className="text-[9.5px] italic text-slate-400" style={MONO}>Strikethrough = out of scope</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1030,12 +1192,22 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
       ];
   const commentMap = parseMetadataComments(values.smeComments, fields.map((field) => field.label));
   const customRows = extractCustomMetadataRows(metadata);
-
-  // tableIndex=5 is the metadata table: col0=label, col1=value(Document Location)
-  const metaImgs = images.filter(img =>
-    img.section === "metadata" ||
-    ((!img.section || img.section === "unknown") && img.tableIndex === 5)
+  const metadataFieldKeys = new Set(
+    fields.flatMap((field) => [
+      normalizeMetadataImageLookupKey(field.label),
+      normalizeMetadataImageLookupKey(field.key),
+    ]),
   );
+
+  // tableIndex=5 is the legacy metadata table fallback, but some uploads persist
+  // metadata images with a different table index and only a usable fieldLabel.
+  const metaImgs = images.filter((img) => {
+    const section = normalizeMetadataImageLookupKey(img.section || "");
+    const fieldLabel = normalizeMetadataImageLookupKey(img.fieldLabel || "");
+
+    return section === "metadata"
+      || ((!section || section === "unknown") && (img.tableIndex === 5 || metadataFieldKeys.has(fieldLabel)));
+  });
 
   const getRowImages = (field: { label: string; key: string }, index: number): CellImageMeta[] =>
     getMetadataRowImagesForField(field, index, metaImgs);
@@ -1100,7 +1272,7 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
               {rowImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
             </td>
             <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
-              {rowComment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              {rowComment ? renderTextWithLinks(rowComment) : <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
             </td>
           </tr>
         ))}
@@ -1112,10 +1284,10 @@ function MetaGrid({ values, format, metadata, brdId, images }: { values: Record<
                 {row.label || "Custom Row"}
               </td>
               <td data-doc-location="1" className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
-                {row.value || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+                {row.value ? renderTextWithLinks(row.value) : <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
               </td>
               <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
-                {row.comment || <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+                {row.comment ? renderTextWithLinks(row.comment) : <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
               </td>
             </tr>
           );
@@ -1162,9 +1334,11 @@ function DraftAndCurrent({ current, prev }: { current: string; prev?: string }) 
   );
 }
 
-function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
+function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { tocData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[]; showRestrictedFields?: boolean }) {
   const rows = buildTocRows(tocData);
-  if (rows.length === 0) return <Empty />;
+  const tocSortingOrder = stripLeadingBrdLabel(normalizeMeaningfulRichText(tocData?.tocSortingOrder), "SME Checkpoint");
+  const tocHidingLevels = normalizeMeaningfulRichText(tocData?.tocHidingLevels);
+  if (rows.length === 0 && (!showRestrictedFields || (!tocSortingOrder && !tocHidingLevels))) return <Empty />;
   
   const TOC_COL_MAP: Record<number,string> = {0:"level",1:"name",2:"required",3:"definition",4:"example",5:"note",6:"tocRequirements",7:"smeComments"};
   // Include section="toc" (new records) OR tableIndex=2 with unknown section (old records)
@@ -1184,78 +1358,127 @@ function TocTable({ tocData, brdId, images }: { tocData?: Record<string, unknown
   });
   
   return (
-    <div className={TBL_WRAP}>
-      <table className="w-full border-collapse" style={{ minWidth: 1080 }}>
-        <thead><tr>
-          <BrdHeaderCell title="Level" greenNote="Innodata only - From regulator website" className="w-16" />
-          <BrdHeaderCell title="Name" greenNote="Innodata only - Identifies Level" className="w-36" />
-          <BrdHeaderCell title="Required" greenNote="True levels must appear / False may or may not appear" className="w-24" />
-          <BrdHeaderCell title="Definition" greenNote="Innodata only - Level value as on regulator weblink" className="w-52" />
-          <BrdHeaderCell title="Example" greenNote="Innodata only - Sample values of respective Levels" className="w-44" />
-          <BrdHeaderCell title="Note" greenNote="Innodata only - Specific instructions for Tech during source configuration" className="w-40" />
-          <BrdHeaderCell title="TOC Requirements" checkpoint="SME Checkpoint" blueNote="For SMEs - To specify on how they want ToC to appear in ELA" className="w-48" />
-          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" className="w-44" />
-        </tr></thead>
-        <tbody>
-          {rows.map((row, i) => {
-            const lvl = (row.level||"").trim();
-            const getImgs = (col: string) => {
-              // Try fieldLabel match first, then rowIndex fallback for old DB records
-              const byLabel = imagesByLevelCol.get(`${lvl}__${col}`) || [];
-              if (byLabel.length > 0) return byLabel;
-              return imagesByLevelCol.get(`__row_${i + 1}__${col}`) || [];
-            };
-            return (
-              <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-                <td className={TD}><LevelBadge val={row.level}/></td>
-                <td className={TD}>
-                  <DraftAndCurrent current={row.name} prev={row._prevName} />
-                </td>
-                <td className={TD}><RequiredBadge val={row.required}/></td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  <DraftAndCurrent current={row.definition} prev={row._prevDefinition} />
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  <DraftAndCurrent current={row.example} prev={row._prevExample} />
-                  {getImgs("example").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  <DraftAndCurrent current={row.note} prev={row._prevNote} />
-                  {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  <DraftAndCurrent current={row.tocRequirements} prev={row._prevTocRequirements} />
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  <DraftAndCurrent current={row.smeComments} prev={row._prevSmeComments} />
-                  {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147]">
-        <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} section{rows.length!==1?"s":""}</span>
-      </div>
+    <div className="space-y-3">
+      {showRestrictedFields && tocSortingOrder && (
+        <div className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-slate-100 dark:bg-[#1e2235]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={MONO}>ToC - Sorting Order</p>
+          </div>
+          <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
+            <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(tocSortingOrder) }} />
+          </div>
+        </div>
+      )}
+
+      {showRestrictedFields && tocHidingLevels && (
+        <div className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-slate-100 dark:bg-[#1e2235]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={MONO}>ToC - Hiding Level (Tech Only)</p>
+          </div>
+          <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
+            <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(tocHidingLevels) }} />
+          </div>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className={TBL_WRAP}>
+          <table className="w-full border-collapse" style={{ minWidth: 1080 }}>
+            <thead><tr>
+              <BrdHeaderCell title="Level" greenNote="Innodata only - From regulator website" className="w-16" />
+              <BrdHeaderCell title="Name" greenNote="Innodata only - Identifies Level" className="w-36" />
+              <BrdHeaderCell title="Required" greenNote="True levels must appear / False may or may not appear" className="w-24" />
+              <BrdHeaderCell title="Definition" greenNote="Innodata only - Level value as on regulator weblink" className="w-52" />
+              <BrdHeaderCell title="Example" greenNote="Innodata only - Sample values of respective Levels" className="w-44" />
+              <BrdHeaderCell title="Note" greenNote="Innodata only - Specific instructions for Tech during source configuration" className="w-40" />
+              <BrdHeaderCell title="TOC Requirements" checkpoint="SME Checkpoint" blueNote="For SMEs - To specify on how they want ToC to appear in ELA" className="w-48" />
+              <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" className="w-44" />
+            </tr></thead>
+            <tbody>
+              {rows.map((row, i) => {
+                const lvl = (row.level||"").trim();
+                const getImgs = (col: string) => {
+                  const byLabel = imagesByLevelCol.get(`${lvl}__${col}`) || [];
+                  if (byLabel.length > 0) return byLabel;
+                  return imagesByLevelCol.get(`__row_${i + 1}__${col}`) || [];
+                };
+                return (
+                  <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                    <td className={TD}><LevelBadge val={row.level}/></td>
+                    <td className={TD}>
+                      <DraftAndCurrent current={row.name} prev={row._prevName} />
+                    </td>
+                    <td className={TD}><RequiredBadge val={row.required}/></td>
+                    <td className={`${TD} whitespace-pre-wrap break-words`}>
+                      <DraftAndCurrent current={row.definition} prev={row._prevDefinition} />
+                    </td>
+                    <td className={`${TD} whitespace-pre-wrap break-words`}>
+                      <DraftAndCurrent current={row.example} prev={row._prevExample} />
+                      {getImgs("example").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={`${TD} whitespace-pre-wrap break-words`}>
+                      <DraftAndCurrent current={row.note} prev={row._prevNote} />
+                      {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={`${TD} whitespace-pre-wrap break-words`}>
+                      <DraftAndCurrent current={row.tocRequirements} prev={row._prevTocRequirements} />
+                      {getImgs("tocRequirements").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                    <td className={`${TD} whitespace-pre-wrap break-words`}>
+                      <DraftAndCurrent current={row.smeComments} prev={row._prevSmeComments} />
+                      {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147]">
+            <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} section{rows.length!==1?"s":""}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function normalizeCitableDisplayValue(value: unknown): "Y" | "N" | "" {
+  const raw = String(value ?? "").trim().toUpperCase();
+  if (["Y", "YES", "TRUE", "1"].includes(raw)) return "Y";
+  if (["N", "NO", "FALSE", "0"].includes(raw)) return "N";
+  return "";
+}
+
+function CitableBadge({ val }: { val: string }) {
+  const normalized = normalizeCitableDisplayValue(val);
+  if (normalized === "Y") return <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/40">Y</span>;
+  if (normalized === "N") return <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-100 dark:bg-[#252d45] text-slate-500 dark:text-slate-500 border border-slate-200 dark:border-[#2a3147]">N</span>;
+  return <span className="text-slate-300 dark:text-slate-600 text-[11px]">—</span>;
 }
 
 function formatDisplay(value: string) {
   const normalized = normalizeBrdCitationText(value);
   if (!normalized) return null;
 
-  return normalized.split(/\n{2,}/).map((paragraph, i) => {
-    const match = paragraph.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
-    if (!match) return <React.Fragment key={i}>{i>0?"\n\n":""}{paragraph}</React.Fragment>;
-    return <React.Fragment key={i}>{i>0?"\n\n":""}<span className="font-semibold">{match[1]}</span>{match[2]??""}</React.Fragment>;
-  });
+  return (
+    <span
+      className="whitespace-pre-wrap break-words"
+      dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(normalized) }}
+    />
+  );
 }
 
 function CitationTable({ citationsData, brdId, images }: { citationsData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const citations = asRecordArray(citationsData?.references);
-  if (citations.length === 0) return <Empty />;
+  const citationLevelSmeCheckpoint = stripLeadingBrdLabel(
+    normalizeMeaningfulRichText(citationsData?.citationLevelSmeCheckpoint ?? citationsData?.citableLevelsSmeCheckpoint),
+    "SME Checkpoint",
+  );
+  const citationRulesSmeCheckpoint = stripLeadingBrdLabel(
+    normalizeMeaningfulRichText(citationsData?.citationRulesSmeCheckpoint),
+    "SME Checkpoint",
+  );
+  if (citations.length === 0 && !citationLevelSmeCheckpoint && !citationRulesSmeCheckpoint) return <Empty />;
   
   const CIT_COL_MAP: Record<number,string> = {0:"level",1:"citationRules",2:"sourceOfLaw",3:"smeComments"};
   // tableIndex=4 is the citation rules table (col1=citationRules, col3=smeComments)
@@ -1274,10 +1497,35 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
   });
   
   return (
-    <div className={TBL_WRAP}>
-      <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 600 }}>
+    <div className="space-y-3">
+      {citationLevelSmeCheckpoint && (
+        <div className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-blue-50 dark:bg-blue-500/10">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citation Level · SME Checkpoint</p>
+          </div>
+          <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
+            <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(citationLevelSmeCheckpoint) }} />
+          </div>
+        </div>
+      )}
+
+      {citationRulesSmeCheckpoint && (
+        <div className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-blue-50 dark:bg-blue-500/10">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citation Rules · SME Checkpoint</p>
+          </div>
+          <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
+            <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(citationRulesSmeCheckpoint) }} />
+          </div>
+        </div>
+      )}
+
+      {citations.length > 0 && (
+      <div className={TBL_WRAP}>
+      <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 720 }}>
         <thead><tr>
           <BrdHeaderCell title="Lvl" greenNote="Citation level" />
+          <BrdHeaderCell title="Citable" greenNote="Should this level be citable" />
           <BrdHeaderCell title="Citation Rules" checkpoint="SME Checkpoint" blueNote="Include the levels and punctuation that should appear in ELA citations" />
           <BrdHeaderCell title="Source of Law" checkpoint="SME Checkpoint" blueNote="Identify the level that should serve as the Source of Law" />
           <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
@@ -1294,12 +1542,17 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
               <tr key={i} className={i%2===0?"bg-white dark:bg-transparent":"bg-slate-50/40 dark:bg-[#1a1f35]/40"}>
                 <td className={`w-14 ${TD}`}><LevelBadge val={asString(row.level)}/></td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {formatDisplay(asString(row.citationRules))||"—"}
+                  <CitableBadge val={asString(row.isCitable)} />
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {formatDisplay(asString(row.citationRules)) || "—"}
                   {getImgs("citationRules").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>{asString(row.sourceOfLaw)||"—"}</td>
                 <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {formatDisplay(asString(row.smeComments))}
+                  {formatDisplay(asString(row.sourceOfLaw)) || "—"}
+                </td>
+                <td className={`${TD} whitespace-pre-wrap break-words`}>
+                  {formatDisplay(asString(row.smeComments)) || "—"}
                   {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                 </td>
               </tr>
@@ -1308,10 +1561,12 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
         </tbody>
       </table>
     </div>
+      )}
+    </div>
   );
 }
 
-function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
+function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
   const levels = useMemo(() => asExtractedLevels(cpData), [cpData]);
   const hardcodedPathFromData = String(cpData?.hardcoded_path ?? cpData?.hardcodedPath ?? "").trim();
   const derivedHardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
@@ -1319,17 +1574,6 @@ function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unk
   const rcFilename = String(cpData?.rc_filename ?? "");
   const headingAnnotation = String(cpData?.heading_annotation ?? "");
   const wsRows = useMemo(() => { const e = asExtractedWhitespace(cpData); return e.length > 0 ? e : DEFAULT_WHITESPACE_ROWS; }, [cpData]);
-  
-  // Group images by fieldLabel (= level number) and colIndex
-  const TOC_COL_MAP2: Record<number,string> = {0:"levelNumber",1:"name",3:"definition",4:"example",5:"note"};
-  const imagesByLevelCol = new Map<string, CellImageMeta[]>();
-  images.filter(img => img.section === "toc").forEach(img => {
-    const colKey = TOC_COL_MAP2[img.colIndex] ?? "note";
-    const key = `${(img.fieldLabel||"").trim()}__${colKey}`;
-    const arr = imagesByLevelCol.get(key) || [];
-    arr.push(img);
-    imagesByLevelCol.set(key, arr);
-  });
   
   return (
     <div className="space-y-5">
@@ -1353,23 +1597,17 @@ function ContentProfile({ cpData, brdId, images }: { cpData?: Record<string, unk
             <tbody>
               {levels.length===0
                 ?<tr><td colSpan={5} className="py-6 text-center text-[12px] text-slate-400 italic">No levels defined</td></tr>
-                :levels.map((row,i)=>{
-                    // levelNumber is "Level N", fieldLabel from extractor is just "N"
-                    const lvlNum = (row.levelNumber||"").replace(/^Level\s*/i,"").trim();
-                    const getImgs = (col: string) => imagesByLevelCol.get(`${lvlNum}__${col}`) || [];
-                    return (
-                      <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
-                        <td className={TD}><span className="font-mono text-[11px]">{row.levelNumber||"—"}</span></td>
-                        <td className={`${TD} whitespace-pre-line`}>{row.description||<Nil/>}</td>
-                        <td className={TD}>
-                          <span className={`text-[11px] font-mono whitespace-pre-line select-all ${row.redjayXmlTag==="Hardcoded"?"text-amber-700 dark:text-amber-400 font-semibold":"text-sky-700 dark:text-sky-400"}`}>{row.redjayXmlTag||<Nil/>}</span>
-                          {getImgs("note").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                        </td>
-                        <td className={TD}><span className="font-mono text-[11px]">{row.path||<Nil/>}</span></td>
-                        <td className={TD}>{row.remarksNotes||<Nil/>}</td>
-                      </tr>
-                    );
-                  })}
+                :levels.map((row,i)=>(
+                    <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                      <td className={TD}><span className="font-mono text-[11px]">{row.levelNumber||"—"}</span></td>
+                      <td className={`${TD} whitespace-pre-line`}>{row.description||<Nil/>}</td>
+                      <td className={TD}>
+                        <span className={`text-[11px] font-mono whitespace-pre-line select-all ${row.redjayXmlTag==="Hardcoded"?"text-amber-700 dark:text-amber-400 font-semibold":"text-sky-700 dark:text-sky-400"}`}>{row.redjayXmlTag||<Nil/>}</span>
+                      </td>
+                      <td className={TD}><span className="font-mono text-[11px]">{row.path||<Nil/>}</span></td>
+                      <td className={TD}>{row.remarksNotes||<Nil/>}</td>
+                    </tr>
+                  ))}
             </tbody>
           </table>
         </div>
@@ -1671,6 +1909,10 @@ const GEN_BTN_CONFIG: Record<string, { label:string; sublabel:string; descriptio
 };
 
 export default function Generate({ brdId, title, format, status, initialData, onEdit, onComplete, canEdit = true, showCellImages = true, imageIds }: Props) {
+  const { user } = useAuth();
+  const teamSlug = String(user?.team?.slug ?? "").toLowerCase();
+  const isPrivilegedUser = user?.role === "SUPER_ADMIN" || (teamSlug === "pre-production" && user?.role === "ADMIN");
+  const canViewRestrictedFields = !["APPROVED", "ON_HOLD"].includes(String(status ?? "").toUpperCase()) || isPrivilegedUser;
   const isApproved = status === "APPROVED";
   const [generating, setGenerating] = useState<Record<string, boolean>>({});
   const [done, setDone]             = useState<Record<string, boolean>>({});
@@ -1891,7 +2133,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
   return (
     <>
       <style>{`:root{--doc-bg:#fefefe}.dark{--doc-bg:#1a1f31}.tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:rgba(148,163,184,0.4) transparent}.tbl-scroll::-webkit-scrollbar{height:5px}.tbl-scroll::-webkit-scrollbar-thumb{border-radius:999px;background:rgba(148,163,184,0.45)}.doc-page{max-width:100%;margin:0 auto}:root{--brd-title-color:#1e293b}.dark{--brd-title-color:#f1f5f9}.dark .gen-btn-card{background:#1e2235!important;border-color:#2a3147!important}.dark .gen-btn-card.gen-btn-done{background:#0d2318!important;border-color:#166534!important}.dark .gen-btn-icon-wrap{background:#252d45!important;color:#94a3b8!important}.dark .gen-btn-icon-wrap.icon-metajson{background:#1e2d4d!important;color:#60a5fa!important}.dark .gen-btn-icon-wrap.icon-innod{background:#1e1f4d!important;color:#818cf8!important}.dark .gen-btn-icon-wrap.icon-content{background:#2a1f45!important;color:#a78bfa!important}.dark .gen-btn-icon-wrap.icon-done{background:#14532d!important;color:#4ade80!important}.dark .gen-btn-title{color:#e2e8f0!important}.dark .gen-btn-title.done{color:#4ade80!important}`}</style>
-      <AssistiveTouch />
+      <AssistiveTouch showCitationGuide={canViewRestrictedFields} />
       <div ref={docPageRef} className="doc-page px-4 py-6 space-y-1">
 
         {/* Document Header */}
@@ -1963,38 +2205,48 @@ export default function Generate({ brdId, title, format, status, initialData, on
           <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap" as const}}>
             {brdId && <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#64748b",background:"#f1f5f9",border:"1px solid #e2e8f0",padding:"3px 10px",borderRadius:4}}>{brdId}</span>}
             <span style={{color:"#cbd5e1",fontSize:13}}>·</span>
-            <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#94a3b8"}}>5 Sections</span>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#94a3b8"}}>{canViewRestrictedFields ? "6 Sections" : "5 Sections"}</span>
           </div>
         </div>
 
+        {canViewRestrictedFields && (
+          <>
+            <DocBlock id="section-citation-guide">
+              <DocSectionHeader idx={0} onEdit={onEdit??noop} canEdit={canEdit}/>
+              <CitationGuideTable tocData={tocData} />
+            </DocBlock>
+            <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
+          </>
+        )}
+
         <DocBlock id="section-scope">
-          <DocSectionHeader idx={0} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/>
           <ScopeTable scopeData={scopeData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
         
         <DocBlock id="section-metadata">
-          <DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <DocSectionHeader idx={2} onEdit={onEdit??noop} canEdit={canEdit}/>
           <MetaGrid values={metadataValues} format={activeFormat} metadata={metadataData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
         
         <DocBlock id="section-toc">
-          <DocSectionHeader idx={2} onEdit={onEdit??noop} canEdit={canEdit}/>
-          <TocTable tocData={tocData} brdId={brdId} images={images} />
+          <DocSectionHeader idx={3} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <TocTable tocData={tocData} brdId={brdId} images={images} showRestrictedFields={canViewRestrictedFields} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
         
         <DocBlock id="section-citations">
-          <DocSectionHeader idx={3} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <DocSectionHeader idx={4} onEdit={onEdit??noop} canEdit={canEdit}/>
           <CitationTable citationsData={citationsData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
         
         <div ref={contentProfileRef}>
           <DocBlock id="section-content-profile">
-            <DocSectionHeader idx={4} onEdit={onEdit??noop} canEdit={canEdit}/>
-            <ContentProfile cpData={contentProfileData} brdId={brdId} images={images} />
+            <DocSectionHeader idx={5} onEdit={onEdit??noop} canEdit={canEdit}/>
+            <ContentProfile cpData={contentProfileData} />
           </DocBlock>
         </div>
 

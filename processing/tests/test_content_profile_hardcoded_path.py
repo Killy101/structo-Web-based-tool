@@ -100,6 +100,43 @@ class HardcodedPathExtractionTests(unittest.TestCase):
         self.assertIn("<Level 2>", refs["2"]["citationRules"])
         self.assertIn("Part II", refs["3"]["citationRules"])
 
+    def test_extract_citations_keeps_levels_that_only_exist_in_the_citable_table(self):
+        doc = create_document()
+
+        citable_table = doc.add_table(rows=5, cols=3)
+        citable_headers = ["Level", "Is Level Citable?", "SME Comments"]
+        for idx, header in enumerate(citable_headers):
+            citable_table.rows[0].cells[idx].text = header
+
+        citable_rows = [
+            ("1", "N", ""),
+            ("2", "N", ""),
+            ("3", "N", ""),
+            ("4", "Y", "Only this level has explicit rules"),
+        ]
+        for row_index, row_values in enumerate(citable_rows, start=1):
+            for col_index, value in enumerate(row_values):
+                citable_table.rows[row_index].cells[col_index].text = value
+
+        rules_table = doc.add_table(rows=2, cols=4)
+        rules_headers = ["Citation Level", "Citation Rules", "Source of Law", "SME Comments"]
+        for idx, header in enumerate(rules_headers):
+            rules_table.rows[0].cells[idx].text = header
+        rules_table.rows[1].cells[0].text = "4"
+        rules_table.rows[1].cells[1].text = "<Level 4> Example: Ala. Admin. Code r. 482-1-117-.11"
+        rules_table.rows[1].cells[2].text = "Level 2"
+        rules_table.rows[1].cells[3].text = "Reviewed"
+
+        result = extract_citations(doc)
+        refs = {row["level"]: row for row in result["references"]}
+
+        self.assertEqual(set(refs.keys()), {"1", "2", "3", "4"})
+        self.assertEqual(refs["1"]["isCitable"], "N")
+        self.assertEqual(refs["2"]["isCitable"], "N")
+        self.assertEqual(refs["3"]["isCitable"], "N")
+        self.assertEqual(refs["4"]["isCitable"], "Y")
+        self.assertIn("Ala. Admin. Code", refs["4"]["citationRules"])
+
     def test_extract_toc_supports_plain_paragraph_levels_section(self):
         toc = extract_toc(_build_legacy_levels_doc())
         sections = toc["sections"]

@@ -4,10 +4,24 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.services.comp_extractor import Block, _is_noise, _norm_cmp, _seq_key
+from src.services.comp_extractor import (
+    Block,
+    _is_noise,
+    _norm_cmp,
+    _seq_key,
+    _should_preserve_from_hf_strip,
+)
 
 
 class CompareNoiseFilterTests(unittest.TestCase):
+    def test_compilation_lines_are_preserved_from_header_footer_strip(self):
+        self.assertTrue(
+            _should_preserve_from_hf_strip("Compilation No. 172 Compilation date: 18/02/2026")
+        )
+        self.assertTrue(
+            _should_preserve_from_hf_strip("Compilation No. 173 Compilation date: 14/03/2026")
+        )
+
     def test_amendment_leader_lines_are_not_suppressed_as_noise(self):
         self.assertFalse(_is_noise("F278(2) ............................"))
         self.assertFalse(_is_noise("[F278](2) ............................"))

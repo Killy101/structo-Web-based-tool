@@ -37,7 +37,7 @@ from fastapi.responses import ORJSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 try:
-    import orjson as _orjson
+    import orjson as _orjson  # type: ignore[import-not-found]
     _has_orjson = True
 except ImportError:
     _has_orjson = False
@@ -136,7 +136,7 @@ router = APIRouter(prefix="/compare", tags=["compare"])
 
 # ── Serialisation helpers ─────────────────────────────────────────────────────
 
-def _chunk_to_dict(ch: object, idx: int) -> dict:
+def _chunk_to_dict(ch, idx: int) -> dict:
     d = {
         "id":         idx,
         "kind":       ch.kind,          # "add" | "del" | "mod" | "emp"
@@ -202,7 +202,7 @@ def _pane_to_json(data: dict) -> dict:
     }
 
 
-def _dict_to_chunk(d: dict) -> object:
+def _dict_to_chunk(d: dict):
     return ce.Chunk(
         kind=d["kind"],
         block_a=d.get("block_a", -1),
@@ -471,7 +471,7 @@ async def diff_pdfs_stream(
 
             # Serialize the big result with orjson when available
             if _has_orjson:
-                result_bytes = b'{"t":"r","d":' + _orjson.dumps(payload) + b'}\n'
+                result_bytes = b'{"t":"r","d":' + _orjson.dumps(payload) + b'}\n'  # type: ignore[name-defined]
             else:
                 result_bytes = (_json.dumps({"t": "r", "d": payload}) + "\n").encode()
 

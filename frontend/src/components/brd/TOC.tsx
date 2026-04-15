@@ -2,6 +2,7 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdImage from "./BrdImage";
 import BrdTableHeaderCell from "./BrdTableHeaderCell";
+import RichTextEditableField from "./RichTextEditableField";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
@@ -43,6 +44,28 @@ interface CellImageMeta {
 
 const INITIAL_ROWS: TocRow[] = [];
 
+function ensureTraceableLevels(rows: TocRow[]): TocRow[] {
+  const existingLevels = new Set(rows.map((row) => row.level.trim()));
+  const nextRows = [...rows];
+
+  const buildPlaceholder = (level: "0" | "1"): TocRow => ({
+    id: `hardcoded-${level}`,
+    level,
+    name: "",
+    required: "true",
+    definition: level === "0" ? "Hardcoded root path" : "Hardcoded child path",
+    example: "",
+    note: "Add the hardcoded path used to trace this BRD source.",
+    tocRequirements: "",
+    smeComments: "",
+  });
+
+  if (!existingLevels.has("0")) nextRows.push(buildPlaceholder("0"));
+  if (!existingLevels.has("1")) nextRows.push(buildPlaceholder("1"));
+
+  return nextRows.sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
+}
+
 interface Props {
   initialData?: {
     sections?: Array<{
@@ -56,10 +79,18 @@ interface Props {
       tocRequirements?: string;
       smeComments?: string;
     }>;
+    tocSortingOrder?: string;
+    tocHidingLevels?: string;
+    citationStyleGuide?: {
+      description?: string;
+      rows?: Array<{ label?: string; value?: string }>;
+    };
   };
   brdId?: string;
   onDataChange?: (data: Record<string, unknown>) => void;
 }
+
+
 
 function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
   const sections = Array.isArray(initialData?.sections) ? initialData.sections : [];
@@ -170,37 +201,38 @@ function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
   }
 
   const timestamp = Date.now();
-  return sections
-    .filter((section): section is NonNullable<typeof sections[number]> =>
-      typeof section === "object" && section !== null
-    )
-    .map((section, index) => {
-      const rawLevel = String(section.level ?? section.id ?? index + 1);
-      const levelMatch = rawLevel.match(/\*{1,2}(\d+)\*{1,2}|\b(\d+)\b/);
-      const level = levelMatch
-        ? (levelMatch[1] ?? levelMatch[2] ?? rawLevel)
-        : rawLevel;
+  return ensureTraceableLevels(
+    sections
+      .filter((section): section is NonNullable<typeof sections[number]> =>
+        typeof section === "object" && section !== null
+      )
+      .map((section, index) => {
+        const rawLevel = String(section.level ?? section.id ?? index + 1);
+        const levelMatch = rawLevel.match(/\*{1,2}(\d+)\*{1,2}|\b(\d+)\b/);
+        const level = levelMatch
+          ? (levelMatch[1] ?? levelMatch[2] ?? rawLevel)
+          : rawLevel;
 
-      return {
-        id: `${timestamp}-${index}`,
-        level: level.trim(),
-        name: section.name ?? "",
-        required: mapRequiredValue(section.required),
-        definition: section.definition ?? "",
-        example: section.example ?? "",
-        note: section.note ?? "",
-        tocRequirements: section.tocRequirements ?? "",
-        smeComments: section.smeComments ?? "",
-        // Restore previously captured original values from saved data
-        _prevName:             (section as Record<string, unknown>)._prevName as string | undefined,
-        _prevDefinition:       (section as Record<string, unknown>)._prevDefinition as string | undefined,
-        _prevExample:          (section as Record<string, unknown>)._prevExample as string | undefined,
-        _prevNote:             (section as Record<string, unknown>)._prevNote as string | undefined,
-        _prevTocRequirements:  (section as Record<string, unknown>)._prevTocRequirements as string | undefined,
-        _prevSmeComments:      (section as Record<string, unknown>)._prevSmeComments as string | undefined,
-      };
-    })
-    .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
+        return {
+          id: `${timestamp}-${index}`,
+          level: level.trim(),
+          name: section.name ?? "",
+          required: mapRequiredValue(section.required),
+          definition: section.definition ?? "",
+          example: section.example ?? "",
+          note: section.note ?? "",
+          tocRequirements: section.tocRequirements ?? "",
+          smeComments: section.smeComments ?? "",
+          // Restore previously captured original values from saved data
+          _prevName:             (section as Record<string, unknown>)._prevName as string | undefined,
+          _prevDefinition:       (section as Record<string, unknown>)._prevDefinition as string | undefined,
+          _prevExample:          (section as Record<string, unknown>)._prevExample as string | undefined,
+          _prevNote:             (section as Record<string, unknown>)._prevNote as string | undefined,
+          _prevTocRequirements:  (section as Record<string, unknown>)._prevTocRequirements as string | undefined,
+          _prevSmeComments:      (section as Record<string, unknown>)._prevSmeComments as string | undefined,
+        };
+      })
+  );
 }
 
 function normalizeRowForCompare(row: TocRow) {
@@ -310,10 +342,17 @@ function RichTextValue({ value }: { value: string }) {
   );
 }
 
+function hasMeaningfulRichText(value: string): boolean {
+  return brdRichTextToPlain(value).trim().length > 0;
+}
+
 export default function TOC({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows] = useState<TocRow[]>(INITIAL_ROWS);
+  const [tocSortingOrder, setTocSortingOrder] = useState("");
+  const [tocHidingLevels, setTocHidingLevels] = useState("");
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
   const [saved, setSaved] = useState(false);
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
   const [images, setImages] = useState<CellImageMeta[]>([]);
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   const API_BASE_TOC = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
@@ -326,17 +365,29 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   }
   const isInitializing = useRef(false);
   const rowsRef = useRef<TocRow[]>(INITIAL_ROWS);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
     const newRows = buildRowsFromToc(initialData);
-    if (rowsEqualIgnoringIds(rowsRef.current, newRows)) return;
+    const nextSortingOrderRaw = String(initialData?.tocSortingOrder ?? "");
+    const nextHidingLevelsRaw = String(initialData?.tocHidingLevels ?? "");
+    const nextSortingOrder = hasMeaningfulRichText(nextSortingOrderRaw) ? nextSortingOrderRaw.trim() : "";
+    const nextHidingLevels = hasMeaningfulRichText(nextHidingLevelsRaw) ? nextHidingLevelsRaw.trim() : "";
+    const rowsUnchanged = rowsEqualIgnoringIds(rowsRef.current, newRows);
+    const sortingUnchanged = tocSortingOrder === nextSortingOrder;
+    const hidingUnchanged = tocHidingLevels === nextHidingLevels;
+
+    if (rowsUnchanged && sortingUnchanged && hidingUnchanged) return;
 
     isInitializing.current = true;
     setRows(newRows);
+    setTocSortingOrder(nextSortingOrder);
+    setTocHidingLevels(nextHidingLevels);
     setEditingCell(null);
     setSaved(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
   useEffect(() => {
@@ -346,12 +397,12 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   useEffect(() => {
     if (!onDataChange) return;
     if (isInitializing.current) { isInitializing.current = false; return; }
+
     onDataChange({
       sections: rows.map(r => ({
         level: r.level, name: r.name, required: r.required,
         definition: r.definition, example: r.example, note: r.note,
         tocRequirements: r.tocRequirements, smeComments: r.smeComments,
-        // Persist captured originals so they survive save/reload cycles
         ...(r._prevName            && { _prevName: r._prevName }),
         ...(r._prevDefinition      && { _prevDefinition: r._prevDefinition }),
         ...(r._prevExample         && { _prevExample: r._prevExample }),
@@ -359,9 +410,11 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         ...(r._prevTocRequirements && { _prevTocRequirements: r._prevTocRequirements }),
         ...(r._prevSmeComments     && { _prevSmeComments: r._prevSmeComments }),
       })),
+      ...(tocSortingOrder && { tocSortingOrder }),
+      ...(tocHidingLevels && { tocHidingLevels }),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows]);
+  }, [rows, tocSortingOrder, tocHidingLevels]);
 
   useEffect(() => {
     if (!brdId) return;
@@ -433,16 +486,54 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     };
     setRows((prev) => [...prev, newRow]);
     setEditingCell({ rowId: newRow.id, col: "name" });
+    setActiveRowId(newRow.id);
   }
 
   function deleteRow(id: string) {
     setRows((prev) => prev.filter((r) => r.id !== id));
+    if (editingCell?.rowId === id) setEditingCell(null);
+    if (activeRowId === id) setActiveRowId(null);
   }
 
   function handleSave() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const root = containerRef.current;
+      if (!root) return;
+      const activeElement = document.activeElement;
+      const targetNode = e.target as Node | null;
+      const withinEditor = (activeElement ? root.contains(activeElement) : false)
+        || (targetNode ? root.contains(targetNode) : false)
+        || activeRowId !== null;
+      if (!withinEditor) return;
+
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = !!target && (
+        target.tagName === "INPUT"
+        || target.tagName === "TEXTAREA"
+        || target.isContentEditable
+      );
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        addRow();
+        return;
+      }
+
+      if (e.key === "Delete" && !isTypingTarget && activeRowId) {
+        e.preventDefault();
+        deleteRow(activeRowId);
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRowId, rows.length, editingCell]);
 
   // colIndex → column field key (matches actual Word TOC table structure)
   const TOC_COL_MAP: Record<number, string> = { 0: "level", 1: "name", 2: "required", 3: "definition", 4: "example", 5: "note", 6: "tocRequirements", 7: "smeComments" };
@@ -575,7 +666,43 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   }
 
   return (
-    <div className="space-y-4 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
+    <div ref={containerRef} className="space-y-4 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
+      <div className="space-y-3">
+        <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
+          <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+              ToC - Sorting Order · SME Checkpoint
+            </p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={tocSortingOrder}
+              onChange={setTocSortingOrder}
+              rows={3}
+              labelPrefix="SME Checkpoint"
+              placeholder="Specify the SME checkpoint guidance for ToC sorting order"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
+          <div className="px-3 py-2 bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+              ToC - Hiding Level (Tech Only)
+            </p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={tocHidingLevels}
+              onChange={setTocHidingLevels}
+              rows={3}
+              labelPrefix="SME Checkpoint"
+              placeholder="Specify levels to hide in ToC"
+            />
+          </div>
+        </div>
+      </div>
+
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-700/40">
         <div>
@@ -633,7 +760,11 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
                 const rowImgsByCol = matchRowImgs(row, idx);
                 return (
                   <React.Fragment key={row.id}>
-                    <tr className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
+                    <tr
+                      onClick={() => setActiveRowId(row.id)}
+                      onFocusCapture={() => setActiveRowId(row.id)}
+                      className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} ${activeRowId === row.id ? "ring-1 ring-blue-300 dark:ring-blue-700/40" : ""} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}
+                    >
                       {COLUMNS.map((col) => (
                         <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                           <div className="group">

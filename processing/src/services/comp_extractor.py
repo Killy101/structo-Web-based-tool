@@ -187,6 +187,7 @@ _RE_HF_MARKER    = re.compile(r'\b(?:f|c|e|m|s)\d+[a-z]?\b')
 _RE_HF_BARE      = re.compile(r'^[fcemsx]\d+[a-z]?$')
 _RE_HF_SECREF    = re.compile(r'\b(?:s\.|sch\.|para\.|art\.|reg\.)\s*\d')
 _RE_HF_BODYSTART = re.compile(r'^(?:word|words|s\.\s*\d|reg\.|sch\.|para\.)')
+_RE_COMPILATION_LINE = re.compile(r'\bcompilation\s+no\.?\s*\d+\b', re.I)
 
 # _promote_section_number_headings
 _RE_TITLE_CASE   = re.compile(r'^[A-Z][a-z]')
@@ -400,6 +401,18 @@ def _compact_amendment_markers(text: str) -> str:
     )
 
     return s
+
+
+def _should_preserve_from_hf_strip(line_txt: str) -> bool:
+    """Return True for semantically meaningful top/bottom lines.
+
+    Compilation/version lines often appear in page header zones. If we treat
+    them as repeating header/footer noise, true version changes (e.g. 172 -> 173)
+    are lost before diffing.
+    """
+    if not line_txt:
+        return False
+    return bool(_RE_COMPILATION_LINE.search(line_txt))
 
 
 def _canonical_amendment_marker(text: str) -> Optional[str]:
@@ -1067,6 +1080,8 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
                             bool(_RE_HF_SECREF.search(line_txt)) or
                             bool(_RE_HF_BODYSTART.search(line_txt))
                         )
+                        if _should_preserve_from_hf_strip(line_txt):
+                            marker_like = True
                         if line_txt in hf_noise and not marker_like:
                             continue
 
@@ -5110,8 +5125,8 @@ def _joined_equivalent(text_a: str, text_b: str) -> bool:
             return True
         # Slightly relaxed: subset numbers with very high overlap
         if s_sim >= 0.88:
-            nums_a = set(re.findall(r'\b\d+[a-z]?\b', na))
-            nums_b = set(re.findall(r'\b\d+[a-z]?\b', nb))
+            nums_a = _numeric_tokens(na)
+            nums_b = _numeric_tokens(nb)
             if (nums_a <= nums_b or nums_b <= nums_a) and _word_overlap_ratio(na, nb) >= 0.85:
                 return True
     # Content-only comparison: strip inline amendment markers [F48] etc.
@@ -5410,11 +5425,17 @@ def _convert_adjacent_del_add_runs_to_mod(chunks: List[Chunk]) -> List[Chunk]:
         else:
             min_sim, min_overlap = 0.78, 0.74
 
+        numbers_or_numeric_mod = (
+            _numbers_match(na, nb) or
+            _is_high_confidence_numeric_mod(na, nb, sim, overlap)
+        )
+        overlap_ok = overlap >= min_overlap or (numbers_or_numeric_mod and overlap >= 0.30)
+
         should_convert = (
             not _should_suppress_chunk(joined_a, joined_b) and
-            _numbers_match(na, nb) and
+            numbers_or_numeric_mod and
             sim >= min_sim and
-            overlap >= min_overlap
+            overlap_ok
         )
 
         if should_convert:
@@ -5533,7 +5554,12 @@ def _convert_high_similarity_del_add_to_mod(chunks: List[Chunk]) -> List[Chunk]:
             sim = max(_similarity(dn, an), _char_similarity(dn, an))
             if sim < 0.72:
                 continue
-            if not _numbers_match(dn, an):
+            overlap = _word_overlap_ratio(dn, an)
+            numbers_or_numeric_mod = (
+                _numbers_match(dn, an) or
+                _is_high_confidence_numeric_mod(dn, an, sim, overlap)
+            )
+            if not numbers_or_numeric_mod:
                 continue
             pos_bonus = 1.0 - (abs(ai - di) / 60.0)
             score = sim + max(0.0, pos_bonus) * 0.03
@@ -5580,6 +5606,53 @@ def _word_overlap_ratio(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def _numeric_tokens(text: str) -> set[str]:
+        """Extract numeric-like tokens, including those attached to words.
+
+        Examples matched:
+            - "172"
+            - "14" from dates like 14/03/2026
+            - "176" from strings like "Sabotage176"
+            - "10a"
+        """
+        return set(re.findall(r'(?<!\d)\d+[a-z]?(?!\d)', text, flags=re.I))
+
+
+def _is_high_confidence_numeric_mod(na: str, nb: str, sim: float, overlap: float) -> bool:
+    """Allow MOD conversion when numbers changed but textual scaffold is the same.
+
+    This addresses lines like:
+      "Compilation No. 172 Compilation date: 18/02/2026"
+      "Compilation No. 173 Compilation date: 14/03/2026"
+    where strict numeric-equality guards would otherwise keep DEL+ADD pairs.
+    """
+    nums_a = _numeric_tokens(na)
+    nums_b = _numeric_tokens(nb)
+    if not nums_a or not nums_b or nums_a == nums_b:
+        return False
+
+    wa, wb = na.split(), nb.split()
+    if len(wa) >= 2 and len(wb) >= 2:
+        same_prefix = wa[0] == wb[0] and wa[1] == wb[1]
+        if same_prefix and sim >= 0.90:
+            return True
+
+    # Compare the textual scaffold with numbers removed.
+    # This catches cases like "Sabotage176" -> "Sabotage175" where overlap
+    # metrics can look deceptively low due tokenization differences.
+    sa = re.sub(r'(?<!\d)\d+[a-z]?(?!\d)', ' ', na, flags=re.I)
+    sb = re.sub(r'(?<!\d)\d+[a-z]?(?!\d)', ' ', nb, flags=re.I)
+    sa = re.sub(r'\s+', ' ', sa).strip()
+    sb = re.sub(r'\s+', ' ', sb).strip()
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+
+    scaffold_sim = max(_similarity(sa, sb), _char_similarity(sa, sb))
+    return scaffold_sim >= 0.94 and sim >= 0.90 and overlap >= 0.30
+
+
 def _is_reflow_only(a: str, b: str) -> bool:
     """
     True when two strings contain the same legal content but differ only in
@@ -5609,8 +5682,8 @@ def _numbers_match(a: str, b: str) -> bool:
     """True when numeric tokens of the shorter text are all present in the longer.
     Distinguishes reflow (same numbers, different wrapping) from real changes
     (different years, schedule references, section numbers)."""
-    nums_a = set(re.findall(r'\b\d+[a-z]?\b', a))
-    nums_b = set(re.findall(r'\b\d+[a-z]?\b', b))
+    nums_a = _numeric_tokens(a)
+    nums_b = _numeric_tokens(b)
     if not nums_a and not nums_b:
         return True
     shorter = nums_a if len(nums_a) <= len(nums_b) else nums_b
@@ -5637,8 +5710,8 @@ def _is_linewrap_reflow(na: str, nb: str) -> bool:
     if difflib.SequenceMatcher(None, wa, wb, autojunk=False).ratio() < 0.90:
         return False
     # Symmetric number check: both must have the same set of numbers
-    nums_a = set(re.findall(r'\b\d+[a-z]?\b', na))
-    nums_b = set(re.findall(r'\b\d+[a-z]?\b', nb))
+    nums_a = _numeric_tokens(na)
+    nums_b = _numeric_tokens(nb)
     if nums_a != nums_b:
         return False
     return _word_overlap_ratio(na, nb) >= 0.85

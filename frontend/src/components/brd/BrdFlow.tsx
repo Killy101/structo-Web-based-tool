@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Upload from "./Upload";
+import CitationGuide from "./CitationGuide";
 import Scope from "./Scope";
 import Metadata from "./Metadata";
 import ContentProfile from "./ContentProf";
@@ -9,6 +10,7 @@ import Toc from "./TOC";
 import Citation from "./Citation";
 import Generate from "./Generate";
 import api from "@/app/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 interface Props {
   onClose?: () => void;
@@ -44,20 +46,30 @@ interface BrdDetailResponse {
   brdConfig?:      Record<string, unknown>;
 }
 
-const STEPS      = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
-const EDIT_STEPS = ["Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
+const FULL_FLOW_STEP_IDS = ["upload", "citationGuide", "scope", "metadata", "toc", "citationRules", "contentProfile", "generate"] as const;
+type FlowStepId = (typeof FULL_FLOW_STEP_IDS)[number];
 
-const STEP_META = [
-  { icon: "↑", desc: "Start by uploading your source documents" },
-  { icon: "◎", desc: "Define boundaries, objectives, and scope" },
-  { icon: "≡", desc: "Add project details and stakeholders" },
-  { icon: "✦", desc: "Generate and customize the table of contents" },
-  { icon: "§", desc: "Define citation formatting and standardization rules" },
-  { icon: "⬡", desc: "Analyze and structure content" },
-  { icon: "✦", desc: "Review and generate the final BRD document" },
-];
+const STEP_LABELS: Record<FlowStepId, string> = {
+  upload: "Upload",
+  citationGuide: "Citation Guide Link",
+  scope: "Scope",
+  metadata: "Metadata",
+  toc: "TOC",
+  citationRules: "Citation Rules",
+  contentProfile: "Content Profiling",
+  generate: "Generate",
+};
 
-const EDIT_STEP_META = STEP_META.slice(1);
+const STEP_META_BY_ID: Record<FlowStepId, { icon: string; desc: string }> = {
+  upload: { icon: "↑", desc: "Start by uploading your source documents" },
+  citationGuide: { icon: "⌁", desc: "Capture citation guide links and source-specific guidance" },
+  scope: { icon: "◎", desc: "Define boundaries, objectives, and scope" },
+  metadata: { icon: "≡", desc: "Add project details and stakeholders" },
+  toc: { icon: "✦", desc: "Review TOC settings and document structure" },
+  citationRules: { icon: "§", desc: "Define citation formatting and standardization rules" },
+  contentProfile: { icon: "⬡", desc: "Analyze and structure content" },
+  generate: { icon: "✦", desc: "Review and generate the final BRD document" },
+};
 
 // ── Exit / Save confirmation modal ────────────────────────────────────────────
 function SaveAndExitModal({
@@ -167,16 +179,22 @@ export default function BrdFlow({
 }: Props) {
   const isEditMode = !!initialMeta?.brdId;
   const cameFromGenerate = isEditMode; // always show "Back to Generate" in edit mode
+  const { user } = useAuth();
 
-  const toEditStep   = (s: number) => Math.max(0, s - 1);
-  const fromEditStep = (s: number) => s + 1;
+  const teamSlug = String(user?.team?.slug ?? "").toLowerCase();
+  const isPrivilegedUser = user?.role === "SUPER_ADMIN" || (teamSlug === "pre-production" && user?.role === "ADMIN");
+  const initialStatus = String(initialMeta?.status ?? "").toUpperCase();
+  const initialCanViewRestrictedFields = !["APPROVED", "ON_HOLD"].includes(initialStatus) || isPrivilegedUser;
 
-  const steps    = isEditMode ? EDIT_STEPS     : STEPS;
-  const stepMeta = isEditMode ? EDIT_STEP_META : STEP_META;
-
-  const clampedInitial = isEditMode
-    ? Math.max(0, Math.min(toEditStep(initialStep), EDIT_STEPS.length - 1))
-    : Math.max(0, Math.min(initialStep, STEPS.length - 1));
+  const visibleInitialStepIds = (isEditMode ? FULL_FLOW_STEP_IDS.slice(1) : FULL_FLOW_STEP_IDS)
+    .filter((id) => initialCanViewRestrictedFields || id !== "citationGuide");
+  const requestedInitialStepId = FULL_FLOW_STEP_IDS[Math.max(0, Math.min(initialStep, FULL_FLOW_STEP_IDS.length - 1))] ?? (isEditMode ? "citationGuide" : "upload");
+  const clampedInitial = Math.max(
+    0,
+    visibleInitialStepIds.indexOf(requestedInitialStepId) >= 0
+      ? visibleInitialStepIds.indexOf(requestedInitialStepId)
+      : 0,
+  );
 
   const [step,            setStep]            = useState(clampedInitial);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
@@ -188,6 +206,19 @@ export default function BrdFlow({
   );
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError,   setViewError]   = useState<string | null>(null);
+
+  const currentStatus = String(uploadMeta?.status ?? initialMeta?.status ?? "").toUpperCase();
+  const canViewRestrictedFields = !["APPROVED", "ON_HOLD"].includes(currentStatus) || isPrivilegedUser;
+  const flowStepIds = (isEditMode ? FULL_FLOW_STEP_IDS.slice(1) : FULL_FLOW_STEP_IDS)
+    .filter((id) => canViewRestrictedFields || id !== "citationGuide");
+  const steps = flowStepIds.map((id) => STEP_LABELS[id]);
+  const stepMeta = flowStepIds.map((id) => STEP_META_BY_ID[id]);
+  const activeStepId = flowStepIds[Math.max(0, Math.min(step, flowStepIds.length - 1))] ?? (isEditMode ? "citationGuide" : "upload");
+
+  useEffect(() => {
+    if (step <= flowStepIds.length - 1) return;
+    setStep(Math.max(0, flowStepIds.length - 1));
+  }, [flowStepIds.length, step]);
 
   // ── FIX: per-section draft buffers ────────────────────────────────────────
   // These refs accumulate onDataChange updates WITHOUT triggering re-renders
@@ -321,15 +352,14 @@ export default function BrdFlow({
   }
 
   function handleEditFromGenerate(targetFullStep: number) {
-    // No need to flush here — Generate doesn't have editable draft fields
-    setStep(isEditMode ? toEditStep(targetFullStep) : targetFullStep);
+    const targetStepId = FULL_FLOW_STEP_IDS[Math.max(0, Math.min(targetFullStep, FULL_FLOW_STEP_IDS.length - 1))] ?? "generate";
+    const nextIndex = flowStepIds.indexOf(targetStepId);
+    setStep(nextIndex >= 0 ? nextIndex : Math.max(0, flowStepIds.indexOf("scope")));
   }
 
 function renderStepContent() {
-  const fullStep = isEditMode ? fromEditStep(step) : step;
-
-  switch (fullStep) {
-    case 0:
+  switch (activeStepId) {
+    case "upload":
       return (
         <Upload
           onComplete={(data) => {
@@ -339,56 +369,61 @@ function renderStepContent() {
         />
       );
 
-    case 1:
+    case "citationGuide": {
+      const tocData = (tocDraft.current ?? uploadMeta?.toc ?? {}) as Record<string, unknown>;
+      return (
+        <CitationGuide
+          initialData={tocData as { citationStyleGuide?: { description?: string; rows?: Array<{ label?: string; value?: string }> } }}
+          onDataChange={(data) => {
+            tocDraft.current = { ...tocData, ...data };
+          }}
+        />
+      );
+    }
+
+    case "scope":
       return <Scope
         initialData={uploadMeta?.scope}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
         onDataChange={(data) => { scopeDraft.current = data; }}
       />;
 
-    case 2:
+    case "metadata":
       return (
         <Metadata
           format={uploadMeta?.format ?? "new"}
           title={getBestTitle()}
-          // ── FIX: always pass the stable uploadMeta.metadata, never the
-          //         draft output — this prevents the init loop that erases fields
           initialData={uploadMeta?.metadata}
+          scopeData={(scopeDraft.current ?? uploadMeta?.scope) as Record<string, unknown> | undefined}
           brdId={uploadMeta?.brdId}
-          // ── FIX: write to ref, not directly into uploadMeta ──
           onDataChange={(data) => { metadataDraft.current = data; }}
         />
       );
 
-    case 3: {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tocData = uploadMeta?.toc as any;
+    case "toc": {
+      const tocData = (tocDraft.current ?? uploadMeta?.toc ?? {}) as Record<string, unknown>;
       return <Toc
-        initialData={tocData}
+        initialData={tocData as { sections?: Array<{ id?: string; level?: string; name?: string; required?: string; definition?: string; example?: string; note?: string; tocRequirements?: string; smeComments?: string; }>; tocSortingOrder?: string; tocHidingLevels?: string; citationStyleGuide?: { description?: string; rows?: Array<{ label?: string; value?: string }> } }}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
-        onDataChange={(data) => { tocDraft.current = data; }}
+        onDataChange={(data) => { tocDraft.current = { ...tocData, ...data }; }}
       />;
     }
 
-    case 4:
+    case "citationRules":
       return <Citation
         initialData={uploadMeta?.citations}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
         onDataChange={(data) => { citationsDraft.current = data; }}
       />;
 
-    case 5:
+    case "contentProfile":
       return <ContentProfile
         initialData={uploadMeta?.contentProfile}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
         onDataChange={(data) => { contentProfileDraft.current = data; }}
       />;
 
-    case 6: {
+    case "generate":
       return (
         <Generate
           brdId={uploadMeta?.brdId}
@@ -408,7 +443,6 @@ function renderStepContent() {
           onComplete={onClose}
         />
       );
-    }
 
     default:
       return null;

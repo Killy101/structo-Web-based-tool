@@ -1,14 +1,26 @@
 import { Role, Status, User } from "../types";
 
+export const normalizeRole = (role: Role | string | null | undefined): Role => {
+  const normalized = String(role ?? "").trim().toUpperCase();
+  if (normalized === "SADMIN") return "SUPER_ADMIN";
+  if (normalized === "SUPER_ADMIN" || normalized === "ADMIN" || normalized === "USER") {
+    return normalized as Role;
+  }
+  return "USER";
+};
+
 // ─── ROLE CONFIG ───────────────────────────────────────────
 export const ROLE_LABELS: Record<Role, string> = {
   SUPER_ADMIN: "Super Admin",
+  SADMIN: "Super Admin",
   ADMIN: "Admin",
   USER: "User",
 };
 
 export const ROLE_BADGE_COLORS: Record<Role, string> = {
   SUPER_ADMIN:
+    "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
+  SADMIN:
     "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
   ADMIN:
     "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
@@ -17,6 +29,7 @@ export const ROLE_BADGE_COLORS: Record<Role, string> = {
 
 export const ROLE_CHART_COLORS: Record<Role, string> = {
   SUPER_ADMIN: "#6366f1",
+  SADMIN: "#6366f1",
   ADMIN: "#8b5cf6",
   USER: "#3b82f6",
 };
@@ -62,7 +75,7 @@ export const FEATURE_LABELS: Record<string, string> = {
 // Returns the display label for a user, preferring custom role name
 export const getUserRoleLabel = (user: Partial<User>): string => {
   if (user.userRole?.name) return user.userRole.name;
-  return ROLE_LABELS[user.role as Role] ?? user.role ?? "User";
+  return ROLE_LABELS[normalizeRole(user.role)] ?? user.role ?? "User";
 };
 
 // Returns the badge color for a user, using custom role color or base role color
@@ -70,7 +83,7 @@ export const getUserRoleBadgeColor = (user: Partial<User>): string => {
   if (user.userRole) {
     return "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400";
   }
-  return ROLE_BADGE_COLORS[user.role as Role] ?? ROLE_BADGE_COLORS.USER;
+  return ROLE_BADGE_COLORS[normalizeRole(user.role)] ?? ROLE_BADGE_COLORS.USER;
 };
 
 // ─── BASE ROLES FOR CREATE USER (simplified) ──────────────
@@ -102,16 +115,16 @@ export const CAN_CHANGE_PASSWORD: Partial<Record<Role, Role[]>> = {
 };
 
 export const canCreate = (actor: Role, target: Role) =>
-  CAN_CREATE_ROLES[actor]?.includes(target) ?? false;
+  CAN_CREATE_ROLES[normalizeRole(actor)]?.includes(normalizeRole(target)) ?? false;
 
 export const canDeactivate = (actor: Role, target: Role) =>
-  CAN_DEACTIVATE_ROLES[actor]?.includes(target) ?? false;
+  CAN_DEACTIVATE_ROLES[normalizeRole(actor)]?.includes(normalizeRole(target)) ?? false;
 
 export const canChangeRoleTo = (actor: Role, targetRole: Role) =>
-  ALLOWED_TARGET_ROLES[actor]?.includes(targetRole) ?? false;
+  ALLOWED_TARGET_ROLES[normalizeRole(actor)]?.includes(normalizeRole(targetRole)) ?? false;
 
 export const canChangePassword = (actor: Role, target: Role) =>
-  CAN_CHANGE_PASSWORD[actor]?.includes(target) ?? false;
+  CAN_CHANGE_PASSWORD[normalizeRole(actor)]?.includes(normalizeRole(target)) ?? false;
 
 // ─── FORMATTERS ────────────────────────────────────────────
 export const formatDate = (date: string | null): string => {

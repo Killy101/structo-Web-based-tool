@@ -15,6 +15,7 @@ interface Brd {
   sourceName?:  string;
   contentName?: string;
   status:       BrdStatus;
+  processType?: string;
   version:      string;
   lastUpdated:  string;
   geography:    string;
@@ -75,6 +76,64 @@ const STATUS_HELPER: Record<BrdStatus, string> = {
   COMPLETED: "Ready for review and approval.",
   APPROVED: "Client approved. View BRD and generate all outputs.",
   ON_HOLD: "Production questions or client comments pending.",
+};
+
+const PROCESS_TYPE_OPTIONS = [
+  "New source - Initial",
+  "Updating - Initial",
+  "New source - Evergreen",
+  "Updating - Evergreen",
+] as const;
+
+type ProcessTypeTone = "blue" | "indigo" | "emerald" | "green" | "slate";
+
+function getProcessTypeTone(processType?: string): ProcessTypeTone {
+  const value = String(processType ?? "").toLowerCase();
+  if (value.includes("new source") && value.includes("evergreen")) return "indigo";
+  if (value.includes("new source")) return "blue";
+  if (value.includes("updating") && value.includes("evergreen")) return "green";
+  if (value.includes("updating")) return "emerald";
+  return "slate";
+}
+
+const PROCESS_TYPE_SELECT_CLASSES: Record<ProcessTypeTone, string> = {
+  blue: "border-blue-200 bg-blue-50 text-blue-700 focus:ring-blue-200 dark:border-blue-700/40 dark:bg-blue-900/20 dark:text-blue-300",
+  indigo: "border-indigo-200 bg-indigo-50 text-indigo-700 focus:ring-indigo-200 dark:border-indigo-700/40 dark:bg-indigo-900/20 dark:text-indigo-300",
+  emerald: "border-emerald-200 bg-emerald-50 text-emerald-700 focus:ring-emerald-200 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300",
+  green: "border-green-200 bg-green-50 text-green-700 focus:ring-green-200 dark:border-green-700/40 dark:bg-green-900/20 dark:text-green-300",
+  slate: "border-slate-200 bg-slate-50 text-slate-700 focus:ring-slate-200 dark:border-slate-700/40 dark:bg-slate-800 dark:text-slate-300",
+};
+
+const PROCESS_TYPE_BADGE_CLASSES: Record<ProcessTypeTone, string> = {
+  blue: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700/40 dark:bg-blue-900/20 dark:text-blue-300",
+  indigo: "border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-700/40 dark:bg-indigo-900/20 dark:text-indigo-300",
+  emerald: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-900/20 dark:text-emerald-300",
+  green: "border-green-200 bg-green-50 text-green-700 dark:border-green-700/40 dark:bg-green-900/20 dark:text-green-300",
+  slate: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/40 dark:bg-slate-800 dark:text-slate-300",
+};
+
+const PROCESS_TYPE_HINT_CLASSES: Record<ProcessTypeTone, string> = {
+  blue: "text-blue-600 dark:text-blue-400",
+  indigo: "text-indigo-600 dark:text-indigo-400",
+  emerald: "text-emerald-600 dark:text-emerald-400",
+  green: "text-green-600 dark:text-green-400",
+  slate: "text-slate-500 dark:text-slate-400",
+};
+
+const PROCESS_TYPE_DOT_CLASSES: Record<ProcessTypeTone, string> = {
+  blue: "bg-blue-500",
+  indigo: "bg-indigo-500",
+  emerald: "bg-emerald-500",
+  green: "bg-green-500",
+  slate: "bg-slate-400",
+};
+
+const PROCESS_TYPE_OPTION_STYLE: Record<ProcessTypeTone, { backgroundColor: string; color: string; fontWeight: number }> = {
+  blue: { backgroundColor: "#eff6ff", color: "#1d4ed8", fontWeight: 600 },
+  indigo: { backgroundColor: "#eef2ff", color: "#4338ca", fontWeight: 600 },
+  emerald: { backgroundColor: "#ecfdf5", color: "#047857", fontWeight: 600 },
+  green: { backgroundColor: "#f0fdf4", color: "#15803d", fontWeight: 600 },
+  slate: { backgroundColor: "#f8fafc", color: "#475569", fontWeight: 500 },
 };
 
 // ── Continent / Geography ─────────────────────────────────────────
@@ -507,6 +566,7 @@ export default function BrdPage() {
   const [reuploadTargetId, setReuploadTargetId] = useState<string | null>(null);
   const [statusTarget,    setStatusTarget]    = useState<Brd | null>(null);
   const [statusUpdating,  setStatusUpdating]  = useState(false);
+  const [processTypeUpdatingId, setProcessTypeUpdatingId] = useState<string | null>(null);
   const [nextStatus,      setNextStatus]      = useState<BrdStatus>("DRAFT");
   const reuploadInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -520,6 +580,10 @@ export default function BrdPage() {
   const canChangeBrdStatus = isSuperAdmin || (isPreProductionTeam && isAdmin);
   const canDeleteBrd = isSuperAdmin || (isPreProductionTeam && isAdmin);
   const canUseTrash = canDeleteBrd;
+  const canAccessVersionHistory = isSuperAdmin || (isPreProductionTeam && isAdmin);
+  const processTypeHelpText = canEditBrd
+    ? "BRD / Process Type can be updated directly from this dashboard by Super Admin and Pre-Production Admin."
+    : "BRD / Process Type is read-only for your role and can only be updated by Super Admin or Pre-Production Admin.";
 
   const allowedStatusFilters: Array<BrdStatus | "All"> =
     isSuperAdmin || isPreProductionTeam
@@ -542,13 +606,14 @@ export default function BrdPage() {
   const handleFlowClose = useCallback(() => { setShowBrdFlow(false); fetchBrds(); }, [fetchBrds]);
 
   const exportToCsv = () => {
-    const headers = ["BRD ID", "Title", "Geography", "Status", "Version", "Format", "Last Updated"];
+    const headers = ["BRD ID", "Title", "Jurisdiction", "Status", "BRD/Process Type", "Version", "Format", "Last Updated"];
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const rows = brds.map((b) => [
       escape(b.id),
       escape(displayTitle(b)),
       escape(b.geography),
       escape(STATUS_LABEL[b.status] ?? b.status),
+      escape(b.processType ?? "—"),
       escape(b.version),
       escape(b.format === "old" ? "Old Version" : "New Version"),
       escape(b.lastUpdated),
@@ -755,13 +820,33 @@ export default function BrdPage() {
     }
   };
 
+  const submitProcessTypeChange = async (brd: Brd, processType: string) => {
+    if (!canEditBrd) return;
+
+    setProcessTypeUpdatingId(brd.id);
+    setFetchError(null);
+    try {
+      await api.patch(`/brd/${brd.id}`, { processType });
+      setBrds((prev) =>
+        prev.map((item) =>
+          item.id === brd.id ? { ...item, processType } : item,
+        ),
+      );
+    } catch (err) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setFetchError(error?.response?.data?.error ?? error?.message ?? "Failed to change BRD process type");
+    } finally {
+      setProcessTypeUpdatingId(null);
+    }
+  };
+
   const statusCounts = brds.reduce<Record<string, number>>((acc, b) => {
     acc[b.status] = (acc[b.status] || 0) + 1; return acc;
   }, {});
 
   const filtered = brds.filter(b => {
     const q = search.toLowerCase(); const name = displayTitle(b).toLowerCase();
-    const matchSearch = !q || name.includes(q) || b.title.toLowerCase().includes(q) || b.id.toLowerCase().includes(q) || b.geography.toLowerCase().includes(q);
+    const matchSearch = !q || name.includes(q) || b.title.toLowerCase().includes(q) || b.id.toLowerCase().includes(q) || b.geography.toLowerCase().includes(q) || String(b.processType ?? "").toLowerCase().includes(q);
     const matchStatus = activeFilter === "All" || b.status === activeFilter;
     const matchContinent = activeContinent === null || detectContinent(b.geography) === activeContinent;
     return matchSearch && matchStatus && matchContinent;
@@ -869,7 +954,7 @@ export default function BrdPage() {
           <select value={activeContinent ?? "All"} onChange={e => { const v = e.target.value; setActiveContinent(v === "All" ? null : v as Continent); setPage(1); }}
             className="appearance-none pl-3 pr-7 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:border-blue-400 cursor-pointer"
             style={activeContinent ? { borderColor: CONTINENT_COLOR[activeContinent], color: CONTINENT_COLOR[activeContinent] } : {}}>
-            <option value="All">All Regions</option>
+            <option value="All">All Jurisdictions</option>
             {(["Asia","Europe","Americas","Africa","Oceania","Global"] as Continent[]).map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg></span>
@@ -908,7 +993,7 @@ export default function BrdPage() {
         <div className="ml-auto flex items-center gap-2">
           <div className="relative flex items-center">
             <span className="absolute left-3 text-slate-400 pointer-events-none"><SearchIcon /></span>
-            <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search title, ID, geography…"
+            <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search title, ID, jurisdiction, process type…"
               className="pl-8 pr-8 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors" />
             {search && <button onClick={() => setSearch("")} className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg></button>}
           </div>
@@ -933,6 +1018,10 @@ export default function BrdPage() {
           <span className="text-slate-300 dark:text-slate-600">→</span>
           <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-violet-500" />Approved</span>
           <span className="inline-flex items-center gap-1.5 ml-2"><span className="w-2 h-2 rounded-full bg-slate-400" />On Hold (questions/comments)</span>
+          <span title={processTypeHelpText} className="inline-flex items-center gap-1.5 ml-2 rounded-full border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11c1.657 0 3-1.343 3-3S13.657 5 12 5 9 6.343 9 8s1.343 3 3 3zm0 0v8m-4-4h8" /></svg>
+            Process Type: Admin controlled
+          </span>
         </div>
       </div>
 
@@ -952,8 +1041,14 @@ export default function BrdPage() {
               <th className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={allPageSelected} disabled={!canDeleteBrd} onChange={toggleAll} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" /></th>
               <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">BRD ID</th>
               <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Source / Content Name</th>
-              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Geography</th>
+              <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Jurisdiction</th>
               <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Status</th>
+              <th title={processTypeHelpText} className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">
+                <div className="flex flex-col">
+                  <span>BRD / Process Type</span>
+                  <span className="mt-1 text-[9px] normal-case tracking-normal text-amber-600 dark:text-amber-400">Admin only</span>
+                </div>
+              </th>
               <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Version</th>
               <th className="px-3 py-3 text-left font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Last Updated</th>
               <th className="px-3 py-3 text-center font-bold text-slate-500 dark:text-slate-300 text-[10px] uppercase tracking-wider whitespace-nowrap">Actions</th>
@@ -961,9 +1056,9 @@ export default function BrdPage() {
           </thead>
           <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-[#1e3a5f]">
             {loading ? (
-              Array.from({length:8}).map((_,i) => <tr key={i}>{Array.from({length:8}).map((_,j) => <td key={j} className="px-3 py-3.5"><div className="h-3.5 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" style={{width:`${60+Math.random()*30}%`}}/></td>)}</tr>)
+              Array.from({length:8}).map((_,i) => <tr key={i}>{Array.from({length:9}).map((_,j) => <td key={j} className="px-3 py-3.5"><div className="h-3.5 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" style={{width:`${60+Math.random()*30}%`}}/></td>)}</tr>)
             ) : paginated.length === 0 ? (
-              <tr><td colSpan={8} className="px-4 py-20 text-center text-slate-400 dark:text-slate-500">
+              <tr><td colSpan={9} className="px-4 py-20 text-center text-slate-400 dark:text-slate-500">
                 <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3"><svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
                 <div className="text-sm font-medium text-slate-600 dark:text-slate-400">{brds.length === 0 ? "No BRDs yet" : "No results found"}</div>
                 <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{brds.length === 0 ? 'Click "New BRD" to get started.' : "Try adjusting your search or filters."}</div>
@@ -976,6 +1071,7 @@ export default function BrdPage() {
               const canReupload = canEditBrd && brd.status === "DRAFT";
               const isSelected = selected.has(brd.id);
               const continent = detectContinent(brd.geography);
+              const processTypeTone = getProcessTypeTone(brd.processType);
               return (
                 <tr key={brd.id} className={`transition-colors group ${isSelected ? "bg-blue-50 dark:bg-blue-900/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}>
                   <td className="w-10 px-3 py-3 text-center"><input type="checkbox" checked={isSelected} disabled={!canDeleteBrd} onChange={() => toggleOne(brd.id)} className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" /></td>
@@ -1007,6 +1103,41 @@ export default function BrdPage() {
                     )}
                   </td>
                   <td className="px-3 py-3 whitespace-nowrap">
+                    {canEditBrd ? (
+                      <div className="min-w-[190px]">
+                        <div className="relative">
+                          <span className={`pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-2 w-2 rounded-full ${PROCESS_TYPE_DOT_CLASSES[processTypeTone]}`} />
+                          <select
+                            title={processTypeHelpText}
+                            value={brd.processType ?? ""}
+                            data-process-type-tone={processTypeTone === "emerald" ? "green" : processTypeTone}
+                            disabled={processTypeUpdatingId === brd.id}
+                            onChange={(e) => submitProcessTypeChange(brd, e.target.value)}
+                            className={`w-full rounded-lg border px-2.5 py-1.5 pl-7 text-[11px] font-semibold focus:outline-none focus:ring-2 disabled:opacity-60 ${PROCESS_TYPE_SELECT_CLASSES[processTypeTone]}`}
+                          >
+                            {PROCESS_TYPE_OPTIONS.map((option) => {
+                              const optionTone = getProcessTypeTone(option);
+                              return (
+                                <option key={option} value={option} style={PROCESS_TYPE_OPTION_STYLE[optionTone]}>
+                                  {option}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                        <div className={`mt-1 text-[9px] ${PROCESS_TYPE_HINT_CLASSES[processTypeTone]}`}>
+                          {processTypeUpdatingId === brd.id ? "Saving…" : "Admin only"}
+                        </div>
+                      </div>
+                    ) : (
+                      <span title={processTypeHelpText} className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium ${PROCESS_TYPE_BADGE_CLASSES[processTypeTone]}`}>
+                        <span className={`h-2 w-2 rounded-full ${PROCESS_TYPE_DOT_CLASSES[processTypeTone]}`} />
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V8a4 4 0 10-8 0v3m-1 0h10a1 1 0 011 1v6a1 1 0 01-1 1H7a1 1 0 01-1-1v-6a1 1 0 011-1z" /></svg>
+                        {brd.processType ?? "—"}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded">{brd.version}</span>
                       {brd.format === "old"
@@ -1019,21 +1150,23 @@ export default function BrdPage() {
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
                       <button disabled={!canView}
-                        onClick={() => setHistoryBrd(brd)}
-                        title="View BRD Version"
+                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(7); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
+                        title="View latest BRD"
                         className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EyeIcon />
                       </button>
                       <button disabled={!canEdit}
-                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(6); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
+                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(7); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
                         title="Edit BRD (Draft, Paused, Complete, Approved, On Hold)"
                         className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EditIcon />
                       </button>
-                      <button onClick={() => setHistoryBrd(brd)} title="Version History"
-                        className="p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 dark:hover:text-violet-400 transition-colors">
-                        <HistoryIcon />
-                      </button>
+                      {canAccessVersionHistory && (
+                        <button onClick={() => setHistoryBrd(brd)} title="Version History"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 dark:hover:text-violet-400 transition-colors">
+                          <HistoryIcon />
+                        </button>
+                      )}
                       <button
                         onClick={() => openStatusModal(brd)}
                         title="Change Status"
@@ -1463,8 +1596,8 @@ export default function BrdPage() {
       )}
 
       {/* ── History Modal ── */}
-      {historyBrd && (
-        <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} canEditVersions={canEditBrd} />
+      {historyBrd && canAccessVersionHistory && (
+        <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} canEditVersions={canAccessVersionHistory} />
       )}
 
       {/* ── Status Modal ── */}

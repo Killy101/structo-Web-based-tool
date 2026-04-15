@@ -1,10 +1,12 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdTableHeaderCell from "./BrdTableHeaderCell";
+import RichTextEditableField from "./RichTextEditableField";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import BrdImage from "./BrdImage";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 import { normalizeBrdCitationText } from "@/utils/brdCitationText";
+import { brdRichTextToPlain, sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
 import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 interface CitationRow {
@@ -45,6 +47,13 @@ interface Props {
   onDataChange?: (data: Record<string, unknown>) => void;
 }
 
+function normalizeCitableValue(value: unknown): "Y" | "N" | "" {
+  const raw = String(value ?? "").trim().toUpperCase();
+  if (["Y", "YES", "TRUE", "1"].includes(raw)) return "Y";
+  if (["N", "NO", "FALSE", "0"].includes(raw)) return "N";
+  return "";
+}
+
 function buildRowsFromCitations(initialData?: Record<string, unknown>): CitationRow[] {
   if (!initialData) return [];
   const references = Array.isArray(initialData.references) ? initialData.references : [];
@@ -52,11 +61,11 @@ function buildRowsFromCitations(initialData?: Record<string, unknown>): Citation
     .filter((ref): ref is Record<string, unknown> => typeof ref === "object" && ref !== null)
     .map((ref, idx) => ({
       id:            `${Date.now()}-${idx}`,
-      level:         typeof ref.level         === "string" ? ref.level         : String(ref.level ?? ""),
-      citationRules: typeof ref.citationRules === "string" ? ref.citationRules : "",
-      sourceOfLaw:   typeof ref.sourceOfLaw   === "string" ? ref.sourceOfLaw   : "",
-      isCitable:     (typeof ref.isCitable    === "string" ? ref.isCitable     : "") as "Y" | "N" | "",
-      smeComments:   typeof ref.smeComments   === "string" ? ref.smeComments   : "",
+      level:         typeof ref.level === "string" ? ref.level : String(ref.level ?? ""),
+      citationRules: typeof ref.citationRules === "string" ? ref.citationRules : typeof ref.citation_rules === "string" ? ref.citation_rules : "",
+      sourceOfLaw:   typeof ref.sourceOfLaw === "string" ? ref.sourceOfLaw : typeof ref.source_of_law === "string" ? ref.source_of_law : "",
+      isCitable:     normalizeCitableValue(typeof ref.isCitable === "string" ? ref.isCitable : ref.is_citable),
+      smeComments:   typeof ref.smeComments === "string" ? ref.smeComments : typeof ref.sme_comments === "string" ? ref.sme_comments : "",
     }));
 }
 
@@ -104,10 +113,11 @@ function levelBadge(val: string) {
 }
 
 function citableBadge(val: string) {
-  if (val === "Y") return (
+  const normalized = normalizeCitableValue(val);
+  if (normalized === "Y") return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/40">Y</span>
   );
-  if (val === "N") return (
+  if (normalized === "N") return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-100 dark:bg-[#252d45] text-slate-500 dark:text-slate-500 border border-slate-300 dark:border-[#2a3147]">N</span>
   );
   return <span className="text-slate-400 dark:text-slate-600 text-[11px]">—</span>;
@@ -121,19 +131,23 @@ function renderCitationRulesDisplay(value: string) {
   const normalized = formatCitationRulesForDisplay(value);
   if (!normalized) return null;
 
-  return normalized.split(/\n{2,}/).map((paragraph, i) => {
-    const match = paragraph.match(/^(Example\s*:|Notes?\s*:)(.*)$/i);
-    if (!match) return <React.Fragment key={i}>{i > 0 ? "\n\n" : ""}{paragraph}</React.Fragment>;
-    return <React.Fragment key={i}>{i > 0 ? "\n\n" : ""}<span className="font-semibold">{match[1]}</span>{match[2] ?? ""}</React.Fragment>;
-  });
+  return (
+    <span
+      className="whitespace-pre-wrap break-words"
+      dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(normalized) }}
+    />
+  );
 }
 
 export default function Citation({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows]               = useState<CitationRow[]>(INITIAL_ROWS);
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
   const [saved, setSaved]             = useState(false);
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
   const [images, setImages]           = useState<CellImageMeta[]>([]);
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
+  const [citationLevelSmeCheckpoint, setCitationLevelSmeCheckpoint] = useState("");
+  const [citationRulesSmeCheckpoint, setCitationRulesSmeCheckpoint] = useState("");
   const API_BASE_CIT = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
   function getCellImgs(a: string, b: string): UploadedCellImage[] { return cellImages[cellKey(a, b)] ?? []; }
@@ -144,17 +158,36 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   }
   const isInitializing = useRef(false);
   const rowsRef = useRef<CitationRow[]>(INITIAL_ROWS);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
     const nextRows = buildRowsFromCitations(initialData);
-    if (citationRowsEqualIgnoringIds(rowsRef.current, nextRows)) return;
+    const nextCitationLevelSmeCheckpoint = typeof initialData?.citationLevelSmeCheckpoint === "string"
+      ? initialData.citationLevelSmeCheckpoint
+      : typeof initialData?.citableLevelsSmeCheckpoint === "string"
+        ? initialData.citableLevelsSmeCheckpoint
+        : "";
+    const nextCitationRulesSmeCheckpoint = typeof initialData?.citationRulesSmeCheckpoint === "string"
+      ? initialData.citationRulesSmeCheckpoint
+      : "";
+
+    if (
+      citationRowsEqualIgnoringIds(rowsRef.current, nextRows)
+      && citationLevelSmeCheckpoint === nextCitationLevelSmeCheckpoint
+      && citationRulesSmeCheckpoint === nextCitationRulesSmeCheckpoint
+    ) {
+      return;
+    }
 
     isInitializing.current = true;
     setRows(nextRows);
+    setCitationLevelSmeCheckpoint(nextCitationLevelSmeCheckpoint);
+    setCitationRulesSmeCheckpoint(nextCitationRulesSmeCheckpoint);
     setEditingCell(null);
     setSaved(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
   useEffect(() => {
@@ -167,12 +200,14 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     onDataChange({
       references: rows.map(r => ({
         level: r.level, citationRules: r.citationRules,
-        sourceOfLaw: r.sourceOfLaw, isCitable: r.isCitable,
+        sourceOfLaw: r.sourceOfLaw, isCitable: normalizeCitableValue(r.isCitable),
         smeComments: r.smeComments,
       })),
+      citationLevelSmeCheckpoint,
+      citationRulesSmeCheckpoint,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows]);
+  }, [rows, citationLevelSmeCheckpoint, citationRulesSmeCheckpoint]);
 
   useEffect(() => {
     if (!brdId) return;
@@ -234,17 +269,54 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     const newRow: CitationRow = { id: Date.now().toString(), level: "1", citationRules: "", sourceOfLaw: "", isCitable: "", smeComments: "" };
     setRows(prev => [...prev, newRow]);
     setEditingCell({ rowId: newRow.id, col: "citationRules" });
+    setActiveRowId(newRow.id);
   }
 
   function deleteRow(id: string) {
     setRows(prev => prev.filter(r => r.id !== id));
     if (editingCell?.rowId === id) setEditingCell(null);
+    if (activeRowId === id) setActiveRowId(null);
   }
 
   function handleSave() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const root = containerRef.current;
+      if (!root) return;
+      const activeElement = document.activeElement;
+      const targetNode = e.target as Node | null;
+      const withinEditor = (activeElement ? root.contains(activeElement) : false)
+        || (targetNode ? root.contains(targetNode) : false)
+        || activeRowId !== null;
+      if (!withinEditor) return;
+
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = !!target && (
+        target.tagName === "INPUT"
+        || target.tagName === "TEXTAREA"
+        || target.isContentEditable
+      );
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        addRow();
+        return;
+      }
+
+      if (e.key === "Delete" && !isTypingTarget && activeRowId) {
+        e.preventDefault();
+        deleteRow(activeRowId);
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRowId, rows.length, editingCell]);
 
   function renderCell(row: CitationRow, col: string, rowIdx: number) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
@@ -268,7 +340,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
           <option value="">—</option><option value="Y">Y</option><option value="N">N</option>
         </select>
       );
-      return <div className="cursor-pointer min-h-[24px] flex items-center" onClick={() => setEditingCell({ rowId: row.id, col })}>{citableBadge(value)}</div>;
+      return <div className="cursor-pointer min-h-[24px] flex items-center" onClick={() => setEditingCell({ rowId: row.id, col })}>{citableBadge(normalizeCitableValue(value))}</div>;
     }
 
     if (isEditing) return (
@@ -278,8 +350,12 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     return (
       <div onClick={() => setEditingCell({ rowId: row.id, col })}
         className="cursor-pointer min-h-[24px] text-[11.5px] text-slate-700 dark:text-slate-300 leading-snug whitespace-pre-wrap break-words hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
-        title={value}>
-        {value ? (shouldFmt ? renderCitationRulesDisplay(value) : value) : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
+        title={brdRichTextToPlain(value)}>
+        {value ? (
+          shouldFmt
+            ? renderCitationRulesDisplay(rawValue)
+            : <span className="whitespace-pre-wrap break-words" dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(rawValue) }} />
+        ) : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
         {cellImgs.map(img => (
           <BrdImage key={img.id}
             src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
@@ -294,7 +370,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   }
 
   return (
-    <div className="space-y-4">
+    <div ref={containerRef} className="space-y-4">
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-700/40">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation</p>
@@ -313,6 +389,38 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
         </div>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
+          <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation Level · SME Checkpoint</p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={citationLevelSmeCheckpoint}
+              onChange={setCitationLevelSmeCheckpoint}
+              rows={4}
+              labelPrefix="SME Checkpoint"
+              placeholder="Add the SME checkpoint note for citation level guidance"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
+          <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation Rules · SME Checkpoint</p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={citationRulesSmeCheckpoint}
+              onChange={setCitationRulesSmeCheckpoint}
+              rows={4}
+              labelPrefix="SME Checkpoint"
+              placeholder="Add the SME checkpoint note for citation rules"
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse" style={{ minWidth: "860px" }}>
@@ -328,7 +436,12 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight: 400 }}>
               {rows.map((row, idx) => (
-                <tr key={row.id} className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
+                <tr
+                  key={row.id}
+                  onClick={() => setActiveRowId(row.id)}
+                  onFocusCapture={() => setActiveRowId(row.id)}
+                  className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} ${activeRowId === row.id ? "ring-1 ring-blue-300 dark:ring-blue-700/40" : ""} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}
+                >
                   {COLUMNS.map(col => (
                     <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                       <div className="group">

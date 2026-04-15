@@ -16,6 +16,8 @@ match the frontend CitationRow interface:
 
 import re
 
+from .toc_extractor import _extract_section_block, _is_heading_paragraph, _iter_block_items, _normalize_heading
+
 
 # ─────────────────────────────────────────────
 # Helpers
@@ -39,6 +41,26 @@ def _normalise_citation_rule(raw: str) -> str:
     return text
 
 
+def _extract_section_note(doc, *keywords: str) -> str:
+    items = list(_iter_block_items(doc))
+    for idx, (kind, block) in enumerate(items):
+        if kind != "paragraph":
+            continue
+        if not _is_heading_paragraph(block):
+            continue
+
+        heading = _normalize_heading(getattr(block, "text", ""))
+        if not heading or not all(keyword in heading for keyword in keywords):
+            continue
+
+        texts, _ = _extract_section_block(items, idx, rich=True)
+        note = "\n".join(texts).strip()
+        if note:
+            return note
+
+    return ""
+
+
 def _is_citable_table(table) -> bool:
     """Citable-levels table, including combined 5-column legacy variants."""
     if not table.rows:
@@ -58,6 +80,31 @@ def _is_citation_rules_table(table) -> bool:
     return has_level and has_rules and has_supporting_cols
 
 
+def _merge_missing_citable_levels(references: list[dict], citable_map: dict[str, str]) -> list[dict]:
+    by_level: dict[str, dict] = {}
+    for ref in references:
+        lvl = str(ref.get("level", "")).strip()
+        if lvl:
+            merged = dict(ref)
+            if not merged.get("isCitable") and lvl in citable_map:
+                merged["isCitable"] = citable_map[lvl]
+            by_level[lvl] = merged
+
+    for lvl, citable in citable_map.items():
+        if lvl in by_level:
+            continue
+        by_level[lvl] = {
+            "id": lvl,
+            "level": lvl,
+            "citationRules": "",
+            "sourceOfLaw": "",
+            "isCitable": citable,
+            "smeComments": "",
+        }
+
+    return sorted(by_level.values(), key=lambda ref: int(ref.get("level") or 0))
+
+
 # ─────────────────────────────────────────────
 # Public extractor
 # ─────────────────────────────────────────────
@@ -68,6 +115,12 @@ def extract_citations(doc) -> dict:
     Rules tables.  Falls back to extract_citations_legacy() when the legacy
     2-column table format is detected.
     """
+    citation_level_sme_checkpoint = _extract_section_note(doc, "citable", "level")
+    citation_rules_sme_checkpoint = (
+        _extract_section_note(doc, "citation", "standardization")
+        or _extract_section_note(doc, "citation", "rule")
+    )
+
     # ── Step 1: build citable map  { level_str → "Y" | "N" } ────────────────
     citable_map: dict[str, str] = {}
     for table in doc.tables:
@@ -88,9 +141,11 @@ def extract_citations(doc) -> dict:
     if not any(_is_citation_rules_table(t) for t in doc.tables):
         result = extract_citations_legacy(doc)
         # Merge citable_map from standard table (if any) into legacy result
-        for ref in result["references"]:
-            if not ref["isCitable"] and ref["level"] in citable_map:
-                ref["isCitable"] = citable_map[ref["level"]]
+        result["references"] = _merge_missing_citable_levels(result.get("references", []), citable_map)
+        if citation_level_sme_checkpoint:
+            result["citationLevelSmeCheckpoint"] = citation_level_sme_checkpoint
+        if citation_rules_sme_checkpoint:
+            result["citationRulesSmeCheckpoint"] = citation_rules_sme_checkpoint
         return result
 
     references: list[dict] = []
@@ -152,10 +207,15 @@ def extract_citations(doc) -> dict:
 
         break   # only the first matching table
 
-    return {
+    payload = {
         "citation_style": citation_style,
-        "references":     references,
+        "references": _merge_missing_citable_levels(references, citable_map),
     }
+    if citation_level_sme_checkpoint:
+        payload["citationLevelSmeCheckpoint"] = citation_level_sme_checkpoint
+    if citation_rules_sme_checkpoint:
+        payload["citationRulesSmeCheckpoint"] = citation_rules_sme_checkpoint
+    return payload
 
 
 # ─────────────────────────────────────────────
