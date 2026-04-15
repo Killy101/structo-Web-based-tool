@@ -686,13 +686,15 @@ function renderStepContent() {
               {/* Shortcut rows */}
               <div className="px-5 py-4 space-y-1">
                 {[
-                  { keys: ["Ctrl", "→"],    desc: "Next step" },
-                  { keys: ["Ctrl", "←"],    desc: "Previous step" },
-                  { keys: ["Alt",  "→"],    desc: "Next step (alternative)" },
-                  { keys: ["Alt",  "←"],    desc: "Previous step (alternative)" },
-                  { keys: ["Ctrl", "Enter"],desc: "Next step (confirm & advance)" },
-                  { keys: ["Esc"],          desc: "Close workflow / exit" },
-                  { keys: ["?"],            desc: "Toggle this shortcuts panel" },
+                  { keys: ["Ctrl", "→"],       desc: "Next step" },
+                  { keys: ["Ctrl", "←"],       desc: "Previous step" },
+                  { keys: ["Alt",  "→"],       desc: "Next step (alternative)" },
+                  { keys: ["Alt",  "←"],       desc: "Previous step (alternative)" },
+                  { keys: ["Ctrl", "Enter"],   desc: "Next step (confirm & advance)" },
+                  { keys: ["Ctrl", "Shift", "A"], desc: "Add row (Scope / TOC / Citations / Metadata)" },
+                  { keys: ["Ctrl", "Shift", "D"], desc: "Delete focused row (or last row)" },
+                  { keys: ["Esc"],             desc: "Close workflow / exit" },
+                  { keys: ["?"],               desc: "Toggle this shortcuts panel" },
                 ].map(({ keys, desc }) => (
                   <div
                     key={desc}

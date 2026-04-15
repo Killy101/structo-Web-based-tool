@@ -237,6 +237,30 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     if (editingCell?.rowId === id) setEditingCell(null);
   }
 
+  // ── Keyboard shortcuts: Ctrl+Shift+A = add row, Ctrl+Shift+D = delete focused/last row ──
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const _kbRef = useRef({ rows, focusedRowId, addRow, deleteRow });
+  _kbRef.current = { rows, focusedRowId, addRow, deleteRow };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.ctrlKey || !e.shiftKey) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (e.key === "A" || e.key === "a") {
+        e.preventDefault();
+        _kbRef.current.addRow();
+      } else if (e.key === "D" || e.key === "d") {
+        e.preventDefault();
+        const { rows: r, focusedRowId: fid } = _kbRef.current;
+        const target = fid ?? (r.length > 0 ? r[r.length - 1].id : null);
+        if (target) _kbRef.current.deleteRow(target);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // ── End keyboard shortcuts ──────────────────────────────────────────────────
+
   function handleSave() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -294,7 +318,10 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-700/40">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation</p>
-          <p className="text-[11.5px] text-slate-500 dark:text-slate-500 mt-0.5">Click any cell to edit · {rows.length} rule{rows.length !== 1 ? "s" : ""}</p>
+          <p className="text-[11.5px] text-slate-500 dark:text-slate-500 mt-0.5">
+            Click any cell to edit · {rows.length} rule{rows.length !== 1 ? "s" : ""}
+            {" "}· <kbd className="font-mono text-[10px]">Ctrl+Shift+A</kbd> add · <kbd className="font-mono text-[10px]">Ctrl+Shift+D</kbd> delete
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={handleSave} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${saved ? "bg-emerald-500 text-white" : "bg-white dark:bg-[#1e2235] text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-[#2a3147] hover:bg-slate-50 dark:hover:bg-[#252d45]"}`}>
@@ -324,7 +351,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight: 400 }}>
               {rows.map((row, idx) => (
-                <tr key={row.id} className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
+                <tr key={row.id} className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`} onFocus={() => setFocusedRowId(row.id)}>
                   {COLUMNS.map(col => (
                     <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
                       <div className="group">

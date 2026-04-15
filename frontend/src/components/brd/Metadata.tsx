@@ -377,6 +377,30 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     setSaved(false);
   }
 
+  // ── Keyboard shortcuts: Ctrl+Shift+A = add custom row, Ctrl+Shift+D = delete focused/last ──
+  const [focusedCustomRowId, setFocusedCustomRowId] = useState<string | null>(null);
+  const _kbRef = useRef({ customRows, focusedCustomRowId, addRow, deleteCustomRow });
+  _kbRef.current = { customRows, focusedCustomRowId, addRow, deleteCustomRow };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.ctrlKey || !e.shiftKey) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (e.key === "A" || e.key === "a") {
+        e.preventDefault();
+        _kbRef.current.addRow();
+      } else if (e.key === "D" || e.key === "d") {
+        e.preventDefault();
+        const { customRows: cr, focusedCustomRowId: fid } = _kbRef.current;
+        const target = fid ?? (cr.length > 0 ? cr[cr.length - 1].id : null);
+        if (target) _kbRef.current.deleteCustomRow(target);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // ── End keyboard shortcuts ──────────────────────────────────────────────────
+
   async function handleSave() {
     if (!brdId) return;
     try {
@@ -544,7 +568,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
               {customRows.map((row, rowIdx) => {
                 const tableIdx = fields.length + rowIdx;
                 return (
-                  <tr key={row.id} className={tableIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                  <tr key={row.id} className={tableIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"} onFocus={() => setFocusedCustomRowId(row.id)}>
                     <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
                       <div className="flex items-start gap-2">
                         <div className="flex-1 space-y-1">
