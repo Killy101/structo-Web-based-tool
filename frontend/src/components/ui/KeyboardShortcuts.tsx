@@ -12,6 +12,7 @@ const SHORTCUTS: Shortcut[] = [
   // Navigation
   { keys: ["Alt", "1"], description: "Go to Dashboard", category: "Navigation" },
   { keys: ["Alt", "2"], description: "Go to BRD Sources", category: "Navigation" },
+  { keys: ["Alt", "N"], description: "New BRD (on BRD page)", category: "Navigation" },
   { keys: ["Alt", "3"], description: "Go to Compare", category: "Navigation" },
   { keys: ["Alt", "H"], description: "Go to History", category: "Navigation" },
   { keys: ["Alt", "U"], description: "Go to User Management", category: "Navigation" },
