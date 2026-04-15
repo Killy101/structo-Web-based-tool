@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
 interface Shortcut {
@@ -211,12 +211,12 @@ export default function KeyboardShortcuts() {
                       <span style={{ fontSize: 13, color: "#94a3b8" }}>{s.description}</span>
                       <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
                         {s.keys.map((k, ki) => (
-                          <>
-                            <Key key={k} label={k} />
+                          <React.Fragment key={`${k}-${ki}`}>
+                            <Key label={k} />
                             {ki < s.keys.length - 1 && (
-                              <span key={`plus-${ki}`} style={{ fontSize: 10, color: "#334155", fontWeight: 700 }}>+</span>
+                              <span style={{ fontSize: 10, color: "#334155", fontWeight: 700 }}>+</span>
                             )}
-                          </>
+                          </React.Fragment>
                         ))}
                       </div>
                     </div>
