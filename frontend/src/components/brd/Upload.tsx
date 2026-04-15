@@ -50,6 +50,9 @@ interface DuplicateCheckResponse {
 
 interface Props {
   onComplete?: (result: ExtractedResult) => void;
+  /** Called as soon as the BRD is created in the DB (before the user clicks Continue).
+   *  BrdFlow uses this to track the id so it can discard the BRD on exit. */
+  onBrdCreated?: (brdId: string) => void;
 }
 
 function deriveComplexity(contentProfile: Record<string, unknown> | undefined): string {
@@ -171,7 +174,7 @@ function TitleDuplicateModal({
   );
 }
 
-export default function Upload({ onComplete }: Props) {
+export default function Upload({ onComplete, onBrdCreated }: Props) {
   const [file,         setFile]         = useState<File | null>(null);
   const [stage,        setStage]        = useState<Stage>("idle");
   const [dragging,     setDragging]     = useState(false);
@@ -249,6 +252,10 @@ export default function Upload({ onComplete }: Props) {
       const data = res.data;
       setPipelineStep(PIPELINE_STEPS.length);
 
+      // Notify BrdFlow immediately so it can discard the BRD if the user exits
+      // before clicking "Continue" (at which point uploadMeta is still null).
+      onBrdCreated?.(data.brdId);
+
       // ── Title-level duplicate check (uses the real extracted title) ────────
       // Exclude the BRD we just created (data.brdId) so a new upload never
       // falsely matches itself.
@@ -296,10 +303,9 @@ export default function Upload({ onComplete }: Props) {
     setPipelineStep(-1);
     if (brdIdToDelete) {
       try {
-        await api.delete(`/brd/${brdIdToDelete}`);
-        await api.delete(`/brd/${brdIdToDelete}/permanent`);
+        await api.delete(`/brd/${brdIdToDelete}/discard`);
       } catch (err) {
-        console.warn("[Upload] Failed to fully discard orphaned BRD on duplicate cancel:", err);
+        console.warn("[Upload] Failed to discard orphaned BRD on duplicate cancel:", err);
       }
     }
   }
