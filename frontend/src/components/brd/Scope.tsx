@@ -1009,9 +1009,11 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
     return images
       .filter((img) => {
         const fieldLabel = normalizeScopeLabel(img.fieldLabel ?? "");
-        if (fieldLabel && candidates.includes(fieldLabel)) return true;
+        const isCheckpointSource = img.tableIndex < 0 || img.rid?.startsWith("manual-");
+        if (fieldLabel && candidates.includes(fieldLabel)) return isCheckpointSource;
+
         const cellText = normalizeScopeLabel(img.cellText ?? "");
-        return !!cellText && (cellText.includes("sme checkpoint") || candidates.includes(cellText));
+        return isCheckpointSource && !!cellText && candidates.includes(cellText);
       })
       .map((img) => toUploadedCellImage(img) as UploadedCellImage);
   }
@@ -1098,10 +1100,32 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
   function updateRow(id: string, field: string, value: string | boolean) {
     setRows(p => p.map(r => r.id === id ? { ...r, [field]: value } : r));
   }
-  function removeRow(id: string) {
-    setRows(p => p.filter(r => r.id !== id));
-    if (activeRowId === id) setActiveRowId(null);
-  }
+  function removeRow(id: string) { setRows(p => p.filter(r => r.id !== id)); }
+
+  // ── Keyboard shortcuts: Ctrl+Shift+A = add row, Ctrl+Shift+D = delete focused/last row ──
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const _kbRef = useRef({ rows, focusedRowId, addRow, removeRow });
+  _kbRef.current = { rows, focusedRowId, addRow, removeRow };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.ctrlKey || !e.shiftKey) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (e.key === "A" || e.key === "a") {
+        e.preventDefault();
+        _kbRef.current.addRow();
+      } else if (e.key === "D" || e.key === "d") {
+        e.preventDefault();
+        const { rows: r, focusedRowId: fid } = _kbRef.current;
+        const target = fid ?? (r.length > 0 ? r[r.length - 1].id : null);
+        if (target) _kbRef.current.removeRow(target);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // ── End keyboard shortcuts ──────────────────────────────────────────────────
+
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
 
   useEffect(() => {
@@ -1215,6 +1239,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
         {/* Hint */}
         <p className="text-[10.5px] text-slate-400 dark:text-slate-600 mb-2 ml-0.5" style={MONO}>
           Click any cell to edit · <span style={{ textDecoration: "line-through" }}>S</span> = strikethrough toggle · hover row for actions
+          {" "}· <kbd className="font-mono">Ctrl+Shift+A</kbd> add · <kbd className="font-mono">Ctrl+Shift+D</kbd> delete row
         </p>
 
         <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden mb-3">
@@ -1302,14 +1327,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                   const asrbIdImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "asrbId"), getPersistedCellImages(row, idx, "asrbId"));
                   const smeCommentImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "smeComments"), getPersistedCellImages(row, idx, "smeComments"));
                   return (
-                    <tr
-                      key={row.id}
-                      className={rowCls}
-                      tabIndex={-1}
-                      onClick={() => setActiveRowId(row.id)}
-                      onFocusCapture={() => setActiveRowId(row.id)}
-                      ref={el => { highlightRefs.current[row.id] = el; }}
-                    >
+                    <tr key={row.id} className={rowCls} tabIndex={-1} ref={el => { highlightRefs.current[row.id] = el; }} onFocus={() => setFocusedRowId(row.id)}>
                      <td className={CELL} style={{ minWidth: 200, maxWidth: 320 }}>
                         <div className="group">
                           <div className="flex items-start gap-1.5">

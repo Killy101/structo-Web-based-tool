@@ -19,6 +19,14 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["?"], description: "Toggle this shortcuts panel", category: "Interface" },
   { keys: ["Esc"], description: "Close any open panel or modal", category: "Interface" },
   { keys: ["Alt", "A"], description: "Toggle Live Activity feed", category: "Interface" },
+  // BRD Workflow
+  { keys: ["Ctrl", "→"], description: "Next step in BRD workflow", category: "BRD Workflow" },
+  { keys: ["Ctrl", "←"], description: "Previous step in BRD workflow", category: "BRD Workflow" },
+  { keys: ["Ctrl", "Enter"], description: "Confirm & advance to next step", category: "BRD Workflow" },
+  { keys: ["Ctrl", "Shift", "A"], description: "Add a new row (Scope / TOC / Citations / Metadata)", category: "BRD Workflow" },
+  { keys: ["Ctrl", "Shift", "D"], description: "Delete focused row (or last row if none focused)", category: "BRD Workflow" },
+  { keys: ["Esc"], description: "Close / exit BRD workflow", category: "BRD Workflow" },
+  { keys: ["?"], description: "Show BRD shortcuts panel (inside BRD)", category: "BRD Workflow" },
 ];
 
 const CATEGORIES = Array.from(new Set(SHORTCUTS.map(s => s.category)));
