@@ -805,6 +805,20 @@ export default function BrdPage() {
     setShowBrdFlow(true);
   };
 
+  // Alt+N → New BRD (only when the BRD list page is visible, not while the flow is open)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.altKey || (e.key !== "n" && e.key !== "N")) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      e.preventDefault();
+      startNewBrd();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canCreateBrd]);
+
   if (showBrdFlow) return (
     <div className="h-full w-full">
       <BrdFlow initialStep={flowInitialStep} finalStepMode={flowFinalMode} initialMeta={flowInitialMeta} onClose={handleFlowClose} />
@@ -912,8 +926,9 @@ export default function BrdPage() {
               className="pl-8 pr-8 py-1.5 w-44 sm:w-56 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-400 dark:focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-colors" />
             {search && <button onClick={() => setSearch("")} className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg></button>}
           </div>
-          <button onClick={startNewBrd} disabled={!canCreateBrd} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">
+          <button onClick={startNewBrd} disabled={!canCreateBrd} title="New BRD (Alt+N)" className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">
             <PlusIcon /> New BRD
+            <kbd className="ml-0.5 text-[9px] font-mono opacity-70 bg-white/20 px-1 py-0.5 rounded">Alt+N</kbd>
           </button>
         </div>
       </div>
