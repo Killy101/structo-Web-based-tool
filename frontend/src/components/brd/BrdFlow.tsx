@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Upload from "./Upload";
 import Scope from "./Scope";
 import Metadata from "./Metadata";
@@ -288,6 +288,62 @@ export default function BrdFlow({
     initialSnapshotRef.current = buildFlowSnapshot(uploadMeta);
   }, [uploadMeta]);
 
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement).tagName;
+    const inInput =
+      tag === "INPUT" || tag === "TEXTAREA" ||
+      (e.target as HTMLElement).isContentEditable;
+
+    // ? → toggle shortcuts panel (not in text fields)
+    if (e.key === "?" && !e.ctrlKey && !e.metaKey && !inInput) {
+      e.preventDefault();
+      setShowShortcuts(v => !v);
+      return;
+    }
+
+    // Escape → close shortcuts panel or request exit
+    if (e.key === "Escape") {
+      if (showShortcuts) { setShowShortcuts(false); return; }
+      // Let modals handle their own Escape; only fire requestClose when idle
+      if (!showExitConfirm) requestClose();
+      return;
+    }
+
+    // Don't fire navigation shortcuts while typing
+    if (inInput) return;
+
+    // Alt + → or Ctrl + → → Next step
+    if ((e.altKey || e.ctrlKey) && (e.key === "ArrowRight" || e.key === "Right")) {
+      e.preventDefault();
+      if (!isLastStep && (isEditMode || step !== 0 || uploadMeta)) next();
+      return;
+    }
+
+    // Alt + ← or Ctrl + ← → Previous step
+    if ((e.altKey || e.ctrlKey) && (e.key === "ArrowLeft" || e.key === "Left")) {
+      e.preventDefault();
+      if (step > 0) prev();
+      return;
+    }
+
+    // Ctrl + Enter → Next step
+    if (e.ctrlKey && e.key === "Enter") {
+      e.preventDefault();
+      if (!isLastStep && (isEditMode || step !== 0 || uploadMeta)) next();
+      return;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, isLastStep, isEditMode, uploadMeta, showShortcuts, showExitConfirm]);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
+  // ── End keyboard shortcuts ─────────────────────────────────────────────────
+
   function requestClose() {
     const pending = getPendingUploadMeta();
     const isBlankUpload = !isEditMode && step === 0 && !pending;
@@ -487,6 +543,17 @@ function renderStepContent() {
                 Back to Generate
               </button>
             )}
+            {/* Keyboard shortcuts toggle */}
+            <button
+              onClick={() => setShowShortcuts(v => !v)}
+              title="Keyboard shortcuts (?)"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <rect x="2" y="4" width="20" height="16" rx="2" strokeWidth={2} strokeLinecap="round"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h.01M12 8h.01M17 8h.01M7 12h.01M12 12h.01M17 12h.01M7 16h10" />
+              </svg>
+            </button>
             <button
               onClick={requestClose}
               className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
@@ -548,7 +615,12 @@ function renderStepContent() {
                 Back
               </button>
 
-              <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
+              <div className="flex flex-col items-center gap-0.5">
+                <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
+                <p className="text-[10px] text-slate-300 dark:text-slate-700 hidden sm:block">
+                  <kbd className="font-mono">Ctrl+←</kbd> · <kbd className="font-mono">Ctrl+→</kbd> to navigate · <kbd className="font-mono">?</kbd> for shortcuts
+                </p>
+              </div>
 
               <button
                 onClick={next}
@@ -576,6 +648,79 @@ function renderStepContent() {
           onConfirm={handleDiscardAndExit}
           onCancel={() => setShowExitConfirm(false)}
         />
+      )}
+
+      {/* Keyboard shortcuts panel */}
+      {showShortcuts && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
+            onClick={() => setShowShortcuts(false)}
+          />
+          <div className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(400px,90vw)]">
+            <div className="bg-white dark:bg-[#0b1a2e] rounded-2xl border border-slate-200 dark:border-blue-900/40 shadow-2xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-blue-900/30">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="2" y="4" width="20" height="16" rx="2" strokeWidth={2} strokeLinecap="round"/>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h.01M12 8h.01M17 8h.01M7 12h.01M12 12h.01M17 12h.01M7 16h10" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-900 dark:text-slate-100">BRD Keyboard Shortcuts</p>
+                    <p className="text-xs text-slate-400">Press <kbd className="font-mono">?</kbd> to open / close</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowShortcuts(false)}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Shortcut rows */}
+              <div className="px-5 py-4 space-y-1">
+                {[
+                  { keys: ["Ctrl", "→"],    desc: "Next step" },
+                  { keys: ["Ctrl", "←"],    desc: "Previous step" },
+                  { keys: ["Alt",  "→"],    desc: "Next step (alternative)" },
+                  { keys: ["Alt",  "←"],    desc: "Previous step (alternative)" },
+                  { keys: ["Ctrl", "Enter"],desc: "Next step (confirm & advance)" },
+                  { keys: ["Esc"],          desc: "Close workflow / exit" },
+                  { keys: ["?"],            desc: "Toggle this shortcuts panel" },
+                ].map(({ keys, desc }) => (
+                  <div
+                    key={desc}
+                    className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-slate-50 dark:hover:bg-blue-500/5 transition-colors"
+                  >
+                    <span className="text-sm text-slate-600 dark:text-slate-300">{desc}</span>
+                    <div className="flex items-center gap-1">
+                      {keys.map((k, i) => (
+                        <span key={k} className="flex items-center gap-1">
+                          <kbd className="inline-flex items-center justify-center px-1.5 py-0.5 min-w-[24px] h-[22px] rounded text-[11px] font-mono font-semibold bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 border-b-2 text-blue-600 dark:text-blue-400">
+                            {k}
+                          </kbd>
+                          {i < keys.length - 1 && (
+                            <span className="text-[10px] font-bold text-slate-300 dark:text-slate-600">+</span>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="px-5 py-3 border-t border-slate-100 dark:border-blue-900/30 text-center">
+                <p className="text-[11px] text-slate-400 dark:text-slate-600">Shortcuts are disabled while typing in text fields</p>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </>
   );
