@@ -21,6 +21,10 @@ export interface DiffProgress {
 
 // ── Streaming diff ────────────────────────────────────────────────────────────
 
+const _DIFF_MAX_RETRIES = 4;        // up to 4 retries (5 total attempts)
+const _DIFF_BASE_DELAY_MS = 8_000;  // first retry after ~8 s
+const _DIFF_MAX_DELAY_MS  = 60_000; // cap at 60 s
+
 /**
  * Run a diff between two PDFs, optionally with an XML baseline.
  *
@@ -29,6 +33,8 @@ export interface DiffProgress {
  *  wf3 — Same, plus Panel D is editable and the user can apply changes back to it
  *
  * Reports real-time progress via onProgress callback.
+ * Automatically retries with exponential backoff + jitter when the server returns 429
+ * (too many simultaneous compare jobs), so users in busy teams never see a hard error.
  */
 export async function apiDiff(
   oldFile:  File,
@@ -41,53 +47,85 @@ export async function apiDiff(
   form.append("new_file", newFile);
   if (xmlFile) form.append("xml_file_a", xmlFile);
 
-  const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form });
+  for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
+    const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    const msg = typeof err.detail === "object"
-      ? err.detail.error
-      : (err.detail ?? "Diff failed");
-    throw new Error(msg);
-  }
+    if (res.status === 429) {
+      if (attempt >= _DIFF_MAX_RETRIES) {
+        throw new Error(
+          "The server is handling too many comparisons right now. " +
+          "Please try again in a few minutes."
+        );
+      }
+      // Respect Retry-After if the server sends it, else use exponential backoff.
+      const retryAfterHeader = res.headers.get("Retry-After");
+      const baseDelay = retryAfterHeader
+        ? parseInt(retryAfterHeader, 10) * 1000
+        : Math.min(_DIFF_BASE_DELAY_MS * Math.pow(1.5, attempt), _DIFF_MAX_DELAY_MS);
+      // Add ±25% jitter to spread out thundering-herd retries across 20 users.
+      const jitter = (Math.random() - 0.5) * 0.5 * baseDelay;
+      const delay  = Math.round(Math.max(1000, baseDelay + jitter));
+      const secs   = Math.ceil(delay / 1000);
 
-  const reader  = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result: DiffResult | null = null;
+      if (onProgress) {
+        onProgress({
+          stage: "diff", pct: 0,
+          message: `Server is busy — retrying in ${secs}s… (attempt ${attempt + 1}/${_DIFF_MAX_RETRIES})`,
+        });
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      const msg = typeof err.detail === "object"
+        ? err.detail.error
+        : (err.detail ?? "Diff failed");
+      throw new Error(msg);
+    }
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop()!;
+    const reader  = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: DiffResult | null = null;
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if      (msg.t === "p" && onProgress) onProgress(_parseProgress(msg));
-        else if (msg.t === "r")               result = msg.d as DiffResult;
-        else if (msg.t === "e")               throw new Error(msg.msg || "Diff failed");
-      } catch (e) {
-        if (e instanceof SyntaxError) continue;
-        throw e;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if      (msg.t === "p" && onProgress) onProgress(_parseProgress(msg));
+          else if (msg.t === "r")               result = msg.d as DiffResult;
+          else if (msg.t === "e")               throw new Error(msg.msg || "Diff failed");
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          throw e;
+        }
       }
     }
+
+    if (buffer.trim()) {
+      try {
+        const msg = JSON.parse(buffer);
+        if (msg.t === "r") result = msg.d as DiffResult;
+        if (msg.t === "e") throw new Error(msg.msg || "Diff failed");
+      } catch { /* ignore parse error on trailing data */ }
+    }
+
+    if (!result) throw new Error("No result received from server");
+    return result;
   }
 
-  if (buffer.trim()) {
-    try {
-      const msg = JSON.parse(buffer);
-      if (msg.t === "r") result = msg.d as DiffResult;
-      if (msg.t === "e") throw new Error(msg.msg || "Diff failed");
-    } catch { /* ignore parse error on trailing data */ }
-  }
-
-  if (!result) throw new Error("No result received from server");
-  return result;
+  // Unreachable — the loop always returns or throws. TypeScript safety net.
+  throw new Error("No result received from server");
 }
 
 function _parseProgress(msg: Record<string, unknown>): DiffProgress {

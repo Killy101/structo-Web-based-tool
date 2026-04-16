@@ -47,10 +47,15 @@ logger = logging.getLogger(__name__)
 # ── Concurrency guard ─────────────────────────────────────────────────────────
 # Each Uvicorn worker process has its own copy of this counter, so the actual
 # system-wide ceiling is MAX_CONCURRENT_DIFFS × number-of-workers.
-# Default: 3 concurrent diffs per worker (= up to 12 on 4-worker production).
-# Set MAX_CONCURRENT_DIFFS=1 in .env to restrict to a single job per worker.
-_MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "3"))
+# Default: 5 concurrent diffs per worker (= up to 20 on 4-worker production),
+# which matches the known Updating-team workload of ~20 simultaneous users.
+# Set MAX_CONCURRENT_DIFFS in .env to tune per deployment.
+_MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "5"))
 _active_diffs: int = 0
+
+# Estimated seconds until a busy slot is likely free — sent as Retry-After.
+# Clients should use this value (+ random jitter) before retrying.
+_RETRY_AFTER_SECONDS: int = 30
 
 # Per-job wall-clock timeout. Large PDFs can take 60–120 s; 300 s is generous.
 # Set COMPARE_TIMEOUT_SECONDS in .env to override.
@@ -381,6 +386,7 @@ async def diff_pdfs_stream(
                 f"Server is busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons are "
                 "already running. Please wait a moment and try again."
             ),
+            headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
         )
     _active_diffs += 1
 
