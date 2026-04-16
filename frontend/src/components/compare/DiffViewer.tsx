@@ -367,8 +367,8 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
               side="a"
               headerStats={paneAHeaderStats}
               onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
-              onChunkClick={(id) => selectChunk(id)}
-              onScrollFraction={(f) => paneBRef.current?.scrollToFraction(f)}
+              onChunkClick={(id: number) => selectChunk(id)}
+              onScrollFraction={(f: number) => paneBRef.current?.scrollToFraction(f)}
             />
           </div>
 
@@ -392,8 +392,8 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
               side="b"
               headerStats={paneBHeaderStats}
               onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
-              onChunkClick={(id) => selectChunk(id)}
-              onScrollFraction={(f) => paneARef.current?.scrollToFraction(f)}
+              onChunkClick={(id: number) => selectChunk(id)}
+              onScrollFraction={(f: number) => paneARef.current?.scrollToFraction(f)}
             />
           </div>
         </div>
