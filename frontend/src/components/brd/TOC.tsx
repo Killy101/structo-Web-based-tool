@@ -592,7 +592,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
     const rawValue = row[col as keyof TocRow] as string;
     const value = formatTocCellForDisplay(rawValue, col);
-
+    const editorValue = brdRichTextToPlain(rawValue) || rawValue;
 
     // Handle different column types
     if (col === "required") {
@@ -695,7 +695,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
           <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-              ToC - Sorting Order · SME Checkpoint
+              ToC - Sorting Order 
             </p>
           </div>
           <div className="p-3">

@@ -204,11 +204,6 @@ export default function DiffViewer({
     [xmlSections, sectionCountMap],
   );
 
-  const totalNonEmp = useMemo(
-    () => result.chunks.filter((c) => c.kind !== "emp").length,
-    [result.chunks],
-  );
-
   const activeChunk = useMemo(
     () => result.chunks.find((c) => c.id === activeId) ?? null,
     [result.chunks, activeId],
@@ -378,11 +373,7 @@ export default function DiffViewer({
   return (
     <div className="flex flex-col h-full min-h-0 bg-white dark:bg-[#0a1020]">
       <div className="flex-1 overflow-hidden min-h-0 flex">
-
-        {/* ── Sidebar B — change list ───────────────────────────────────── */}
         <div className="flex-shrink-0 w-[250px] min-w-[250px] flex flex-col border-r border-slate-200 dark:border-white/8">
-
-          {/* Section dropdown */}
           {xmlSections && xmlSections.length > 0 && (
             <div className="px-2 pt-2 pb-1.5 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0d1424]">
               <div className="relative">
@@ -399,9 +390,7 @@ export default function DiffViewer({
                       if (first) selectChunk(first.id);
                     }
                   }}
-                  className="w-full text-[10px] font-semibold rounded-lg border border-slate-200 dark:border-white/10
-                    bg-white dark:bg-white/[0.04] text-slate-700 dark:text-slate-200
-                    pl-7 pr-7 py-1.5 focus:outline-none focus:ring-1 focus:ring-teal-500/40 appearance-none cursor-pointer"
+                  className="w-full text-[10px] font-semibold rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/[0.04] text-slate-700 dark:text-slate-200 pl-7 pr-7 py-1.5 focus:outline-none focus:ring-1 focus:ring-teal-500/40 appearance-none cursor-pointer"
                 >
                   <option value="">All Sections ({totalNonEmp})</option>
                   {sectionsWithChanges.map((s) => (
@@ -425,7 +414,6 @@ export default function DiffViewer({
             onSelect={selectChunk}
             headerActions={
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Back */}
                 <button
                   onClick={onReset}
                   className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
@@ -438,7 +426,6 @@ export default function DiffViewer({
 
                 <div className="w-px h-3.5 bg-slate-200 dark:bg-white/10" />
 
-                {/* XML toggle */}
                 <button
                   onClick={() => setXmlOpen((o) => !o)}
                   title={xmlOpen ? "Hide XML panel" : "Show XML panel"}
@@ -451,7 +438,6 @@ export default function DiffViewer({
                   &lt;/&gt; XML
                 </button>
 
-                {/* Mode badge + stats */}
                 <span className={`ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full ${
                   mode === "wf3"
                     ? "bg-violet-500/15 text-violet-400"
@@ -470,73 +456,23 @@ export default function DiffViewer({
           />
         </div>
 
-        {/* ── Right column: PDF panes + XML ────────────────────────────── */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        {/* PDF panes with draggable vertical splitter */}
-        <div ref={containerRef} className="flex-1 min-h-0 flex relative">
-          {/* Left pane */}
-          <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
-            <DiffPane
-              ref={paneARef}
-              pane={result.pane_a}
-              chunks={result.chunks}
-              activeChunkId={activeId}
-              filename={result.file_a}
-              side="a"
-              headerStats={paneAHeaderStats}
-              onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
-              onChunkClick={(id: number) => selectChunk(id)}
-              onScrollFraction={(f: number) => paneBRef.current?.scrollToFraction(f)}
-            />
-          </div>
-
-          {/* PDF panes with draggable vertical splitter */}
-          <div ref={containerRef} className="flex-1 min-h-0 flex relative overflow-hidden">
-
-          {/* Right pane */}
-          <div className="min-w-0 flex-1 overflow-hidden">
-            <DiffPane
-              ref={paneBRef}
-              pane={result.pane_b}
-              chunks={result.chunks}
-              activeChunkId={activeId}
-              filename={result.file_b}
-              side="b"
-              headerStats={paneBHeaderStats}
-              onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
-              onChunkClick={(id: number) => selectChunk(id)}
-              onScrollFraction={(f: number) => paneARef.current?.scrollToFraction(f)}
-            />
-          </div>
-        </div>
-
-        {/* XML Editor panel — below panes, with draggable horizontal splitter */}
-        {xmlOpen && (
-          <>
-            {/* Horizontal drag handle */}
-            <div
-              className="flex-shrink-0 h-1 cursor-row-resize hover:bg-blue-400/40 active:bg-blue-500/50 transition-colors relative z-10"
-              style={{ background: "var(--divider, rgba(148,163,184,0.2))" }}
-              onMouseDown={startDragH}
-            >
-              <div className="absolute -top-1 -bottom-1 inset-x-0" />
-            </div>
-            <div className="flex-shrink-0 overflow-hidden" style={{ height: xmlHeight }}>
-              <XmlPanel
-                ref={xmlRef}
-                xmlText={xmlText}
-                xmlFilename={xmlFilename}
-                activeChunk={activeChunk}
-                appliedIds={appliedIds}
-                navSpan={navSpan}
-                status={xmlStatus}
-                onLoad={loadXml}
-                onApply={applyChunk}
-                onDownload={downloadXml}
+        <div ref={containerRef} className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 flex relative overflow-hidden">
+            <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
+              <DiffPane
+                ref={paneARef}
+                pane={result.pane_a}
+                chunks={result.chunks}
+                activeChunkId={activeId}
+                filename={result.file_a}
+                side="a"
+                headerStats={paneAHeaderStats}
+                onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
+                onChunkClick={selectChunk}
+                onScrollFraction={syncScrollFromOldPane}
               />
             </div>
 
-            {/* Vertical drag handle */}
             <div
               className="flex-shrink-0 w-1 cursor-col-resize hover:bg-blue-400/40 active:bg-blue-500/50 transition-colors relative z-10"
               style={{ background: "rgba(148,163,184,0.2)" }}
@@ -545,7 +481,6 @@ export default function DiffViewer({
               <div className="absolute inset-y-0 -left-1 -right-1" />
             </div>
 
-            {/* Panel C — New PDF */}
             <div className="min-w-0 flex-1 overflow-hidden">
               <DiffPane
                 ref={paneBRef}
@@ -554,16 +489,16 @@ export default function DiffViewer({
                 activeChunkId={activeId}
                 filename={result.file_b}
                 side="b"
+                headerStats={paneBHeaderStats}
+                onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
                 onChunkClick={selectChunk}
                 onScrollFraction={syncScrollFromNewPane}
               />
             </div>
           </div>
 
-          {/* Panel D — XML (both wf2 read-only and wf3 editable) */}
           {xmlOpen && (
             <>
-              {/* Horizontal drag handle */}
               <div
                 className="flex-shrink-0 h-1 cursor-row-resize hover:bg-blue-400/40 active:bg-blue-500/50 transition-colors relative z-10"
                 style={{ background: "rgba(148,163,184,0.2)" }}
