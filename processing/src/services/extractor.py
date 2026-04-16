@@ -203,7 +203,73 @@ def _inner_html(node) -> str:
     return re.sub(r"^<[^>]+>|</[^>]+>$", "", rendered, count=1).strip()
 
 
-def _apply_run_style(run, style: dict[str, bool]) -> None:
+def _normalize_run_color(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    cleaned = html.unescape(str(value)).strip().strip('"\'')
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("#"):
+        cleaned = cleaned[1:]
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", cleaned):
+        return cleaned.upper()
+
+    rgb_match = re.fullmatch(r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*[\d.]+\s*)?\)", cleaned)
+    if rgb_match:
+        parts = [max(0, min(255, int(part))) for part in rgb_match.groups()[:3]]
+        return "".join(f"{part:02X}" for part in parts)
+
+    named_colors = {
+        "black": "000000",
+        "blue": "0000FF",
+        "green": "008000",
+        "red": "FF0000",
+        "orange": "FFA500",
+        "purple": "800080",
+        "gray": "808080",
+        "grey": "808080",
+        "white": "FFFFFF",
+        "yellow": "FFFF00",
+    }
+    return named_colors.get(cleaned.lower())
+
+
+def _merge_inline_style(style: dict[str, object] | None, node) -> dict[str, object]:
+    merged: dict[str, object] = dict(style or {
+        "bold": False,
+        "italic": False,
+        "underline": False,
+        "strike": False,
+        "color": None,
+    })
+
+    attrs = getattr(node, "attrib", {}) or {}
+    raw_style = str(attrs.get("style") or "")
+    raw_style_lower = raw_style.lower()
+
+    if "font-weight" in raw_style_lower and (
+        "bold" in raw_style_lower or re.search(r"font-weight\s*:\s*[5-9]00", raw_style_lower)
+    ):
+        merged["bold"] = True
+    if "font-style" in raw_style_lower and "italic" in raw_style_lower:
+        merged["italic"] = True
+    if ("text-decoration" in raw_style_lower or "text-decoration-line" in raw_style_lower) and "underline" in raw_style_lower:
+        merged["underline"] = True
+    if ("text-decoration" in raw_style_lower or "text-decoration-line" in raw_style_lower) and "line-through" in raw_style_lower:
+        merged["strike"] = True
+
+    color_match = re.search(r"(?:^|;)\s*color\s*:\s*([^;]+)", raw_style, flags=re.IGNORECASE)
+    color_value = color_match.group(1) if color_match else attrs.get("color")
+    normalized_color = _normalize_run_color(str(color_value) if color_value is not None else None)
+    if normalized_color:
+        merged["color"] = normalized_color
+
+    return merged
+
+
+def _apply_run_style(run, style: dict[str, object]) -> None:
     if style.get("bold"):
         run.bold = True
     if style.get("italic"):
@@ -212,9 +278,16 @@ def _apply_run_style(run, style: dict[str, bool]) -> None:
         run.underline = True
     if style.get("strike"):
         run.font.strike = True
+    if style.get("color"):
+        try:
+            from docx.shared import RGBColor
+
+            run.font.color.rgb = RGBColor.from_string(str(style["color"]))
+        except Exception:
+            pass
 
 
-def _append_text_to_paragraph(paragraph, text: str, style: dict[str, bool]) -> None:
+def _append_text_to_paragraph(paragraph, text: str, style: dict[str, object]) -> None:
     normalized = html.unescape(text.replace("\xa0", " ")).replace("\r\n", "\n").replace("\r", "\n")
     if not normalized:
         return
@@ -228,8 +301,8 @@ def _append_text_to_paragraph(paragraph, text: str, style: dict[str, bool]) -> N
         _apply_run_style(run, style)
 
 
-def _append_inline_html_to_paragraph(paragraph, node, style: dict[str, bool] | None = None) -> None:
-    current_style = dict(style or {"bold": False, "italic": False, "underline": False, "strike": False})
+def _append_inline_html_to_paragraph(paragraph, node, style: dict[str, object] | None = None) -> None:
+    current_style = _merge_inline_style(style, node)
     tag = getattr(node, "tag", None)
     if isinstance(tag, str):
         lowered = tag.lower()

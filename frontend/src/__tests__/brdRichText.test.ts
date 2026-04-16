@@ -33,4 +33,12 @@ describe("sanitizeBrdRichTextHtml", () => {
     expect(html).toContain('href="file:///C:/confluence/display/~W620263"');
     expect(html).toContain('Raut, Divya');
   });
+
+  it("removes leaked rich-text placeholder tokens from saved BRD values", () => {
+    const input = 'https://example.com/source__BRD_RICH_TEXT_1__ more text __BRD_RICH_TEXT_2__';
+    const html = sanitizeBrdRichTextHtml(input);
+
+    expect(html).not.toContain('__BRD_RICH_TEXT_');
+    expect(brdRichTextToPlain(html)).toContain('https://example.com/source');
+  });
 });

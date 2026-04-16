@@ -54,16 +54,34 @@ const DEFAULT_WHITESPACE_ROWS: WhitespaceRow[] = [
 
 /* ─────────────── Shared image helpers ─────────────── */
 const API_BASE_CP = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-const CP_KW = ["rc filename", "hardcoded path", "heading annotation", "level number", "level", "redjay", "whitespace", "innodreplace", "tags", "description", "path"];
+const CP_SECTION_ALIASES = new Set(["contentprofile", "content profile", "content_profile"]);
 const LEVEL_COL_INDEX: Record<string, number> = { levelNumber: 0, description: 1, redjayXmlTag: 2, path: 3, remarksNotes: 4 };
 const WS_COL_INDEX: Record<string, number> = { tags: 0, innodReplace: 1 };
 function normCP(s: string) { return s.toLowerCase().replace(/\s+/g, " ").trim(); }
-function matchCPImgs(pool: CellImageMeta[], ...texts: string[]): CellImageMeta[] {
-  const normed = texts.map(normCP).filter(Boolean);
-  if (!normed.length) return [];
-  return pool.filter(img => {
-    const t = normCP(img.cellText || "");
-    return normed.some(rt => t.includes(rt) || rt.includes(t));
+function isContentProfileSection(section?: string) {
+  return CP_SECTION_ALIASES.has(normCP(section || ""));
+}
+function isStoredContentProfileField(fieldLabel: string): boolean {
+  const normalized = normCP(fieldLabel);
+  return !!normalized && (
+    normalized === "headingannotation" ||
+    normalized === "heading annotation" ||
+    normalized === "rcfilename" ||
+    normalized === "rc filename" ||
+    /^lvl-\d+-/.test(normalized) ||
+    /^ws-\d+-/.test(normalized)
+  );
+}
+function matchCPImgs(pool: CellImageMeta[], row: LevelRow, rowIdx: number): CellImageMeta[] {
+  const candidates = [row.levelNumber, row.description, row.redjayXmlTag, row.path, row.remarksNotes].map(normCP).filter(Boolean);
+  if (!candidates.length) return [];
+  return pool.filter((img) => {
+    if (!isContentProfileSection(img.section) && !isStoredContentProfileField(img.fieldLabel || "")) return false;
+    if (img.rowIndex !== rowIdx + 1) return false;
+    const field = normCP(img.fieldLabel || "");
+    const text = normCP(img.cellText || "");
+    if (!field) return true;
+    return candidates.some((candidate) => field === candidate || text === candidate);
   });
 }
 
@@ -335,16 +353,15 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     setCellImages(prev => removeUploadedImageFromMap(prev, id));
   }
   function matchesContentProfileImage(img: CellImageMeta, expectedCol: number, candidates: string[], rowIndex?: number): boolean {
+    if (!isContentProfileSection(img.section) && !isStoredContentProfileField(img.fieldLabel || "")) return false;
     if (img.colIndex !== expectedCol) return false;
+    if (rowIndex === undefined || img.rowIndex !== rowIndex) return false;
+
     const normalizedField = normCP(img.fieldLabel || "");
-    if (normalizedField && candidates.some(candidate => normalizedField === candidate || normalizedField.includes(candidate) || candidate.includes(normalizedField))) {
-      return true;
-    }
     const normalizedCellText = normCP(img.cellText || "");
-    if (normalizedCellText && candidates.some(candidate => normalizedCellText === candidate || normalizedCellText.includes(candidate) || candidate.includes(normalizedCellText))) {
-      return true;
-    }
-    return rowIndex !== undefined && img.rowIndex === rowIndex && !normalizedField;
+    if (!normalizedField) return true;
+
+    return candidates.some(candidate => normalizedField === candidate || normalizedCellText === candidate);
   }
   function getPersistedLevelImages(row: LevelRow, col: string, rowIdx: number): UploadedCellImage[] {
     const expectedCol = LEVEL_COL_INDEX[col];
@@ -359,11 +376,12 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     return contentImages.filter(img => matchesContentProfileImage(img, expectedCol, candidates, rowIdx + 1)).map(img => toUploadedCellImage(img) as UploadedCellImage);
   }
   function getHeadingAnnotationImages(): UploadedCellImage[] {
-    const candidates = ["heading annotation", headingAnnotation].map(normCP).filter(Boolean);
+    const candidates = ["heading annotation", "headingannotation", headingAnnotation].map(normCP).filter(Boolean);
     return contentImages.filter(img => {
+      if (!isContentProfileSection(img.section) && !isStoredContentProfileField(img.fieldLabel || "")) return false;
       const normalizedField = normCP(img.fieldLabel || "");
       const normalizedCellText = normCP(img.cellText || "");
-      return candidates.some(candidate => normalizedField === candidate || normalizedField.includes(candidate) || normalizedCellText === candidate || normalizedCellText.includes(candidate));
+      return candidates.some(candidate => normalizedField === candidate || normalizedCellText === candidate);
     }).map(img => toUploadedCellImage(img) as UploadedCellImage);
   }
   const isInitializing = useRef(false);
@@ -442,8 +460,8 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
           const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
           all = fallback.data.images ?? [];
         }
-        const cpImgs = all.filter(img => { const t = normCP(img.cellText || ""); return CP_KW.some(kw => t.includes(kw)); });
-        setContentImages(cpImgs.length > 0 ? cpImgs : all);
+        const cpImgs = all.filter((img) => isContentProfileSection(img.section) || isStoredContentProfileField(img.fieldLabel || ""));
+        setContentImages(cpImgs);
         // Restore manually uploaded images into cellImages
         const manualImgs = all.filter((img): img is CellImageMeta & { section: string; rid: string; fieldLabel: string } => img.section === "contentProfile" && img.rid?.startsWith("manual-"));
         const restored: Record<string, UploadedCellImage[]> = {};
@@ -623,7 +641,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]">
                 {levels.map((row, idx) => {
-                  const rowImgs = matchCPImgs(contentImages, row.levelNumber, row.description, row.path);
+                  const rowImgs = matchCPImgs(contentImages, row, idx);
                   return (
                     <React.Fragment key={row.id}>
                       <tr className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>

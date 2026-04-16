@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from src.routers.process import router as process_router
 from src.routers.compare import router as compare_router
+from src.services.extraction_diagnostics import build_extraction_diagnostics, build_format_fingerprint
 from src.services.extractor import _is_mhtml_doc, convert_doc_to_docx, extract_all_sections, extract_text
 from src.services.extractors.image_extractor import extract_and_store_images_from_mhtml
 
@@ -61,6 +62,7 @@ async def process_upload(
 
         working_path = temp_path
         working_suffix = suffix
+        is_mhtml_source = suffix == ".doc" and _is_mhtml_doc(temp_path)
 
         if suffix == ".doc":
             converted_docx_path = convert_doc_to_docx(temp_path)
@@ -75,11 +77,19 @@ async def process_upload(
         result = dict(extracted)
         cell_images = result.pop("cell_images", [])
 
-        if not cell_images and suffix == ".doc" and temp_path and _is_mhtml_doc(temp_path):
+        if not cell_images and suffix == ".doc" and temp_path and is_mhtml_source:
             try:
                 cell_images = extract_and_store_images_from_mhtml(temp_path, brd_id or "")
             except Exception as exc:
                 print(f"[WARN process_upload] MHTML image fallback failed: {exc}")
+
+        format_fingerprint = build_format_fingerprint(
+            filename=filename,
+            original_suffix=suffix,
+            detected_format=str(result.get("format", "new")),
+            is_mhtml_doc=is_mhtml_source,
+        )
+        diagnostics = build_extraction_diagnostics(result, image_count=len(cell_images))
 
         if "contentProfile" in result and "content_profile" not in result:
             result["content_profile"] = result["contentProfile"]
@@ -90,6 +100,9 @@ async def process_upload(
         result["char_count"] = len(raw_text)
         result["detected_format"] = result.get("format", "new")
         result["image_metadata"] = cell_images
+        result["format_fingerprint"] = format_fingerprint
+        result["formatFingerprint"] = format_fingerprint
+        result["diagnostics"] = diagnostics
         return result
     except HTTPException:
         raise

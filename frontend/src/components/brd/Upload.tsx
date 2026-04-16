@@ -25,6 +25,25 @@ interface ImageMeta {
   blobUrl:    string | null;
 }
 
+interface FormatFingerprint {
+  extension: string;
+  container: string;
+  template: string;
+  label: string;
+}
+
+interface ProcessingWarning {
+  code: string;
+  severity: string;
+  message: string;
+  recommendation?: string;
+}
+
+interface ProcessingDiagnostics {
+  summary?: Record<string, unknown>;
+  warnings?: ProcessingWarning[];
+}
+
 interface ExtractedResult {
   brdId:          string;
   title:          string;
@@ -37,6 +56,8 @@ interface ExtractedResult {
   contentProfile: Record<string, unknown>;
   brdConfig?:     Record<string, unknown>;
   imageMetadata?: ImageMeta[];
+  diagnostics?:   ProcessingDiagnostics | null;
+  formatFingerprint?: FormatFingerprint | null;
 }
 
 // Shape returned by GET /brd/check-duplicate
@@ -478,7 +499,7 @@ export default function Upload({ onComplete, onBrdCreated }: Props) {
               {[
                 { label: "BRD ID",     value: result.brdId },
                 { label: "Title",      value: result.title },
-                { label: "Format",     value: result.format === "old" ? "Legacy Format" : "New Format" },
+                { label: "Format",     value: result.formatFingerprint?.label ?? (result.format === "old" ? "Legacy Format" : "New Format") },
                 { label: "Complexity", value: deriveComplexity(result.contentProfile) },
               ].map(({ label, value }) => (
                 <div key={label} className="px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
@@ -487,6 +508,47 @@ export default function Upload({ onComplete, onBrdCreated }: Props) {
                 </div>
               ))}
             </div>
+
+            {result.diagnostics?.summary && (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  { label: "In Scope", value: String(result.diagnostics.summary.scopeInCount ?? 0) },
+                  { label: "Excluded", value: String(result.diagnostics.summary.scopeOutCount ?? 0) },
+                  { label: "TOC", value: String(result.diagnostics.summary.tocSectionCount ?? 0) },
+                  { label: "Citations", value: String(result.diagnostics.summary.citationReferenceCount ?? 0) },
+                ].map(({ label, value }) => (
+                  <div key={label} className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950/40">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 font-mono mb-1">{label}</p>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{value}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!!result.diagnostics?.warnings?.length && (
+              <div className="rounded-lg border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-300 font-mono mb-2">
+                  Source Health Warnings
+                </p>
+                <ul className="space-y-2">
+                  {result.diagnostics.warnings.map((warning) => (
+                    <li key={warning.code} className="rounded-md border border-amber-200/80 dark:border-amber-700/30 bg-white/70 dark:bg-slate-950/20 px-3 py-2 text-sm text-amber-950 dark:text-amber-100">
+                      <div className="flex gap-2">
+                        <span className="mt-[2px]">⚠</span>
+                        <div>
+                          <p>{warning.message}</p>
+                          {warning.recommendation && (
+                            <p className="mt-1 text-xs text-amber-800 dark:text-amber-200/90">
+                              Recommended action: {warning.recommendation}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="flex justify-end pt-2">
               <button

@@ -60,13 +60,13 @@ interface XmlLevel {
 }
 
 interface ChunkPanelProps {
-  onNavigateToCompare: (chunk: PdfChunk) => void;
-  onAllChunksReady:    (chunks: PdfChunk[]) => void;
-  onFilesReady:        (oldPdf: File, newPdf: File, xmlFile?: File) => void;
-  onJobCreated:        (job: JobState) => void;
-  activeJob?:          JobState | null;
-  fileCount?:          FileCount;
-  conversionPair?:     ConversionPair;
+  onNavigateToCompare?: (chunk: PdfChunk, sourceName?: string) => void;
+  onAllChunksReady?:    (chunks: PdfChunk[]) => void;
+  onFilesReady?:        (oldPdf: File, newPdf: File, xmlFile?: File | null) => void;
+  onJobCreated?:        (job: JobState) => void;
+  activeJob?:           JobState | null;
+  fileCount?:           FileCount;
+  conversionPair?:      ConversionPair;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -568,14 +568,17 @@ export default function ChunkPanel({
   onFilesReady,
   onJobCreated,
   activeJob,
+  fileCount = 3,
   conversionPair = "pdf-to-pdf",
 }: ChunkPanelProps) {
   const exts = EXT_MAP[conversionPair];
+  const requiresXml = fileCount !== 2;
 
   const [oldFile, setOldFile] = useState<File | null>(null);
   const [newFile, setNewFile] = useState<File | null>(null);
   const [xmlFile, setXmlFile] = useState<File | null>(null);
   const [tagName, setTagName] = useState("");
+  const [sourceName, setSourceName] = useState(activeJob?.source_name ?? "");
 
   const [xmlLevels,     setXmlLevels]     = useState<XmlLevel[]>([]);
   const [loadingLevels, setLoadingLevels] = useState(false);
@@ -587,6 +590,7 @@ export default function ChunkPanel({
 
   const [chunks,      setChunks]      = useState<PdfChunk[]>([]);
   const [jobId,       setJobId]       = useState<string | null>(activeJob?.job_id ?? null);
+  const [resolvedSourceName, setResolvedSourceName] = useState<string>(activeJob?.source_name ?? "");
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [filter,      setFilter]      = useState<"all" | "changed" | "unchanged">("all");
   const [search,      setSearch]      = useState("");
@@ -625,11 +629,12 @@ export default function ChunkPanel({
             const chunksData = await chunksRes.json();
             const allChunks: PdfChunk[] = chunksData.chunks ?? [];
             setChunks(allChunks);
+            setResolvedSourceName(chunksData.source_name ?? resolvedSourceName);
             setProgress(100);
             setStage("Complete");
             setLoading(false);
-            onAllChunksReady(allChunks);
-            onJobCreated({ job_id: currentJobId, source_name: chunksData.source_name ?? "", status: "done" });
+            onAllChunksReady?.(allChunks);
+            onJobCreated?.({ job_id: currentJobId, source_name: chunksData.source_name ?? "", status: "done" });
             const firstChanged = allChunks.find((c: PdfChunk) => c.has_changes);
             if (firstChanged) setSelectedIdx(firstChanged.index);
           } catch {
@@ -641,7 +646,7 @@ export default function ChunkPanel({
         // Ignore transient polling failures
       }
     }, 800);
-  }, [stopPolling, onAllChunksReady, onJobCreated]);
+  }, [stopPolling, onAllChunksReady, onJobCreated, resolvedSourceName]);
 
   // ── Auto-detect XML structure client-side (no endpoint needed) ─────────────
   useEffect(() => {
@@ -678,10 +683,14 @@ export default function ChunkPanel({
   });
 
   const changedCount = chunks.filter(c => c.has_changes).length;
-  const canRun = !loading && !!oldFile && !!newFile && !!xmlFile && !!tagName;
+  const hasSourceName = sourceName.trim().length > 0;
+  const canRun = !loading && !!oldFile && !!newFile && hasSourceName && (!requiresXml || (!!xmlFile && !!tagName));
 
   async function handleRun() {
     if (!oldFile || !newFile) { setError("Upload both PDF files first."); return; }
+    if (!sourceName.trim()) { setError("Enter a source name first."); return; }
+    if (requiresXml && (!xmlFile || !tagName)) { setError("Upload the XML file and choose a chunk level first."); return; }
+
     setError(null);
     setLoading(true);
     setProgress(0);
@@ -690,19 +699,19 @@ export default function ChunkPanel({
     setSelectedIdx(null);
     stopPolling();
 
-    onFilesReady(oldFile, newFile, xmlFile ?? undefined);
+    onFilesReady?.(oldFile, newFile, xmlFile ?? null);
 
-    const sourceName = oldFile.name.replace(/\.[^.]+$/, "");
+    const trimmedSourceName = sourceName.trim() || oldFile.name.replace(/\.[^.]+$/, "");
     const uploadFd = new FormData();
     uploadFd.append("old_pdf", oldFile);
     uploadFd.append("new_pdf", newFile);
     if (xmlFile) uploadFd.append("xml_file", xmlFile);
-    uploadFd.append("source_name", sourceName);
+    uploadFd.append("source_name", trimmedSourceName);
 
     try {
       const uploadRes = await fetch(`${API}/compare/upload`, { method: "POST", body: uploadFd });
 
-      const uploadCt = uploadRes.headers.get("content-type") ?? "";
+      const uploadCt = uploadRes.headers?.get?.("content-type") ?? "application/json";
       if (!uploadCt.includes("application/json")) {
         throw new Error(`Server error (${uploadRes.status}): upload failed`);
       }
@@ -712,11 +721,30 @@ export default function ChunkPanel({
         throw new Error(uploadData.detail ?? "Upload failed");
       }
 
+      const immediateChunks: PdfChunk[] = uploadData.pdf_chunks ?? uploadData.chunks ?? [];
+      if (uploadData.success && immediateChunks.length > 0) {
+        setChunks(immediateChunks);
+        setResolvedSourceName(uploadData.source_name ?? trimmedSourceName);
+        setProgress(100);
+        setStage("Complete");
+        setLoading(false);
+        onAllChunksReady?.(immediateChunks);
+        onJobCreated?.({
+          job_id: uploadData.job_id ?? "direct-result",
+          source_name: uploadData.source_name ?? trimmedSourceName,
+          status: "done",
+        });
+        const firstChanged = immediateChunks.find((c: PdfChunk) => c.has_changes) ?? immediateChunks[0] ?? null;
+        if (firstChanged) setSelectedIdx(firstChanged.index);
+        return;
+      }
+
       const jid: string = uploadData.job_id ?? "";
       if (!jid) throw new Error("Upload succeeded but no job_id was returned");
 
       setJobId(jid);
-      onJobCreated({ job_id: jid, source_name: uploadData.source_name ?? sourceName, status: "uploaded" });
+      setResolvedSourceName(uploadData.source_name ?? trimmedSourceName);
+      onJobCreated?.({ job_id: jid, source_name: uploadData.source_name ?? trimmedSourceName, status: "uploaded" });
 
       setStage("Starting chunking…");
       setProgress(3);
@@ -732,7 +760,7 @@ export default function ChunkPanel({
       });
 
       // Check content-type before parsing — a server crash returns HTML, not JSON
-      const ct = res.headers.get("content-type") ?? "";
+      const ct = res.headers?.get?.("content-type") ?? "application/json";
       if (!ct.includes("application/json")) {
         const text = await res.text();
         // Extract useful info from the HTML error page if possible
@@ -743,7 +771,7 @@ export default function ChunkPanel({
         );
       }
 
-      const ct2 = res.headers.get("content-type") ?? "";
+      const ct2 = res.headers?.get?.("content-type") ?? "application/json";
       if (!ct2.includes("application/json")) {
         const txt = await res.text();
         throw new Error(`start-chunking error (${res.status}): ${txt.slice(0, 200)}`);
@@ -788,25 +816,44 @@ export default function ChunkPanel({
               accept={exts.new} file={newFile} onChange={setNewFile} color="blue" />
           </div>
 
-          {/* Step 2 — XML (required) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-600 uppercase tracking-widest">
-                Step 2 — XML file
+                Step 2 — Source name
               </p>
-              <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400">
-                Required
+              <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${hasSourceName ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400" : "bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400"}`}>
+                {hasSourceName ? "Ready" : "Required"}
               </span>
             </div>
-            <DropZone label="XML file" sublabel="The document to be updated"
-              accept=".xml" file={xmlFile} onChange={setXmlFile} color="green" />
+            <input
+              type="text"
+              value={sourceName}
+              onChange={e => setSourceName(e.target.value)}
+              placeholder="e.g. ManualV2, ProductGuide"
+              className="w-full rounded-xl border border-slate-200 dark:border-white/8 bg-white dark:bg-white/3 px-3 py-2 text-sm text-slate-700 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-600 outline-none focus:border-violet-400 dark:focus:border-violet-500/40 transition-colors"
+            />
           </div>
 
-          {/* Step 3 — Tag selector (only appears after XML uploaded) */}
-          {xmlFile && (
+          {requiresXml && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-600 uppercase tracking-widest">
+                  Step 3 — XML file
+                </p>
+                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+                  Required
+                </span>
+              </div>
+              <DropZone label="XML file" sublabel="The document to be updated"
+                accept=".xml" file={xmlFile} onChange={setXmlFile} color="green" />
+            </div>
+          )}
+
+          {/* Step 4 — Tag selector (only appears after XML uploaded) */}
+          {requiresXml && xmlFile && (
             <div className="space-y-2">
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-600 uppercase tracking-widest">
-                Step 3 — Chunk level
+                Step 4 — Chunk level
               </p>
               <p className="text-[10px] text-slate-400 dark:text-slate-600 -mt-0.5">
                 Detected from your XML
@@ -824,6 +871,7 @@ export default function ChunkPanel({
           <button
             onClick={handleRun}
             disabled={!canRun}
+            aria-label={loading ? "Processing" : "Chunk Now"}
             className="w-full py-3 rounded-xl text-sm font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             style={{
               background: canRun ? "linear-gradient(135deg,#6d28d9 0%,#4f46e5 100%)" : "rgba(109,40,217,0.12)",
@@ -920,12 +968,12 @@ export default function ChunkPanel({
                 <button
                   onClick={() => {
                     const first = chunks.find(c => c.has_changes);
-                    if (first) { setSelectedIdx(first.index); onNavigateToCompare(first); }
+                    if (first) { setSelectedIdx(first.index); onNavigateToCompare?.(first, resolvedSourceName); }
                   }}
                   disabled={changedCount === 0}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-violet-100 text-violet-700 border border-violet-200 hover:bg-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:border-violet-500/30 dark:hover:bg-violet-500/25"
                 >
-                  Review changes →
+                  Compare changes →
                 </button>
               </div>
 
@@ -961,7 +1009,7 @@ export default function ChunkPanel({
                     key={chunk.index}
                     chunk={chunk}
                     selected={selectedIdx === chunk.index}
-                    onOpen={() => { setSelectedIdx(chunk.index); onNavigateToCompare(chunk); }}
+                    onOpen={() => { setSelectedIdx(chunk.index); onNavigateToCompare?.(chunk, resolvedSourceName); }}
                   />
                 ))
               )}

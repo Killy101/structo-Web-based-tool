@@ -35,6 +35,8 @@ def _clean(value: str) -> str:
     value = " ".join(value.split())
     # Strip all varieties of surrounding quotes (straight and curly)
     value = value.strip("\"'\u201c\u201d\u2018\u2019\u00ab\u00bb")
+    if value.lower() in {"n/a", "na", "none", "null", "tbd", "-", "--", "—", "not applicable"}:
+        return ""
     return value
 
 
@@ -98,6 +100,50 @@ def _split_contributors(value: str) -> list[str]:
             return paired_names
 
     return [_clean(text)]
+
+
+_METADATA_HINTS = {
+    "metadata element", "document location", "content category name", "source name",
+    "authoritative source", "issuing agency", "content uri", "content url",
+    "publication date", "effective date", "processing date", "document type",
+}
+
+_NON_METADATA_HINTS = {
+    "document title", "reference url", "content url url for the title", "citable levels",
+    "citation rules", "toc requirements", "is level citable?", "source of law",
+}
+
+_IGNORED_METADATA_LABELS = {
+    "metadata element", "document location", "document type",
+    "innodata last edit date", "innodata fields changed",
+    "elevate last edit date", "elevate fields changed",
+}
+
+
+def _looks_like_metadata_table(table) -> bool:
+    if not table.rows:
+        return False
+
+    sample = []
+    for row in table.rows[: min(3, len(table.rows))]:
+        for cell in row.cells[: min(3, len(row.cells))]:
+            text = _clean(cell.text.replace("\xa0", " ")).lower()
+            if text:
+                sample.append(text)
+
+    if not sample:
+        return False
+
+    joined = " | ".join(sample)
+    if any(marker in joined for marker in _NON_METADATA_HINTS) and "metadata element" not in joined:
+        return False
+
+    return any(marker in joined for marker in _METADATA_HINTS)
+
+
+def _iter_candidate_metadata_tables(doc):
+    candidates = [table for table in doc.tables if _looks_like_metadata_table(table)]
+    return candidates if candidates else doc.tables
 
 
 def _is_legacy_format(doc) -> bool:
@@ -204,6 +250,7 @@ def _extract_metadata_new(doc) -> dict:
         "authoritative source":      "authoritative_source",
         "source type":               "source_type",
         "content type":              "content_type",
+        "document type":             "content_type",
         "publication date":          "publication_date",
         "last updated date":         "last_updated_date",
         "effective date":            "effective_date",
@@ -234,7 +281,7 @@ def _extract_metadata_new(doc) -> dict:
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     sme_comment_lines: list[str] = []
 
-    for table in doc.tables:
+    for table in _iter_candidate_metadata_tables(doc):
         for row in table.rows:
             cells = row.cells
             if len(cells) < 2:
@@ -273,7 +320,7 @@ def _extract_metadata_new(doc) -> dict:
                     if comment_value:
                         _append_named_comment(sme_comment_lines, raw_label, comment_value)
                     break
-            if label and not matched:
+            if label and not matched and label not in _IGNORED_METADATA_LABELS:
                 print(f"[DEBUG metadata_extractor] unmatched label: {ascii(label[:60])}")
 
     for field in (
@@ -368,6 +415,7 @@ def extract_metadata_legacy(doc) -> dict:
         "source name":               "content_category_name",
         "source type":               "source_type",
         "content type":              "content_type",
+        "document type":             "content_type",
         "publication date":          "publication_date",
         "last updated date":         "last_updated_date",
         "effective date":            "effective_date",
@@ -398,7 +446,7 @@ def extract_metadata_legacy(doc) -> dict:
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     sme_comment_lines: list[str] = []
 
-    for table in doc.tables:
+    for table in _iter_candidate_metadata_tables(doc):
         for row in table.rows:
             cells = row.cells
             if len(cells) < 2:

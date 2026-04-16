@@ -377,10 +377,12 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
                         current_heading_section = hint
                         current_context_label = ""
 
+            paragraph_xml = getattr(child, "xml", "") or ""
             if para_text and _SME_CHECKPOINT_RE.search(para_text):
                 current_context_label = "SME Checkpoint"
+            elif para_text and "w:drawing" not in paragraph_xml:
+                current_context_label = ""
 
-            paragraph_xml = getattr(child, "xml", "") or ""
             if "w:drawing" in paragraph_xml:
                 embeds = re.findall(r'r:embed="([^"]+)"', paragraph_xml)
                 field_label = _derive_section_field_label(para_text, current_heading_section, current_context_label)
@@ -838,6 +840,8 @@ def extract_and_store_images_from_mhtml(path: str, brd_id: str) -> list[dict]:
             block_text = _normalize_inline_text(" ".join(el.itertext()))
             if block_text and _SME_CHECKPOINT_RE.search(block_text):
                 current_context_label = "SME Checkpoint"
+            elif block_text:
+                current_context_label = ""
 
             imgs = el.xpath(".//img") if tag in {"p", "div", "span"} else []
             if not imgs:

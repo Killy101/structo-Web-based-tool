@@ -195,6 +195,9 @@ export default function BrdFlow({
       ? visibleInitialStepIds.indexOf(requestedInitialStepId)
       : 0,
   );
+  const flowStepIds = visibleInitialStepIds;
+  const steps = flowStepIds.map((id) => STEP_LABELS[id]);
+  const stepMeta = flowStepIds.map((id) => STEP_META_BY_ID[id]);
 
   const [step,            setStep]            = useState(clampedInitial);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
@@ -264,8 +267,9 @@ export default function BrdFlow({
   }
   // ── End FIX ───────────────────────────────────────────────────────────────
 
-  const isLastStep     = step === steps.length - 1;
-  const isGenerateStep = isLastStep;
+  const activeStepId = flowStepIds[step] ?? flowStepIds[flowStepIds.length - 1] ?? "upload";
+  const isLastStep = step === steps.length - 1;
+  const isGenerateStep = activeStepId === "generate";
 
   useEffect(() => {
     if (!initialMeta?.brdId) return;

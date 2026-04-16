@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { brdRichTextToPlain, sanitizeBrdRichTextHtml, stripLeadingBrdLabel } from "@/utils/brdRichText";
 
 interface Props {
@@ -28,20 +28,15 @@ export default function RichTextEditableField({
     return labelPrefix ? stripLeadingBrdLabel(raw, labelPrefix) : raw;
   }, [labelPrefix, value]);
 
-  const plain = brdRichTextToPlain(normalizedValue).trim();
-  const hasValue = plain.length > 0;
+  const editorValue = brdRichTextToPlain(normalizedValue);
+  const hasValue = editorValue.trim().length > 0;
+  const shouldShowEditor = isEditing || (!hasInteracted && !hasValue);
 
-  useEffect(() => {
-    if (!hasInteracted) {
-      setIsEditing(!hasValue);
-    }
-  }, [hasInteracted, hasValue]);
-
-  if (isEditing || !hasValue) {
+  if (shouldShowEditor) {
     return (
       <div className="space-y-2">
         <textarea
-          value={value}
+          value={editorValue}
           onChange={(e) => {
             setHasInteracted(true);
             onChange(e.target.value);

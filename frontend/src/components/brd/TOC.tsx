@@ -643,7 +643,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         return (
           <textarea
             autoFocus
-            value={rawValue}
+            value={editorValue}
             rows={2}
             onChange={(e) => updateCell(row.id, col, e.target.value)}
                         className="w-full text-[11.5px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-none text-slate-700 dark:text-slate-200 leading-snug"
@@ -670,7 +670,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
       return (
         <textarea
           autoFocus
-          value={rawValue}
+          value={editorValue}
           rows={2}
           onChange={(e) => updateCell(row.id, col, e.target.value)}
                     className="w-full text-[11.5px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-none text-slate-700 dark:text-slate-200 leading-snug"

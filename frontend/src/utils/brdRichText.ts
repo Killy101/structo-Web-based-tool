@@ -51,7 +51,8 @@ function sanitizeStyleAttr(style: string): string {
   }
 
   const decorationMatch = style.match(/(?:^|;)\s*text-decoration\s*:\s*([^;]+)/i);
-  const decoration = (decorationMatch?.[1] || "").toLowerCase();
+  const decorationLineMatch = style.match(/(?:^|;)\s*text-decoration-line\s*:\s*([^;]+)/i);
+  const decoration = `${decorationMatch?.[1] || ""} ${decorationLineMatch?.[1] || ""}`.toLowerCase();
   if (decoration.includes("underline")) safeRules.push("text-decoration:underline");
   if (decoration.includes("line-through")) safeRules.push("text-decoration:line-through");
 
@@ -84,6 +85,7 @@ export function sanitizeBrdRichTextHtml(value: string): string {
   if (!value) return "";
 
   let text = decodeCommonEntities(value.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+  text = text.replace(/__BRD_RICH_TEXT_\d+__/g, " ");
   const preserved: Array<[string, string]> = [];
   let idx = 0;
 
@@ -106,14 +108,20 @@ export function sanitizeBrdRichTextHtml(value: string): string {
     return safeColor ? `<span style="color:${escapeHtml(safeColor)}">` : "<span>";
   });
   keep(/<\/(?:span|font)>/gi, "</span>");
+  keep(/<(?:p|div)\b[^>]*>/gi, "");
+  keep(/<\/(?:p|div)>/gi, "<br/>");
+  keep(/<(?:ul|ol)\b[^>]*>/gi, "");
+  keep(/<\/(?:ul|ol)>/gi, "<br/>");
+  keep(/<li\b[^>]*>/gi, "• ");
+  keep(/<\/li>/gi, "<br/>");
   keep(/<br\s*\/?>/gi, "<br/>");
-  keep(/<(?:em|i)>/gi, "<em>");
+  keep(/<(?:em|i)\b[^>]*>/gi, "<em>");
   keep(/<\/(?:em|i)>/gi, "</em>");
-  keep(/<(?:strong|b)>/gi, "<strong>");
+  keep(/<(?:strong|b)\b[^>]*>/gi, "<strong>");
   keep(/<\/(?:strong|b)>/gi, "</strong>");
-  keep(/<(?:s|strike|del)>/gi, "<s>");
+  keep(/<(?:s|strike|del)\b[^>]*>/gi, "<s>");
   keep(/<\/(?:s|strike|del)>/gi, "</s>");
-  keep(/<u>/gi, "<u>");
+  keep(/<u\b[^>]*>/gi, "<u>");
   keep(/<\/u>/gi, "</u>");
   keep(/(?:https?:\/\/|file:\/\/\/)[^\s<]+/gi, (match) => buildAnchorTag(match));
 
@@ -125,16 +133,49 @@ export function sanitizeBrdRichTextHtml(value: string): string {
   return text;
 }
 
+export function hasBrdRichTextMarkup(value: string): boolean {
+  return /<[^>]+>/.test(value || "");
+}
+
+export function hasBrdRichTextColor(value: string): boolean {
+  return /(?:style\s*=\s*['"][^'"]*color\s*:|<font\b[^>]*color=)/i.test(value || "");
+}
+
+export function extractBrdRichTextHref(value: string): string {
+  if (!value) return "";
+
+  const decoded = decodeCommonEntities(value);
+  const anchorMatch = decoded.match(/<a\b[^>]*href=(['"])(.*?)\1/i);
+  if (anchorMatch) {
+    return sanitizeUrl(anchorMatch[2]) ?? anchorMatch[2].trim();
+  }
+
+  const urlMatch = decoded.match(/(?:https?:\/\/|file:\/\/\/)[^\s"'<>]+/i);
+  if (urlMatch) {
+    return sanitizeUrl(urlMatch[0]) ?? urlMatch[0].trim();
+  }
+
+  return "";
+}
+
 export function brdRichTextToPlain(value: string): string {
   if (!value) return "";
-  return decodeCommonEntities(
-    value
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<a\b[^>]*href=(['"])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, "$3 ($2)")
-      .replace(/<\/?(?:em|i|strong|b|s|strike|del|u|span|font|a)(?:\s+[^>]*)?>/gi, "")
-  ).trim();
+
+  const normalized = value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/__BRD_RICH_TEXT_\d+__/g, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<a\b[^>]*href=(['"])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, "$3 ($2)")
+    .replace(/<(?:li)\b[^>]*>/gi, "• ")
+    .replace(/<\/(?:li|p|div|tr|table|ul|ol|tbody|thead)>/gi, "\n")
+    .replace(/<(?:p|div|ul|ol|table|tbody|thead|tr)\b[^>]*>/gi, "");
+
+  return decodeCommonEntities(stripTags(normalized))
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function stripLeadingBrdLabel(value: string, label: string): string {

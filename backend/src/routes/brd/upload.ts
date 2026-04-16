@@ -26,19 +26,40 @@ const upload = multer({
   },
 })
 
+interface FormatFingerprint {
+  extension: string
+  container: string
+  template: string
+  label: string
+}
+
+interface ProcessingWarning {
+  code: string
+  severity: string
+  message: string
+}
+
+interface ProcessingDiagnostics {
+  summary?: Record<string, unknown>
+  warnings?: ProcessingWarning[]
+}
+
 interface ProcessingResult {
-  filename:         string
-  char_count:       number
-  detected_format?: string   // "new" | "old" — auto-detected by Python
-  scope:            Record<string, unknown>
-  metadata:         Record<string, unknown>
-  toc:              Record<string, unknown>
-  citations:        Record<string, unknown>
-  content_profile?: Record<string, unknown>
-  contentProfile?:  Record<string, unknown>
-  brd_config?:      Record<string, unknown>
-  brdConfig?:       Record<string, unknown>
-  image_metadata?:  ImageMeta[]
+  filename:           string
+  char_count:         number
+  detected_format?:   string   // "new" | "old" — auto-detected by Python
+  scope:              Record<string, unknown>
+  metadata:           Record<string, unknown>
+  toc:                Record<string, unknown>
+  citations:          Record<string, unknown>
+  content_profile?:   Record<string, unknown>
+  contentProfile?:    Record<string, unknown>
+  brd_config?:        Record<string, unknown>
+  brdConfig?:         Record<string, unknown>
+  image_metadata?:    ImageMeta[]
+  diagnostics?:       ProcessingDiagnostics
+  format_fingerprint?: FormatFingerprint
+  formatFingerprint?:  FormatFingerprint
 }
 
 interface ImageMeta {
@@ -252,6 +273,8 @@ router.post(
         contentProfile: extractedContentProfile,
         brdConfig: cleanBrdConfig,
         imageMetadata: responseImageMetadata,
+        diagnostics: extracted.diagnostics ?? null,
+        formatFingerprint: extracted.format_fingerprint ?? extracted.formatFingerprint ?? null,
       })
 
     } catch (err) {
@@ -371,6 +394,8 @@ router.post(
         contentProfile: extractedContentProfile,
         brdConfig:      extractedBrdConfig ?? null,
         imageMetadata:  responseImageMetadata,
+        diagnostics:    extracted.diagnostics ?? null,
+        formatFingerprint: extracted.format_fingerprint ?? extracted.formatFingerprint ?? null,
       })
     } catch (err) {
       console.log('[POST /brd/re-upload/:brdId]', err)

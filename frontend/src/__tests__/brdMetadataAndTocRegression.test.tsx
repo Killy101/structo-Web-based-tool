@@ -4,8 +4,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import Metadata from "../components/brd/Metadata";
 import Toc from "../components/brd/TOC";
 import Generate from "../components/brd/Generate";
+import Scope from "../components/brd/Scope";
 import CitationGuide from "../components/brd/CitationGuide";
 import Citation from "../components/brd/Citation";
+import RichTextEditableField from "../components/brd/RichTextEditableField";
 import api from "@/app/lib/api";
 
 jest.mock("@/app/lib/api", () => ({
@@ -338,6 +340,35 @@ describe("BRD metadata and document structure regressions", () => {
     expect(screen.getAllByPlaceholderText(/e\.g\. link/i)).toHaveLength(1);
   });
 
+  it("lets imported citation guide fields be edited or removed without snapping back", async () => {
+    render(
+      <CitationGuide
+        initialData={{
+          citationStyleGuide: {
+            description: "SME Checkpoint Initial note",
+            rows: [
+              { label: "SME Checkpoint", value: "Remove me" },
+              { label: "Product Owner", value: "Raut, Divya" },
+            ],
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByLabelText(/remove citation guide row/i)[0]);
+
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("SME Checkpoint")).not.toBeInTheDocument();
+    });
+
+    const remainingLabel = screen.getByDisplayValue("Product Owner");
+    fireEvent.change(remainingLabel, { target: { value: "Guide Owner" } });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("Guide Owner")).toBeInTheDocument();
+    });
+  });
+
   it("renders scope checkpoint images and preserves red bold scope text in the review screen", async () => {
     mockedApi.get.mockResolvedValue({
       data: {
@@ -369,11 +400,13 @@ describe("BRD metadata and document structure regressions", () => {
             in_scope: [
               {
                 document_title: '<span style="color:red"><strong>Critical scope item</strong></span>',
-                regulator_url: "",
-                content_url: "",
+                regulator_url: '<span style="color:#ae2e24"><a href="https://example.com/ref">https://example.com/ref</a></span>',
+                content_url: '<span style="color:#ae2e24"><a href="https://example.com/content">https://example.com/content</a></span>',
                 issuing_authority: "Agency",
                 asrb_id: "ASRB-100",
                 sme_comments: "Review required",
+                initial_evergreen: '<span style="color:#ae2e24"><strong>Evergreen</strong></span>',
+                date_of_ingestion: '<span style="color:#ae2e24"><strong>WIP</strong></span>',
               },
             ],
           },
@@ -386,8 +419,36 @@ describe("BRD metadata and document structure regressions", () => {
     });
 
     expect(screen.getByText(/critical scope item/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /example\.com\/ref/i })).toHaveAttribute("href", "https://example.com/ref");
     expect(container.innerHTML).toContain("color:red");
     expect(container.querySelector("strong")).not.toBeNull();
+  });
+
+  it("preserves rich-text scope links in the editable scope table", async () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    render(
+      <Scope
+        brdId="BRD-123"
+        initialData={{
+          smeCheckpoint: "Scope note",
+          in_scope: [
+            {
+              document_title: '<span style="color:#ae2e24"><strong>Ordonnance test</strong></span>',
+              regulator_url: '<span style="color:#ae2e24"><a href="https://example.com/reference">https://example.com/reference</a></span>',
+              content_url: '<span style="color:#ae2e24"><a href="https://example.com/content">https://example.com/content</a></span>',
+              issuing_authority: "Authority",
+              asrb_id: "ASRB-777",
+              sme_comments: "Review",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /example\.com\/reference/i })).toHaveAttribute("href", "https://example.com/reference");
+    });
   });
 
   it("allows citation SME checkpoint text to be cleared and propagated", async () => {
@@ -418,6 +479,24 @@ describe("BRD metadata and document structure regressions", () => {
         citationLevelSmeCheckpoint: "",
         citationRulesSmeCheckpoint: "Rules note",
       }));
+    });
+  });
+
+  it("shows plain text in the SME checkpoint editor even when the source value contains BRD HTML", async () => {
+    const onChange = jest.fn();
+
+    render(
+      <RichTextEditableField
+        value={'<strong><span style="color:#1D7AFC">SME Checkpoint:</span></strong><br/><span style="text-decoration:line-through">Old rule</span><br/>New guidance'}
+        onChange={onChange}
+        labelPrefix="SME Checkpoint"
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/old rule/i));
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("Old rule\nNew guidance");
     });
   });
 

@@ -345,6 +345,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   function renderCell(row: CitationRow, col: string, rowIdx: number) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
     const rawValue  = row[col as keyof CitationRow] as string;
+    const editorValue = brdRichTextToPlain(rawValue) || rawValue;
     const shouldFmt = col === "citationRules" || col === "smeComments";
     const value     = shouldFmt ? formatCitationRulesForDisplay(rawValue) : rawValue;
     const cellImgs  = getCellImages(row, col, rowIdx);
@@ -368,7 +369,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     }
 
     if (isEditing) return (
-      <textarea autoFocus value={rawValue} rows={2} onChange={e => updateCell(row.id, col, e.target.value)}         className="w-full text-[11.5px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-none text-slate-700 dark:text-slate-200 leading-snug" />
+      <textarea autoFocus value={editorValue} rows={2} onChange={e => updateCell(row.id, col, e.target.value)}         className="w-full text-[11.5px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-none text-slate-700 dark:text-slate-200 leading-snug" />
     );
 
     return (

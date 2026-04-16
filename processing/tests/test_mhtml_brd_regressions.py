@@ -10,7 +10,7 @@ from docx.oxml.ns import qn
 from docx.shared import RGBColor
 
 from src.services.extractor import _fallback_from_text, convert_doc_to_docx, extract_all
-from src.services.extractors.scope_extractor import _is_non_data_scope_row, extract_scope
+from src.services.extractors.scope_extractor import _is_non_data_scope_row, extract_scope, extract_scope_from_file
 from src.services.extractors.image_extractor import extract_and_store_images_from_mhtml
 from src.services.extractors.toc_extractor import extract_toc
 from src.services.extractors.citations_extractor import _normalise_citation_rule, extract_citations
@@ -133,7 +133,8 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
         scope = extract_scope(doc)
 
         self.assertEqual(len(scope["out_of_scope"]), 1)
-        self.assertEqual(scope["out_of_scope"][0]["document_title"], "Withdrawn German Parliament source")
+        self.assertIn("Withdrawn German Parliament source", scope["out_of_scope"][0]["document_title"])
+        self.assertIn("<s>", scope["out_of_scope"][0]["document_title"])
         self.assertEqual(scope["out_of_scope"][0]["sme_comments"], "SME requested removal from monitoring")
         self.assertEqual(len(scope["in_scope"]), 1)
 
@@ -162,6 +163,65 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
         self.assertIn("Haibach, Julia", rows[0]["value"])
         self.assertIn("Nov 13, 2025", rows[0]["value"])
         self.assertIn("Nov 17, 2025", rows[0]["value"])
+
+    def test_mhtml_scope_preserves_red_rich_text_rows(self):
+        mhtml = textwrap.dedent(
+            '''\
+            MIME-Version: 1.0
+            Content-Type: multipart/related; boundary="BOUNDARY"
+
+            --BOUNDARY
+            Content-Type: text/html; charset=UTF-8
+            Content-Transfer-Encoding: quoted-printable
+            Content-Location: file:///C:/exported.html
+
+            <html>
+              <body>
+                <h2>Scope</h2>
+                <table>
+                  <tr>
+                    <th>Document Title</th>
+                    <th>Reference URL</th>
+                    <th>Content URL</th>
+                    <th>Issuing Authority</th>
+                    <th>ASRB ID</th>
+                    <th>SME Comments</th>
+                    <th>Initial / Evergreen</th>
+                    <th>Date of Ingestion</th>
+                  </tr>
+                  <tr>
+                    <td><p><span style="color:#ae2e24;"><strong>Ordonnance test</strong></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><a href="https://example.com/reference">https://example.com/reference</a></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><a href="https://example.com/content">https://example.com/content</a></span></p></td>
+                    <td><p>Swiss Authority</p></td>
+                    <td><p>ASRB-321</p></td>
+                    <td><p><span style="color:#ae2e24;"><strong>Needs review</strong></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><strong>Evergreen</strong></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><strong>WIP</strong></span></p></td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+
+            --BOUNDARY--
+            '''
+        )
+
+        with tempfile.NamedTemporaryFile("w", suffix=".doc", delete=False, encoding="utf-8") as handle:
+            handle.write(mhtml)
+            doc_path = handle.name
+
+        try:
+            scope = extract_scope_from_file(doc_path)
+        finally:
+            Path(doc_path).unlink(missing_ok=True)
+
+        self.assertEqual(len(scope["in_scope"]), 1)
+        row = scope["in_scope"][0]
+        self.assertIn("color:#ae2e24", row["document_title"])
+        self.assertIn("https://example.com/reference", row["regulator_url"])
+        self.assertIn("color:#ae2e24", row["initial_evergreen"])
+        self.assertIn("color:#ae2e24", row["date_of_ingestion"])
 
     def test_extracts_metadata_images_from_mhtml_confluence_exports(self):
         mhtml = textwrap.dedent(
@@ -627,6 +687,103 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
         self.assertIn("Raut, Divya", guide["rows"][0]["value"])
         self.assertIn("file:///C:/confluence/display/~W620263", guide["rows"][0]["value"])
         self.assertEqual(guide["rows"][1]["label"], "SME")
+
+    def test_extract_toc_ignores_scope_and_metadata_rows_inside_citation_guide_block(self):
+        doc = Document()
+        doc.add_heading("Citation Style Guide Link", level=2)
+
+        guide_table = doc.add_table(rows=1, cols=2)
+        guide_table.rows[0].cells[0].text = "Product Owner"
+        guide_table.rows[0].cells[1].text = "Raut, Divya"
+
+        polluted_scope_table = doc.add_table(rows=2, cols=2)
+        polluted_scope_table.rows[0].cells[0].text = "Document Title"
+        polluted_scope_table.rows[0].cells[1].text = "Reference URL"
+        polluted_scope_table.rows[1].cells[0].text = "Swiss Ordinance"
+        polluted_scope_table.rows[1].cells[1].text = "https://example.com/ordinance"
+
+        polluted_metadata_table = doc.add_table(rows=2, cols=2)
+        polluted_metadata_table.rows[0].cells[0].text = "Source Name"
+        polluted_metadata_table.rows[0].cells[1].text = "Document Location"
+        polluted_metadata_table.rows[1].cells[0].text = "Swiss Federal Council"
+        polluted_metadata_table.rows[1].cells[1].text = "Switzerland"
+
+        doc.add_heading("Document Structure", level=1)
+        levels = doc.add_table(rows=2, cols=8)
+        headers = ["Level", "Name", "Required", "Definition", "Example", "Note", "TOC Requirements", "SME Comments"]
+        for idx, header in enumerate(headers):
+            levels.rows[0].cells[idx].text = header
+        levels.rows[1].cells[0].text = "2"
+        levels.rows[1].cells[1].text = "Title"
+
+        extracted = extract_toc(doc)
+        guide = extracted.get("citationStyleGuide") or {}
+        labels = [row["label"] for row in guide.get("rows") or []]
+
+        self.assertIn("Product Owner", labels)
+        self.assertNotIn("Document Title", labels)
+        self.assertNotIn("Source Name", labels)
+
+    def test_mhtml_scope_urls_do_not_absorb_evergreen_or_ingestion_values(self):
+        mhtml = textwrap.dedent(
+            '''\
+            MIME-Version: 1.0
+            Content-Type: multipart/related; boundary="BOUNDARY"
+
+            --BOUNDARY
+            Content-Type: text/html; charset=UTF-8
+            Content-Transfer-Encoding: quoted-printable
+            Content-Location: file:///C:/exported.html
+
+            <html>
+              <body>
+                <h2>Scope</h2>
+                <table>
+                  <tr>
+                    <th>Document Title</th>
+                    <th>Reference URL</th>
+                    <th>Content URL</th>
+                    <th>Issuing Authority</th>
+                    <th>ASRB ID</th>
+                    <th>SME Comments</th>
+                    <th>Initial / Evergreen</th>
+                    <th>Date of Ingestion</th>
+                  </tr>
+                  <tr>
+                    <td><p><span style="color:#ae2e24;"><strong>Ordonnance test</strong></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><a href="https://www.fedlex.admin.ch/eli/cc/2000/243/fr">https://www.fedlex.admin.ch/eli/cc/2000/243/fr</a></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><a href="https://www.fedlex.admin.ch/eli/cc/2000/243/fr">https://www.fedlex.admin.ch/eli/cc/2000/243/fr</a></span></p></td>
+                    <td><p>Swiss Authority</p></td>
+                    <td><p>ASRB-321</p></td>
+                    <td><p>This has been repealed and therefore does not need to be ingested.</p></td>
+                    <td><p><span style="color:#ae2e24;"><strong>Evergreen</strong></span></p></td>
+                    <td><p><span style="color:#ae2e24;"><strong>WIP</strong></span></p></td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+
+            --BOUNDARY--
+            '''
+        )
+
+        with tempfile.NamedTemporaryFile("w", suffix=".doc", delete=False, encoding="utf-8") as handle:
+            handle.write(mhtml)
+            doc_path = handle.name
+
+        try:
+            scope = extract_scope_from_file(doc_path)
+        finally:
+            Path(doc_path).unlink(missing_ok=True)
+
+        self.assertEqual(len(scope["in_scope"]), 1)
+        row = scope["in_scope"][0]
+        self.assertIn("https://www.fedlex.admin.ch/eli/cc/2000/243/fr", row["regulator_url"])
+        self.assertIn("https://www.fedlex.admin.ch/eli/cc/2000/243/fr", row["content_url"])
+        self.assertNotIn("Evergreen", row["regulator_url"])
+        self.assertNotIn("WIP", row["content_url"])
+        self.assertIn("Evergreen", row["initial_evergreen"])
+        self.assertIn("WIP", row["date_of_ingestion"])
 
 if __name__ == "__main__":
     unittest.main()

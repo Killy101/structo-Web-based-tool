@@ -224,7 +224,20 @@ def _extract_citation_style_guide(items, start_idx: int) -> dict[str, Any] | Non
     rows: list[dict[str, str]] = []
     description_parts = [text for text in texts if text]
 
+    def looks_like_non_guide_table(table) -> bool:
+        if not table.rows:
+            return False
+        header_cells = [_clean(cell.text).lower() for cell in table.rows[0].cells]
+        joined = " | ".join(header_cells)
+        return any(marker in joined for marker in [
+            "document title", "reference url", "content url", "issuing authority",
+            "metadata element", "document location", "source name", "content category name",
+            "level", "required", "definition", "toc requirements", "source of law",
+        ])
+
     for table in tables:
+        if looks_like_non_guide_table(table):
+            continue
         for row in table.rows:
             rich_cells = [_cell_value(cell, rich=True) for cell in row.cells]
             plain_cells = [_clean(cell.text) for cell in row.cells]

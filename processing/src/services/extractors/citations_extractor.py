@@ -16,7 +16,7 @@ match the frontend CitationRow interface:
 
 import re
 
-from .toc_extractor import _extract_section_block, _is_heading_paragraph, _iter_block_items, _normalize_heading
+from .toc_extractor import _cell_value, _clean_rich_text, _extract_section_block, _is_heading_paragraph, _iter_block_items, _normalize_heading
 
 
 # ─────────────────────────────────────────────
@@ -25,7 +25,10 @@ from .toc_extractor import _extract_section_block, _is_heading_paragraph, _iter_
 
 def _clean(text: str) -> str:
     normalized = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"\s+", " ", normalized).strip()
+    cleaned = re.sub(r"\s+", " ", normalized).strip()
+    if cleaned.lower() in {"n/a", "na", "none", "null", "tbd", "-", "--", "—", "not applicable"}:
+        return ""
+    return cleaned
 
 
 def _normalise_level(raw: str) -> str:
@@ -36,7 +39,8 @@ def _normalise_level(raw: str) -> str:
 
 
 def _normalise_citation_rule(raw: str) -> str:
-    text = _clean(raw)
+    rich_tag_pattern = re.compile(r"</?(?:span|font|strong|b|em|i|u|s|strike|del|br|a|p|div)\b", re.IGNORECASE)
+    text = _clean_rich_text(raw) if rich_tag_pattern.search(raw or "") else _clean(raw)
     text = re.sub(r"(?i)(\S)(example\s*:)", r"\1 \2", text)
     return text
 
@@ -70,14 +74,19 @@ def _is_citable_table(table) -> bool:
 
 
 def _is_citation_rules_table(table) -> bool:
-    """Rules table, including combined `Citable Levels` layouts with a `Rules` column."""
+    """Rules table, including combined layouts with explicit Rules / Source of Law columns."""
     if not table.rows:
         return False
-    header = " ".join(c.text for c in table.rows[0].cells).lower()
-    has_level = "level" in header
-    has_rules = "citation rules" in header or re.search(r"\brules?\b", header) is not None
-    has_supporting_cols = "source" in header or "citable" in header
-    return has_level and has_rules and has_supporting_cols
+
+    header_cells = [_clean(c.text).lower() for c in table.rows[0].cells]
+    has_level = any(cell.startswith("level") or "citation level" in cell for cell in header_cells)
+    has_source_of_law = any("source of law" in cell for cell in header_cells)
+    has_explicit_rules_col = any(
+        cell == "rules" or cell.startswith("citation rules") or cell.startswith("citation rule")
+        for cell in header_cells
+    )
+
+    return has_level and (has_source_of_law or has_explicit_rules_col)
 
 
 def _merge_missing_citable_levels(references: list[dict], citable_map: dict[str, str]) -> list[dict]:
@@ -175,13 +184,17 @@ def extract_citations(doc) -> dict:
             cells = row.cells
             n = len(cells)
 
-            def cell(idx: int | None) -> str:
-                return _clean(cells[idx].text) if idx is not None and idx < n else ""
+            def cell(idx: int | None, rich: bool = False) -> str:
+                if idx is None or idx >= n:
+                    return ""
+                if rich:
+                    return _clean_rich_text(_cell_value(cells[idx], rich=True))
+                return _clean(cells[idx].text)
 
             lvl_raw       = cell(col_level)
-            citation_rule = _normalise_citation_rule(cell(col_rules))
-            source_of_law = cell(col_source)
-            sme_comments  = cell(col_sme)
+            citation_rule = _normalise_citation_rule(cell(col_rules, rich=True))
+            source_of_law = cell(col_source, rich=True)
+            sme_comments  = cell(col_sme, rich=True)
 
             lvl = _normalise_level(lvl_raw)
             if not lvl:
@@ -192,9 +205,11 @@ def extract_citations(doc) -> dict:
             if raw_citable:
                 citable = "Y" if raw_citable.startswith("Y") else "N" if raw_citable.startswith("N") else raw_citable
 
-            # Use level-2 citation rule as the overall style description
-            if lvl == "2" and citation_rule and citation_rule.upper() != "N":
-                citation_style = citation_rule
+            # Prefer level-2 citation rule as the overall style description,
+            # but fall back to the first meaningful populated rule.
+            if citation_rule and citation_rule.upper() != "N":
+                if lvl == "2" or citation_style.startswith("Hierarchical pipe-separated"):
+                    citation_style = citation_rule
 
             references.append({
                 "id":            str(ri),
@@ -290,11 +305,15 @@ def extract_citations_legacy(doc) -> dict:
             cells = row.cells
             n = len(cells)
 
-            def cell(idx: int) -> str:
-                return _clean(cells[idx].text) if idx < n else ""
+            def cell(idx: int, rich: bool = False) -> str:
+                if idx >= n:
+                    return ""
+                if rich:
+                    return _clean_rich_text(_cell_value(cells[idx], rich=True))
+                return _clean(cells[idx].text)
 
             lvl_raw       = cell(col_level)
-            citation_rule = _normalise_citation_rule(cell(col_rules))
+            citation_rule = _normalise_citation_rule(cell(col_rules, rich=True))
             lvl           = _normalise_level(lvl_raw)
 
             if not lvl:

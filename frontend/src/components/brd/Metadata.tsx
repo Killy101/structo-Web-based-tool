@@ -330,13 +330,14 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
         const visibleImages = all.filter((img) => {
           const section = normalizeLookupKey(img.section || "");
           const fieldKey = normalizeLookupKey(img.fieldLabel || "");
-          const cellTextKey = normalizeLookupKey(img.cellText || "");
+          const isManualImage = !!img.rid?.startsWith("manual-");
+          const isMetadataSection = section === "metadata";
+          const isLegacyMetadataImage = (!section || section === "unknown")
+            && (img.tableIndex === 5 || metadataImageKeys.has(fieldKey));
 
-          return section === "metadata"
-            || metadataImageKeys.has(fieldKey)
-            || metadataImageKeys.has(cellTextKey)
-            || ((!section || section === "unknown") && img.tableIndex === 5)
-            || (!!img.rid?.startsWith("manual-") && (section === "metadata" || metadataImageKeys.has(fieldKey)));
+          return isMetadataSection
+            || isLegacyMetadataImage
+            || (isManualImage && (isMetadataSection || metadataImageKeys.has(fieldKey)));
         });
 
         setImages(visibleImages);
@@ -364,29 +365,23 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     const labelNorm = normalizeLookupKey(field.label);
     const keyNorm = normalizeLookupKey(field.key);
 
-    const byLabel = images.filter((img) => {
+    const byFieldLabel = images.filter((img) => {
       const section = normalizeLookupKey(img.section || "");
       if (section && section !== "metadata" && section !== "unknown") return false;
 
       const fieldLabelNorm = normalizeLookupKey(img.fieldLabel || "");
-      const cellTextNorm = normalizeLookupKey(img.cellText || "");
-      const candidates = [fieldLabelNorm, cellTextNorm].filter(Boolean);
-
-      return candidates.some((candidate) =>
-        candidate === labelNorm
-        || candidate === keyNorm
-        || candidate.includes(labelNorm)
-        || candidate.includes(keyNorm)
-        || labelNorm.includes(candidate)
-        || keyNorm.includes(candidate),
-      );
+      return !!fieldLabelNorm && (fieldLabelNorm === labelNorm || fieldLabelNorm === keyNorm);
     });
-    if (byLabel.length > 0) return byLabel;
+    if (byFieldLabel.length > 0) return byFieldLabel;
 
-    // Fallback: metadata header = row 0, data starts at row 1
-    return images.filter(img =>
-      img.rowIndex === fieldArrayIndex + 1 && (!img.fieldLabel || img.fieldLabel.trim() === "")
-    );
+    const expectedRowIndex = fieldArrayIndex + 1;
+    return images.filter((img) => {
+      const section = normalizeLookupKey(img.section || "");
+      const fieldLabelNorm = normalizeLookupKey(img.fieldLabel || "");
+      if (section && section !== "metadata" && section !== "unknown") return false;
+      if (fieldLabelNorm) return false;
+      return img.rowIndex === expectedRowIndex;
+    });
   }
 
   function setValue(key: string, val: string) {

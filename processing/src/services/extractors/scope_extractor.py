@@ -866,7 +866,6 @@ def extract_scope(doc) -> dict:
             try:
                 rich_text = _cell_value(cell, rich=True)
                 if rich_text:
-                    rich_text = re.sub(r"</?(?:s|strike|del)>", "", rich_text, flags=re.IGNORECASE)
                     return rich_text.strip()
             except Exception:
                 pass
@@ -980,45 +979,72 @@ def _extract_scope_from_mhtml(path: str) -> dict:
                     return ki
             return None
 
-        title_col   = find_col(["document title"])
-        ref_col     = find_col(["reference url", "parent url"])
-        content_col = find_col(["content url", "url for the title"])
-        auth_col    = find_col(["issuing authority"])
-        asrb_col    = find_col(["asrb id"])
-        sme_col     = find_col(["sme comments", "sme checkpoint"])
+        title_col      = find_col(["document title"])
+        ref_col        = find_col(["reference url", "parent url"])
+        content_col    = find_col(["content url", "url for the title"])
+        auth_col       = find_col(["issuing authority"])
+        asrb_col       = find_col(["asrb id"])
+        sme_col        = find_col(["sme comments", "sme checkpoint"])
+        evergreen_col  = find_col(["initial / evergreen", "initial/ evergreen", "initial/evergreen", "initial evergreen"])
+        ingestion_col  = find_col(["date of ingestion"])
 
         in_scope: list[dict] = []
         out_of_scope: list[dict] = []
         seen: set[str] = set()
 
+        def preserve_inline_html(cell_html: str) -> str:
+            if not cell_html:
+                return ""
+            html = cell_html.replace("\xa0", " ").replace("&nbsp;", " ")
+            html = re.sub(r"__BRD_RICH_TEXT_\d+__", " ", html)
+            html = re.sub(r"</?(?:p|div|td|tr|table|tbody|thead|th)[^>]*>", "", html, flags=re.IGNORECASE)
+            html = re.sub(r"<br\s*/?>", "<br/>", html, flags=re.IGNORECASE)
+            html = re.sub(r">\s+<", "><", html)
+            return html.strip()
+
+        def gcell_plain(cells_html, idx):
+            if idx is None or idx >= len(cells_html):
+                return ""
+            return strip_tags(cells_html[idx]).strip()
+
+        def gcell_rich(cells_html, idx):
+            if idx is None or idx >= len(cells_html):
+                return ""
+            rich_value = preserve_inline_html(cells_html[idx])
+            plain_value = strip_tags(rich_value).strip()
+            if re.search(r"</?(?:span|font|strong|b|em|i|u|s|strike|del|a)\b|style\s*=\s*['\"][^'\"]*color\s*:", rich_value, re.IGNORECASE):
+                return rich_value
+            return plain_value
+
         for row_html in rows[1:]:
             cells_html = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.IGNORECASE)
-            cells = [strip_tags(c) for c in cells_html]
 
-            def gcell(idx):
-                if idx is None or idx >= len(cells): return ""
-                return cells[idx].strip()
-
-            doc_title = gcell(title_col)
+            doc_title = gcell_rich(cells_html, title_col)
             if not doc_title:
                 continue
 
-            title_low = doc_title.lower()
+            title_low = strip_tags(doc_title).lower()
             if any(m in title_low for m in _BOILERPLATE_MARKERS):
                 continue
             if _row_is_header_text(title_low):
                 continue
 
-            ref_url, _ = extract_url_and_note_from_text(gcell(ref_col))
-            content_url, content_note = extract_url_and_note_from_text(gcell(content_col))
+            reference_cell = gcell_rich(cells_html, ref_col)
+            content_cell = gcell_rich(cells_html, content_col)
+            ref_url, _ = extract_url_and_note_from_text(gcell_plain(cells_html, ref_col))
+            content_url_plain, content_note = extract_url_and_note_from_text(gcell_plain(cells_html, content_col))
             ref_url = re.split(r"\s+NOTE\s*:", ref_url)[0].strip()
-            content_url = re.split(r"\s+NOTE\s*:", content_url)[0].strip()
-            issuing_raw = gcell(auth_col)
-            asrb_raw    = gcell(asrb_col)
-            sme_raw     = gcell(sme_col)
+            content_url_plain = re.split(r"\s+NOTE\s*:", content_url_plain)[0].strip()
+            regulator_value = reference_cell if re.search(r"color\s*:|<a\b", reference_cell, re.IGNORECASE) else ref_url
+            content_value = content_cell if re.search(r"color\s*:|<a\b", content_cell, re.IGNORECASE) else content_url_plain
+            issuing_raw = gcell_rich(cells_html, auth_col)
+            asrb_raw = gcell_plain(cells_html, asrb_col)
+            sme_raw = gcell_rich(cells_html, sme_col)
+            initial_ev = gcell_rich(cells_html, evergreen_col)
+            date_ing = gcell_rich(cells_html, ingestion_col)
             asrb_id, sme_comments = _normalise_asrb_and_sme(asrb_raw, sme_raw)
 
-            if _is_non_data_scope_row(doc_title, ref_url, content_url, sme_comments):
+            if _is_non_data_scope_row(doc_title, ref_url, content_url_plain, sme_comments):
                 continue
             if doc_title in seen:
                 continue
@@ -1032,16 +1058,16 @@ def _extract_scope_from_mhtml(path: str) -> dict:
 
             entry = {
                 "document_title":         doc_title,
-                "regulator_url":          ref_url,
-                "content_url":            content_url,
+                "regulator_url":          regulator_value,
+                "content_url":            content_value,
                 "content_note":           content_note,
                 "issuing_authority":      auth_name,
                 "issuing_authority_code": auth_code,
                 "geography":              geography,
                 "asrb_id":                asrb_id,
                 "sme_comments":           sme_comments,
-                "initial_evergreen":      "",
-                "date_of_ingestion":      "",
+                "initial_evergreen":      initial_ev,
+                "date_of_ingestion":      date_ing,
                 "strikethrough":          False,
             }
 

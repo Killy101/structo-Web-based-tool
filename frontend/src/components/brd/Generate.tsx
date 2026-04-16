@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
-import { brdRichTextToPlain, sanitizeBrdRichTextHtml, stripLeadingBrdLabel } from "@/utils/brdRichText";
+import { brdRichTextToPlain, extractBrdRichTextHref, hasBrdRichTextColor, hasBrdRichTextMarkup, sanitizeBrdRichTextHtml, stripLeadingBrdLabel } from "@/utils/brdRichText";
 import {
   normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
   parseBrdMetadataComments as parseMetadataComments,
@@ -260,6 +260,41 @@ function renderTextWithLinks(value: string): React.ReactNode {
   );
 }
 
+function renderScopeLink(value: string, outOfScope = false, sourceTone = false): React.ReactNode {
+  const trimmed = value.trim();
+  if (!trimmed) return <Nil />;
+
+  const plainValue = brdRichTextToPlain(trimmed) || extractBrdRichTextHref(trimmed) || trimmed;
+  if (hasBrdRichTextMarkup(trimmed)) {
+    const toneClass = outOfScope
+      ? "line-through text-red-600 dark:text-red-400"
+      : sourceTone
+        ? "text-red-700 dark:text-red-400"
+        : "text-slate-700 dark:text-slate-300";
+
+    return (
+      <span
+        className={`block text-[11px] break-words ${toneClass}`}
+        title={plainValue}
+        dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(trimmed) }}
+      />
+    );
+  }
+
+  const href = extractBrdRichTextHref(trimmed) || trimmed;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={`hover:underline text-[11px] block truncate ${outOfScope ? "line-through text-red-600 dark:text-red-400" : sourceTone ? "text-red-700 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}
+      title={plainValue}
+    >
+      {plainValue}
+    </a>
+  );
+}
+
 function normalizeMetadataImageLookupKey(value: string): string {
   return value
     .toLowerCase()
@@ -277,25 +312,21 @@ export function getMetadataRowImagesForField(
   const labelKey = normalizeMetadataImageLookupKey(field.label);
   const fieldKey = normalizeMetadataImageLookupKey(field.key);
 
-  const byLabel = images.filter((img) => {
+  const byFieldLabel = images.filter((img) => {
+    const sectionKey = normalizeMetadataImageLookupKey(img.section || "");
+    if (sectionKey && sectionKey !== "metadata" && sectionKey !== "unknown") return false;
+
     const fieldLabelKey = normalizeMetadataImageLookupKey(img.fieldLabel || "");
-    const cellTextKey = normalizeMetadataImageLookupKey(img.cellText || "");
-    const candidates = [fieldLabelKey, cellTextKey].filter(Boolean);
-
-    return candidates.some((candidate) =>
-      candidate === labelKey
-      || candidate === fieldKey
-      || candidate.includes(labelKey)
-      || candidate.includes(fieldKey)
-      || labelKey.includes(candidate)
-      || fieldKey.includes(candidate),
-    );
+    return !!fieldLabelKey && (fieldLabelKey === labelKey || fieldLabelKey === fieldKey);
   });
-  if (byLabel.length > 0) return byLabel;
+  if (byFieldLabel.length > 0) return byFieldLabel;
 
-  return images.filter(
-    (img) => img.rowIndex === index + 1 && !normalizeMetadataImageLookupKey(img.fieldLabel || ""),
-  );
+  const expectedRowIndex = index + 1;
+  return images.filter((img) => {
+    const sectionKey = normalizeMetadataImageLookupKey(img.section || "");
+    if (sectionKey && sectionKey !== "metadata" && sectionKey !== "unknown") return false;
+    return img.rowIndex === expectedRowIndex && !normalizeMetadataImageLookupKey(img.fieldLabel || "");
+  });
 }
 
 function deriveTitle(metadata: Record<string, unknown> | undefined, fallback: string | undefined): string {
@@ -950,9 +981,27 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
     pushImage(imagesByCellText, normalizeScopeImageKey(img.cellText || ""), img);
   });
 
-  const getScopeImgs = (row: ScopeRow, field: "title" | "referenceLink" | "contentUrl" | "issuingAuth" | "asrbId" | "smeComments", fallbackText = "") => {
+  const scopeFieldColumnIndex = {
+    title: 0,
+    referenceLink: 1,
+    contentUrl: 2,
+    issuingAuth: 3,
+    asrbId: 4,
+    smeComments: 5,
+  } as const;
+
+  const getScopeImgs = (
+    row: ScopeRow,
+    rowIndex: number,
+    field: "title" | "referenceLink" | "contentUrl" | "issuingAuth" | "asrbId" | "smeComments",
+    fallbackText = "",
+  ) => {
     const result: CellImageMeta[] = [];
     const seen = new Set<number>();
+    const expectedRowIndex = rowIndex + 1;
+    const expectedColIndex = scopeFieldColumnIndex[field];
+    const stableKey = normalizeScopeImageKey(`${row.stableKey}-${field}`);
+    const fallbackKey = normalizeScopeImageKey(fallbackText);
     const fieldAliases = {
       title: [field, "document title"],
       referenceLink: [field, "reference link", "reference url"],
@@ -960,53 +1009,59 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
       issuingAuth: [field, "issuing authority"],
       asrbId: [field, "asrb id"],
       smeComments: [field, "sme comments"],
-    }[field];
+    }[field].map(normalizeScopeImageKey);
 
-    [`${row.stableKey}-${field}`, ...fieldAliases].forEach(rawKey => {
-      const key = normalizeScopeImageKey(rawKey);
-      for (const image of imagesByLabel.get(key) ?? []) {
-        if (seen.has(image.id)) continue;
+    images.filter(isScopeImage).forEach((image) => {
+      if (seen.has(image.id)) return;
+
+      const labelKey = normalizeScopeImageKey(image.fieldLabel || "");
+      const cellTextKey = normalizeScopeImageKey(image.cellText || "");
+      const sameCell = image.rowIndex === expectedRowIndex && image.colIndex === expectedColIndex;
+      const exactStableMatch = !!labelKey && labelKey === stableKey;
+      const exactCellTextMatch = !!fallbackKey && cellTextKey === fallbackKey && sameCell;
+      const exactAliasMatch = !!labelKey && fieldAliases.includes(labelKey) && sameCell;
+      const legacyCellMatch = sameCell && !labelKey;
+
+      if (exactStableMatch || exactCellTextMatch || exactAliasMatch || legacyCellMatch) {
         seen.add(image.id);
         result.push(image);
       }
     });
 
-    const textKey = normalizeScopeImageKey(fallbackText);
-    for (const image of imagesByCellText.get(textKey) ?? []) {
-      if (seen.has(image.id)) continue;
-      seen.add(image.id);
-      result.push(image);
-    }
-
-    return result;
+    return result.sort((a, b) => (a.rowIndex - b.rowIndex) || (a.colIndex - b.colIndex) || (a.id - b.id));
   };
 
   const checkpointImages = (() => {
     const result: CellImageMeta[] = [];
     const seen = new Set<number>();
-    const aliases = [
-      "SME Checkpoint",
+    const scopeSpecificAliases = [
       "Scope SME Checkpoint",
       "Scope Checkpoint",
       "scope-smeCheckpoint",
       "scope-sme checkpoint",
       "scope-smecheckpoint",
-    ];
+    ].map(normalizeScopeImageKey);
+    const genericAliases = ["SME Checkpoint", "SME Check-point"].map(normalizeScopeImageKey);
+    const textAliases = [scopeSmeCheckpoint, brdRichTextToPlain(scopeSmeCheckpoint)]
+      .map((value) => normalizeScopeImageKey(value || ""))
+      .filter(Boolean);
 
-    aliases.forEach((rawKey) => {
-      const key = normalizeScopeImageKey(rawKey);
-      for (const image of imagesByLabel.get(key) ?? []) {
-        if (seen.has(image.id)) continue;
-        seen.add(image.id);
-        result.push(image);
-      }
-    });
+    images.filter(isScopeImage).forEach((image) => {
+      if (seen.has(image.id)) return;
 
-    [scopeSmeCheckpoint, brdRichTextToPlain(scopeSmeCheckpoint)].forEach((value) => {
-      const key = normalizeScopeImageKey(value || "");
-      if (!key) return;
-      for (const image of imagesByCellText.get(key) ?? []) {
-        if (seen.has(image.id)) continue;
+      const labelKey = normalizeScopeImageKey(image.fieldLabel || "");
+      const textKey = normalizeScopeImageKey(image.cellText || "");
+      const sectionKey = normalizeScopeImageKey(image.section || "");
+      const isCheckpointSource = image.tableIndex < 0 || image.rowIndex <= 0 || image.rid?.startsWith("manual-");
+      if (!isCheckpointSource) return;
+
+      const matchesText = !!textKey && textAliases.includes(textKey);
+      const matchesLabel = !!labelKey && (
+        scopeSpecificAliases.includes(labelKey) ||
+        (genericAliases.includes(labelKey) && (sectionKey === "scope" || matchesText))
+      );
+
+      if (matchesLabel || matchesText) {
         seen.add(image.id);
         result.push(image);
       }
@@ -1059,16 +1114,33 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
             <tbody>
               {rows.map((row, i) => {
                 const oos = row.isOutOfScope;
-                const titleImages = getScopeImgs(row, "title", row.title);
-                const referenceImages = getScopeImgs(row, "referenceLink", row.referenceLink);
-                const contentImages = getScopeImgs(row, "contentUrl", row.contentUrl);
-                const authorityImages = getScopeImgs(row, "issuingAuth", row.issuingAuth);
-                const asrbImages = getScopeImgs(row, "asrbId", row.asrbId);
-                const smeImages = getScopeImgs(row, "smeComments", row.smeComments);
+                const rowHasSourceTone = [
+                  row.title,
+                  row.referenceLink,
+                  row.contentUrl,
+                  row.contentNote,
+                  row.issuingAuth,
+                  row.smeComments,
+                  row.initialEvergreen,
+                  row.dateOfIngestion,
+                ].some(hasBrdRichTextColor);
+                const titleImages = getScopeImgs(row, i, "title", row.title);
+                const referenceImages = getScopeImgs(row, i, "referenceLink", row.referenceLink);
+                const contentImages = getScopeImgs(row, i, "contentUrl", row.contentUrl);
+                const authorityImages = getScopeImgs(row, i, "issuingAuth", row.issuingAuth);
+                const asrbImages = getScopeImgs(row, i, "asrbId", row.asrbId);
+                const smeImages = getScopeImgs(row, i, "smeComments", row.smeComments);
 
                 return (
                   <tr key={row.id} className={oos ? "bg-red-50/70 dark:bg-red-500/10" : i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
                     <td className={TD} style={{wordBreak:"break-word"}}>
+                      {oos && (
+                        <div className="mb-1">
+                          <span className="inline-flex items-center rounded-full border border-red-200 dark:border-red-800/40 bg-red-100 dark:bg-red-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-red-700 dark:text-red-300">
+                            Excluded
+                          </span>
+                        </div>
+                      )}
                       {row.title
                         ? <span
                             className={oos ? "line-through text-red-600 dark:text-red-400" : ""}
@@ -1079,19 +1151,11 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
                       {titleImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                     </td>
                     <td className={TD}>
-                      {row.referenceLink
-                        ? <a href={row.referenceLink} target="_blank" rel="noreferrer"
-                            className={`hover:underline text-[11px] block truncate ${oos ? "line-through text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}
-                            title={row.referenceLink}>{row.referenceLink}</a>
-                        : <Nil/>}
+                      {renderScopeLink(row.referenceLink, oos, rowHasSourceTone)}
                       {referenceImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                     </td>
                     <td className={TD} style={{wordBreak:"break-word", whiteSpace:"pre-wrap"}}>
-                      {row.contentUrl
-                        ? <a href={row.contentUrl} target="_blank" rel="noreferrer"
-                            className={`hover:underline text-[11px] block truncate ${oos ? "line-through text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}
-                            title={row.contentUrl}>{row.contentUrl}</a>
-                        : <Nil/>}
+                      {renderScopeLink(row.contentUrl, oos, rowHasSourceTone)}
                       {row.contentNote && (
                         <div className={`mt-1 text-[10.5px] leading-relaxed ${oos ? "line-through text-red-500 dark:text-red-400" : "text-slate-500 dark:text-slate-400"}`}>
                           <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.contentNote) }} />
@@ -1125,16 +1189,34 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
                         : <Nil/>}
                       {smeImages.map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
                     </td>
-                    {extra.evergreen && <td className={TD}>{row.initialEvergreen||"—"}</td>}
-                    {extra.ingestion && <td className={TD}>{row.dateOfIngestion||"—"}</td>}
+                    {extra.evergreen && (
+                      <td className={TD}>
+                        {row.initialEvergreen
+                          ? <span
+                              className={oos ? "line-through text-red-600 dark:text-red-400" : rowHasSourceTone ? "text-red-700 dark:text-red-400" : ""}
+                              dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.initialEvergreen) }}
+                            />
+                          : "—"}
+                      </td>
+                    )}
+                    {extra.ingestion && (
+                      <td className={TD}>
+                        {row.dateOfIngestion
+                          ? <span
+                              className={oos ? "line-through text-red-600 dark:text-red-400" : rowHasSourceTone ? "text-red-700 dark:text-red-400" : ""}
+                              dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.dateOfIngestion) }}
+                            />
+                          : "—"}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
             </tbody>
           </table>
           <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147] flex justify-between items-center">
-            <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} document{rows.length!==1?"s":""}{rows.filter(r=>r.isOutOfScope).length>0&&` · ${rows.filter(r=>r.isOutOfScope).length} out of scope`}</span>
-            {rows.filter(r=>r.isOutOfScope).length>0&&<span className="text-[9.5px] italic text-slate-400" style={MONO}>Strikethrough = out of scope</span>}
+            <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} document{rows.length!==1?"s":""}{rows.filter(r=>r.isOutOfScope).length>0&&` · ${rows.filter(r=>r.isOutOfScope).length} excluded`}</span>
+            {rows.filter(r=>r.isOutOfScope).length>0&&<span className="text-[9.5px] italic text-slate-400" style={MONO}>Red / struck rows are archived from active scope</span>}
           </div>
         </div>
       )}

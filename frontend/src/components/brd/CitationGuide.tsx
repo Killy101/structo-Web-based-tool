@@ -42,8 +42,14 @@ function normalizeCitationGuide(raw?: Props["initialData"]): CitationGuideState 
   return { description, rows };
 }
 
+function citationGuideStatesEqual(a: CitationGuideState, b: CitationGuideState): boolean {
+  if (a.description !== b.description) return false;
+  if (a.rows.length !== b.rows.length) return false;
+  return a.rows.every((row, index) => row.label === b.rows[index]?.label && row.value === b.rows[index]?.value);
+}
+
 export default function CitationGuide({ initialData, onDataChange }: Props) {
-  const [guide, setGuide] = useState<CitationGuideState>({ description: "", rows: [] });
+  const [guide, setGuide] = useState<CitationGuideState>(() => normalizeCitationGuide(initialData));
   const [saved, setSaved] = useState(false);
   const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
   const isInitializing = useRef(false);
@@ -51,14 +57,16 @@ export default function CitationGuide({ initialData, onDataChange }: Props) {
 
   useEffect(() => {
     const nextGuide = normalizeCitationGuide(initialData);
-    if (
-      guide.description === nextGuide.description &&
-      JSON.stringify(guide.rows) === JSON.stringify(nextGuide.rows)
-    ) {
-      return;
-    }
+    if (citationGuideStatesEqual(guide, nextGuide)) return;
+
     isInitializing.current = true;
-    setGuide(nextGuide);
+    const frame = window.requestAnimationFrame(() => {
+      setGuide((prev) => (citationGuideStatesEqual(prev, nextGuide) ? prev : nextGuide));
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+    // Only rehydrate when upstream initial data changes, not on every local edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
   useEffect(() => {
