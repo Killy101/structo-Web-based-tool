@@ -9,6 +9,11 @@ const TEAM_POLICY_PREFIX = '__TEAM_ROLE_POLICY__'
 const POLICY_ROLES = ['ADMIN', 'USER'] as const
 type PolicyRole = (typeof POLICY_ROLES)[number]
 
+// Cache: track which team slugs have had policies ensured recently.
+// Avoids repeated UPSERT queries on every GET /policies request.
+const ensuredPoliciesAt = new Map<string, number>()
+const ENSURE_POLICY_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
 const FEATURE_CATALOG: Record<string, string> = {
   dashboard: 'Dashboard', 'brd-process': 'BRD Process', 'brd-view-generate': 'BRD View and Generate Sources',
   'user-management': 'User Management', 'compare-basic': 'Compare',
@@ -71,6 +76,13 @@ async function ensureTeamPolicies(teamSlug: string) {
       )
     }),
   )
+}
+
+async function ensureTeamPoliciesIfStale(teamSlug: string) {
+  const lastEnsured = ensuredPoliciesAt.get(teamSlug)
+  if (lastEnsured && Date.now() - lastEnsured < ENSURE_POLICY_CACHE_TTL_MS) return
+  await ensureTeamPolicies(teamSlug)
+  ensuredPoliciesAt.set(teamSlug, Date.now())
 }
 
 async function renameTeamPolicies(oldSlug: string, nextSlug: string) {
@@ -158,6 +170,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthReque
     )
     const team = created[0]
     await ensureTeamPolicies(team.slug)
+    ensuredPoliciesAt.set(team.slug, Date.now())
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_CREATED', $2)`, [req.user!.userId, `Created team "${name.trim()}"`])
     res.status(201).json({ message: 'Team created', team })
   } catch (error) {
@@ -189,6 +202,8 @@ router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthR
       [name.trim(), slug, targetId],
     )
     await renameTeamPolicies(team.slug, updated[0].slug)
+    ensuredPoliciesAt.delete(team.slug)
+    ensuredPoliciesAt.set(updated[0].slug, Date.now())
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_RENAMED', $2)`, [req.user!.userId, `Renamed team "${team.name}" to "${name.trim()}"`])
     res.json({ message: 'Team updated', team: updated[0] })
   } catch (error) {
@@ -221,7 +236,7 @@ router.get('/policies', authenticate, authorize(['SUPER_ADMIN']), async (_req: A
   try {
     const { rows: teams } = await pool.query(`SELECT id, name, slug FROM teams ORDER BY created_at ASC`)
 
-    await Promise.all(teams.map((team: any) => ensureTeamPolicies(team.slug)))
+    await Promise.all(teams.map((team: any) => ensureTeamPoliciesIfStale(team.slug)))
 
     const { rows: policyRows } = await pool.query(
       `SELECT id, name, slug, features, updated_at as "updatedAt" FROM user_roles WHERE slug LIKE $1`,
@@ -266,6 +281,7 @@ router.patch('/:id/policies/:role', authenticate, authorize(['SUPER_ADMIN']), as
     if (!team) return res.status(404).json({ error: 'Team not found' })
 
     await ensureTeamPolicies(team.slug)
+    ensuredPoliciesAt.set(team.slug, Date.now())
 
     const { rows: updated } = await pool.query(
       `UPDATE user_roles SET features = $1, updated_at = NOW() WHERE slug = $2

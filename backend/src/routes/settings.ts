@@ -107,7 +107,19 @@ async function loadGovernanceSettings() {
   }
 }
 
-async function loadOperationsStatus() {
+type OperationsStatusCache = { operationsPolicy: OperationsPolicyState; sessionTimeoutMinutes: number }
+let operationsStatusCache: (OperationsStatusCache & { fetchedAt: number }) | null = null
+const OPERATIONS_STATUS_CACHE_TTL_MS = 10_000
+
+function invalidateOperationsStatusCache() {
+  operationsStatusCache = null
+}
+
+async function loadOperationsStatus(): Promise<OperationsStatusCache> {
+  const now = Date.now()
+  if (operationsStatusCache && now - operationsStatusCache.fetchedAt < OPERATIONS_STATUS_CACHE_TTL_MS) {
+    return operationsStatusCache
+  }
   const { rows } = await pool.query(
     `SELECT key, value FROM app_settings WHERE key = ANY($1)`,
     [[GOVERNANCE_OPERATIONS_KEY, GOVERNANCE_SECURITY_KEY]],
@@ -116,7 +128,9 @@ async function loadOperationsStatus() {
   const operationsPolicy = normalizeOperationsPolicy(byKey.get(GOVERNANCE_OPERATIONS_KEY))
   const sec = byKey.get(GOVERNANCE_SECURITY_KEY) as Record<string, unknown> | undefined
   const sessionTimeoutMinutes = Math.max(5, Number(sec?.sessionTimeoutMinutes ?? 30))
-  return { operationsPolicy, sessionTimeoutMinutes }
+  const result = { operationsPolicy, sessionTimeoutMinutes }
+  operationsStatusCache = { ...result, fetchedAt: now }
+  return result
 }
 
 router.get('/operations-status', authenticate, async (_req: AuthRequest, res: Response) => {
@@ -184,6 +198,7 @@ router.patch('/governance', authenticate, authorize(['SUPER_ADMIN']), async (req
       [req.user!.userId, 'GOVERNANCE_SETTINGS_UPDATED', JSON.stringify({ message: 'Updated governance settings', sections, changes })],
     )
 
+    invalidateOperationsStatusCache()
     return res.json({ message: 'Governance settings updated', settings: { securityPolicy, operationsPolicy } })
   } catch (error) {
     console.log('Update governance settings error:', error)

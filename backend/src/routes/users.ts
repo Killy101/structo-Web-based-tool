@@ -63,18 +63,31 @@ async function hardDeleteUserWithDependencies(
 router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const actorRole = req.user!.role
-    const actorId   = req.user!.userId
+
+    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1'),  10) || 1)
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50))
+    const offset = (page - 1) * limit
 
     let whereClause = ''
     const params: unknown[] = []
 
     if (actorRole === 'ADMIN') {
-      const { rows: adminRows } = await pool.query(`SELECT team_id FROM users WHERE id = $1`, [actorId])
-      const teamId = adminRows[0]?.team_id
-      if (!teamId) return res.json({ users: [] })
+      const teamId = req.user!.teamId
+      if (!teamId) return res.json({ users: [], total: 0, page, limit })
       whereClause = `WHERE u.team_id = $1 AND u.role = 'USER'`
       params.push(teamId)
     }
+
+    const countParams = [...params]
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*) as total FROM users u ${whereClause}`,
+      countParams,
+    )
+    const total = parseInt(countRows[0].total, 10)
+
+    params.push(limit, offset)
+    const limitParam  = params.length - 1
+    const offsetParam = params.length
 
     const { rows: users } = await pool.query(
       `SELECT u.id, u.user_id as "userId", u.email, u.first_name as "firstName", u.last_name as "lastName",
@@ -87,11 +100,12 @@ router.get('/', authenticate, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: A
        LEFT JOIN teams t ON u.team_id = t.id
        LEFT JOIN user_roles ur ON u.user_role_id = ur.id
        ${whereClause}
-       ORDER BY u.created_at DESC`,
+       ORDER BY u.created_at DESC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
       params,
     )
 
-    res.json({ users })
+    res.json({ users, total, page, limit })
   } catch (error) {
     console.log('Get users error:', error)
     res.status(500).json({ error: 'Internal server error' })

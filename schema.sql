@@ -1177,6 +1177,36 @@ CREATE INDEX idx_password_history_user_created ON public.password_history USING 
 
 
 --
+-- Name: idx_users_team_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_users_team_id ON public.users USING btree (team_id);
+
+
+--
+-- Name: idx_users_role_status; Type: INDEX; Schema: public; Owner: postgres
+-- Supports queries filtering by role (e.g. finding SUPER_ADMINs) and status (ACTIVE/INACTIVE)
+--
+
+CREATE INDEX idx_users_role_status ON public.users USING btree (role, status);
+
+
+--
+-- Name: idx_user_logs_user_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_user_logs_user_id ON public.user_logs USING btree (user_id);
+
+
+--
+-- Name: idx_user_logs_action_created_at; Type: INDEX; Schema: public; Owner: postgres
+-- Supports governance-history queries filtering by action and ordering by created_at
+--
+
+CREATE INDEX idx_user_logs_action_created_at ON public.user_logs USING btree (action, created_at DESC);
+
+
+--
 -- Name: brd_cell_images brd_cell_images_brd_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
