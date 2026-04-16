@@ -44,6 +44,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# ── Concurrency guard ─────────────────────────────────────────────────────────
+# Each Uvicorn worker process has its own copy of this counter, so the actual
+# system-wide ceiling is MAX_CONCURRENT_DIFFS × number-of-workers.
+# Default: 3 concurrent diffs per worker (= up to 12 on 4-worker production).
+# Set MAX_CONCURRENT_DIFFS=1 in .env to restrict to a single job per worker.
+_MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "3"))
+_active_diffs: int = 0
+
+# Per-job wall-clock timeout. Large PDFs can take 60–120 s; 300 s is generous.
+# Set COMPARE_TIMEOUT_SECONDS in .env to override.
+_COMPARE_TIMEOUT_SECONDS: int = int(os.environ.get("COMPARE_TIMEOUT_SECONDS", "300"))
+
 # ── Import the pure diff engine ───────────────────────────────────────────────
 #
 # The engine module may be named either:
@@ -360,6 +372,18 @@ async def diff_pdfs_stream(
       {"t":"r","d":{...result...}}             — final result
       {"t":"e","msg":"..."}                    — error
     """
+    # ── Concurrency gate ──────────────────────────────────────────────────────
+    global _active_diffs
+    if _active_diffs >= _MAX_CONCURRENT_DIFFS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Server is busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons are "
+                "already running. Please wait a moment and try again."
+            ),
+        )
+    _active_diffs += 1
+
     data_a = await old_file.read()
     data_b = await new_file.read()
     xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
@@ -495,29 +519,48 @@ async def diff_pdfs_stream(
                         pass
 
     async def _generate():
+        global _active_diffs
         loop = asyncio.get_event_loop()
         fut = loop.run_in_executor(None, _run)
+        deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
 
-        while True:
-            try:
-                item = q.get_nowait()
-                if item is None:
+        try:
+            while True:
+                # ── Timeout guard ─────────────────────────────────────────────
+                if loop.time() > deadline:
+                    logger.warning("diff/stream timed out after %ss", _COMPARE_TIMEOUT_SECONDS)
+                    yield (
+                        _json.dumps({
+                            "t": "e",
+                            "msg": (
+                                f"Compare job timed out after {_COMPARE_TIMEOUT_SECONDS}s. "
+                                "Try splitting the document into smaller sections."
+                            ),
+                        }) + "\n"
+                    ).encode()
                     break
-                yield item if isinstance(item, bytes) else item.encode()
-            except _queue_mod.Empty:
-                if fut.done():
-                    # Drain remaining items
-                    while not q.empty():
-                        item = q.get_nowait()
-                        if item is None:
-                            break
-                        yield item if isinstance(item, bytes) else item.encode()
-                    # Check for executor exceptions
-                    exc = fut.exception()
-                    if exc:
-                        yield (_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode()
-                    break
-                await asyncio.sleep(0.05)
+
+                try:
+                    item = q.get_nowait()
+                    if item is None:
+                        break
+                    yield item if isinstance(item, bytes) else item.encode()
+                except _queue_mod.Empty:
+                    if fut.done():
+                        # Drain remaining items
+                        while not q.empty():
+                            item = q.get_nowait()
+                            if item is None:
+                                break
+                            yield item if isinstance(item, bytes) else item.encode()
+                        # Check for executor exceptions
+                        exc = fut.exception()
+                        if exc:
+                            yield (_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode()
+                        break
+                    await asyncio.sleep(0.05)
+        finally:
+            _active_diffs -= 1
 
     return StreamingResponse(
         _generate(),
