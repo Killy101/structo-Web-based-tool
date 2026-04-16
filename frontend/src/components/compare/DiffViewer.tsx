@@ -170,6 +170,35 @@ export default function DiffViewer({
     return m;
   }, [result.chunks, mapSection]);
 
+  const totalNonEmp = useMemo(
+    () => result.chunks.filter((c) => c.kind !== "emp").length,
+    [result.chunks],
+  );
+
+  // ── Per-pane header stats ────────────────────────────────────────────────
+  // Pane A (old): highlight deletions + modifications removed from this version
+  const paneAHeaderStats = useMemo(() => [
+    { label: "-", count: filteredStats.deletions,     colorClass: "text-rose-500",   title: `${filteredStats.deletions} deletion${filteredStats.deletions !== 1 ? "s" : ""}` },
+    { label: "~", count: filteredStats.modifications, colorClass: "text-amber-500",  title: `${filteredStats.modifications} modification${filteredStats.modifications !== 1 ? "s" : ""}` },
+  ].filter((s) => s.count > 0), [filteredStats]);
+
+  // Pane B (new): highlight additions + modifications introduced in this version
+  const paneBHeaderStats = useMemo(() => [
+    { label: "+", count: filteredStats.additions,     colorClass: "text-emerald-500", title: `${filteredStats.additions} addition${filteredStats.additions !== 1 ? "s" : ""}` },
+    { label: "~", count: filteredStats.modifications, colorClass: "text-amber-500",   title: `${filteredStats.modifications} modification${filteredStats.modifications !== 1 ? "s" : ""}` },
+  ].filter((s) => s.count > 0), [filteredStats]);
+
+  // First chunk to scroll to per pane (within the current filter)
+  const firstPaneAChunk = useMemo(
+    () => filteredChunks.find((c) => c.kind === "del" || c.kind === "mod"),
+    [filteredChunks],
+  );
+  const firstPaneBChunk = useMemo(
+    () => filteredChunks.find((c) => c.kind === "add" || c.kind === "mod"),
+    [filteredChunks],
+  );
+
+  // Sections that actually have changes (for dropdown)
   const sectionsWithChanges = useMemo(
     () => xmlSections?.filter((s) => sectionCountMap.has(s.label)) ?? [],
     [xmlSections, sectionCountMap],
@@ -443,21 +472,63 @@ export default function DiffViewer({
 
         {/* ── Right column: PDF panes + XML ────────────────────────────── */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {/* PDF panes with draggable vertical splitter */}
+        <div ref={containerRef} className="flex-1 min-h-0 flex relative">
+          {/* Left pane */}
+          <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
+            <DiffPane
+              ref={paneARef}
+              pane={result.pane_a}
+              chunks={result.chunks}
+              activeChunkId={activeId}
+              filename={result.file_a}
+              side="a"
+              headerStats={paneAHeaderStats}
+              onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
+            />
+          </div>
 
           {/* PDF panes with draggable vertical splitter */}
           <div ref={containerRef} className="flex-1 min-h-0 flex relative overflow-hidden">
 
-            {/* Panel A — Old PDF */}
-            <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
-              <DiffPane
-                ref={paneARef}
-                pane={result.pane_a}
-                chunks={result.chunks}
-                activeChunkId={activeId}
-                filename={result.file_a}
-                side="a"
-                onChunkClick={selectChunk}
-                onScrollFraction={syncScrollFromOldPane}
+          {/* Right pane */}
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <DiffPane
+              ref={paneBRef}
+              pane={result.pane_b}
+              chunks={result.chunks}
+              activeChunkId={activeId}
+              filename={result.file_b}
+              side="b"
+              headerStats={paneBHeaderStats}
+              onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
+            />
+          </div>
+        </div>
+
+        {/* XML Editor panel — below panes, with draggable horizontal splitter */}
+        {xmlOpen && (
+          <>
+            {/* Horizontal drag handle */}
+            <div
+              className="flex-shrink-0 h-1 cursor-row-resize hover:bg-blue-400/40 active:bg-blue-500/50 transition-colors relative z-10"
+              style={{ background: "var(--divider, rgba(148,163,184,0.2))" }}
+              onMouseDown={startDragH}
+            >
+              <div className="absolute -top-1 -bottom-1 inset-x-0" />
+            </div>
+            <div className="flex-shrink-0 overflow-hidden" style={{ height: xmlHeight }}>
+              <XmlPanel
+                ref={xmlRef}
+                xmlText={xmlText}
+                xmlFilename={xmlFilename}
+                activeChunk={activeChunk}
+                appliedIds={appliedIds}
+                navSpan={navSpan}
+                status={xmlStatus}
+                onLoad={loadXml}
+                onApply={applyChunk}
+                onDownload={downloadXml}
               />
             </div>
 

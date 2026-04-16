@@ -17,14 +17,23 @@ import { useTheme } from "../../context/ThemContext";
 import type { Chunk, ChunkKind, DiffPaneHandle, PaneData, TagConfig } from "./types";
 import { KIND_META } from "./types";
 
+interface HeaderStat {
+  label: string;
+  count: number;
+  colorClass: string;
+  title: string;
+}
+
 interface Props {
   pane:          PaneData;
   chunks:        Chunk[];
   activeChunkId: number | null;
-  filename:      string;
-  side:          "a" | "b";
-  onChunkClick?: (chunkId: number) => void;
-  onScrollFraction?: (scrollFraction: number) => void;
+  filename: string;
+  side: "a" | "b";
+  /** Per-pane change-count badges rendered in the header */
+  headerStats?: HeaderStat[];
+  /** Called when the user clicks the "Jump to first change" button */
+  onJumpToFirst?: () => void;
 }
 
 // ── Dark-mode colour maps for backend's light pastel highlights ───────────────
@@ -93,6 +102,10 @@ function buildLines(pane: PaneData): LineSeg[][] {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
+const DiffPane = forwardRef<DiffPaneHandle, Props>(
+  ({ pane, chunks, activeChunkId, filename, side, headerStats, onJumpToFirst }, ref) => {
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const { dark } = useTheme();
 
 const DiffPane = forwardRef<DiffPaneHandle, Props>(
   ({ pane, chunks, activeChunkId, filename, side, onChunkClick, onScrollFraction }, ref) => {
@@ -202,42 +215,50 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       );
     }, [activeChunkId, kindMap]);
 
-    // ── Render ────────────────────────────────────────────────────────────────
-
-    const sideBadgeCls = side === "a"
-      ? "bg-rose-600 text-white"
-      : "bg-emerald-600 text-white";
-
-    const handleChunkClick = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!onChunkClick) return;
-      const target = e.target as HTMLElement;
-      const el = target.closest("[data-chunk-id]") as HTMLElement | null;
-      if (!el) return;
-      const raw = el.getAttribute("data-chunk-id");
-      if (!raw) return;
-      const id = Number(raw);
-      if (!Number.isFinite(id)) return;
-      onChunkClick(id);
-    };
-
-    const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-      if (!onScrollFraction || syncingRef.current) return;
-      const el = e.currentTarget;
-      const max = el.scrollHeight - el.clientHeight;
-      if (max <= 0) return;
-      onScrollFraction(el.scrollTop / max);
-    };
+    const hasStats = headerStats && headerStats.length > 0;
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
-        {/* Header */}
-        <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
-          <span className={`text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadgeCls}`}>
-            {side === "a" ? "OLD" : "NEW"}
-          </span>
-          <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
-            {filename}
-          </span>
+        {/* ── Panel header ──────────────────────────────────────────────────── */}
+        <div className="flex-shrink-0 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
+          {/* Row 1: badge + filename + jump button */}
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}`}>
+              {side.toUpperCase()}
+            </span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate flex-1 min-w-0">
+              {filename}
+            </span>
+
+            {/* Change-count badges */}
+            {hasStats && (
+              <div className="flex-shrink-0 flex items-center gap-1.5">
+                {headerStats!.map((stat) => (
+                  <span
+                    key={stat.label}
+                    title={stat.title}
+                    className={`text-[9px] font-mono font-bold ${stat.colorClass} select-none`}
+                  >
+                    {stat.label}{stat.count}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Jump-to-first-change button */}
+            {onJumpToFirst && hasStats && (
+              <button
+                onClick={onJumpToFirst}
+                title="Jump to first change in this panel"
+                className="flex-shrink-0 flex items-center gap-0.5 text-[9px] font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors px-1.5 py-0.5 rounded hover:bg-slate-200 dark:hover:bg-white/10"
+              >
+                <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                </svg>
+                Jump
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Scrollable text body */}
