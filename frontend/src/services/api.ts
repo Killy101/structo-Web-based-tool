@@ -173,6 +173,12 @@ export const userLogsApi = {
     api
       .post<{ success: boolean }>("/user-logs/compare", { fileA, fileB })
       .then((r) => r.data),
+  deleteOld: (months = 1) =>
+    api
+      .delete<{ success: boolean; deleted: number; months: number }>(
+        `/user-logs/cleanup?months=${months}`,
+      )
+      .then((r) => r.data),
 };
 
 export const brdApi = {

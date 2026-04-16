@@ -1,7 +1,8 @@
 "use client";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Filter, Search, Shield, Activity, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, Filter, Search, Shield, Activity, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { Badge } from "./index";
 import { Button } from "./index";
 import { userLogsApi } from "../../services/api";
@@ -379,6 +380,8 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
     service: [],
     status: [],
   });
+  const [deletingOld, setDeletingOld] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const fetchLogs = async () => {
     setLoading(true);
@@ -391,6 +394,48 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDeleteOld = async () => {
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    setDeletingOld(true);
+    setConfirmDelete(false);
+    try {
+      const result = await userLogsApi.deleteOld(1);
+      await fetchLogs();
+      // Brief visual feedback via alert — keeps UI simple
+      alert(`Deleted ${result.deleted} log entries older than 1 month.`);
+    } catch {
+      alert("Failed to delete old logs. Please try again.");
+    } finally {
+      setDeletingOld(false);
+    }
+  };
+
+  const handleExportXls = () => {
+    const rows = filteredLogs.map((log) => ({
+      Timestamp: new Date(log.timestamp).toLocaleString(),
+      Level: log.level,
+      Service: log.service,
+      User: log.triggeredBy ?? "",
+      "User ID": log.userDisplayId ?? "",
+      Message: log.message,
+      Status: log.status,
+      Tags: log.tags.join(", "),
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Logs");
+
+    // Auto-size columns based on content
+    const colWidths = Object.keys(rows[0] ?? {}).map((key) => ({
+      wch: Math.max(key.length, ...rows.map((r) => String(r[key as keyof typeof r] ?? "").length)) + 2,
+    }));
+    worksheet["!cols"] = colWidths;
+
+    const filename = `structo-logs-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(workbook, filename);
   };
 
   useEffect(() => {
@@ -460,10 +505,49 @@ export function InteractiveLogsTable({ role }: InteractiveLogsTableProps) {
                 )}
               </p>
             </div>
-            <Button variant="secondary" size="sm" onClick={fetchLogs} disabled={loading}>
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-              <span className="hidden sm:inline">Refresh</span>
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleExportXls}
+                disabled={loading || logs.length === 0}
+                title="Export visible logs to Excel"
+              >
+                <Download className="h-4 w-4" />
+                <span className="hidden sm:inline">Export XLS</span>
+              </Button>
+
+              {isSuperAdmin && (
+                confirmDelete ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-red-600 dark:text-red-400 font-medium">Delete logs &gt;1 month old?</span>
+                    <Button variant="danger" size="sm" onClick={handleDeleteOld} disabled={deletingOld}>
+                      {deletingOld ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Confirm"}
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => setConfirmDelete(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleDeleteOld}
+                    disabled={deletingOld}
+                    title="Delete log entries older than 1 month"
+                    className="text-red-600 dark:text-red-400 border-red-200 dark:border-red-900 hover:bg-red-50 dark:hover:bg-red-950/30"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span className="hidden sm:inline">Delete &gt;1 Month</span>
+                  </Button>
+                )
+              )}
+
+              <Button variant="secondary" size="sm" onClick={fetchLogs} disabled={loading}>
+                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                <span className="hidden sm:inline">Refresh</span>
+              </Button>
+            </div>
           </div>
 
           <div className="flex gap-2">

@@ -70,6 +70,35 @@ router.get(
   },
 )
 
+// ── DELETE /user-logs/cleanup — purge logs older than N months (default: 1) ──
+// SUPER_ADMIN only — irreversible, always logs what was deleted.
+router.delete(
+  '/cleanup',
+  authenticate,
+  authorize(['SUPER_ADMIN']),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const months = Math.max(1, parseInt((req.query.months as string) || '1', 10))
+      const { rowCount } = await pool.query(
+        `DELETE FROM user_logs WHERE created_at < NOW() - ($1 || ' months')::interval`,
+        [months],
+      )
+      const deleted = rowCount ?? 0
+
+      // Audit the cleanup itself so it is visible in fresh logs
+      await pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'LOGS_CLEANUP', $2)`,
+        [req.user!.userId, `Deleted ${deleted} log entries older than ${months} month${months !== 1 ? 's' : ''}`],
+      )
+
+      return res.json({ success: true, deleted, months })
+    } catch (error) {
+      console.log('Logs cleanup error:', error)
+      return res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
 router.post('/compare', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { fileA, fileB } = req.body
