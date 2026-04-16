@@ -34,7 +34,7 @@ import DiffPane  from "./DiffPane";
 import XmlPanel  from "./XmlPanel";
 
 interface Props {
-  mode:            WorkflowMode;
+  mode:            WorkflowMode;  
   result:          DiffResult;
   onReset:         () => void;
   initialXmlFile?: File | null;

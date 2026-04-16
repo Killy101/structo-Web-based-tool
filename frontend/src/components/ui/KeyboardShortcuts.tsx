@@ -16,6 +16,14 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["Alt", "3"], description: "Go to Compare", category: "Navigation" },
   { keys: ["Alt", "H"], description: "Go to History", category: "Navigation" },
   { keys: ["Alt", "U"], description: "Go to User Management", category: "Navigation" },
+  // BRD
+  { keys: ["↑"], description: "Scroll up in BRD list", category: "BRD" },
+  { keys: ["↓"], description: "Scroll down in BRD list", category: "BRD" },
+  // Compare
+  { keys: ["↑"], description: "Previous change / chunk", category: "Compare" },
+  { keys: ["↓"], description: "Next change / chunk", category: "Compare" },
+  { keys: ["←"], description: "Shrink left pane (side-by-side)", category: "Compare" },
+  { keys: ["→"], description: "Expand left pane (side-by-side)", category: "Compare" },
   // UI
   { keys: ["?"], description: "Toggle this shortcuts panel", category: "Interface" },
   { keys: ["Esc"], description: "Close any open panel or modal", category: "Interface" },

@@ -569,6 +569,19 @@ export default function BrdPage() {
   const [processTypeUpdatingId, setProcessTypeUpdatingId] = useState<string | null>(null);
   const [nextStatus,      setNextStatus]      = useState<BrdStatus>("DRAFT");
   const reuploadInputRef = useRef<HTMLInputElement | null>(null);
+  const scrollRef        = useRef<HTMLDivElement | null>(null);
+
+  // ── Keyboard scroll (↑/↓) ────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); scrollRef.current?.scrollBy({ top: 120, behavior: "smooth" }); }
+      if (e.key === "ArrowUp")   { e.preventDefault(); scrollRef.current?.scrollBy({ top: -120, behavior: "smooth" }); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   const teamSlug = String(user?.team?.slug ?? "").toLowerCase();
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
@@ -1049,7 +1062,7 @@ export default function BrdPage() {
       />
 
       {/* ── Table ── */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
         <table className="w-full text-xs border-collapse">
           <thead className="sticky top-0 z-10">
             <tr className="bg-slate-50 dark:bg-slate-900 border-b-2 border-slate-200 dark:border-blue-900/60">
