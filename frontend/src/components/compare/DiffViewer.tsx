@@ -187,14 +187,16 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
     URL.revokeObjectURL(url);
   }, [xmlText, xmlFilename]);
 
-  // ── Keyboard nav (↑ / ↓) ────────────────────────────────────────────────
+  // ── Keyboard nav (↑/↓ chunks · ←/→ split ratio) ───────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
       if (e.target instanceof HTMLTextAreaElement) return;
       const idx = chunkIds.indexOf(activeId ?? -1);
-      if (e.key === "ArrowDown" && idx < chunkIds.length - 1) selectChunk(chunkIds[idx + 1]);
-      if (e.key === "ArrowUp"   && idx > 0)              selectChunk(chunkIds[idx - 1]);
+      if (e.key === "ArrowDown" && idx < chunkIds.length - 1) { e.preventDefault(); selectChunk(chunkIds[idx + 1]); }
+      if (e.key === "ArrowUp"   && idx > 0)                   { e.preventDefault(); selectChunk(chunkIds[idx - 1]); }
+      if (e.key === "ArrowLeft")  { e.preventDefault(); setSplitPct(p => Math.max(20, p - 5)); }
+      if (e.key === "ArrowRight") { e.preventDefault(); setSplitPct(p => Math.min(80, p + 5)); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);

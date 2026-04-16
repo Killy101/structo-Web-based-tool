@@ -629,6 +629,27 @@ export default function ComparePanel({
   const navText=selChange?(selChange.new_text||selChange.old_text||selChange.text||""):"";
   const xmlHl=navText;
 
+  // ── Keyboard nav (↑/↓ changes) ──────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.target instanceof HTMLTextAreaElement) return;
+      if (filtered.length === 0) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = selIdx === null ? 0 : Math.min(filtered.length - 1, selIdx + 1);
+        setSelIdx(next); setBotTab("detail");
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = selIdx === null ? 0 : Math.max(0, selIdx - 1);
+        setSelIdx(prev); setBotTab("detail");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [filtered.length, selIdx]);
+
   // ── RENDER ──────────────────────────────────────────────────────────────
   return (
     <>
