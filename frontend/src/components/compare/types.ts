@@ -36,9 +36,11 @@ export interface TagConfig {
   overstrike?: boolean;
 }
 
-/** Handle type for scrolling a DiffPane to a chunk */
+/** Handle type for imperative DiffPane control */
 export interface DiffPaneHandle {
   scrollToChunk: (chunkId: number, orderedIds?: number[], scrollFraction?: number) => void;
+  /** Programmatically scroll to a proportional position (0–1) without triggering onScrollFraction */
+  scrollToFraction: (fraction: number) => void;
 }
 
 export interface PaneData {
