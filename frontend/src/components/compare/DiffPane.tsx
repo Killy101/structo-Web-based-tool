@@ -1,18 +1,11 @@
 "use client";
-// ─────────────────────────────────────────────────────────────────────────────
-// DiffPane.tsx
-// Renders one side (old / new) of the side-by-side PDF text diff.
-//
-// Performance strategy
-// ────────────────────
-//  • Full node tree built once via useMemo (can be 5k–50k spans for large docs).
-//  • Active-chunk highlight applied via a tiny injected <style> rule so only
-//    a CSS string regenerates on each selection — NOT the full node tree.
-//  • content-visibility:auto on each line div gives near-virtual-scroll
-//    performance without a JS virtualization library.
-// ─────────────────────────────────────────────────────────────────────────────
-
-import React, { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
 import { useTheme } from "../../context/ThemContext";
 import type { Chunk, ChunkKind, DiffPaneHandle, PaneData, TagConfig } from "./types";
 import { KIND_META } from "./types";
@@ -30,6 +23,10 @@ interface Props {
   activeChunkId: number | null;
   filename: string;
   side: "a" | "b";
+  /** Called when the user clicks a highlighted chunk span in this pane */
+  onChunkClick?: (chunkId: number) => void;
+  /** Called with scroll fraction (0–1) when the user manually scrolls this pane */
+  onScrollFraction?: (scrollFraction: number) => void;
   /** Per-pane change-count badges rendered in the header */
   headerStats?: HeaderStat[];
   /** Called when the user clicks the "Jump to first change" button */
@@ -103,8 +100,9 @@ function buildLines(pane: PaneData): LineSeg[][] {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 const DiffPane = forwardRef<DiffPaneHandle, Props>(
-  ({ pane, chunks, activeChunkId, filename, side, headerStats, onJumpToFirst }, ref) => {
-    const scrollRef = useRef<HTMLDivElement>(null);
+  ({ pane, chunks, activeChunkId, filename, side, onChunkClick, onScrollFraction, headerStats, onJumpToFirst }, ref) => {
+    const scrollRef  = useRef<HTMLDivElement>(null);
+    const syncingRef = useRef(false);   // true while a programmatic scroll is in flight
     const { dark } = useTheme();
 
 const DiffPane = forwardRef<DiffPaneHandle, Props>(
@@ -119,17 +117,30 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         const container = scrollRef.current;
         if (!container) return;
 
-        // 1. Exact element match
+        // Suppress the scroll-fraction callback while we drive the scroll
+        syncingRef.current = true;
+        const clearSync = () => { syncingRef.current = false; };
+
+        // Try exact match first
         const el = container.querySelector(`[data-chunk-id="${chunkId}"]`) as HTMLElement | null;
-        if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          setTimeout(clearSync, 500);
+          return;
+        }
 
         // 2. Proportional scroll from the other pane
         if (scrollFraction !== undefined) {
-          const max = container.scrollHeight - container.clientHeight;
-          if (max > 0) { container.scrollTo({ top: scrollFraction * max, behavior: "smooth" }); return; }
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          if (maxScroll > 0) {
+            container.scrollTo({ top: scrollFraction * maxScroll, behavior: "smooth" });
+            setTimeout(clearSync, 500);
+            return;
+          }
         }
 
-        // 3. Nearest-neighbour fallback
+        // Fallback 2: find the nearest neighbour chunk that exists in this pane
+        syncingRef.current = false; // nothing scrolled yet
         if (!orderedIds) return;
         const idx = orderedIds.indexOf(chunkId);
         if (idx < 0) return;
@@ -137,19 +148,24 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           for (const d of [-dist, dist]) {
             const ni = idx + d;
             if (ni < 0 || ni >= orderedIds.length) continue;
-            const nb = container.querySelector(`[data-chunk-id="${orderedIds[ni]}"]`) as HTMLElement | null;
-            if (nb) { nb.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+            const neighbor = container.querySelector(`[data-chunk-id="${orderedIds[ni]}"]`) as HTMLElement | null;
+            if (neighbor) {
+              syncingRef.current = true;
+              neighbor.scrollIntoView({ behavior: "smooth", block: "center" });
+              setTimeout(clearSync, 500);
+              return;
+            }
           }
         }
       },
-      scrollToFraction(scrollFraction) {
+
+      scrollToFraction(fraction: number) {
         const container = scrollRef.current;
         if (!container) return;
-        const max = container.scrollHeight - container.clientHeight;
-        if (max <= 0) return;
         syncingRef.current = true;
-        container.scrollTo({ top: Math.max(0, Math.min(1, scrollFraction)) * max, behavior: "auto" });
-        requestAnimationFrame(() => { syncingRef.current = false; });
+        const maxScroll = container.scrollHeight - container.clientHeight;
+        container.scrollTo({ top: fraction * maxScroll, behavior: "smooth" });
+        setTimeout(() => { syncingRef.current = false; }, 500);
       },
     }), []);
 
@@ -215,13 +231,32 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       );
     }, [activeChunkId, kindMap]);
 
+    /* ── Click-to-select: clicking any highlighted span selects its chunk ── */
+    const handleChunkClick = useCallback((e: React.MouseEvent) => {
+      if (!onChunkClick) return;
+      const target = e.target as HTMLElement;
+      const chunkSpan = target.closest("[data-chunk-id]") as HTMLElement | null;
+      if (chunkSpan?.dataset.chunkId) {
+        const id = Number(chunkSpan.dataset.chunkId);
+        if (!isNaN(id)) onChunkClick(id);
+      }
+    }, [onChunkClick]);
+
+    /* ── Scroll sync: emit fraction to parent when user scrolls manually ── */
+    const handleScroll = useCallback(() => {
+      if (syncingRef.current) return;
+      const container = scrollRef.current;
+      if (!container || !onScrollFraction) return;
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      if (maxScroll > 0) onScrollFraction(container.scrollTop / maxScroll);
+    }, [onScrollFraction]);
+
     const hasStats = headerStats && headerStats.length > 0;
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
         {/* ── Panel header ──────────────────────────────────────────────────── */}
         <div className="flex-shrink-0 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
-          {/* Row 1: badge + filename + jump button */}
           <div className="flex items-center gap-2 px-3 py-2">
             <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}`}>
               {side.toUpperCase()}
@@ -261,9 +296,13 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           </div>
         </div>
 
-        {/* Scrollable text body */}
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onClick={handleChunkClick} onScroll={handleScroll}>
-          {activeCSS && <style>{activeCSS}</style>}
+        <div
+          ref={scrollRef}
+          className="flex-1 min-h-0 overflow-auto"
+          onScroll={handleScroll}
+          onClick={handleChunkClick}
+        >
+          {activeChunkCSS && <style>{activeChunkCSS}</style>}
           <pre
             className="text-[11.5px] whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-[#c8d8e8] px-3 py-1"
             style={{ lineHeight: "1.6", overflowWrap: "break-word", wordBreak: "break-word" }}
