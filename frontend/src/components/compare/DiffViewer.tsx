@@ -247,6 +247,29 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
     [result.chunks],
   );
 
+  // ── Per-pane header stats ────────────────────────────────────────────────
+  // Pane A (old): highlight deletions + modifications removed from this version
+  const paneAHeaderStats = useMemo(() => [
+    { label: "-", count: filteredStats.deletions,     colorClass: "text-rose-500",   title: `${filteredStats.deletions} deletion${filteredStats.deletions !== 1 ? "s" : ""}` },
+    { label: "~", count: filteredStats.modifications, colorClass: "text-amber-500",  title: `${filteredStats.modifications} modification${filteredStats.modifications !== 1 ? "s" : ""}` },
+  ].filter((s) => s.count > 0), [filteredStats]);
+
+  // Pane B (new): highlight additions + modifications introduced in this version
+  const paneBHeaderStats = useMemo(() => [
+    { label: "+", count: filteredStats.additions,     colorClass: "text-emerald-500", title: `${filteredStats.additions} addition${filteredStats.additions !== 1 ? "s" : ""}` },
+    { label: "~", count: filteredStats.modifications, colorClass: "text-amber-500",   title: `${filteredStats.modifications} modification${filteredStats.modifications !== 1 ? "s" : ""}` },
+  ].filter((s) => s.count > 0), [filteredStats]);
+
+  // First chunk to scroll to per pane (within the current filter)
+  const firstPaneAChunk = useMemo(
+    () => filteredChunks.find((c) => c.kind === "del" || c.kind === "mod"),
+    [filteredChunks],
+  );
+  const firstPaneBChunk = useMemo(
+    () => filteredChunks.find((c) => c.kind === "add" || c.kind === "mod"),
+    [filteredChunks],
+  );
+
   // Sections that actually have changes (for dropdown)
   const sectionsWithChanges = useMemo(
     () => xmlSections?.filter((s) => sectionCountMap.has(s.label)) ?? [],
@@ -342,6 +365,8 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
               activeChunkId={activeId}
               filename={result.file_a}
               side="a"
+              headerStats={paneAHeaderStats}
+              onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
             />
           </div>
 
@@ -363,6 +388,8 @@ export default function DiffViewer({ result, onReset, initialXmlFile, xmlSection
               activeChunkId={activeId}
               filename={result.file_b}
               side="b"
+              headerStats={paneBHeaderStats}
+              onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
             />
           </div>
         </div>
