@@ -21,6 +21,7 @@ import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
 import type { DiffResult, WorkflowMode, XmlSection } from "../../../components/compare/types";
 import { apiDiff, type DiffProgress } from "../../../components/compare/api";
+import { userLogsApi } from "../../../services/api";
 
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
 const DiffViewer = dynamic(() => import("../../../components/compare/DiffViewer"), { ssr: false });
@@ -337,6 +338,7 @@ function useDiffState() {
       }, xmlFile);
 
       setResult(data);
+      userLogsApi.logCompare(fileA.name, fileB.name).catch(() => { /* fire-and-forget */ });
       if (data.xml_sections?.length && allSections.length === 0)
         setAllSections(data.xml_sections);
       if (xmlSections.length > 0) setShowModal(true);

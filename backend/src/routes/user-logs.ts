@@ -70,6 +70,22 @@ router.get(
   },
 )
 
+router.post('/compare', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { fileA, fileB } = req.body
+    if (!fileA || !fileB) return res.status(400).json({ error: 'fileA and fileB are required' })
+
+    await pool.query(
+      `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_COMPARE_RUN', $2)`,
+      [req.user!.userId, `Compared "${fileA}" vs "${fileB}"`],
+    )
+    return res.status(201).json({ success: true })
+  } catch (error) {
+    console.log('Log compare error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 router.get('/my', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { rows: logs } = await pool.query(

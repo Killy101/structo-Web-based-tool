@@ -425,7 +425,7 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT deleted_at as "deletedAt", status FROM brds WHERE brd_id = $1`,
+      `SELECT deleted_at as "deletedAt", status, title FROM brds WHERE brd_id = $1`,
       [String(req.params.brdId)],
     )
     const existing = rows[0]
@@ -475,6 +475,19 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
       )
     }
 
+    // Log the status/field change (fire-and-forget)
+    const patchActorId = (req as any).user?.userId ?? null
+    if (patchActorId) {
+      const brdTitle = existing.title ?? brdId
+      const changeDesc = normalizedStatus
+        ? `Status changed to ${normalizedStatus} for "${brdTitle}" (${brdId})`
+        : `Updated "${brdTitle}" (${brdId})`
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_STATUS_UPDATED', $2)`,
+        [patchActorId, changeDesc],
+      ).catch((e: unknown) => console.warn('Failed to log BRD status update:', e))
+    }
+
     return res.json({ success: true, brdId })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
@@ -495,7 +508,7 @@ router.delete('/:brdId/discard', authenticate, async (req: AuthRequest, res: Res
     const policy  = getBrdAccessPolicy(res)
 
     const { rows } = await pool.query(
-      `SELECT brd_id, status, deleted_at, created_by_id FROM brds WHERE brd_id = $1`,
+      `SELECT brd_id, title, status, deleted_at, created_by_id FROM brds WHERE brd_id = $1`,
       [brdId],
     )
     if (!rows[0] || rows[0].deleted_at !== null) {
@@ -513,8 +526,17 @@ router.delete('/:brdId/discard', authenticate, async (req: AuthRequest, res: Res
       return res.status(403).json({ error: 'You can only discard your own BRDs' })
     }
 
+    const discardTitle = rows[0].title ?? brdId
     // Hard-delete — cascades to brd_sections, brd_cell_images, brd_versions
     await pool.query(`DELETE FROM brds WHERE brd_id = $1`, [brdId])
+
+    if (userId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_DISCARDED', $2)`,
+        [userId, `Discarded DRAFT "${discardTitle}" (${brdId})`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD discard:', e))
+    }
+
     return res.json({ success: true })
   } catch (err) {
     console.log('[DELETE /brd/:brdId/discard]', err)
@@ -525,15 +547,25 @@ router.delete('/:brdId/discard', authenticate, async (req: AuthRequest, res: Res
 // ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
 router.delete('/:brdId', requireBrdDelete, async (req: Request, res: Response) => {
   try {
+    const brdId = String(req.params.brdId)
     const { rows } = await pool.query(
-      `SELECT deleted_at FROM brds WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      `SELECT deleted_at, title FROM brds WHERE brd_id = $1`,
+      [brdId],
     )
     if (!rows[0] || rows[0].deleted_at !== null) return res.status(404).json({ error: 'BRD not found' })
     await pool.query(
       `UPDATE brds SET deleted_at = NOW(), updated_at = NOW() WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      [brdId],
     )
+
+    const deleteActorId = (req as any).user?.userId ?? null
+    if (deleteActorId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_DELETED', $2)`,
+        [deleteActorId, `Soft-deleted "${rows[0].title ?? brdId}" (${brdId})`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD delete:', e))
+    }
+
     return res.json({ success: true })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
@@ -543,16 +575,26 @@ router.delete('/:brdId', requireBrdDelete, async (req: Request, res: Response) =
 // ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
 router.post('/:brdId/restore', requireBrdTrashAccess, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: Request, res: Response) => {
   try {
+    const brdId = String(req.params.brdId)
     const { rows } = await pool.query(
-      `SELECT deleted_at FROM brds WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      `SELECT deleted_at, title FROM brds WHERE brd_id = $1`,
+      [brdId],
     )
     if (!rows[0]) return res.status(404).json({ error: 'BRD not found' })
     if (rows[0].deleted_at === null) return res.status(400).json({ error: 'BRD is not deleted' })
     await pool.query(
       `UPDATE brds SET deleted_at = NULL, updated_at = NOW() WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      [brdId],
     )
+
+    const restoreActorId = (req as any).user?.userId ?? null
+    if (restoreActorId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_RESTORED', $2)`,
+        [restoreActorId, `Restored "${rows[0].title ?? brdId}" (${brdId}) from trash`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD restore:', e))
+    }
+
     return res.json({ success: true })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
@@ -564,15 +606,24 @@ router.delete('/:brdId/permanent', requireBrdTrashAccess, authorize(['SUPER_ADMI
   try {
     const brdId = String(req.params.brdId)
     const { rows } = await pool.query(
-      `SELECT deleted_at FROM brds WHERE brd_id = $1`,
+      `SELECT deleted_at, title FROM brds WHERE brd_id = $1`,
       [brdId],
     )
     if (!rows[0]) return res.status(404).json({ error: 'BRD not found' })
     if (rows[0].deleted_at === null) return res.status(400).json({ error: 'BRD must be soft-deleted before permanent delete' })
 
+    const permTitle = rows[0].title ?? brdId
     // All related rows (brd_sections, brd_cell_images, brd_versions) are deleted
     // by ON DELETE CASCADE constraints defined in the schema.
     await pool.query(`DELETE FROM brds WHERE brd_id = $1`, [brdId])
+
+    const permActorId = (req as any).user?.userId ?? null
+    if (permActorId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_PERMANENTLY_DELETED', $2)`,
+        [permActorId, `Permanently deleted "${permTitle}" (${brdId})`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD permanent delete:', e))
+    }
 
     return res.json({ success: true })
   } catch (err) {

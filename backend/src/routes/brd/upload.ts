@@ -257,7 +257,16 @@ router.post(
         console.warn('Failed to send BRD upload notification:', notifyErr)
       }
 
-      // ── 6. Return extracted data (strip binary imageData from response) ───
+      // ── 6. Log upload + processing activity ──────────────────────────────
+      const actorId = (req as any).user?.userId ?? null
+      if (actorId) {
+        pool.query(
+          `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_UPLOADED', $2)`,
+          [actorId, `Uploaded and processed "${title}" (${brdId}, file: ${file.originalname})`],
+        ).catch((e: unknown) => console.warn('Failed to log BRD upload:', e))
+      }
+
+      // ── 7. Return extracted data (strip binary imageData from response) ───
       const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || []
 
       return res.json({
@@ -307,13 +316,14 @@ router.post(
     try {
       // Confirm BRD exists and is not deleted
       const { rows } = await pool.query(
-        `SELECT brd_id, status, deleted_at FROM brds WHERE brd_id = $1`,
+        `SELECT brd_id, title, status, deleted_at FROM brds WHERE brd_id = $1`,
         [brdId],
       )
       if (!rows[0] || rows[0].deleted_at !== null) {
         return res.status(404).json({ error: 'BRD not found' })
       }
       const currentStatus: string = rows[0].status ?? 'DRAFT'
+      const existingTitle: string = rows[0].title ?? brdId
 
       // Fetch existing sections as fallback
       const { rows: existingRows } = await pool.query(
@@ -380,6 +390,15 @@ router.post(
           )
         }
       })
+
+      // Log re-upload activity (fire-and-forget)
+      const reUploadActorId = (req as any).user?.userId ?? null
+      if (reUploadActorId) {
+        pool.query(
+          `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_RE_UPLOADED', $2)`,
+          [reUploadActorId, `Re-uploaded source file for "${existingTitle}" (${brdId}, file: ${file.originalname})`],
+        ).catch((e: unknown) => console.warn('Failed to log BRD re-upload:', e))
+      }
 
       const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || []
 

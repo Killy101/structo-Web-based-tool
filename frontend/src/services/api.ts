@@ -169,6 +169,10 @@ export const userLogsApi = {
   getAll: () => api.get<{ logs: UserLog[] }>("/user-logs").then((r) => r.data),
   getMine: () =>
     api.get<{ logs: UserLog[] }>("/user-logs/my").then((r) => r.data),
+  logCompare: (fileA: string, fileB: string) =>
+    api
+      .post<{ success: boolean }>("/user-logs/compare", { fileA, fileB })
+      .then((r) => r.data),
 };
 
 export const brdApi = {

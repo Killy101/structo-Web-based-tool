@@ -37,7 +37,7 @@ function inferLevel(action: string): LogLevel {
   const a = action.toUpperCase();
   if (a.includes("FAIL") || a.includes("ERROR") || a.includes("INVALID")) return "error";
   if (a.includes("LOGIN") || a.includes("MFA") || a.includes("PASSWORD") || a.includes("SECURITY") || a.includes("BLOCKED") || a.includes("LOCK")) return "security";
-  if (a.includes("DELETE") || a.includes("ROLE") || a.includes("PROMOTE") || a.includes("DEACTIVAT") || a.includes("SETTING") || a.includes("POLICY") || a.includes("PERMISSION")) return "audit";
+  if (a.includes("DELETE") || a.includes("ROLE") || a.includes("PROMOTE") || a.includes("DEACTIVAT") || a.includes("SETTING") || a.includes("POLICY") || a.includes("PERMISSION") || a.includes("UPLOAD") || a.includes("RESTOR") || a.includes("DISCARD") || a.includes("STATUS_UPDATE")) return "audit";
   if (a.includes("WARN") || a.includes("SLOW") || a.includes("RATE_LIMIT")) return "warning";
   return "info";
 }
@@ -65,8 +65,10 @@ function inferTags(action: string): string[] {
   if (a.includes("TEAM")) tags.push("team");
   if (a.includes("ROLE")) tags.push("role-change");
   if (a.includes("FAIL") || a.includes("ERROR")) tags.push("failed");
-  if (a.includes("DELETE")) tags.push("delete");
+  if (a.includes("DELETE") || a.includes("DISCARD")) tags.push("delete");
   if (a.includes("UPDATE") || a.includes("SETTING")) tags.push("update");
+  if (a.includes("COMPARE")) tags.push("compare");
+  if (a.includes("RESTOR")) tags.push("restore");
   if (tags.length === 0) tags.push("activity");
   return tags;
 }
