@@ -2,6 +2,7 @@ import { Router, Response } from 'express'
 import pool from '../lib/db'
 import { authenticate, AuthRequest } from '../middleware/authenticate'
 import { authorize } from '../middleware/authorize'
+import { invalidateSecurityPolicyCache } from '../lib/get-security-policy'
 
 const router = Router()
 
@@ -199,6 +200,7 @@ router.patch('/governance', authenticate, authorize(['SUPER_ADMIN']), async (req
     )
 
     invalidateOperationsStatusCache()
+    invalidateSecurityPolicyCache()
     return res.json({ message: 'Governance settings updated', settings: { securityPolicy, operationsPolicy } })
   } catch (error) {
     console.log('Update governance settings error:', error)

@@ -17,21 +17,12 @@ router.get(
       let paramIdx = 1
 
       if (actorRole === 'ADMIN') {
-        const { rows: adminRows } = await pool.query(
-          `SELECT team_id FROM users WHERE id = $1`,
-          [req.user!.userId],
-        )
-        const teamId = adminRows[0]?.team_id
+        const teamId = req.user!.teamId
         if (!teamId) return res.json({ logs: [] })
 
-        const { rows: members } = await pool.query(
-          `SELECT id FROM users WHERE team_id = $1`,
-          [teamId],
-        )
-        const memberIds = members.map((m: any) => m.id)
-
-        conditions.push(`ul.user_id = ANY($${paramIdx++})`)
-        params.push(memberIds)
+        // Filter to team members via subquery — avoids 2 separate round-trips
+        conditions.push(`ul.user_id IN (SELECT id FROM users WHERE team_id = $${paramIdx++})`)
+        params.push(teamId)
 
         // Admins must not see their own login/logout
         conditions.push(

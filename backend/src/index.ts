@@ -137,6 +137,13 @@ async function runStartupMigrations() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_inbound_emails_processed ON inbound_emails (processed)`)
     console.log('[migrations] inbound_emails table OK')
 
+    // Performance indexes for user/team/log queries (safe to run on existing DBs)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_team_id ON users (team_id)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_role_status ON users (role, status)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_logs_user_id ON user_logs (user_id)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_logs_action_created_at ON user_logs (action, created_at DESC)`)
+    console.log('[migrations] performance indexes OK')
+
     // Fix SERIAL sequences that may be out of sync with existing data
     await pool.query(`
       SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 0) + 1)
