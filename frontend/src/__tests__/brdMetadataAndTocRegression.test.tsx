@@ -1,6 +1,6 @@
 import React from "react";
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import Metadata from "../components/brd/Metadata";
 import Toc from "../components/brd/TOC";
 import Generate from "../components/brd/Generate";
@@ -473,6 +473,71 @@ describe("BRD metadata and document structure regressions", () => {
     expect(screen.getByRole("link", { name: /example\.com\/ref/i })).toHaveAttribute("href", "https://example.com/ref");
     expect(container.innerHTML).toContain("color:red");
     expect(container.querySelector("strong")).not.toBeNull();
+  });
+
+  it("shows a scope row image only on the matching SME comments row in the review screen", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 96,
+            tableIndex: 7,
+            rowIndex: 1,
+            colIndex: 5,
+            rid: "manual-96",
+            mediaName: "scope-row.png",
+            mimeType: "image/png",
+            cellText: "Row specific screenshot",
+            section: "scope",
+            fieldLabel: "in-0-smeComments",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <Generate
+        brdId="BRD-123"
+        format="old"
+        status="DRAFT"
+        initialData={{
+          scope: {
+            in_scope: [
+              {
+                stable_key: "in-0",
+                document_title: "Doc A",
+                regulator_url: "https://example.com/a",
+                content_url: "https://example.com/content-a",
+                issuing_authority: "Agency A",
+                asrb_id: "ASRB-A",
+                sme_comments: "FF: replace link A",
+              },
+              {
+                stable_key: "in-1",
+                document_title: "Doc B",
+                regulator_url: "https://example.com/b",
+                content_url: "https://example.com/content-b",
+                issuing_authority: "Agency B",
+                asrb_id: "ASRB-B",
+                sme_comments: "FF: replace link B",
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText(/row specific screenshot/i)).toHaveLength(1);
+    });
+
+    const firstRow = screen.getByText("Doc A").closest("tr");
+    const secondRow = screen.getByText("Doc B").closest("tr");
+
+    expect(firstRow).not.toBeNull();
+    expect(secondRow).not.toBeNull();
+    expect(within(firstRow as HTMLElement).getByAltText(/row specific screenshot/i)).toBeInTheDocument();
+    expect(within(secondRow as HTMLElement).queryByAltText(/row specific screenshot/i)).not.toBeInTheDocument();
   });
 
   it("preserves rich-text scope links in the editable scope table", async () => {

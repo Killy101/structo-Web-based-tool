@@ -20,6 +20,8 @@ interface Props {
   brdId: string;
   section: string;
   fieldLabel: string;
+  rowIndex?: number;
+  colIndex?: number;
   existingImages?: UploadedCellImage[];
   onUploaded?: (img: UploadedCellImage) => void;
   onDeleted?: (id: number) => void;
@@ -39,6 +41,8 @@ export default function CellImageUploader({
   brdId,
   section,
   fieldLabel,
+  rowIndex,
+  colIndex,
   existingImages = [],
   onUploaded,
   onDeleted,
@@ -147,6 +151,8 @@ export default function CellImageUploader({
           mediaName:  pending.name,
           section,
           fieldLabel,
+          ...(rowIndex !== undefined ? { rowIndex } : {}),
+          ...(colIndex !== undefined ? { colIndex } : {}),
           cellText:   captionText.trim() || normalizedDefaultText || pending.name.replace(/\.[^.]+$/, ""),
         }
       );

@@ -5,6 +5,7 @@ import Metadata from "../components/brd/Metadata";
 import Scope from "../components/brd/Scope";
 import ContentProfile from "../components/brd/ContentProf";
 import TOC from "../components/brd/TOC";
+import Citation from "../components/brd/Citation";
 import api from "@/app/lib/api";
 
 jest.mock("@/app/lib/api", () => ({
@@ -217,6 +218,141 @@ describe("BRD image placement regressions", () => {
 
     await waitFor(() => {
       expect(screen.getByAltText(/level 9 paragraph screenshot/i)).toBeInTheDocument();
+    });
+  });
+
+  it("keeps a scope cell image on the matching row instead of repeating it across rows with the same text", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 903,
+            tableIndex: 4,
+            rowIndex: 1,
+            colIndex: 5,
+            rid: "rId903",
+            mediaName: "scope-sme-comment.png",
+            mimeType: "image/png",
+            cellText: "Shared comment screenshot",
+            section: "scope",
+            fieldLabel: "same comment",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <Scope
+        brdId="BRD-123"
+        initialData={{
+          smeCheckpoint: "Review links only",
+          in_scope: [
+            {
+              document_title: "Doc 1",
+              reference_link: "https://example.com/1",
+              content_url: "https://example.com/content-1",
+              issuing_authority: "Authority 1",
+              asrb_id: "ASRB-1",
+              sme_comments: "Same comment",
+            },
+            {
+              document_title: "Doc 2",
+              reference_link: "https://example.com/2",
+              content_url: "https://example.com/content-2",
+              issuing_authority: "Authority 2",
+              asrb_id: "ASRB-2",
+              sme_comments: "Same comment",
+            },
+          ],
+          out_of_scope: [],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText(/shared comment screenshot/i)).toHaveLength(1);
+    });
+
+    const firstRow = screen.getByText("Doc 1").closest("tr");
+    const secondRow = screen.getByText("Doc 2").closest("tr");
+
+    expect(firstRow).not.toBeNull();
+    expect(secondRow).not.toBeNull();
+    expect(within(firstRow as HTMLElement).getByAltText(/shared comment screenshot/i)).toBeInTheDocument();
+    expect(within(secondRow as HTMLElement).queryByAltText(/shared comment screenshot/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps a citation image on the intended row when multiple rows share the same level", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 904,
+            tableIndex: 4,
+            rowIndex: 1,
+            colIndex: 3,
+            rid: "rId904",
+            mediaName: "citation-level-1.png",
+            mimeType: "image/png",
+            cellText: "Citation row screenshot",
+            section: "citations",
+            fieldLabel: "Level 1",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <Citation
+        brdId="BRD-123"
+        initialData={{
+          references: [
+            { level: "1", citationRules: "Rule A", sourceOfLaw: "Law A", isCitable: "Y", smeComments: "Comment A" },
+            { level: "1", citationRules: "Rule B", sourceOfLaw: "Law B", isCitable: "N", smeComments: "Comment B" },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText(/citation row screenshot/i)).toHaveLength(1);
+    });
+  });
+
+  it("keeps a TOC image on the intended row when multiple rows share the same level", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 905,
+            tableIndex: 2,
+            rowIndex: 2,
+            colIndex: 7,
+            rid: "rId905",
+            mediaName: "toc-level-1.png",
+            mimeType: "image/png",
+            cellText: "TOC row screenshot",
+            section: "toc",
+            fieldLabel: "Level 1",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <TOC
+        brdId="BRD-123"
+        initialData={{
+          sections: [
+            { level: "1", name: "Heading A", required: "true", definition: "Definition A", example: "Example A", note: "", tocRequirements: "", smeComments: "Comment A" },
+            { level: "1", name: "Heading B", required: "false", definition: "Definition B", example: "Example B", note: "", tocRequirements: "", smeComments: "Comment B" },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText(/toc row screenshot/i)).toHaveLength(1);
     });
   });
 });

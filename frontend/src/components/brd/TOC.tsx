@@ -367,7 +367,6 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   const rowsRef = useRef<TocRow[]>(INITIAL_ROWS);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
     const newRows = buildRowsFromToc(initialData);
@@ -564,6 +563,9 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
 
   // colIndex → column field key (matches actual Word TOC table structure)
   const TOC_COL_MAP: Record<number, string> = { 0: "level", 1: "name", 2: "required", 3: "definition", 4: "example", 5: "note", 6: "tocRequirements", 7: "smeComments" };
+  const TOC_FIELD_TO_COL_INDEX = Object.fromEntries(
+    Object.entries(TOC_COL_MAP).map(([index, key]) => [key, Number(index)]),
+  ) as Record<string, number>;
 
   function extractTocImageLevel(fieldLabel: string): string {
     const raw = (fieldLabel || "").trim();
@@ -571,26 +573,39 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     return match?.[1] ?? "";
   }
 
+  function buildTocRowImageKeys(row: TocRow, rowIdx: number, col: string): string[] {
+    return [
+      cellKey(`${row.level}-${rowIdx + 1}`, col),
+      cellKey(row.level, col),
+    ].map((value) => value.trim().toLowerCase()).filter(Boolean);
+  }
+
   // Match images to a TOC row.
-  // Primary: fieldLabel (= level number e.g. "3" or "Level 3") + colIndex — works for new DB records.
-  // Fallback: rowIndex (arrayIdx+1 because row 0 is header) + colIndex — works for stale DB records.
+  // Prefer exact row+column keys from manual uploads, then fall back to legacy level labels,
+  // finally use rowIndex+colIndex for stale extracted records.
   function matchRowImgs(row: TocRow, rowIdx: number): { [col: string]: CellImageMeta[] } {
     if (!images.length) return {};
     const levelStr = row.level.trim();
-
-    const byFieldLabel = images.filter(img => extractTocImageLevel(img.fieldLabel || "") === levelStr);
-
-    const byRowIndex = byFieldLabel.length === 0
-      ? images.filter(img => img.rowIndex === rowIdx + 1 && (!img.fieldLabel || img.fieldLabel === ""))
-      : [];
-
-    const matched = byFieldLabel.length > 0 ? byFieldLabel : byRowIndex;
+    const sameLevelRows = rowsRef.current.filter((candidate) => candidate.level.trim() === levelStr);
     const byCol: { [col: string]: CellImageMeta[] } = {};
-    matched.forEach(img => {
-      const colKey = TOC_COL_MAP[img.colIndex] ?? "note";
+
+    images.forEach((img) => {
+      const colKey = TOC_COL_MAP[img.colIndex];
+      if (!colKey) return;
+
+      const fieldLabel = (img.fieldLabel || "").trim().toLowerCase();
+      const rowIndexMatches = img.rowIndex === rowIdx + 1;
+      const exactKeys = buildTocRowImageKeys(row, rowIdx, colKey);
+      const isExactMatch = !!fieldLabel && exactKeys.includes(fieldLabel);
+      const isLevelMatch = extractTocImageLevel(img.fieldLabel || "") === levelStr && (sameLevelRows.length === 1 || rowIndexMatches);
+      const isLegacyRowFallback = rowIndexMatches && !fieldLabel;
+
+      if (!isExactMatch && !isLevelMatch && !isLegacyRowFallback) return;
+
       if (!byCol[colKey]) byCol[colKey] = [];
       byCol[colKey].push(img);
     });
+
     return byCol;
   }
 
@@ -792,20 +807,28 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
                 return (
                   <React.Fragment key={row.id}>
                     <tr className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`} onFocus={() => setFocusedRowId(row.id)}>
-                      {COLUMNS.map((col) => (
-                        <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
-                          <div className="group">
-                          {renderCell(row, col.key)}
-                          {rowImgsByCol[col.key]?.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
-                          {getCellImgs(row.level, col.key).map(img => (
-                            <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={mergeUploadedImageLists(getCellImgs(row.level, col.key), (rowImgsByCol[col.key] ?? []).map(toUploadedCellImage) as UploadedCellImage[])} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
-                        </div>
-                        </td>
-                      ))}
+                      {COLUMNS.map((col) => {
+                        const rowImageKey = `${row.level}-${idx + 1}`;
+                        const legacyEditableImages = rows.filter((candidate) => candidate.level.trim() === row.level.trim()).length === 1
+                          ? getCellImgs(row.level, col.key)
+                          : [];
+                        const editableImages = mergeUploadedImageLists(
+                          getCellImgs(rowImageKey, col.key),
+                          legacyEditableImages,
+                          (rowImgsByCol[col.key] ?? []).map(toUploadedCellImage) as UploadedCellImage[],
+                        );
+                        return (
+                          <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                            <div className="group">
+                              {renderCell(row, col.key)}
+                              {editableImages.map((img) => (
+                                <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                              ))}
+                              {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(rowImageKey, col.key)} rowIndex={idx + 1} colIndex={TOC_FIELD_TO_COL_INDEX[col.key]} existingImages={editableImages} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(rowImageKey, col.key, img)} onDeleted={id => onCellDeleted(rowImageKey, col.key, id)}/>}
+                            </div>
+                          </td>
+                        );
+                      })}
                       <td className="w-8 px-2 py-2 align-top">
                         <button onClick={() => deleteRow(row.id)} className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-slate-400 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all">
                           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>

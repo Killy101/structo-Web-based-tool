@@ -16,8 +16,8 @@ const ENSURE_POLICY_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
 const FEATURE_CATALOG: Record<string, string> = {
   dashboard: 'Dashboard', 'brd-process': 'BRD Process', 'brd-view-generate': 'BRD View and Generate Sources',
-  'user-management': 'User Management', 'compare-basic': 'Compare',
-  'compare-merge': 'Compare Merge', 'compare-pdf-xml-only': 'Compare PDF + XML Only', 'user-logs': 'User Logs',
+  'user-management': 'User Management', 'compare-basic': 'Workflow 1 · Chunk & Compare',
+  'compare-merge': 'Merge XML Chunks', 'compare-pdf-xml-only': 'Workflow 2 · Compare & Apply', 'user-logs': 'User Logs',
 }
 
 function humanizeFeatureKey(key: string): string {
@@ -35,12 +35,12 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<PolicyRole, string[]>
     USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
   if (slug === 'production') return {
-    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
+    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'user-logs'],
     USER:  ['dashboard', 'brd-view-generate', 'compare-basic'],
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-merge'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
   }
   return {
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],
@@ -62,9 +62,9 @@ async function ensureTeamPolicies(teamSlug: string) {
       if (existing[0]?.id) {
         await pool.query(
           `UPDATE user_roles
-           SET slug = $1, name = $2, updated_at = NOW()
-           WHERE id = $3`,
-          [slug, name, existing[0].id],
+           SET slug = $1, name = $2, features = $3, updated_at = NOW()
+           WHERE id = $4`,
+          [slug, name, defaults[role], existing[0].id],
         )
         return
       }

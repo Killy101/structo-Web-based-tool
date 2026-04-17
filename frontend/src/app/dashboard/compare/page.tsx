@@ -2,15 +2,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // page.tsx — Compare feature entry point
 //
-// Two workflows remain (Workflow 1 / Direct Compare removed):
+// Two workflows remain and are shown to users as Workflow 1 and Workflow 2:
 //
-//  WF2 "Chunk & Compare"  — Old PDF + New PDF + XML
-//                           4-panel view, XML panel is read-only
-//                           Browse changes by section
+//  Workflow 1 (internal wf2) "Chunk & Compare"  — Old PDF + New PDF + XML
+//                                                  4-panel view, XML panel is read-only
+//                                                  Browse changes by section
 //
-//  WF3 "Compare & Apply"  — Old PDF + New PDF + XML
-//                           4-panel view, XML panel is editable
-//                           Accept / Reject / Edit changes → save updated XML
+//  Workflow 2 (internal wf3) "Compare & Apply"  — Old PDF + New PDF + XML
+//                                                  4-panel view, XML panel is editable
+//                                                  Accept / Reject / Edit changes → save updated XML
 //
 // Both workflows share the same DiffViewer — only the `mode` prop differs.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ function WorkflowSelector({
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl mx-auto">
         <WorkflowCard
-          badge="Workflow 2"
+          badge="Workflow 1"
           title="Chunk & Compare"
           description="Compare old and new PDFs using XML as the baseline. Browse changes by section with added / deleted / modified highlighting. XML panel is read-only."
           steps={[
@@ -157,7 +157,7 @@ function WorkflowSelector({
           }
         />
         <WorkflowCard
-          badge="Workflow 3"
+          badge="Workflow 2"
           title="Compare & Apply"
           description="Detect changes between old and new PDFs, then apply them directly to the XML. Accept, reject, or manually edit each change before downloading the updated XML."
           steps={[
@@ -366,7 +366,7 @@ export default function ComparePage() {
   const { user } = useAuth();
   const features     = user?.effectiveFeatures ?? [];
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
-  const canWf2       = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canWf2       = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
   const canWf3       = isSuperAdmin || features.includes("compare-pdf-xml-only");
   const canMerge     = isSuperAdmin || features.includes("compare-merge");
 

@@ -160,8 +160,6 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   const rowsRef = useRef<CitationRow[]>(INITIAL_ROWS);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-
   useEffect(() => {
     const nextRows = buildRowsFromCitations(initialData);
     const nextCitationLevelSmeCheckpoint = typeof initialData?.citationLevelSmeCheckpoint === "string"
@@ -242,23 +240,37 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     fetchImages();
   }, [brdId]);
 
+  function buildCitationImageKeys(row: CitationRow, arrayIdx: number, col: string): string[] {
+    return [
+      cellKey(`${row.level}-${arrayIdx + 1}`, col),
+      cellKey(row.level, col),
+    ].map((value) => value.trim().toLowerCase()).filter(Boolean);
+  }
+
   // Returns images for a specific row+column.
-  // Primary: fieldLabel match ("Level 13") + exact colIndex.
-  // Fallback: rowIndex (Word table row, 1-based because row 0 = header) + colIndex.
+  // Prefer exact row+column keys from manual uploads, then fall back to legacy level labels,
+  // finally use rowIndex + colIndex for stale records.
   function getCellImages(row: CitationRow, col: string, arrayIdx: number): CellImageMeta[] {
     const colIdx = CITATION_COL_INDEX[col] ?? -1;
     if (colIdx === -1) return [];
 
-    const byLabel = images.filter(img =>
-      img.colIndex === colIdx &&
-      img.fieldLabel?.trim() === `Level ${row.level}`
-    );
-    if (byLabel.length > 0) return byLabel;
+    const rowIndexMatches = (img: CellImageMeta) => img.rowIndex === arrayIdx + 1;
+    const sameLevelRows = rowsRef.current.filter((candidate) => candidate.level.trim() === row.level.trim());
+    const exactKeys = buildCitationImageKeys(row, arrayIdx, col);
 
-    return images.filter(img =>
-      img.colIndex === colIdx &&
-      img.rowIndex === arrayIdx + 1
-    );
+    return images.filter((img) => {
+      if (img.colIndex !== colIdx) return false;
+
+      const fieldLabel = (img.fieldLabel || "").trim().toLowerCase();
+      if (fieldLabel && exactKeys.includes(fieldLabel)) return true;
+
+      if (fieldLabel && (fieldLabel === `level ${row.level}`.trim().toLowerCase() || fieldLabel === row.level.trim().toLowerCase())) {
+        return sameLevelRows.length === 1 || rowIndexMatches(img);
+      }
+
+      if (fieldLabel) return false;
+      return rowIndexMatches(img);
+    });
   }
 
   function updateCell(rowId: string, col: string, value: string) {
@@ -342,13 +354,12 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRowId, rows.length, editingCell]);
 
-  function renderCell(row: CitationRow, col: string, rowIdx: number) {
+  function renderCell(row: CitationRow, col: string) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
     const rawValue  = row[col as keyof CitationRow] as string;
     const editorValue = brdRichTextToPlain(rawValue) || rawValue;
     const shouldFmt = col === "citationRules" || col === "smeComments";
     const value     = shouldFmt ? formatCitationRulesForDisplay(rawValue) : rawValue;
-    const cellImgs  = getCellImages(row, col, rowIdx);
 
     if (col === "level") {
       if (isEditing) return (
@@ -381,15 +392,6 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
             ? renderCitationRulesDisplay(rawValue)
             : <span className="whitespace-pre-wrap break-words" dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(rawValue) }} />
         ) : <span className="text-slate-400 dark:text-slate-600 italic">—</span>}
-        {cellImgs.map(img => (
-          <BrdImage key={img.id}
-            src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
-            alt={img.cellText || img.mediaName}
-            className="mt-1 max-w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#1a1f35]"
-            width={320}
-            height={180}
-            onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-        ))}
       </div>
     );
   }
@@ -465,17 +467,28 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
             <tbody className="divide-y divide-slate-100 dark:divide-[#2a3147]" style={{ fontWeight: 400 }}>
               {rows.map((row, idx) => (
                 <tr key={row.id} className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`} onFocus={() => setFocusedRowId(row.id)}>
-                  {COLUMNS.map(col => (
-                    <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
-                      <div className="group">
-                        {renderCell(row, col.key, idx)}
-                        {getCellImgs(row.level, col.key).map(img => (
-                          <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" width={320} height={180} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                        ))}
-                        {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(row.level, col.key)} existingImages={mergeUploadedImageLists(getCellImgs(row.level, col.key), getCellImages(row, col.key, idx).map(toUploadedCellImage) as UploadedCellImage[])} defaultCellText={String(row[col.key as keyof CitationRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
-                      </div>
-                    </td>
-                  ))}
+                  {COLUMNS.map(col => {
+                    const rowImageKey = `${row.level}-${idx + 1}`;
+                    const legacyEditableImages = rows.filter((candidate) => candidate.level.trim() === row.level.trim()).length === 1
+                      ? getCellImgs(row.level, col.key)
+                      : [];
+                    const editableImages = mergeUploadedImageLists(
+                      getCellImgs(rowImageKey, col.key),
+                      legacyEditableImages,
+                      getCellImages(row, col.key, idx).map(toUploadedCellImage) as UploadedCellImage[],
+                    );
+                    return (
+                      <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                        <div className="group">
+                          {renderCell(row, col.key)}
+                          {editableImages.map(img => (
+                            <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CIT)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" width={320} height={180} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                          ))}
+                          {brdId && <CellImageUploader brdId={brdId} section="citations" fieldLabel={cellKey(rowImageKey, col.key)} rowIndex={idx + 1} colIndex={CITATION_COL_INDEX[col.key]} existingImages={editableImages} defaultCellText={String(row[col.key as keyof CitationRow] ?? "")} onUploaded={img => onCellUploaded(rowImageKey, col.key, img)} onDeleted={id => onCellDeleted(rowImageKey, col.key, id)}/>}
+                        </div>
+                      </td>
+                    );
+                  })}
                   <td className="w-8 px-2 py-2 align-top">
                     <button onClick={() => deleteRow(row.id)} className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-slate-400 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all">
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>

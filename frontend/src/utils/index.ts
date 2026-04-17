@@ -64,9 +64,9 @@ export const FEATURE_LABELS: Record<string, string> = {
   "dashboard": "Dashboard",
   "brd-process": "BRD Process",
   "brd-view-generate": "BRD View and Generate Sources",
-  "compare-basic": "Direct Comparison",
-  "compare-merge": "Chunk & Compare",
-  "compare-pdf-xml-only": "Compare & Apply",
+  "compare-basic": "Workflow 1 · Chunk & Compare",
+  "compare-merge": "Merge XML Chunks",
+  "compare-pdf-xml-only": "Workflow 2 · Compare & Apply",
   "user-logs": "History",
   "user-management": "User Management",
 };

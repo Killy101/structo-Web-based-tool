@@ -220,9 +220,14 @@ router.post('/:brdId/images', requireBrdEdit, async (req: Request, res: Response
 router.post('/:brdId/images/upload', requireBrdEdit, async (req: Request, res: Response) => {
   try {
     const brdId = String(req.params.brdId)
-    const { imageData, mimeType, mediaName, section, fieldLabel, cellText } = req.body
+    const { imageData, mimeType, mediaName, section, fieldLabel, cellText, rowIndex, colIndex } = req.body
 
     if (!imageData || !mimeType) return res.status(400).json({ error: 'imageData and mimeType are required' })
+
+    const parsedRowIndex = Number(rowIndex)
+    const parsedColIndex = Number(colIndex)
+    const safeRowIndex = Number.isFinite(parsedRowIndex) ? parsedRowIndex : 0
+    const safeColIndex = Number.isFinite(parsedColIndex) ? parsedColIndex : 0
 
     const { rows: existing } = await pool.query(
       `SELECT table_index FROM brd_cell_images WHERE brd_id = $1 ORDER BY table_index DESC LIMIT 1`,
@@ -235,10 +240,10 @@ router.post('/:brdId/images/upload', requireBrdEdit, async (req: Request, res: R
     const { rows: created } = await pool.query(
       `INSERT INTO brd_cell_images
          (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
-       VALUES ($1, $2, 0, 0, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id, media_name as "mediaName", mime_type as "mimeType",
                  section, field_label as "fieldLabel", cell_text as "cellText"`,
-      [brdId, nextTableIndex, rid, mediaName ?? 'image', mimeType, cellText ?? '',
+      [brdId, nextTableIndex, safeRowIndex, safeColIndex, rid, mediaName ?? 'image', mimeType, cellText ?? '',
        section ?? 'unknown', fieldLabel ?? '', imageBytes],
     )
 

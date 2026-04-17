@@ -66,6 +66,8 @@ describe("CellImageUploader edit workflow", () => {
         brdId="BRD-123"
         section="metadata"
         fieldLabel="Publication Date"
+        rowIndex={4}
+        colIndex={1}
         defaultCellText="Existing publication text"
         onUploaded={onUploaded}
       />,
@@ -89,8 +91,8 @@ describe("CellImageUploader edit workflow", () => {
         "/brd/BRD-123/images/upload",
         expect.objectContaining({
           section: "metadata",
-          fieldLabel: "Publication Date",
-          cellText: "Publication screenshot",
+          fieldLabel: "Publication Date",          rowIndex: 4,
+          colIndex: 1,          cellText: "Publication screenshot",
         }),
       );
     });

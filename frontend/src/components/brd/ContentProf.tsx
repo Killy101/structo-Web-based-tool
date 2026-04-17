@@ -352,13 +352,21 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     setContentImages(prev => prev.filter(img => img.id !== id));
     setCellImages(prev => removeUploadedImageFromMap(prev, id));
   }
-  function matchesContentProfileImage(img: CellImageMeta, expectedCol: number, candidates: string[], rowIndex?: number): boolean {
+  function matchesContentProfileImage(
+    img: CellImageMeta,
+    expectedCol: number,
+    candidates: string[],
+    rowIndex?: number,
+    exactFieldKeys: string[] = [],
+  ): boolean {
     if (!isContentProfileSection(img.section) && !isStoredContentProfileField(img.fieldLabel || "")) return false;
     if (img.colIndex !== expectedCol) return false;
-    if (rowIndex === undefined || img.rowIndex !== rowIndex) return false;
 
     const normalizedField = normCP(img.fieldLabel || "");
     const normalizedCellText = normCP(img.cellText || "");
+
+    if (normalizedField && exactFieldKeys.includes(normalizedField)) return true;
+    if (rowIndex === undefined || img.rowIndex !== rowIndex) return false;
     if (!normalizedField) return true;
 
     return candidates.some(candidate => normalizedField === candidate || normalizedCellText === candidate);
@@ -367,13 +375,15 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     const expectedCol = LEVEL_COL_INDEX[col];
     if (expectedCol === undefined) return [];
     const candidates = [row.levelNumber, row.description, row.redjayXmlTag, row.path, row.remarksNotes].map(normCP).filter(Boolean);
-    return contentImages.filter(img => matchesContentProfileImage(img, expectedCol, candidates, rowIdx + 1)).map(img => toUploadedCellImage(img) as UploadedCellImage);
+    const exactFieldKeys = [cellKey(row.id, col)].map(normCP).filter(Boolean);
+    return contentImages.filter(img => matchesContentProfileImage(img, expectedCol, candidates, rowIdx + 1, exactFieldKeys)).map(img => toUploadedCellImage(img) as UploadedCellImage);
   }
   function getPersistedWhitespaceImages(row: WhitespaceRow, col: string, rowIdx: number): UploadedCellImage[] {
     const expectedCol = WS_COL_INDEX[col];
     if (expectedCol === undefined) return [];
     const candidates = [row.tags, row.innodReplace].map(normCP).filter(Boolean);
-    return contentImages.filter(img => matchesContentProfileImage(img, expectedCol, candidates, rowIdx + 1)).map(img => toUploadedCellImage(img) as UploadedCellImage);
+    const exactFieldKeys = [cellKey(row.id, col)].map(normCP).filter(Boolean);
+    return contentImages.filter(img => matchesContentProfileImage(img, expectedCol, candidates, rowIdx + 1, exactFieldKeys)).map(img => toUploadedCellImage(img) as UploadedCellImage);
   }
   function getHeadingAnnotationImages(): UploadedCellImage[] {
     const candidates = ["heading annotation", "headingannotation", headingAnnotation].map(normCP).filter(Boolean);
@@ -652,7 +662,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                             {getCellImgs(row.id, col.key).map(img => (
                               <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                             ))}
-                            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={mergeUploadedImageLists(getCellImgs(row.id, col.key), getPersistedLevelImages(row, col.key, idx))} defaultCellText={String(row[col.key as keyof typeof row] ?? "")} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
+                            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} rowIndex={idx + 1} colIndex={LEVEL_COL_INDEX[col.key]} existingImages={mergeUploadedImageLists(getCellImgs(row.id, col.key), getPersistedLevelImages(row, col.key, idx))} defaultCellText={String(row[col.key as keyof typeof row] ?? "")} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
                           </div>
                           </td>
                         ))}
@@ -707,7 +717,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
           <div className="flex items-center gap-2">
             <div className="flex-1"><FieldRow label="Heading Annotation" value={headingAnnotation} onChange={setHeadingAnnotation} placeholder="e.g. Level 2" /></div>
-            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel="headingAnnotation" existingImages={mergeUploadedImageLists(getCellImgs("headingAnnotation", "value"), getHeadingAnnotationImages())} defaultCellText={headingAnnotation} onUploaded={img => onCellUploaded("headingAnnotation", "value", img)} onDeleted={id => onCellDeleted("headingAnnotation", "value", id)}/>}
+            {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel="headingAnnotation" rowIndex={0} colIndex={0} existingImages={mergeUploadedImageLists(getCellImgs("headingAnnotation", "value"), getHeadingAnnotationImages())} defaultCellText={headingAnnotation} onUploaded={img => onCellUploaded("headingAnnotation", "value", img)} onDeleted={id => onCellDeleted("headingAnnotation", "value", id)}/>}
           </div>
           {getCellImgs("headingAnnotation", "value").map(img => (
             <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-2 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
@@ -755,7 +765,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
                         {getCellImgs(row.id, col.key).map(img => (
                           <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_CP2)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                         ))}
-                        {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} existingImages={mergeUploadedImageLists(getCellImgs(row.id, col.key), getPersistedWhitespaceImages(row, col.key, idx))} defaultCellText={String(row[col.key as keyof typeof row] ?? "")} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
+                        {brdId && <CellImageUploader brdId={brdId} section="contentProfile" fieldLabel={cellKey(row.id, col.key)} rowIndex={idx + 1} colIndex={WS_COL_INDEX[col.key]} existingImages={mergeUploadedImageLists(getCellImgs(row.id, col.key), getPersistedWhitespaceImages(row, col.key, idx))} defaultCellText={String(row[col.key as keyof typeof row] ?? "")} onUploaded={img => onCellUploaded(row.id, col.key, img)} onDeleted={id => onCellDeleted(row.id, col.key, id)}/>}
                       </div>
                       </td>
                     ))}

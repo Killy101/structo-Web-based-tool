@@ -480,9 +480,6 @@
   border-top: 1px solid rgba(26, 143, 209, 0.08);
   border-bottom: 1px solid rgba(26, 143, 209, 0.08);
   overflow: hidden;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
   scroll-margin-top: 68px;
   box-sizing: border-box;
   padding: clamp(48px, 6vh, 80px) clamp(24px, 5vw, 96px);
@@ -662,9 +659,6 @@
 .features {
   background: #060d1a;
   border-top: 1px solid rgba(26, 143, 209, 0.08);
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
   scroll-margin-top: 68px;
   box-sizing: border-box;
   padding: clamp(48px, 6vh, 80px) clamp(24px, 5vw, 96px);
@@ -676,13 +670,19 @@
   width: 100%;
 }
 
+.aboutInner,
+.featuresInner,
+.workflowInner {
+  width: 100%;
+}
+
 .sectionTitle {
   font-family: "Syne", sans-serif;
   font-size: clamp(24px, 2.5vw, 42px);
   font-weight: 800;
   color: #ffffff;
   letter-spacing: -0.6px;
-  margin-bottom: clamp(32px, 4vh, 56px);
+  margin-bottom: clamp(20px, 2.4vh, 32px);
   max-width: 22ch;
 }
 
@@ -908,7 +908,7 @@
 .workflow {
   background: #0b1a2e;
   border-top: 1px solid rgba(26, 143, 209, 0.08);
-  padding: clamp(48px, 6vh, 80px) clamp(24px, 5vw, 96px);
+  padding: clamp(36px, 4vh, 56px) clamp(24px, 5vw, 96px);
   scroll-margin-top: 68px;
 }
 
@@ -923,7 +923,7 @@
   display: flex;
   align-items: flex-start;
   gap: 0;
-  margin-top: clamp(32px, 4vh, 56px);
+  margin-top: clamp(16px, 2vh, 24px);
 }
 
 .workflowStepWrap {
@@ -1135,7 +1135,7 @@
   .workflowSteps { flex-direction: column; }
   .workflowStepWrap { flex-direction: column; width: 100%; }
   .workflowArrow { transform: rotate(90deg); padding: clamp(8px, 2vh, 14px) 0; }
-  .workflow { padding: 60px 20px; }
+  .workflow { padding: 44px 20px; }
   .heroWrapper { padding: 0 20px; }
   .hero { grid-template-columns: 1fr; min-height: calc(100vh - 62px); gap: 32px; }
   .heroContent { text-align: center; align-items: center; }

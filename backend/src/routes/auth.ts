@@ -25,12 +25,12 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<'ADMIN' | 'USER', str
     USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
   if (slug === 'production') return {
-    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
+    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'user-logs'],
     USER:  ['dashboard', 'brd-view-generate', 'compare-basic'],
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-merge'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
   }
   return {
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],
@@ -42,14 +42,22 @@ function applyTeamRoleFeatureGuards(teamSlug: string | null, role: string, featu
   const slug = String(teamSlug ?? '').toLowerCase()
   let next = Array.from(new Set(features))
 
-  // Team Pre-Production USER: read-only BRD sources, no History, direct compare only.
-  if (slug === 'pre-production' && role === 'USER') {
-    next = next.filter((f) => f !== '*' && f !== 'user-logs' && f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
+  if (slug === 'pre-production' || slug === 'production') {
+    next = next.filter((f) => f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
   }
 
-  // Production USER: direct compare only.
+  if (slug === 'updating' && (next.includes('compare-basic') || next.includes('compare-merge'))) {
+    next = Array.from(new Set([...next, 'compare-pdf-xml-only']))
+  }
+
+  // Team Pre-Production USER: read-only BRD sources, no History.
+  if (slug === 'pre-production' && role === 'USER') {
+    next = next.filter((f) => f !== '*' && f !== 'user-logs')
+  }
+
+  // Production USER: no History.
   if (slug === 'production' && role === 'USER') {
-    next = next.filter((f) => f !== '*' && f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
+    next = next.filter((f) => f !== '*' && f !== 'user-logs')
   }
 
   return next

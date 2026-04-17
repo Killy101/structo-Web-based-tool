@@ -102,6 +102,10 @@ export default function HomePage() {
   useScrollReveal();
   const router = useRouter();
   const [covered, setCovered] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-scroll-behavior", "smooth");
+  }, []);
   const [showEye, setShowEye] = useState(false);
   const [lightMode, setLightMode] = useState(false);
 

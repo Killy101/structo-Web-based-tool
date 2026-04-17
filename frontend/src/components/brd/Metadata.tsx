@@ -624,6 +624,8 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                       brdId={brdId}
                       section="metadata"
                       fieldLabel={field.key}
+                      rowIndex={fieldIdx + 1}
+                      colIndex={1}
                       existingImages={editableFieldImages}
                       defaultCellText={values[field.key] ?? ""}
                       onUploaded={img => onFieldUploaded(field.key, img)}
@@ -713,6 +715,8 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                                 brdId={brdId}
                                 section="metadata"
                                 fieldLabel={field.key}
+                                rowIndex={fieldIdx + 1}
+                                colIndex={1}
                                 existingImages={editableFieldImages}
                                 defaultCellText={values[field.key] ?? ""}
                                 onUploaded={img => onFieldUploaded(field.key, img)}

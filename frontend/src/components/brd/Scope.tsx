@@ -1014,30 +1014,59 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
 
   const SCOPE_COL_MAP: Record<number, string> = { 0: "title", 1: "referenceLink", 2: "contentUrl", 3: "issuingAuth", 4: "asrbId", 5: "smeComments" };
   function normalizeScopeLabel(value: string) { return value.trim().toLowerCase().replace(/\s+/g, " "); }
+  function getScopeColumnCandidates(row: ScopeRow, col: string): string[] {
+    switch (col) {
+      case "title":
+        return [row.title];
+      case "referenceLink":
+        return [row.referenceLink];
+      case "contentUrl":
+        return [row.contentUrl, row.contentNote];
+      case "issuingAuth":
+        return [row.issuingAuth];
+      case "asrbId":
+        return [row.asrbId];
+      case "smeComments":
+        return [row.smeComments];
+      default:
+        return [];
+    }
+  }
   function getPersistedCellImages(row: ScopeRow, rowIdx: number, col: string): UploadedCellImage[] {
     const expectedCol = Object.entries(SCOPE_COL_MAP).find(([, key]) => key === col)?.[0];
     if (!expectedCol) return [];
     const expectedColIndex = Number(expectedCol);
-    const candidates = [
-      row.stableKey,
-      cellKey(row.stableKey, col),
-      row.title,
-      row.referenceLink,
-      row.contentUrl,
-      row.contentNote,
-      row.issuingAuth,
-      row.asrbId,
-      row.smeComments,
-      row.initialEvergreen,
-      row.dateOfIngestion,
-    ].map(normalizeScopeLabel).filter(Boolean);
+    const exactFieldKeys = [row.stableKey, cellKey(row.stableKey, col)]
+      .map(normalizeScopeLabel)
+      .filter(Boolean);
+    const valueCandidates = getScopeColumnCandidates(row, col)
+      .map(normalizeScopeLabel)
+      .filter(Boolean);
 
     return images
       .filter((img) => {
         if (img.colIndex !== expectedColIndex) return false;
+
+        const rowIndexMatches = img.rowIndex === rowIdx + 1;
         const fieldLabel = normalizeScopeLabel(img.fieldLabel ?? "");
-        if (fieldLabel && candidates.includes(fieldLabel)) return true;
-        return img.rowIndex === rowIdx + 1 && !fieldLabel;
+
+        if (!fieldLabel) return rowIndexMatches;
+        if (exactFieldKeys.includes(fieldLabel)) return true;
+
+        if (valueCandidates.includes(fieldLabel)) {
+          if (rowIndexMatches) return true;
+
+          const matchingRows = rowsRef.current.filter((candidateRow) => (
+            getScopeColumnCandidates(candidateRow, col)
+              .map(normalizeScopeLabel)
+              .filter(Boolean)
+              .includes(fieldLabel)
+          ));
+
+          return matchingRows.length === 1 && matchingRows[0]?.stableKey === row.stableKey;
+        }
+
+        return false;
       })
       .map((img) => toUploadedCellImage(img) as UploadedCellImage);
   }
@@ -1319,6 +1348,8 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                   brdId={brdId}
                   section="scope"
                   fieldLabel={cellKey("scope", "smeCheckpoint")}
+                  rowIndex={0}
+                  colIndex={0}
                   existingImages={scopeCheckpointImages}
                   defaultCellText={scopeSmeCheckpoint}
                   onUploaded={img => onCellUploaded("scope", "smeCheckpoint", img)}
@@ -1410,7 +1441,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {titleImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} existingImages={titleImages} defaultCellText={row.title} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} rowIndex={idx + 1} colIndex={0} existingImages={titleImages} defaultCellText={row.title} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 160, width: 160 }}>
@@ -1419,7 +1450,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {referenceLinkImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} existingImages={referenceLinkImages} defaultCellText={row.referenceLink} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} rowIndex={idx + 1} colIndex={1} existingImages={referenceLinkImages} defaultCellText={row.referenceLink} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 180, width: 180 }}>
@@ -1434,7 +1465,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {contentUrlImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} existingImages={contentUrlImages} defaultCellText={row.contentUrl || row.contentNote} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} rowIndex={idx + 1} colIndex={2} existingImages={contentUrlImages} defaultCellText={row.contentUrl || row.contentNote} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
@@ -1443,7 +1474,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {issuingAuthImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} existingImages={issuingAuthImages} defaultCellText={row.issuingAuth} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} rowIndex={idx + 1} colIndex={3} existingImages={issuingAuthImages} defaultCellText={row.issuingAuth} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
@@ -1452,7 +1483,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {asrbIdImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} existingImages={asrbIdImages} defaultCellText={row.asrbId} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} rowIndex={idx + 1} colIndex={4} existingImages={asrbIdImages} defaultCellText={row.asrbId} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
@@ -1461,7 +1492,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                           {smeCommentImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} existingImages={smeCommentImages} defaultCellText={row.smeComments} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} rowIndex={idx + 1} colIndex={5} existingImages={smeCommentImages} defaultCellText={row.smeComments} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
                         </div>
                       </td>
                       {extra.evergreen && <td className={CELL}><InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "initialEvergreen", val)}/></td>}
