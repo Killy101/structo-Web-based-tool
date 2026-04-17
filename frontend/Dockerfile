@@ -1,5 +1,7 @@
 # ── Stage 1: Development (hot reload via volume mount) ────────────────────────
-FROM node:20-alpine AS development
+# node:20-slim uses Debian (glibc), required by @next/swc-linux-x64-gnu.
+# Alpine (musl) lacks ld-linux-x86-64.so.2, causing SWC native bindings to fail.
+FROM node:20-slim AS development
 
 WORKDIR /app
 
