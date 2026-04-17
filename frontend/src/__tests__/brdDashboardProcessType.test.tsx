@@ -14,23 +14,57 @@ jest.mock("@/app/lib/api", () => ({
   },
 }));
 
+const mockAuthState = {
+  user: {
+    role: "ADMIN",
+    team: { slug: "pre-production" },
+  },
+};
+
 jest.mock("../context/AuthContext", () => ({
-  useAuth: () => ({
-    user: {
-      role: "ADMIN",
-      team: { slug: "pre-production" },
-    },
-  }),
+  useAuth: () => mockAuthState,
 }));
 
 describe("BRD dashboard process type editing", () => {
   const mockedApi = api as jest.Mocked<typeof api>;
 
   beforeEach(() => {
+    mockAuthState.user.role = "ADMIN";
+    mockAuthState.user.team.slug = "pre-production";
     mockedApi.get.mockReset();
     mockedApi.patch.mockReset();
     mockedApi.post.mockReset();
     mockedApi.delete.mockReset();
+  });
+
+  it("shows regular pre-production users a read-only latest-version view", async () => {
+    mockAuthState.user.role = "USER";
+
+    mockedApi.get.mockResolvedValue({
+      data: [
+        {
+          id: "BRD-001",
+          title: "Sample BRD",
+          status: "APPROVED",
+          processType: "Updating - Evergreen",
+          version: "v2.0",
+          lastUpdated: "2026-04-15",
+          geography: "Europe",
+          format: "new",
+        },
+      ],
+    } as never);
+
+    render(<BrdPage />);
+
+    expect(await screen.findByTitle(/new brd/i)).toBeDisabled();
+    expect(screen.queryByTitle(/version history/i)).not.toBeInTheDocument();
+    expect(screen.getByTitle(/edit brd/i)).toBeDisabled();
+    expect(screen.getByTitle(/remove/i)).toBeDisabled();
+
+    const statusSelect = screen.getByDisplayValue("All Status") as HTMLSelectElement;
+    const optionLabels = Array.from(statusSelect.options).map((option) => option.textContent);
+    expect(optionLabels).toEqual(["All Status", "Approved", "On Hold"]);
   });
 
   it("lets admins change the process type directly from the dashboard", async () => {

@@ -41,7 +41,7 @@ function buildPolicy(params: { userId: number; role: string; teamSlug: string | 
       if (role === 'ADMIN') {
         return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: true, canEdit: true, canChangeStatus: true, canDelete: true, canUseTrash: true, visibleStatuses: null }
       }
-      return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: false, canEdit: false, canChangeStatus: false, canDelete: false, canUseTrash: false, visibleStatuses: null }
+      return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: false, canEdit: false, canChangeStatus: false, canDelete: false, canUseTrash: false, visibleStatuses: RESTRICTED_STATUSES }
     }
     return { userId: params.userId, role, teamSlug: params.teamSlug, canCreate: false, canEdit: false, canChangeStatus: false, canDelete: false, canUseTrash: false, visibleStatuses: RESTRICTED_STATUSES }
   }

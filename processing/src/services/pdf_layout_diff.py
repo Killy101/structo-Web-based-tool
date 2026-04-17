@@ -5,7 +5,7 @@ import re
 import difflib
 import unicodedata
 import logging
-from typing import Optional
+from typing import Any, Optional
 from collections import Counter
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,12 @@ try:
     from pdfminer.layout import LAParams
     _PDFMINER_OK = True
 except Exception as e:
+    extract_pages = None
+    LTTextBox = None
+    LTTextLine = None
+    LTChar = None
+    LTAnno = None
+    LAParams = None
     _PDFMINER_OK = False
     logger.warning(f"pdfminer import failed: {e}")
 
@@ -149,6 +155,13 @@ def _extract_lines(
     if not _PDFMINER_OK:
         raise RuntimeError("pdfminer.six is required: pip install pdfminer.six")
 
+    assert LAParams is not None
+    assert extract_pages is not None
+    assert LTTextBox is not None
+    assert LTTextLine is not None
+    assert LTChar is not None
+    assert LTAnno is not None
+
     laparams = LAParams(
         line_margin=0.3,
         word_margin=0.1,
@@ -170,14 +183,14 @@ def _extract_lines(
             if page_end is not None and page_num > page_end:
                 break
             # Collect text boxes sorted top→bottom, left→right
-            textboxes = [
+            textboxes: list[Any] = [
                 el for el in page_layout
                 if isinstance(el, LTTextBox)
             ]
             textboxes.sort(key=lambda b: (-b.y1, b.x0))
 
             for tbox in textboxes:
-                for tline in tbox:
+                for tline in getattr(tbox, "_objs", []):
                     if not isinstance(tline, LTTextLine):
                         continue
 
@@ -514,7 +527,8 @@ def _diff_blocks(
               new_line: Optional[Line]) -> dict:
         nonlocal cid
         cid += 1
-        page = (new_line or old_line).page  # type: ignore
+        source_line = new_line if new_line is not None else old_line
+        page = source_line.page if source_line is not None else None
         old_text = old_line.text.strip() if old_line else None
         new_text = new_line.text.strip() if new_line else None
 
@@ -538,7 +552,7 @@ def _diff_blocks(
             "page":           page,
             "old_page":       old_line.page if old_line else None,
             "new_page":       new_line.page if new_line else None,
-            "bbox":           (new_line or old_line).bbox if (new_line or old_line) else None,
+            "bbox":           source_line.bbox if source_line is not None else None,
             "old_bbox":       old_line.bbox if old_line else None,
             "new_bbox":       new_line.bbox if new_line else None,
             "suggested_xml":  sug,

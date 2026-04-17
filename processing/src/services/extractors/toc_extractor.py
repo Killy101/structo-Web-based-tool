@@ -93,18 +93,31 @@ def _clean_rich_text(text: str) -> str:
 def _normalize_heading(text: str) -> str:
     normalized = _clean(text).lower().replace("\u00a0", " ")
     normalized = normalized.replace("*", " ").replace("{", " ").replace("}", " ")
+    normalized = re.sub(r"^[\s\u2022•·\-–—#:]+", "", normalized)
+    normalized = re.sub(r"\(\s*#.*?\)", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
-    return normalized.strip()
+    return normalized.strip(" :-")
 
 
 _SECTION_HEADING_PATTERNS: tuple[str, ...] = (
-    r"^metadata(?:\s*\([^)]*\))?$",
+    r"^metadata(?:\s+details?)?(?:\s*\([^)]*\))?$",
+    r"^details?(?:\s*\([^)]*\))?$",
+    r"^exceptions?(?:\s*\([^)]*\))?$",
+    r"^updates?(?:\s*\([^)]*\))?$",
     r"^scope(?:\s*\([^)]*\))?$",
     r"^how to identify(?:\s*\([^)]*\))?$",
+    r"^frequency of updates(?:\s*\([^)]*\))?$",
+    r"^(?:content category|source) to be monitored for updates.*$",
+    r"^file delivery requirements(?:\s*\([^)]*\))?$",
+    r"^file separation(?:\s*\([^)]*\))?$",
+    r"^file naming conventions(?:\s*\([^)]*\))?$",
+    r"^rc file naming conventions(?:\s*\([^)]*\))?$",
+    r"^zip file naming conventions(?:\s*\([^)]*\))?$",
+    r"^brd signed[- ]off by sme(?:\s*\([^)]*\))?$",
     r"^(?:toc\s+with\s+)?document structure(?:\s+levels?)?(?:\s*\([^)]*\))?$",
     r"^citation style guide(?:\s+link)?(?:\s*\([^)]*\))?$",
     r"^citable levels?(?:\s*\([^)]*\))?$",
-    r"^citation(?:\s+standardization)?\s+rules?(?:\s*\([^)]*\))?$",
+    r"^citation(?:\s+format\s+requirements|\s+standardization)?\s+rules?(?:\s*\([^)]*\))?$",
     r"^toc\b.*sorting order(?:\s*\([^)]*\))?$",
     r"^toc\b.*hiding levels?(?:\s*\([^)]*\))?$",
     r"^content profil(?:e|ing)(?:\s*\([^)]*\))?$",

@@ -970,23 +970,45 @@ def _extract_scope_from_mhtml(path: str) -> dict:
         if "document title" not in header_text or "reference url" not in header_text:
             continue
 
-        header_cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", rows[0], re.DOTALL | re.IGNORECASE)
-        header_texts = [strip_tags(c).lower() for c in header_cells]
+        def is_header_row(row_html: str) -> bool:
+            lowered = strip_tags(row_html).lower()
+            header_markers = [
+                "document title", "reference url", "parent url", "content url",
+                "url for the title", "issuing authority", "innodata to capture",
+                "asrb id", "innodata only", "sme comments", "sme checkpoint",
+                "if anything needs be changed", "please specify",
+                "initial / evergreen", "initial evergreen", "date of ingestion",
+            ]
+            return any(marker in lowered for marker in header_markers)
+
+        header_row_count = 0
+        header_rows = []
+        for row_html in rows[: min(4, len(rows))]:
+            if is_header_row(row_html):
+                header_rows.append(row_html)
+                header_row_count += 1
+            elif header_rows:
+                break
+
+        header_cells_by_col: dict[int, str] = {}
+        for header_row in header_rows or rows[:1]:
+            for idx, cell_html in enumerate(re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", header_row, re.DOTALL | re.IGNORECASE)):
+                header_cells_by_col[idx] = f"{header_cells_by_col.get(idx, '')} {strip_tags(cell_html).lower()}".strip()
 
         def find_col(keywords):
-            for ki, kt in enumerate(header_texts):
-                if any(kw in kt for kw in keywords):
-                    return ki
+            for idx, text in sorted(header_cells_by_col.items()):
+                if any(kw in text for kw in keywords):
+                    return idx
             return None
 
-        title_col      = find_col(["document title"])
-        ref_col        = find_col(["reference url", "parent url"])
-        content_col    = find_col(["content url", "url for the title"])
-        auth_col       = find_col(["issuing authority"])
-        asrb_col       = find_col(["asrb id"])
-        sme_col        = find_col(["sme comments", "sme checkpoint"])
+        title_col      = find_col(["document title", "source name"])
+        ref_col        = find_col(["reference url", "parent url", "regulator url", "regulator weblink"])
+        content_col    = find_col(["content url", "url for the title", "url for the source"])
+        auth_col       = find_col(["issuing authority", "innodata to capture"])
+        asrb_col       = find_col(["asrb id", "innodata only"])
+        sme_col        = find_col(["sme comments", "sme checkpoint", "if anything needs be changed", "please specify"])
         evergreen_col  = find_col(["initial / evergreen", "initial/ evergreen", "initial/evergreen", "initial evergreen"])
-        ingestion_col  = find_col(["date of ingestion"])
+        ingestion_col  = find_col(["date of ingestion", "ingestion date"])
 
         in_scope: list[dict] = []
         out_of_scope: list[dict] = []
@@ -1016,7 +1038,7 @@ def _extract_scope_from_mhtml(path: str) -> dict:
                 return rich_value
             return plain_value
 
-        for row_html in rows[1:]:
+        for row_html in rows[header_row_count or 1:]:
             cells_html = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.IGNORECASE)
 
             doc_title = gcell_rich(cells_html, title_col)

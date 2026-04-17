@@ -164,6 +164,67 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
         self.assertIn("Nov 13, 2025", rows[0]["value"])
         self.assertIn("Nov 17, 2025", rows[0]["value"])
 
+    def test_mhtml_scope_extracts_sme_comments_when_first_header_row_is_instructional(self):
+        mhtml = textwrap.dedent(
+            '''\
+            MIME-Version: 1.0
+            Content-Type: multipart/related; boundary="BOUNDARY"
+
+            --BOUNDARY
+            Content-Type: text/html; charset=UTF-8
+            Content-Transfer-Encoding: quoted-printable
+            Content-Location: file:///C:/exported.html
+
+            <html>
+              <body>
+                <h2>Scope</h2>
+                <table>
+                  <tr>
+                    <th>Document title as appearing on regulator weblink</th>
+                    <th>Reference URL from which document title was accessed</th>
+                    <th>URL for the title under the source</th>
+                    <th>Innodata to capture</th>
+                    <th>Innodata only</th>
+                    <th>If anything needs be changed, please specify</th>
+                  </tr>
+                  <tr>
+                    <th>Document Title</th>
+                    <th>Reference URL</th>
+                    <th>Content URL</th>
+                    <th>Issuing Authority</th>
+                    <th>ASRB ID</th>
+                    <th>SME Comments</th>
+                  </tr>
+                  <tr>
+                    <td>Comisión Nacional Bancaria y de Valores Rules</td>
+                    <td>https://example.com/reference</td>
+                    <td>https://example.com/content</td>
+                    <td>CNBV</td>
+                    <td>ASRB-444</td>
+                    <td>Title for this document should be updated to the regulator-preferred name.</td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+
+            --BOUNDARY--
+            '''
+        )
+
+        with tempfile.NamedTemporaryFile("w", suffix=".doc", delete=False, encoding="utf-8") as handle:
+            handle.write(mhtml)
+            doc_path = handle.name
+
+        try:
+            scope = extract_scope_from_file(doc_path)
+        finally:
+            Path(doc_path).unlink(missing_ok=True)
+
+        self.assertEqual(len(scope["in_scope"]), 1)
+        row = scope["in_scope"][0]
+        self.assertEqual(row["sme_comments"], "Title for this document should be updated to the regulator-preferred name.")
+        self.assertEqual(row["asrb_id"], "ASRB444")
+
     def test_mhtml_scope_preserves_red_rich_text_rows(self):
         mhtml = textwrap.dedent(
             '''\
@@ -577,6 +638,40 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
         self.assertNotIn("Citable Levels", toc.get("tocSortingOrder", ""))
         self.assertIn("which levels are citable", citations.get("citationLevelSmeCheckpoint", ""))
         self.assertIn("citations should appear in ELA", citations.get("citationRulesSmeCheckpoint", ""))
+
+    def test_citation_checkpoint_ignores_toc_tail_noise(self):
+        doc = Document()
+        doc.add_paragraph("Citation Standardization Rules")
+        doc.add_paragraph("- Metadata")
+        doc.add_paragraph("Details :")
+        doc.add_paragraph("Exceptions")
+        doc.add_paragraph("Updates")
+
+        doc.add_heading("Citable Levels", level=2)
+        doc.add_paragraph("SME Checkpoint - Indicate which levels are citable.")
+        citable_table = doc.add_table(rows=2, cols=3)
+        citable_table.rows[0].cells[0].text = "Level"
+        citable_table.rows[0].cells[1].text = "Is Level Citable?"
+        citable_table.rows[0].cells[2].text = "SME Comments"
+        citable_table.rows[1].cells[0].text = "2"
+        citable_table.rows[1].cells[1].text = "Y"
+
+        doc.add_heading("Citation Standardization Rules", level=2)
+        doc.add_paragraph("SME Checkpoint")
+        doc.add_paragraph("Citation rules stand for how the citations should appear in ELA.")
+        rules_table = doc.add_table(rows=2, cols=4)
+        rules_table.rows[0].cells[0].text = "Level"
+        rules_table.rows[0].cells[1].text = "Citation Rules"
+        rules_table.rows[0].cells[2].text = "Source of Law"
+        rules_table.rows[0].cells[3].text = "SME Comments"
+        rules_table.rows[1].cells[0].text = "2"
+        rules_table.rows[1].cells[1].text = "<Level 2>"
+
+        citations = extract_citations(doc)
+
+        self.assertIn("citations should appear in ELA", citations.get("citationRulesSmeCheckpoint", ""))
+        self.assertNotIn("Metadata", citations.get("citationRulesSmeCheckpoint", ""))
+        self.assertNotIn("Exceptions", citations.get("citationRulesSmeCheckpoint", ""))
 
     def test_extract_toc_includes_citation_style_and_toc_context_blocks(self):
         doc = Document()

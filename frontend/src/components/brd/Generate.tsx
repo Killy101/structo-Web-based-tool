@@ -95,6 +95,7 @@ type SaveStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
 const APPROVAL_RESTRICTED = new Set(["metajson", "innod", "content"]);
 
 type Format = "new" | "old";
+type StructuringVariant = "contentCategoryName" | "sourceName";
 
 interface ScopeRow {
   id: string; stableKey: string; title: string; referenceLink: string; contentUrl: string; contentNote: string;
@@ -419,6 +420,82 @@ function extractCustomMetadataRows(metadata?: Record<string, unknown>): CustomMe
     }))
     .filter((row) => row.label || row.value || row.comment);
 }
+
+function detectStructuringVariant(format: Format, metadata?: Record<string, unknown>): StructuringVariant {
+  const metadataKeys = Object.keys(metadata ?? {}).map((key) => key.toLowerCase());
+  if (
+    metadataKeys.includes("source name") ||
+    metadataKeys.includes("source_name") ||
+    metadataKeys.includes("sourcename")
+  ) {
+    return "sourceName";
+  }
+  return format === "old" ? "sourceName" : "contentCategoryName";
+}
+
+function StructuringRequirementsTable({
+  values,
+  metadata,
+  variant,
+}: {
+  values: Record<string, string>;
+  metadata?: Record<string, unknown>;
+  variant: StructuringVariant;
+}) {
+  const selectedField = variant === "sourceName"
+    ? { label: "Source Name", key: "sourceName" as const }
+    : { label: "Content Category Name", key: "contentCategoryName" as const };
+  const fallbackKey = selectedField.key === "sourceName" ? "contentCategoryName" : "sourceName";
+  const rawValue = (values[selectedField.key] || values[fallbackKey] || values.name || "").trim();
+  const rowComment = (
+    asString(metadata?.[variant === "sourceName" ? "source_name_sme_checkpoint" : "content_category_name_sme_checkpoint"]).trim() ||
+    asString(metadata?.structuring_sme_checkpoint).trim() ||
+    ""
+  ).trim();
+  const displayValue = buildMetadataDocumentLocationText(selectedField.key, rawValue, metadata).trim();
+
+  if (!hasDocumentLocationValue(displayValue) && !hasDocumentLocationValue(rowComment)) {
+    return <Empty />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-xl border border-emerald-200 dark:border-emerald-700/40 bg-emerald-50/70 dark:bg-emerald-500/10 px-4 py-3">
+        <div className="space-y-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-800 dark:text-emerald-300" style={MONO}>Detected from uploaded BRD</p>
+          <p className="text-[12px] text-slate-700 dark:text-slate-200">
+            This section follows the uploaded source automatically and shows the correct BRD-native field and SME checkpoint text.
+          </p>
+        </div>
+      </div>
+
+      <div className={TBL_WRAP}>
+        <table className="w-full text-[11.5px]" style={{ minWidth: 760 }}>
+          <thead>
+            <tr>
+              <BrdHeaderCell title="Structuring Element" greenNote="First item in the BRD flow" className="w-56" />
+              <BrdHeaderCell title="Document Location" greenNote="Source-aligned value kept for export" />
+              <BrdHeaderCell title="SME Checkpoint" checkpoint="Validation" blueNote="Confirm before continuing to the next section" className="w-72" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="bg-white dark:bg-[#161b2e]">
+              <td className="px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 align-middle whitespace-nowrap" style={MONO}>
+                {selectedField.label}
+              </td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {displayValue ? renderTextWithLinks(displayValue) : <Nil />}
+              </td>
+              <td className="px-3 py-2 text-[11.5px] text-slate-700 dark:text-slate-300 align-top whitespace-pre-wrap break-words">
+                {rowComment ? renderTextWithLinks(rowComment) : <span className="text-slate-300 dark:text-slate-600 italic">—</span>}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 function asScopeEntryArray(v: unknown): ScopeEntry[] {
   return Array.isArray(v) ? v.filter(i => i !== null && typeof i === "object") as ScopeEntry[] : [];
 }
@@ -601,23 +678,117 @@ const MONO  = { fontFamily: "'DM Mono', monospace" } as const;
 const SERIF = { fontFamily: "'Georgia', 'Times New Roman', serif" } as const;
 
 const SECTION_META = [
-  { num: "I",   label: "Citation Guide Link",       step: 1, color: "#0f766e" },
-  { num: "II",  label: "Scope",                     step: 2, color: "#1e40af" },
-  { num: "III", label: "Metadata",                  step: 3, color: "#5b21b6" },
-  { num: "IV",  label: "TOC with Document Structure", step: 4, color: "#312e81" },
-  { num: "V",   label: "Citation Rules",            step: 5, color: "#92400e" },
-  { num: "VI",  label: "Content Profiling",         step: 6, color: "#065f46" },
+  { num: "I",   label: "Structuring Requirements",    step: 1, color: "#0f766e" },
+  { num: "II",  label: "Scope",                       step: 2, color: "#1e40af" },
+  { num: "III", label: "Document Structure",          step: 3, color: "#312e81" },
+  { num: "IV",  label: "Citation Format Requirements",step: 4, color: "#92400e" },
+  { num: "V",   label: "Metadata",                    step: 1, color: "#5b21b6" },
+  { num: "VI",  label: "Citation Style Guide Link",   step: 5, color: "#0f766e" },
+  { num: "VII", label: "Content Profile",             step: 6, color: "#065f46" },
 ];
 
 const NAV_ITEMS = [
-  { id: "section-citation-guide",  label: "Citation Guide Link",       icon: "I",   step: 1,    color: "emerald" },
-  { id: "section-scope",           label: "Scope",                     icon: "II",  step: 2,    color: "blue"    },
-  { id: "section-metadata",        label: "Metadata",                  icon: "III", step: 3,    color: "violet"  },
-  { id: "section-toc",             label: "TOC with Document Structure", icon: "IV", step: 4,  color: "indigo"  },
-  { id: "section-citations",       label: "Citation Rules",            icon: "V",   step: 5,    color: "amber"   },
-  { id: "section-content-profile", label: "Content Profile",           icon: "VI",  step: 6,    color: "emerald" },
-  { id: "section-generate",        label: "Generate",                  icon: "▶",   step: null, color: "slate"   },
+  { id: "section-structuring-requirements", label: "Structuring Requirements",     icon: "I",   step: 1,    color: "emerald" },
+  { id: "section-scope",                    label: "Scope",                        icon: "II",  step: 2,    color: "blue"    },
+  { id: "section-toc",                      label: "Document Structure",           icon: "III", step: 3,    color: "indigo"  },
+  { id: "section-citations",                label: "Citation Format Requirements", icon: "IV",  step: 4,    color: "amber"   },
+  { id: "section-metadata",                 label: "Metadata",                     icon: "V",   step: 1,    color: "violet"  },
+  { id: "section-citation-guide",           label: "Citation Style Guide Link",    icon: "VI",  step: 5,    color: "emerald" },
+  { id: "section-content-profile",          label: "Content Profile",              icon: "VII", step: 6,    color: "emerald" },
+  { id: "section-generate",                 label: "Generate",                     icon: "▶",   step: null, color: "slate"   },
 ];
+
+type ExportOutlineItem = {
+  id: string;
+  label: string;
+  children?: ExportOutlineItem[];
+};
+
+export function buildReviewSectionOrder(showCitationGuide = true) {
+  return NAV_ITEMS.filter((item) => showCitationGuide || item.id !== "section-citation-guide");
+}
+
+function normalizeExportOutlineLabel(value: unknown): string {
+  return brdRichTextToPlain(asString(value)).replace(/\s+/g, " ").trim();
+}
+
+export function buildExportDocumentOutline({
+  format,
+  metadata,
+  tocData,
+  contentProfileData,
+  showCitationGuide = true,
+}: {
+  format: Format;
+  metadata?: Record<string, unknown>;
+  tocData?: Record<string, unknown>;
+  contentProfileData?: Record<string, unknown>;
+  showCitationGuide?: boolean;
+}): ExportOutlineItem[] {
+  const structuringVariant = detectStructuringVariant(format, metadata);
+  const structuringLabel = structuringVariant === "sourceName" ? "Source Name" : "Content Category Name";
+  const tocRows = buildTocRows(tocData);
+  const documentStructureItems = Array.from(
+    new Set(
+      tocRows
+        .map((row) => normalizeExportOutlineLabel(row.name))
+        .filter(Boolean),
+    ),
+  ).slice(0, 10);
+  const hasFileDelivery = [
+    contentProfileData?.file_separation,
+    contentProfileData?.rc_naming_convention,
+    contentProfileData?.rc_naming_example,
+    contentProfileData?.zip_naming_convention,
+    contentProfileData?.zip_naming_example,
+  ].some((value) => asString(value).trim());
+
+  return [
+    {
+      id: "section-structuring-requirements",
+      label: "Structuring Requirements",
+      children: [
+        { id: "section-structuring-field", label: structuringLabel },
+        { id: "section-scope", label: "Scope" },
+        ...(normalizeMeaningfulRichText(tocData?.tocSortingOrder)
+          ? [{ id: "section-toc-sorting-order", label: "ToC - Sorting Order" }]
+          : []),
+      ],
+    },
+    {
+      id: "section-toc",
+      label: "Document Structure",
+      children: documentStructureItems.length > 0
+        ? documentStructureItems.map((label, index) => ({
+            id: index === 0 ? "section-toc-levels" : "section-toc",
+            label,
+          }))
+        : [{ id: "section-toc-levels", label: "Levels" }],
+    },
+    {
+      id: "section-citations",
+      label: "Citation Format Requirements",
+      children: [
+        { id: "section-citable-levels", label: "Citable Levels" },
+        { id: "section-citation-standardization-rules", label: "Citation Standardization Rules" },
+      ],
+    },
+    { id: "section-metadata", label: "Metadata" },
+    ...(hasFileDelivery
+      ? [{
+          id: "section-file-delivery",
+          label: "File Delivery Requirements",
+          children: [
+            { id: "section-file-separation", label: "File Separation" },
+            { id: "section-rc-file-naming", label: "RC File Naming Conventions" },
+            { id: "section-zip-file-naming", label: "Zip File Naming Conventions" },
+          ],
+        }]
+      : []),
+    ...(showCitationGuide ? [{ id: "section-citation-guide", label: "Citation Style Guide Link" }] : []),
+    { id: "section-content-profile", label: "Content Profile" },
+  ];
+}
 
 const GenBtnIcons: Record<string, React.ReactNode> = {
   brd: (<svg viewBox="0 0 20 20" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="2" width="14" height="16" rx="2" /><path d="M7 7h6M7 10h6M7 13h4" strokeLinecap="round" /></svg>),
@@ -650,11 +821,52 @@ function getScrollContainer(): HTMLElement {
   return document.scrollingElement as HTMLElement || document.documentElement;
 }
 
-function AssistiveTouch({ showCitationGuide = true }: { showCitationGuide?: boolean }) {
-  const navItems = useMemo(
-    () => NAV_ITEMS.filter((item) => showCitationGuide || item.id !== "section-citation-guide"),
-    [showCitationGuide],
+function renderExportOutline(items: ExportOutlineItem[], depth = 0): React.ReactNode {
+  if (items.length === 0) return null;
+
+  const listStyleType = depth === 0 ? "disc" : depth === 1 ? "circle" : "square";
+  return (
+    <ul style={{ margin: 0, paddingLeft: depth === 0 ? 22 : 20, listStyleType }}>
+      {items.map((item) => (
+        <li key={`${item.id}-${item.label}`} style={{ margin: depth === 0 ? "6px 0" : "4px 0" }}>
+          <a href={`#${item.id}`} style={{ color: "#1d4ed8", textDecoration: "underline", fontSize: 12.5 }}>
+            {item.label}
+          </a>
+          {item.children?.length ? renderExportOutline(item.children, depth + 1) : null}
+        </li>
+      ))}
+    </ul>
   );
+}
+
+function ExportDocumentToc({
+  format,
+  metadata,
+  tocData,
+  contentProfileData,
+  showCitationGuide = true,
+}: {
+  format: Format;
+  metadata?: Record<string, unknown>;
+  tocData?: Record<string, unknown>;
+  contentProfileData?: Record<string, unknown>;
+  showCitationGuide?: boolean;
+}) {
+  const items = useMemo(
+    () => buildExportDocumentOutline({ format, metadata, tocData, contentProfileData, showCitationGuide }),
+    [format, metadata, tocData, contentProfileData, showCitationGuide],
+  );
+
+  return (
+    <div className="mb-6 rounded-xl border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#161b2e] px-5 py-4">
+      <h2 style={{ ...SERIF, fontSize: 20, fontWeight: 700, margin: "0 0 12px 0", color: "#0f172a" }}>Table of Contents</h2>
+      <div>{renderExportOutline(items)}</div>
+    </div>
+  );
+}
+
+function AssistiveTouch({ showCitationGuide = true }: { showCitationGuide?: boolean }) {
+  const navItems = useMemo(() => buildReviewSectionOrder(showCitationGuide), [showCitationGuide]);
   const [open, setOpen]             = useState(false);
   const [activeId, setActiveId]     = useState<string>("");
   const [pos, setPos]               = useState(() => ({ x: Math.max(12, window.innerWidth - 72), y: Math.max(12, window.innerHeight / 2) }));
@@ -1423,17 +1635,22 @@ function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { toc
   if (rows.length === 0 && (!showRestrictedFields || (!tocSortingOrder && !tocHidingLevels))) return <Empty />;
   
   const TOC_COL_MAP: Record<number,string> = {0:"level",1:"name",2:"required",3:"definition",4:"example",5:"note",6:"tocRequirements",7:"smeComments"};
-  // Include section="toc" (new records) OR tableIndex=2 with unknown section (old records)
-  const tocImgs = images.filter(img =>
-    img.section === "toc" ||
-    ((!img.section || img.section === "unknown") && img.tableIndex === 2)
-  );
+  const extractTocImageLevel = (fieldLabel: string) => {
+    const raw = (fieldLabel || "").trim();
+    const match = raw.match(/^level\s*(\d+)$/i) || raw.match(/^(\d+)$/);
+    return match?.[1] ?? "";
+  };
+  // Include section="toc" (new records) OR legacy/engineering unknown records that still carry a TOC row level.
+  const tocImgs = images.filter(img => {
+    const section = (img.section || "").trim().toLowerCase();
+    return section === "toc" || ((!section || section === "unknown") && (img.tableIndex === 2 || !!extractTocImageLevel(img.fieldLabel || "")));
+  });
   // Build lookup: "levelStr__colKey" → images[]  (fieldLabel match for new records)
   const imagesByLevelCol = new Map<string, CellImageMeta[]>();
   tocImgs.forEach(img => {
     const colKey = TOC_COL_MAP[img.colIndex] ?? "note";
-    const fl = (img.fieldLabel || "").trim();
-    const key = fl ? `${fl}__${colKey}` : `__row_${img.rowIndex}__${colKey}`;
+    const normalizedLevel = extractTocImageLevel(img.fieldLabel || "");
+    const key = normalizedLevel ? `${normalizedLevel}__${colKey}` : `__row_${img.rowIndex}__${colKey}`;
     const arr = imagesByLevelCol.get(key) || [];
     arr.push(img);
     imagesByLevelCol.set(key, arr);
@@ -1442,9 +1659,9 @@ function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { toc
   return (
     <div className="space-y-3">
       {showRestrictedFields && tocSortingOrder && (
-        <div className={TBL_WRAP}>
+        <div id="section-toc-sorting-order" className={TBL_WRAP}>
           <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-slate-100 dark:bg-[#1e2235]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={MONO}>ToC - Sorting Order</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={MONO}>ToC – Sorting Order</p>
           </div>
           <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
             <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(tocSortingOrder) }} />
@@ -1455,7 +1672,7 @@ function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { toc
       {showRestrictedFields && tocHidingLevels && (
         <div className={TBL_WRAP}>
           <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-slate-100 dark:bg-[#1e2235]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={MONO}>ToC - Hiding Level (Tech Only)</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={MONO}>Hiding Level</p>
           </div>
           <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
             <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(tocHidingLevels) }} />
@@ -1464,7 +1681,7 @@ function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { toc
       )}
 
       {rows.length > 0 && (
-        <div className={TBL_WRAP}>
+        <div id="section-toc-levels" className={TBL_WRAP}>
           <table className="w-full border-collapse" style={{ minWidth: 1080 }}>
             <thead><tr>
               <BrdHeaderCell title="Level" greenNote="Innodata only - From regulator website" className="w-16" />
@@ -1516,7 +1733,7 @@ function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { toc
             </tbody>
           </table>
           <div className="px-8 py-1.5 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147]">
-            <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} section{rows.length!==1?"s":""}</span>
+            <span className="text-[10px] text-slate-400" style={MONO}>{rows.length} level{rows.length!==1?"s":""}</span>
           </div>
         </div>
       )}
@@ -1550,15 +1767,42 @@ function formatDisplay(value: string) {
   );
 }
 
+function toPlainCheckpointText(value: string): string {
+  return brdRichTextToPlain(value)
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^SME\s+Check-?point[:\s-]*/i, "")
+    .trim();
+}
+
+function extractCitationFormatNotes(checkpoint: string, fallbackStyle = "") {
+  const plain = toPlainCheckpointText(checkpoint || fallbackStyle);
+  if (!plain) return { citationRulesNote: "", sourceOfLawNote: "" };
+
+  const normalized = plain.replace(/\s*·\s*/g, " · ");
+  const match = normalized.match(/([\s\S]*?)(?:[•·]\s*)?Source of Law\s*:?\s*([\s\S]*)/i);
+  if (!match) return { citationRulesNote: normalized, sourceOfLawNote: "" };
+
+  return {
+    citationRulesNote: match[1].trim(),
+    sourceOfLawNote: match[2].trim() ? `Source of Law: ${match[2].trim()}` : "",
+  };
+}
+
 function CitationTable({ citationsData, brdId, images }: { citationsData?: Record<string, unknown>; brdId?: string; images: CellImageMeta[] }) {
   const citations = asRecordArray(citationsData?.references);
   const citationLevelSmeCheckpoint = stripLeadingBrdLabel(
     normalizeMeaningfulRichText(citationsData?.citationLevelSmeCheckpoint ?? citationsData?.citableLevelsSmeCheckpoint),
     "SME Checkpoint",
   );
-  const citationRulesSmeCheckpoint = stripLeadingBrdLabel(
-    normalizeMeaningfulRichText(citationsData?.citationRulesSmeCheckpoint),
-    "SME Checkpoint",
+  const citationRulesGuidance = normalizeMeaningfulRichText(
+    citationsData?.citationRulesSmeCheckpoint ?? citationsData?.citation_style,
+  );
+  const citationRulesSmeCheckpoint = stripLeadingBrdLabel(citationRulesGuidance, "SME Checkpoint");
+  const citableLevelsNote = toPlainCheckpointText(citationLevelSmeCheckpoint);
+  const { citationRulesNote, sourceOfLawNote } = extractCitationFormatNotes(
+    citationRulesGuidance,
+    normalizeMeaningfulRichText(citationsData?.citation_style),
   );
   if (citations.length === 0 && !citationLevelSmeCheckpoint && !citationRulesSmeCheckpoint) return <Empty />;
   
@@ -1580,10 +1824,11 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
   
   return (
     <div className="space-y-3">
+      <div id="section-citable-levels" />
       {citationLevelSmeCheckpoint && (
         <div className={TBL_WRAP}>
           <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-blue-50 dark:bg-blue-500/10">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citation Level · SME Checkpoint</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citable Levels · SME Checkpoint</p>
           </div>
           <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
             <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(citationLevelSmeCheckpoint) }} />
@@ -1591,10 +1836,11 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
         </div>
       )}
 
+      <div id="section-citation-standardization-rules" />
       {citationRulesSmeCheckpoint && (
         <div className={TBL_WRAP}>
           <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-blue-50 dark:bg-blue-500/10">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citation Rules · SME Checkpoint</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Citation Standardization Rules · SME Checkpoint</p>
           </div>
           <div className="px-4 py-3 text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
             <span dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(citationRulesSmeCheckpoint) }} />
@@ -1606,11 +1852,11 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
       <div className={TBL_WRAP}>
       <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 720 }}>
         <thead><tr>
-          <BrdHeaderCell title="Lvl" greenNote="Citation level" />
-          <BrdHeaderCell title="Citable" greenNote="Should this level be citable" />
-          <BrdHeaderCell title="Citation Rules" checkpoint="SME Checkpoint" blueNote="Include the levels and punctuation that should appear in ELA citations" />
-          <BrdHeaderCell title="Source of Law" checkpoint="SME Checkpoint" blueNote="Identify the level that should serve as the Source of Law" />
-          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+          <BrdHeaderCell title="Level" greenNote="Citation level" />
+          <BrdHeaderCell title="Citable Levels" checkpoint="SME Checkpoint" blueNote={citableLevelsNote || "Indicate which levels are citable."} />
+          <BrdHeaderCell title="Citation Standardization Rules" checkpoint="SME Checkpoint" blueNote={citationRulesNote || "This should include the levels that form the citation and the punctuations or symbols between the Levels."} />
+          <BrdHeaderCell title="Source of Law" checkpoint="SME Checkpoint" blueNote={sourceOfLawNote || "SME to indicate which Level should be Source of Law."} />
+          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify here" />
         </tr></thead>
         <tbody>
           {citations.map((row, i) => {
@@ -1648,6 +1894,54 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
   );
 }
 
+function ContentProfileFileDelivery({ cpData }: { cpData?: Record<string, unknown> }) {
+  const fileSeparation = String(cpData?.file_separation ?? "").trim();
+  const rcNamingConvention = String(cpData?.rc_naming_convention ?? cpData?.rc_filename ?? "").trim();
+  const rcNamingExample = String(cpData?.rc_naming_example ?? "").trim();
+  const zipNamingConvention = String(cpData?.zip_naming_convention ?? "").trim();
+  const zipNamingExample = String(cpData?.zip_naming_example ?? "").trim();
+
+  if (!fileSeparation && !rcNamingConvention && !rcNamingExample && !zipNamingConvention && !zipNamingExample) {
+    return null;
+  }
+
+  return (
+    <div id="section-file-delivery" className="space-y-4">
+      <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#161b2e] p-4">
+        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-400 mb-2" style={MONO}>File Delivery Requirements</p>
+        <ul className="list-disc pl-5 text-[11.5px] text-slate-700 dark:text-slate-300 space-y-1">
+          <li>Innodata and Tech will use this information for delivery tracking.</li>
+        </ul>
+      </div>
+
+      {fileSeparation && (
+        <div id="section-file-separation" className="rounded-xl border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#161b2e] p-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-700 dark:text-slate-300 mb-2" style={MONO}>File Separation</p>
+          <div className="text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
+            {renderTextWithLinks(fileSeparation)}
+          </div>
+        </div>
+      )}
+
+      {(rcNamingConvention || rcNamingExample) && (
+        <div id="section-rc-file-naming" className="rounded-xl border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#161b2e] p-4 space-y-2">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-700 dark:text-slate-300" style={MONO}>RC File Naming Conventions</p>
+          {rcNamingConvention && <div className="text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">{renderTextWithLinks(rcNamingConvention)}</div>}
+          {rcNamingExample && <div className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words"><strong>Example:</strong> {renderTextWithLinks(rcNamingExample)}</div>}
+        </div>
+      )}
+
+      {(zipNamingConvention || zipNamingExample) && (
+        <div id="section-zip-file-naming" className="rounded-xl border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#161b2e] p-4 space-y-2">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-700 dark:text-slate-300" style={MONO}>Zip File Naming Conventions</p>
+          {zipNamingConvention && <div className="text-[11.5px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">{renderTextWithLinks(zipNamingConvention)}</div>}
+          {zipNamingExample && <div className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words"><strong>Example:</strong> {renderTextWithLinks(zipNamingExample)}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
   const levels = useMemo(() => asExtractedLevels(cpData), [cpData]);
   const hardcodedPathFromData = String(cpData?.hardcoded_path ?? cpData?.hardcodedPath ?? "").trim();
@@ -1659,6 +1953,7 @@ function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
   
   return (
     <div className="space-y-5">
+      <ContentProfileFileDelivery cpData={cpData} />
       <div className="tbl-scroll -mx-8 border-t border-b border-slate-200 dark:border-[#2a3147]">
         {[["RC Filename",rcFilename,true],["Hardcoded Path",hardcodedPath,true],["Heading Annotation",headingAnnotation,false]].map(([label,value,mono],i)=>(
           <div key={label as string} className={`flex items-center border-b border-slate-100 dark:border-[#2a3147] last:border-0 ${i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}`}>
@@ -1870,10 +2165,14 @@ export function buildBrdExportFilename(title?: string, brdId?: string): string {
 export async function prepareBrdExportElement(sourceEl: HTMLElement): Promise<HTMLElement> {
   const clone = sourceEl.cloneNode(true) as HTMLElement;
 
+  clone.querySelectorAll("[data-export-only='1']").forEach((node) => {
+    const element = node as HTMLElement;
+    element.style.display = "block";
+    element.hidden = false;
+  });
+
   clone.querySelector("#section-generate")?.closest("[style*='paddingTop']")?.remove();
   clone.querySelector("#section-generate")?.remove();
-  const cpBlock = clone.querySelector("#section-content-profile");
-  cpBlock?.parentElement?.remove();
 
   clone.querySelectorAll("[data-draft-current='1']").forEach((node) => {
     const current = node.querySelector("[data-current-value='1']")?.textContent?.trim();
@@ -2004,8 +2303,8 @@ export default function Generate({ brdId, title, format, status, initialData, on
   const [saveError, setSaveError]   = useState<string | null>(null);
   const [savedVersionLabel, setSavedVersionLabel] = useState<string | null>(null);
   const generateUnlocked            = !canEdit || savedToDB;
-  const [metajsonModal, setMetajsonModal] = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"metajson.json"});
-  const [innodModal,    setInnodModal]    = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"innod_metajson.json"});
+  const [metajsonModal, setMetajsonModal] = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"meta.json"});
+  const [innodModal,    setInnodModal]    = useState<{open:boolean;data:Record<string,unknown>|null;filename:string}>({open:false,data:null,filename:"innodMeta.json"});
   const doneResetTimers   = useRef<Record<string, number>>({});
   const docPageRef        = useRef<HTMLDivElement>(null);
   const contentProfileRef = useRef<HTMLDivElement>(null);
@@ -2032,6 +2331,13 @@ export default function Generate({ brdId, title, format, status, initialData, on
 
   const activeFormat: Format   = format === "old" ? "old" : "new";
   const metadataValues         = buildTemplateMetadataValues(activeFormat, metadataData);
+  const structuringVariant = useMemo(
+    () => detectStructuringVariant(activeFormat, metadataData),
+    [activeFormat, metadataData],
+  );
+  const visibleSectionCount = buildReviewSectionOrder(canViewRestrictedFields)
+    .filter((item) => item.id !== "section-generate")
+    .length;
   const autoTitle              = deriveTitle(metadataData, title);
   const [customTitle, setCustomTitle] = useState<string | null>(null);
   const derivedTitle           = customTitle ?? autoTitle;
@@ -2073,10 +2379,44 @@ export default function Generate({ brdId, title, format, status, initialData, on
     a.href = url; a.download = `${sanitizeFilePart(base)}.docx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
+  async function syncGeneratedJsonOutputs() {
+    if (!brdId) return;
+
+    const generated = await api.post<{ success: boolean; metajson: Record<string, unknown> }>(
+      "/brd/generate/metajson",
+      {
+        brdId,
+        title: resolvedTitle,
+        format,
+        scope: scopeData,
+        metadata: metadataData,
+        toc: tocData,
+        citations: citationsData,
+        contentProfile: contentProfileData,
+        brdConfig: brdConfigData,
+      },
+    );
+
+    await Promise.all([
+      api.put(`/brd/${brdId}/sections/simpleMetajson`, { data: generated.data.metajson }),
+      api.put(`/brd/${brdId}/sections/innodMetajson`, { data: generated.data.metajson }),
+    ]);
+  }
+
   async function handleSaveBrd() {
     if (!brdId) return; setSaving(true); setSaveError(null); setSavedVersionLabel(null);
     try {
+      let saveWarning: string | null = null;
+
       await api.post("/brd/save", { brdId, title: resolvedTitle, format, status: resolvedSaveStatus, scope: scopeData, metadata: metadataData, toc: tocData, citations: citationsData, contentProfile: contentProfileData, brdConfig: brdConfigData });
+
+      try {
+        await syncGeneratedJsonOutputs();
+      } catch (syncErr) {
+        console.warn("[handleSaveBrd] Failed to refresh Metajson/Innod outputs after save:", syncErr);
+        saveWarning = saveWarning ?? "BRD saved, but failed to refresh Metajson and Innod outputs.";
+      }
+
       try {
         const versionResponse = await api.post<{ versionNum: number; label?: string }>(`/brd/${brdId}/versions`, {
           scope: scopeData,
@@ -2093,10 +2433,15 @@ export default function Generate({ brdId, title, format, status, initialData, on
       } catch (versionErr: unknown) {
         const versionError = versionErr as { response?: { data?: { error?: string } }; message?: string };
         setSaveError(
+          saveWarning ??
           versionError?.response?.data?.error ??
             versionError?.message ??
             "BRD saved, but failed to create a new version snapshot.",
         );
+      }
+
+      if (saveWarning) {
+        setSaveError(saveWarning);
       }
       setSavedToDB(true);
     } catch (err: unknown) {
@@ -2165,7 +2510,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
           if (saved.data.simpleMetajson) initialData = saved.data.simpleMetajson;
         } catch { /* no saved version yet, use generated */ }
       }
-      setMetajsonModal({open:true,data:initialData,filename:r.data.filename||`${brdId||"metajson"}.json`});
+      setMetajsonModal({open:true,data:initialData,filename:"meta.json"});
       setCompleted(p=>({...p,metajson:true})); markDone("metajson");
     } catch { window.alert("Failed to generate Metajson."); setDone(p=>({...p,metajson:false})); setCompleted(p=>({...p,metajson:false})); }
     finally { setGenerating(p=>({...p,metajson:false})); }
@@ -2193,7 +2538,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
           if (saved.data.innodMetajson) initialData = saved.data.innodMetajson;
         } catch { /* no saved version yet, use generated */ }
       }
-      setInnodModal({open:true,data:initialData,filename:r.data.filename||`${brdId||"innod"}_metajson.json`});
+      setInnodModal({open:true,data:initialData,filename:"innodMeta.json"});
       setCompleted(p=>({...p,innod:true})); markDone("innod");
     } catch { window.alert("Failed to generate Innod Metajson."); setDone(p=>({...p,innod:false})); setCompleted(p=>({...p,innod:false})); }
     finally { setGenerating(p=>({...p,innod:false})); }
@@ -2287,47 +2632,67 @@ export default function Generate({ brdId, title, format, status, initialData, on
           <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap" as const}}>
             {brdId && <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#64748b",background:"#f1f5f9",border:"1px solid #e2e8f0",padding:"3px 10px",borderRadius:4}}>{brdId}</span>}
             <span style={{color:"#cbd5e1",fontSize:13}}>·</span>
-            <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#94a3b8"}}>{canViewRestrictedFields ? "6 Sections" : "5 Sections"}</span>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#94a3b8"}}>{`${visibleSectionCount} Sections`}</span>
           </div>
         </div>
 
-        {canViewRestrictedFields && (
-          <>
-            <DocBlock id="section-citation-guide">
-              <DocSectionHeader idx={0} onEdit={onEdit??noop} canEdit={canEdit}/>
-              <CitationGuideTable tocData={tocData} />
-            </DocBlock>
-            <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-          </>
-        )}
+        <div data-export-only="1" style={{ display: "none" }}>
+          <ExportDocumentToc
+            format={activeFormat}
+            metadata={metadataData}
+            tocData={tocData}
+            contentProfileData={contentProfileData}
+            showCitationGuide={canViewRestrictedFields}
+          />
+        </div>
+
+        <DocBlock id="section-structuring-requirements">
+          <DocSectionHeader idx={0} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <StructuringRequirementsTable
+            values={metadataValues}
+            metadata={metadataData}
+            variant={structuringVariant}
+          />
+        </DocBlock>
+        <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
 
         <DocBlock id="section-scope">
           <DocSectionHeader idx={1} onEdit={onEdit??noop} canEdit={canEdit}/>
           <ScopeTable scopeData={scopeData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        
-        <DocBlock id="section-metadata">
-          <DocSectionHeader idx={2} onEdit={onEdit??noop} canEdit={canEdit}/>
-          <MetaGrid values={metadataValues} format={activeFormat} metadata={metadataData} brdId={brdId} images={images} />
-        </DocBlock>
-        <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        
+
         <DocBlock id="section-toc">
-          <DocSectionHeader idx={3} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <DocSectionHeader idx={2} onEdit={onEdit??noop} canEdit={canEdit}/>
           <TocTable tocData={tocData} brdId={brdId} images={images} showRestrictedFields={canViewRestrictedFields} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        
+
         <DocBlock id="section-citations">
-          <DocSectionHeader idx={4} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <DocSectionHeader idx={3} onEdit={onEdit??noop} canEdit={canEdit}/>
           <CitationTable citationsData={citationsData} brdId={brdId} images={images} />
         </DocBlock>
         <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
-        
+
+        <DocBlock id="section-metadata">
+          <DocSectionHeader idx={4} onEdit={onEdit??noop} canEdit={canEdit}/>
+          <MetaGrid values={metadataValues} format={activeFormat} metadata={metadataData} brdId={brdId} images={images} />
+        </DocBlock>
+        <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
+
+        {canViewRestrictedFields && (
+          <>
+            <DocBlock id="section-citation-guide">
+              <DocSectionHeader idx={5} onEdit={onEdit??noop} canEdit={canEdit}/>
+              <CitationGuideTable tocData={tocData} />
+            </DocBlock>
+            <div style={{height:2,background:"linear-gradient(90deg, transparent, #e2e2dc 30%, #e2e2dc 70%, transparent)",margin:"4px 0"}}/>
+          </>
+        )}
+
         <div ref={contentProfileRef}>
           <DocBlock id="section-content-profile">
-            <DocSectionHeader idx={5} onEdit={onEdit??noop} canEdit={canEdit}/>
+            <DocSectionHeader idx={6} onEdit={onEdit??noop} canEdit={canEdit}/>
             <ContentProfile cpData={contentProfileData} />
           </DocBlock>
         </div>

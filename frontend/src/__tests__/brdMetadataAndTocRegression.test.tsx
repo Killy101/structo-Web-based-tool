@@ -109,6 +109,57 @@ describe("BRD metadata and document structure regressions", () => {
     });
   });
 
+  it("renders a dedicated Structuring Requirements processing view without the metadata grid", () => {
+    render(
+      <Metadata
+        format="old"
+        brdId="BRD-123"
+        viewMode="structuring"
+        initialData={{
+          source_name: "Federal Register",
+          source_name_sme_checkpoint: "SMEs to validate if the Source Name is correct - Correct",
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText(/Structuring Requirements/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/^Source Name$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/SME Checkpoint/i)).toHaveValue("SMEs to validate if the Source Name is correct - Correct");
+    expect(screen.queryByText(/^Metadata Fields$/i)).not.toBeInTheDocument();
+  });
+
+  it("prefers the extracted structuring checkpoint over generic metadata comments", () => {
+    render(
+      <Metadata
+        format="old"
+        brdId="BRD-123"
+        viewMode="structuring"
+        initialData={{
+          source_name: "Code of Federal Regulations",
+          sme_comments: "Source Name: Wrong generic metadata note",
+          source_name_sme_checkpoint: "SMEs to validate if the Source Name is correct - Correct",
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText(/SME Checkpoint/i)).toHaveValue("SMEs to validate if the Source Name is correct - Correct");
+  });
+
+  it("does not use generic metadata SME comments as the structuring checkpoint when no dedicated checkpoint exists", () => {
+    render(
+      <Metadata
+        format="old"
+        viewMode="structuring"
+        initialData={{
+          source_name: "Code of Federal Regulations",
+          sme_comments: "Source Name: Generic metadata comment should not appear here",
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText(/SME Checkpoint/i)).toHaveValue("");
+  });
+
   it("does not show the redundant process type panel in Metadata", () => {
     render(<Metadata format="old" brdId="BRD-123" initialData={{ process_type: "Updating - Evergreen" }} />);
 
@@ -520,9 +571,74 @@ describe("BRD metadata and document structure regressions", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/^Citable$/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/Citable Levels/i).length).toBeGreaterThan(0);
     });
     expect(screen.getAllByText(/^Y$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^N$/).length).toBeGreaterThan(0);
+  });
+
+  it("automatically uses the BRD-native structuring label with no manual selector", async () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    const { rerender } = render(
+      <Generate
+        brdId="BRD-OLD"
+        format="old"
+        status="DRAFT"
+        initialData={{
+          metadata: {
+            source_name: "Legacy source name",
+            sme_comments: "Source Name: Validate this legacy source name",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("Source Name").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Content Category Name" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Source Name" })).not.toBeInTheDocument();
+
+    rerender(
+      <Generate
+        brdId="BRD-NEW"
+        format="new"
+        status="DRAFT"
+        initialData={{
+          metadata: {
+            content_category_name: "Modern content category",
+            sme_comments: "Content Category Name: Validate this content category",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("Content Category Name").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Content Category Name" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Source Name" })).not.toBeInTheDocument();
+  });
+
+  it("uses the BRD citation terminology in Section IV", async () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    render(
+      <Generate
+        brdId="BRD-CIT"
+        format="new"
+        status="DRAFT"
+        initialData={{
+          citations: {
+            citationLevelSmeCheckpoint: "Indicate which levels are citable.",
+            citationRulesSmeCheckpoint: "Citation rules stand for how the citations should appear in ELA. Source of Law identifies the governing level.",
+            references: [
+              { level: "2", isCitable: "Y", citationRules: "Level 2 | Level 3", sourceOfLaw: "Level 2", smeComments: "Reviewed" },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText(/Citation Format Requirements/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Citable Levels/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Citation Standardization Rules/i).length).toBeGreaterThan(0);
   });
 });

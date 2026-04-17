@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import Metadata from "../components/brd/Metadata";
 import Scope from "../components/brd/Scope";
 import ContentProfile from "../components/brd/ContentProf";
+import TOC from "../components/brd/TOC";
 import api from "@/app/lib/api";
 
 jest.mock("@/app/lib/api", () => ({
@@ -180,5 +181,42 @@ describe("BRD image placement regressions", () => {
     });
 
     expect(screen.queryByAltText(/level 0 screenshot from toc/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a level 9 TOC screenshot even when engineering metadata stores it as unknown section", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 902,
+            tableIndex: -1,
+            rowIndex: 9,
+            colIndex: 7,
+            rid: "rId902",
+            mediaName: "level-9-sme.png",
+            mimeType: "image/png",
+            cellText: "Level 9 paragraph screenshot",
+            section: "unknown",
+            fieldLabel: "Level 9",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <TOC
+        brdId="BRD-123"
+        initialData={{
+          sections: [
+            { level: "2", name: "", required: "true", definition: "Title", example: "Act title", note: "", tocRequirements: "", smeComments: "" },
+            { level: "9", name: "", required: "false", definition: "Incrementing number next to article number", example: "5", note: "", tocRequirements: "", smeComments: "It should be noted that the number 1 is not visible." },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByAltText(/level 9 paragraph screenshot/i)).toBeInTheDocument();
+    });
   });
 });

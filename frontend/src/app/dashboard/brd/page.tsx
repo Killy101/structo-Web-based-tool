@@ -599,7 +599,7 @@ export default function BrdPage() {
     : "BRD / Process Type is read-only for your role and can only be updated by Super Admin or Pre-Production Admin.";
 
   const allowedStatusFilters: Array<BrdStatus | "All"> =
-    isSuperAdmin || isPreProductionTeam
+    isSuperAdmin || (isPreProductionTeam && isAdmin)
       ? ["All", "DRAFT", "PAUSED", "COMPLETED", "APPROVED", "ON_HOLD"]
       : ["All", "APPROVED", "ON_HOLD"];
 
@@ -780,6 +780,7 @@ export default function BrdPage() {
       formData.append("file", file);
       await api.post(`/brd/re-upload/${targetId}`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 300000, // large BRD re-processing can take several minutes
       });
       await fetchBrds();
 
@@ -1178,13 +1179,13 @@ export default function BrdPage() {
                   <td className="px-3 py-3 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-0.5">
                       <button disabled={!canView}
-                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(7); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
+                        onClick={() => { setFlowFinalMode("view"); setFlowInitialStep(8); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
                         title="View latest BRD"
                         className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 dark:hover:text-blue-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EyeIcon />
                       </button>
                       <button disabled={!canEdit}
-                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(7); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
+                        onClick={() => { setFlowFinalMode("generate"); setFlowInitialStep(8); setFlowInitialMeta({ format: brd.format, brdId: brd.id, title: name, status: brd.status }); setShowBrdFlow(true); }}
                         title="Edit BRD (Draft, Paused, Complete, Approved, On Hold)"
                         className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 dark:hover:text-slate-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
                         <EditIcon />

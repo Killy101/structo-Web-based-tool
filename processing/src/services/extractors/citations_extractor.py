@@ -47,6 +47,19 @@ def _normalise_citation_rule(raw: str) -> str:
 
 def _extract_section_note(doc, *keywords: str) -> str:
     items = list(_iter_block_items(doc))
+    toc_noise_terms = (
+        "metadata",
+        "details",
+        "exceptions",
+        "updates",
+        "how to identify",
+        "frequency of updates",
+        "file delivery requirements",
+        "file separation",
+        "file naming conventions",
+        "citation style guide",
+    )
+
     for idx, (kind, block) in enumerate(items):
         if kind != "paragraph":
             continue
@@ -59,8 +72,15 @@ def _extract_section_note(doc, *keywords: str) -> str:
 
         texts, _ = _extract_section_block(items, idx, rich=True)
         note = "\n".join(texts).strip()
-        if note:
-            return note
+        if not note:
+            continue
+
+        normalized_note = _normalize_heading(note)
+        if "sme checkpoint" not in normalized_note and not any(term in normalized_note for term in keywords):
+            if any(term in normalized_note for term in toc_noise_terms):
+                continue
+
+        return note
 
     return ""
 

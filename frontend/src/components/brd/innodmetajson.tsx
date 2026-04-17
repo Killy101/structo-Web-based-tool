@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { validateMetajsonSchema } from "@/lib/metajsonValidation";
 
 interface InnodMetajsonProps {
   open: boolean;
@@ -122,7 +123,7 @@ export default function InnodMetajson({
   open,
   onClose,
   metajson,
-  filename = "innod_metajson.json",
+  filename = "innodMeta.json",
   onDownload,
   onSave,
 }: InnodMetajsonProps) {
@@ -130,6 +131,7 @@ export default function InnodMetajson({
   const [raw, setRaw] = useState("");
   const [parseError, setParseError] = useState<string | null>(null);
   const [liveJson, setLiveJson] = useState<Record<string, unknown> | null>(null);
+  const [validated, setValidated] = useState<boolean | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [savedJson, setSavedJson] = useState<Record<string, unknown> | null>(null);
   const [saveFlash, setSaveFlash] = useState(false);
@@ -151,6 +153,7 @@ export default function InnodMetajson({
       setRaw(nextRaw);
       setLiveJson(nextLiveJson);
       setParseError(null);
+      setValidated(null);
       setSavedJson(null);
     });
 
@@ -171,6 +174,7 @@ export default function InnodMetajson({
   const handleRawChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setRaw(value);
+    setValidated(null);
     const result = tryParseJson(value);
     if (result.ok) {
       setLiveJson(result.value);
@@ -199,17 +203,47 @@ export default function InnodMetajson({
     return () => { document.body.style.overflow = ""; };
   }, [open]);
 
+  function handleValidate() {
+    const result = tryParseJson(raw);
+    if (!result.ok) {
+      setLiveJson(null);
+      setParseError(result.error);
+      setValidated(false);
+      return;
+    }
+
+    const validation = validateMetajsonSchema(result.value, { requireTransforms: true });
+    if (!validation.valid) {
+      setLiveJson(null);
+      setParseError(validation.errors[0] || "Metajson structure is invalid");
+      setValidated(false);
+      return;
+    }
+
+    setLiveJson(result.value);
+    setParseError(null);
+    setValidated(true);
+  }
+
   function handleFormat() {
     if (!liveJson) return;
     setRaw(formatJson(liveJson));
+    setValidated(null);
   }
 
   function handleSave() {
     const json = liveJson ?? metajson;
     if (!json || parseError) return;
+    const validation = validateMetajsonSchema(json, { requireTransforms: true });
+    if (!validation.valid) {
+      setParseError(validation.errors[0] || "Metajson structure is invalid");
+      setValidated(false);
+      return;
+    }
     setSavedJson(json);
     setSaveFlash(true);
     setTimeout(() => setSaveFlash(false), 2000);
+    setValidated(true);
     if (onSave) onSave(json);
   }
 
@@ -325,6 +359,22 @@ export default function InnodMetajson({
                   style={MONO}
                 >
                   Format
+                </button>
+              )}
+              {activeTab === "edit" && (
+                <button
+                  onClick={handleValidate}
+                  title="Validate metajson"
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-medium border transition-all ${
+                    validated === true
+                      ? "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-700/40 text-emerald-700 dark:text-emerald-400"
+                      : validated === false
+                        ? "bg-rose-50 dark:bg-rose-500/10 border-rose-300 dark:border-rose-700/40 text-rose-600 dark:text-rose-400"
+                        : "bg-white dark:bg-[#252d45] border-slate-300 dark:border-[#3a4460] text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-[#2e3a55]"
+                  }`}
+                  style={MONO}
+                >
+                  {validated === true ? "Valid" : validated === false ? "Invalid" : "Validate"}
                 </button>
               )}
               {activeTab === "edit" && (
@@ -469,7 +519,9 @@ export default function InnodMetajson({
                     ? <><span className="text-emerald-500 mr-1">✓</span>Saved</>
                     : hasUnsavedChanges
                       ? <span className="text-amber-500">Unsaved changes</span>
-                      : <><span className="text-emerald-500 mr-1">✓</span>Valid JSON</>
+                      : validated === true
+                        ? <><span className="text-emerald-500 mr-1">✓</span>Valid metajson</>
+                        : <span>Click Validate to check the schema</span>
               }
             </div>
             <div className="flex items-center gap-2">
@@ -481,6 +533,7 @@ export default function InnodMetajson({
                       setRaw(formatJson(base));
                       setLiveJson(base);
                       setParseError(null);
+                      setValidated(null);
                     }
                   }}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-medium border transition-all bg-white dark:bg-[#252d45] border-slate-300 dark:border-[#3a4460] text-slate-500 dark:text-slate-400 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-[#2e3a55]"

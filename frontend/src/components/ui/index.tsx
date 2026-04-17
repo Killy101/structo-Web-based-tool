@@ -27,14 +27,10 @@ type BtnVariant =
   | "warning";
 type BtnSize = "xs" | "sm" | "md" | "lg";
 
-interface BtnProps {
+interface BtnProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   children: React.ReactNode;
   variant?: BtnVariant;
   size?: BtnSize;
-  onClick?: () => void;
-  className?: string;
-  disabled?: boolean;
-  type?: "button" | "submit" | "reset";
   loading?: boolean;
 }
 
@@ -42,11 +38,11 @@ export const Button = ({
   children,
   variant = "primary",
   size = "md",
-  onClick,
   className = "",
   disabled,
   type = "button",
   loading,
+  ...props
 }: BtnProps) => {
   const sizes: Record<BtnSize, string> = {
     xs: "px-2 py-1 text-xs gap-1",
@@ -67,9 +63,9 @@ export const Button = ({
   return (
     <button
       type={type}
-      onClick={onClick}
       disabled={disabled || loading}
       className={`inline-flex items-center font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${sizes[size]} ${variants[variant]} ${className}`}
+      {...props}
     >
       {loading && (
         <svg

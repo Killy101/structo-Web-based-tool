@@ -90,11 +90,11 @@ function citationRowsEqualIgnoringIds(a: CitationRow[], b: CitationRow[]): boole
 }
 
 const COLUMNS = [
-  { key: "level",         label: "Level",          width: "w-16",  icon: "⬡" },
-  { key: "isCitable",     label: "Citable",        width: "w-20",  icon: "✓" },
-  { key: "citationRules", label: "Citation Rules",  width: "w-72",  icon: "§" },
-  { key: "sourceOfLaw",   label: "Source of Law",   width: "w-56",  icon: "⚖" },
-  { key: "smeComments",   label: "SME Comments",    width: "w-52",  icon: "◈" },
+  { key: "level",         label: "Level",                           width: "w-16",  icon: "⬡" },
+  { key: "isCitable",     label: "Citable Levels",                 width: "w-20",  icon: "✓" },
+  { key: "citationRules", label: "Citation Standardization Rules",  width: "w-72",  icon: "§" },
+  { key: "sourceOfLaw",   label: "Source of Law",                  width: "w-56",  icon: "⚖" },
+  { key: "smeComments",   label: "SME Comments",                   width: "w-52",  icon: "◈" },
 ];
 
 function levelBadge(val: string) {
@@ -398,9 +398,9 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
     <div ref={containerRef} className="space-y-4">
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-700/40">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation Format Requirements</p>
           <p className="text-[11.5px] text-slate-500 dark:text-slate-500 mt-0.5">
-            Click any cell to edit · {rows.length} rule{rows.length !== 1 ? "s" : ""}
+            Click any cell to edit · {rows.length} requirement{rows.length !== 1 ? "s" : ""}
             {" "}· <kbd className="font-mono text-[10px]">Ctrl+Shift+A</kbd> add · <kbd className="font-mono text-[10px]">Ctrl+Shift+D</kbd> delete
           </p>
         </div>
@@ -420,7 +420,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
       <div className="grid gap-3 md:grid-cols-2">
         <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
           <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation Level · SME Checkpoint</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citable Levels · SME Checkpoint</p>
           </div>
           <div className="p-3">
             <RichTextEditableField
@@ -435,7 +435,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
 
         <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
           <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation Rules · SME Checkpoint</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>Citation Standardization Rules · SME Checkpoint</p>
           </div>
           <div className="p-3">
             <RichTextEditableField
@@ -443,7 +443,7 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
               onChange={setCitationRulesSmeCheckpoint}
               rows={4}
               labelPrefix="SME Checkpoint"
-              placeholder="Add the SME checkpoint note for citation rules"
+              placeholder="Add the SME checkpoint note for citation standardization rules"
             />
           </div>
         </div>
@@ -455,10 +455,10 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
             <thead>
               <tr className="bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
                 <BrdTableHeaderCell className="w-16" title="Level" greenNote="Citation level" />
-                <BrdTableHeaderCell className="w-20" title="Citable" greenNote="Should this level be citable" />
-                <BrdTableHeaderCell className="w-72" title="Citation Rules" checkpoint="SME Checkpoint" blueNote="Include the levels and punctuation that should appear in ELA citations" />
-                <BrdTableHeaderCell className="w-56" title="Source of Law" checkpoint="SME Checkpoint" blueNote="Identify the level that should serve as the Source of Law" />
-                <BrdTableHeaderCell className="w-52" title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+                <BrdTableHeaderCell className="w-20" title="Citable Levels" checkpoint="SME Checkpoint" blueNote="Indicate which levels are citable" />
+                <BrdTableHeaderCell className="w-72" title="Citation Standardization Rules" checkpoint="SME Checkpoint" blueNote="This should include the levels that form the citation and the punctuations or symbols between the levels" />
+                <BrdTableHeaderCell className="w-56" title="Source of Law" checkpoint="SME Checkpoint" blueNote="SME to indicate which Level should be Source of Law" />
+                <BrdTableHeaderCell className="w-52" title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, specify here" />
                 <th className="w-8 px-2 py-2.5 bg-slate-50 dark:bg-[#1e2235]" />
               </tr>
             </thead>
@@ -486,8 +486,8 @@ export default function Citation({ initialData, brdId, onDataChange }: Props) {
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={COLUMNS.length + 1} className="py-12 text-center">
-                    <p className="text-[12.5px] text-slate-500 dark:text-slate-500">No citation rules yet</p>
-                    <button onClick={addRow} className="mt-2 text-[12px] text-blue-600 dark:text-blue-400 hover:underline">+ Add first rule</button>
+                    <p className="text-[12.5px] text-slate-500 dark:text-slate-500">No citation format requirements yet</p>
+                    <button onClick={addRow} className="mt-2 text-[12px] text-blue-600 dark:text-blue-400 hover:underline">+ Add first requirement</button>
                   </td>
                 </tr>
               )}

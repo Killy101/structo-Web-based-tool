@@ -299,6 +299,22 @@ Content-Transfer-Encoding: quoted-printable
             if converted_path:
                 Path(converted_path).unlink(missing_ok=True)
 
+    def test_extracts_structuring_checkpoint_for_source_specific_brd_fields(self):
+        doc = Document()
+        doc.add_heading("Structuring Requirements", level=1)
+        doc.add_heading("Source Name", level=2)
+        doc.add_paragraph("SME Checkpoint SMEs to validate if the Source Name is correct - Correct")
+        doc.add_heading("Scope", level=2)
+        doc.add_paragraph("Scope content starts here")
+
+        metadata = extract_metadata(doc)
+
+        self.assertIn("Source Name is correct", metadata.get("source_name_sme_checkpoint", ""))
+        self.assertEqual(
+            metadata.get("structuring_sme_checkpoint", ""),
+            metadata.get("source_name_sme_checkpoint", ""),
+        )
+
     def test_scope_extraction_preserves_content_url_note_text(self):
         doc = Document()
         table = doc.add_table(rows=2, cols=6)

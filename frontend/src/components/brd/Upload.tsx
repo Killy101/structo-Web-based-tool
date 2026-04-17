@@ -98,7 +98,7 @@ const PIPELINE_STEPS = [
   { key: "scope",     label: "Scope Detection",     icon: "≡" },
   { key: "metadata",  label: "Metadata Extraction", icon: "↑" },
   { key: "toc",       label: "Table of Contents",   icon: "≣" },
-  { key: "citations", label: "Citation Rules",      icon: "❝" },
+  { key: "citations", label: "Citation Format Requirements", icon: "❝" },
   { key: "profile",   label: "Content Profiling",   icon: "✦" },
 ];
 

@@ -111,17 +111,19 @@ import html
 # tkinter removed — headless service mode
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
   
 try:
     import fitz
 except ImportError:
     raise ImportError("PyMuPDF not found.  Run:  pip install pymupdf")
 
+_rfuzz: Any = None
 try:
-    from rapidfuzz import fuzz as _rfuzz
+    import importlib
+    _rfuzz = importlib.import_module("rapidfuzz.fuzz")
     _USE_RAPIDFUZZ = True
-except ImportError:
+except Exception:
     _USE_RAPIDFUZZ = False
 
 
@@ -1635,6 +1637,10 @@ class Block:
     lines:   List[PdfLine]
     x_min:   float
     y:       float
+    _emp_changed: dict = field(default_factory=dict, repr=False)
+    _mod_diff_words: Optional[list] = field(default=None, repr=False)
+    _mod_sw_words: Optional[list] = field(default=None, repr=False)
+    _mod_line_map: Optional[dict] = field(default=None, repr=False)
 
 
 # Patterns that START a new block (anchor line)
@@ -3999,7 +4005,7 @@ def compute_diff(
     lines_b: List[PdfLine],
     xml_text_a: Optional[str] = None,
     xml_text_b: Optional[str] = None,
-    on_progress: Optional[callable] = None,
+    on_progress: Optional[Callable[[str, int], None]] = None,
 ) -> Tuple[List[Block], List[Block], List[Chunk]]:
     """
     Full pipeline: segment -> match -> diff.
@@ -4391,9 +4397,9 @@ def compute_diff(
                 continue
             first = del_words[0]
 
-            best_sim  = 0.72
-            best_ai   = None
-            best_aci  = None
+            best_sim: float = 0.72
+            best_ai: Optional[int] = None
+            best_aci: Optional[int] = None
 
             # Only compare against add chunks that share the same first token
             # (provision anchor like "(a)", "F5", "c2pt" etc.) — massive prune
@@ -4412,7 +4418,7 @@ def compute_diff(
                     best_ai  = ai
                     best_aci = aci
 
-            if best_aci is not None:
+            if best_aci is not None and best_ai is not None:
                 ach = add_chunks[best_ai][1]
                 if (_should_suppress_chunk(dch.text_a, ach.text_b) or
                         (best_sim >= 0.92 and
@@ -5865,8 +5871,10 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
             return m.group(1), m.group(2).strip()
         m = re.match(rf'^\s*{_LEAD_F}({_PROV_TOK})\s+(.+)$', s, re.I)
         if m:
-            lead = re.match(_LEAD_F, s, re.I).group(0)
-            return m.group(1), (lead + m.group(2)).strip()
+            lead_match = re.match(_LEAD_F, s, re.I)
+            if lead_match:
+                lead = lead_match.group(0)
+                return m.group(1), (lead + m.group(2)).strip()
         return None, s.strip()
 
     ma, ta = _strip_front_marker(na)
@@ -6200,7 +6208,7 @@ _TRIVIAL_WORD_PAT = re.compile(
     r'^[\W]*(?:[a-z]{1,3}|\d{1,4}|[ivxlcdm]{1,6})[\W]*$', re.I)
 
 
-def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: List[Block] = None) -> dict:
+def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: Optional[List[Block]] = None) -> dict:
     """
     Build render data for one pane.
     Returns {"segments": [...], "tag_cfgs": {...}, "offsets": {...}, "offset_ends": {...}}
@@ -6459,17 +6467,17 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
 
                         # Map each diff word to a line index via all_sw
                         # (zip by position; extra diff words stay on last line)
-                        dw_line: list = []  # [(word, is_changed, line_idx)]
+                        dw_line_entries: list = []  # [(word, is_changed, line_idx, span)]
                         for di2, (dw2, is_c) in enumerate(diff_words):
                             li2 = all_sw[di2][2] if di2 < len(all_sw) else (all_sw[-1][2] if all_sw else 0)
                             sp2 = all_sw[di2][1] if di2 < len(all_sw) else (all_sw[-1][1] if all_sw else None)
-                            dw_line.append((dw2, is_c, li2, sp2))
+                            dw_line_entries.append((dw2, is_c, li2, sp2))
 
-                        block._mod_diff_words = dw_line
+                        block._mod_diff_words = dw_line_entries
                         block._mod_sw_words   = all_sw
 
                 # Emit words belonging to this line index
-                dw_line = getattr(block, "_mod_diff_words", None)
+                dw_line = block._mod_diff_words
 
                 if dw_line is None:
                     # Trivial suppressed: emit plain spans for this line

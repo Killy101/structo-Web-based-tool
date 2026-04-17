@@ -46,28 +46,35 @@ interface BrdDetailResponse {
   brdConfig?:      Record<string, unknown>;
 }
 
-const FULL_FLOW_STEP_IDS = ["upload", "citationGuide", "scope", "metadata", "toc", "citationRules", "contentProfile", "generate"] as const;
+export const FULL_FLOW_STEP_IDS = ["upload", "structuring", "scope", "toc", "citationRules", "metadata", "citationGuide", "contentProfile", "generate"] as const;
 type FlowStepId = (typeof FULL_FLOW_STEP_IDS)[number];
+
+export function buildVisibleFlowStepIds(isEditMode: boolean, canViewRestrictedFields: boolean): readonly FlowStepId[] {
+  return (isEditMode ? FULL_FLOW_STEP_IDS.slice(1) : FULL_FLOW_STEP_IDS)
+    .filter((id) => canViewRestrictedFields || id !== "citationGuide");
+}
 
 const STEP_LABELS: Record<FlowStepId, string> = {
   upload: "Upload",
-  citationGuide: "Citation Guide Link",
+  structuring: "Structuring Requirements",
   scope: "Scope",
+  toc: "Document Structure",
+  citationRules: "Citation Format Requirements",
   metadata: "Metadata",
-  toc: "TOC",
-  citationRules: "Citation Rules",
-  contentProfile: "Content Profiling",
+  citationGuide: "Citation Style Guide Link",
+  contentProfile: "Content Profile",
   generate: "Generate",
 };
 
 const STEP_META_BY_ID: Record<FlowStepId, { icon: string; desc: string }> = {
   upload: { icon: "↑", desc: "Start by uploading your source documents" },
-  citationGuide: { icon: "⌁", desc: "Capture citation guide links and source-specific guidance" },
+  structuring: { icon: "≡", desc: "Review the source-specific structuring requirements and SME checkpoint" },
   scope: { icon: "◎", desc: "Define boundaries, objectives, and scope" },
-  metadata: { icon: "≡", desc: "Add project details and stakeholders" },
-  toc: { icon: "✦", desc: "Review TOC settings and document structure" },
-  citationRules: { icon: "§", desc: "Define citation formatting and standardization rules" },
-  contentProfile: { icon: "⬡", desc: "Analyze and structure content" },
+  toc: { icon: "✦", desc: "Review ToC sorting, hiding levels, and document structure" },
+  citationRules: { icon: "§", desc: "Define citable levels and citation standardization rules" },
+  metadata: { icon: "▦", desc: "Review the full metadata fields captured from the BRD" },
+  citationGuide: { icon: "⌁", desc: "Capture citation style guide links and source-specific guidance" },
+  contentProfile: { icon: "⬡", desc: "Analyze the content profile" },
   generate: { icon: "✦", desc: "Review and generate the final BRD document" },
 };
 
@@ -186,9 +193,8 @@ export default function BrdFlow({
   const initialStatus = String(initialMeta?.status ?? "").toUpperCase();
   const initialCanViewRestrictedFields = !["APPROVED", "ON_HOLD"].includes(initialStatus) || isPrivilegedUser;
 
-  const visibleInitialStepIds = (isEditMode ? FULL_FLOW_STEP_IDS.slice(1) : FULL_FLOW_STEP_IDS)
-    .filter((id) => initialCanViewRestrictedFields || id !== "citationGuide");
-  const requestedInitialStepId = FULL_FLOW_STEP_IDS[Math.max(0, Math.min(initialStep, FULL_FLOW_STEP_IDS.length - 1))] ?? (isEditMode ? "citationGuide" : "upload");
+  const visibleInitialStepIds = buildVisibleFlowStepIds(isEditMode, initialCanViewRestrictedFields);
+  const requestedInitialStepId = FULL_FLOW_STEP_IDS[Math.max(0, Math.min(initialStep, FULL_FLOW_STEP_IDS.length - 1))] ?? (isEditMode ? "structuring" : "upload");
   const clampedInitial = Math.max(
     0,
     visibleInitialStepIds.indexOf(requestedInitialStepId) >= 0
@@ -462,12 +468,26 @@ function renderStepContent() {
         onDataChange={(data) => { scopeDraft.current = data; }}
       />;
 
+    case "structuring":
+      return (
+        <Metadata
+          viewMode="structuring"
+          format={uploadMeta?.format ?? "new"}
+          title={getBestTitle()}
+          initialData={(metadataDraft.current ?? uploadMeta?.metadata) as Record<string, unknown> | undefined}
+          scopeData={(scopeDraft.current ?? uploadMeta?.scope) as Record<string, unknown> | undefined}
+          brdId={uploadMeta?.brdId}
+          onDataChange={(data) => { metadataDraft.current = data; }}
+        />
+      );
+
     case "metadata":
       return (
         <Metadata
+          viewMode="full"
           format={uploadMeta?.format ?? "new"}
           title={getBestTitle()}
-          initialData={uploadMeta?.metadata}
+          initialData={(metadataDraft.current ?? uploadMeta?.metadata) as Record<string, unknown> | undefined}
           scopeData={(scopeDraft.current ?? uploadMeta?.scope) as Record<string, unknown> | undefined}
           brdId={uploadMeta?.brdId}
           onDataChange={(data) => { metadataDraft.current = data; }}

@@ -146,6 +146,47 @@ def _iter_candidate_metadata_tables(doc):
     return candidates if candidates else doc.tables
 
 
+def _extract_structuring_checkpoints(doc) -> dict:
+    checkpoints = {
+        "source_name_sme_checkpoint": "",
+        "content_category_name_sme_checkpoint": "",
+        "structuring_sme_checkpoint": "",
+    }
+
+    paragraphs = list(doc.paragraphs)
+    for index, paragraph in enumerate(paragraphs):
+        title = _clean(para_text(paragraph).replace("\xa0", " ")).lower().strip("*: ")
+        if not title:
+            continue
+
+        key = ""
+        if "source name" in title:
+            key = "source_name_sme_checkpoint"
+        elif "content category name" in title or title == "content category":
+            key = "content_category_name_sme_checkpoint"
+
+        if not key:
+            continue
+
+        captured: list[str] = []
+        for following in paragraphs[index + 1:]:
+            text = para_text(following).replace("\xa0", " ").strip()
+            if (heading_level(following) or 0) >= 1 and text:
+                break
+            if text:
+                captured.append(text)
+
+        note = "\n".join(captured).strip()
+        if note:
+            checkpoints[key] = note
+
+    checkpoints["structuring_sme_checkpoint"] = (
+        checkpoints["content_category_name_sme_checkpoint"]
+        or checkpoints["source_name_sme_checkpoint"]
+    )
+    return checkpoints
+
+
 def _is_legacy_format(doc) -> bool:
     """
     Returns True when the document uses the legacy BRD metadata format.
@@ -230,6 +271,9 @@ def _extract_metadata_new(doc) -> dict:
         "summary":                   "",
         "status":                    "",
         "sme_comments":              "",
+        "source_name_sme_checkpoint": "",
+        "content_category_name_sme_checkpoint": "",
+        "structuring_sme_checkpoint": "",
         "product_owner":             "",
         "sme":                       "",
         "contributors":              [],
@@ -344,6 +388,8 @@ def _extract_metadata_new(doc) -> dict:
     if not metadata["name"]:
         metadata["name"] = metadata["document_title"]
 
+    metadata.update(_extract_structuring_checkpoints(doc))
+
     metadata["language"] = _infer_language(
         metadata.get("geography", ""),
         metadata.get("language", ""),
@@ -390,6 +436,9 @@ def extract_metadata_legacy(doc) -> dict:
         "summary":                   "",
         "status":                    "",
         "sme_comments":              "",
+        "source_name_sme_checkpoint": "",
+        "content_category_name_sme_checkpoint": "",
+        "structuring_sme_checkpoint": "",
         "product_owner":             "",
         "sme":                       "",
         "contributors":              [],
@@ -507,6 +556,8 @@ def extract_metadata_legacy(doc) -> dict:
         metadata["authoritative_source"] = metadata["issuing_agency"]
     if not metadata["name"]:
         metadata["name"] = metadata["document_title"]
+
+    metadata.update(_extract_structuring_checkpoints(doc))
 
     metadata["language"] = _infer_language(
         metadata.get("geography", ""),

@@ -11,6 +11,7 @@ import {
 import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 type Format = "new" | "old";
+type MetadataViewMode = "full" | "structuring";
 
 interface Props {
   format: Format;
@@ -20,6 +21,7 @@ interface Props {
   initialData?: Record<string, unknown>;
   scopeData?: Record<string, unknown>;
   onDataChange?: (data: Record<string, unknown>) => void;
+  viewMode?: MetadataViewMode;
 }
 
 interface FieldConfig {
@@ -139,15 +141,47 @@ function metadataValuesEqual(a: Record<string, string>, b: Record<string, string
   return true;
 }
 
+function buildInitialMetadataComments(
+  values: Record<string, string>,
+  initialData: Record<string, unknown> | undefined,
+  fields: FieldConfig[],
+  structuringOnly = false,
+): Record<string, string> {
+  const parsed = structuringOnly
+    ? {}
+    : parseMetadataComments(values.smeComments ?? "", fields.map((field) => field.label));
+  const structuringFallback = typeof initialData?.structuring_sme_checkpoint === "string"
+    ? stripQuotes(initialData.structuring_sme_checkpoint)
+    : "";
+  const sourceCheckpoint = typeof initialData?.source_name_sme_checkpoint === "string"
+    ? stripQuotes(initialData.source_name_sme_checkpoint)
+    : structuringFallback;
+  const contentCheckpoint = typeof initialData?.content_category_name_sme_checkpoint === "string"
+    ? stripQuotes(initialData.content_category_name_sme_checkpoint)
+    : structuringFallback;
+
+  if (sourceCheckpoint) {
+    parsed[normalizeMetadataCommentKey("Source Name")] = sourceCheckpoint;
+  }
+  if (contentCheckpoint) {
+    parsed[normalizeMetadataCommentKey("Content Category Name")] = contentCheckpoint;
+  }
+
+  return parsed;
+}
+
 function serializeMetadataComments(
   fields: FieldConfig[],
   comments: Record<string, string>,
-  customRows: CustomMetadataRow[] = []
+  customRows: CustomMetadataRow[] = [],
+  excludedLabels: string[] = [],
 ): string {
+  const excluded = new Set(excludedLabels.map((label) => normalizeMetadataCommentKey(label)));
   return [
     ...fields.map((field) => {
-      const key = normalizeMetadataCommentKey(field.label);
-      const comment = (comments[key] ?? "").trim();
+      const normalizedLabel = normalizeMetadataCommentKey(field.label);
+      if (excluded.has(normalizedLabel)) return "";
+      const comment = (comments[normalizedLabel] ?? "").trim();
       return comment ? `${field.label}: ${comment}` : "";
     }),
     ...customRows.map((row) => {
@@ -195,12 +229,32 @@ function buildOutgoingMetadata(
   values: Record<string, string>,
   comments: Record<string, string>,
   fields: FieldConfig[],
-  customRows: CustomMetadataRow[]
+  customRows: CustomMetadataRow[],
+  initialData?: Record<string, unknown>
 ): Record<string, unknown> {
   const normalizedCustomRows = sanitizeCustomMetadataRows(customRows);
-  const smeComments = serializeMetadataComments(fields, comments, normalizedCustomRows);
+  const smeComments = serializeMetadataComments(fields, comments, normalizedCustomRows, ["Source Name", "Content Category Name"]);
+  const sourceNameCheckpoint = (
+    comments[normalizeMetadataCommentKey("Source Name")] ??
+    (typeof initialData?.source_name_sme_checkpoint === "string" ? initialData.source_name_sme_checkpoint : "")
+  ).trim();
+  const contentCategoryCheckpoint = (
+    comments[normalizeMetadataCommentKey("Content Category Name")] ??
+    (typeof initialData?.content_category_name_sme_checkpoint === "string" ? initialData.content_category_name_sme_checkpoint : "")
+  ).trim();
+  const structuringCheckpoint = (
+    sourceNameCheckpoint ||
+    contentCategoryCheckpoint ||
+    (typeof initialData?.structuring_sme_checkpoint === "string" ? String(initialData.structuring_sme_checkpoint).trim() : "")
+  );
+  const preservedStructuring = {
+    ...(sourceNameCheckpoint ? { source_name_sme_checkpoint: sourceNameCheckpoint } : {}),
+    ...(contentCategoryCheckpoint ? { content_category_name_sme_checkpoint: contentCategoryCheckpoint } : {}),
+    ...(structuringCheckpoint ? { structuring_sme_checkpoint: structuringCheckpoint } : {}),
+  };
 
   return format === "old" ? {
+    ...preservedStructuring,
     source_name:               values.sourceName ?? "",
     authoritative_source:      values.authoritativeSource ?? "",
     source_type:               values.sourceType ?? "",
@@ -227,6 +281,7 @@ function buildOutgoingMetadata(
     status:                    values.status ?? "",
     custom_rows:               normalizedCustomRows,
   } : {
+    ...preservedStructuring,
     content_category_name:     values.contentCategoryName ?? "",
     authoritative_source:      values.authoritativeSource ?? "",
     source_type:               values.sourceType ?? "",
@@ -255,11 +310,20 @@ function buildOutgoingMetadata(
   };
 }
 
-export default function Metadata({ format, brdId, title, onComplete, initialData, onDataChange }: Props) {
+export default function Metadata({ format, brdId, title, onComplete, initialData, onDataChange, viewMode = "full" }: Props) {
+  const structuringOnly = viewMode === "structuring";
   const fields = useMemo(
     () => (format === "old" ? OLD_FIELDS : NEW_FIELDS).filter((field) => field.key !== "smeComments"),
     [format]
   );
+  const visibleFields = useMemo(() => {
+    if (!structuringOnly) return fields;
+    const preferSourceName =
+      (typeof initialData?.source_name === "string" && initialData.source_name.trim()) ||
+      (typeof initialData?.sourceName === "string" && initialData.sourceName.trim()) ||
+      format === "old";
+    return fields.filter((field) => field.key === (preferSourceName ? "sourceName" : "contentCategoryName"));
+  }, [fields, format, initialData, structuringOnly]);
   const metadataImageKeys = useMemo(() => {
     const keys = new Set<string>();
     fields.forEach((field) => {
@@ -296,11 +360,11 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
 
     isInitializing.current = true;
     setValues(nextValues);
-    setCommentValues(parseMetadataComments(nextValues.smeComments ?? "", fields.map((field) => field.label)));
+    setCommentValues(buildInitialMetadataComments(nextValues, initialData, fields, structuringOnly));
     setCustomRows(nextCustomRows);
     lastAppliedSignatureRef.current = signature;
     setSaved(false);
-  }, [format, initialData, fields]);
+  }, [format, initialData, fields, structuringOnly]);
 
   useEffect(() => {
     valuesRef.current = values;
@@ -316,7 +380,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       isInitializing.current = false;
       return;
     }
-    onDataChange(buildOutgoingMetadata(format, values, commentValues, fields, customRows));
+    onDataChange(buildOutgoingMetadata(format, values, commentValues, fields, customRows, initialData));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, commentValues, customRows]);
 
@@ -441,7 +505,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     if (!brdId) return;
     try {
       await api.put(`/brd/${brdId}/sections/metadata`, {
-        data: buildOutgoingMetadata(format, values, commentValues, fields, customRows),
+        data: buildOutgoingMetadata(format, values, commentValues, fields, customRows, initialData),
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -456,7 +520,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-violet-50 dark:bg-violet-500/10 border-violet-200 dark:border-violet-700/40">
         <div className="space-y-1">
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-violet-800 dark:text-violet-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-            Metadata
+            {structuringOnly ? "Structuring Requirements" : "Metadata"}
           </p>
           <div className="flex items-center gap-2.5">
             <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider border ${format === "new" ? "bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-700/40" : "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700/40"}`}>
@@ -466,15 +530,17 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={addRow}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-slate-800 dark:bg-[#252d45] text-white dark:text-slate-200 border border-transparent dark:border-[#3a4460] hover:bg-slate-700 dark:hover:bg-[#2e3a55] transition-all"
-          >
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-            </svg>
-            Add Row
-          </button>
+          {!structuringOnly && (
+            <button
+              onClick={addRow}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-slate-800 dark:bg-[#252d45] text-white dark:text-slate-200 border border-transparent dark:border-[#3a4460] hover:bg-slate-700 dark:hover:bg-[#2e3a55] transition-all"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+              </svg>
+              Add Row
+            </button>
+          )}
           <button
             onClick={handleSave}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${
@@ -503,7 +569,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       </div>
 
       {/* Auto-filled chips */}
-      {(brdId || title) && (
+      {!structuringOnly && (brdId || title) && (
         <div className="grid grid-cols-2 gap-3">
           {brdId && (
             <div className="flex items-start gap-3 px-3.5 py-3 rounded-xl bg-slate-50 dark:bg-[#1e2235] border border-slate-200 dark:border-[#2a3147]">
@@ -529,148 +595,224 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
       )}
 
       {/* Fields */}
-      <div className="rounded-xl bg-slate-50 dark:bg-[#1e2235] border border-slate-200 dark:border-[#2a3147] overflow-hidden">
-        <div className="px-4 pt-3.5 pb-2 border-b border-slate-200 dark:border-[#2a3147]">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-black dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-            {format === "old" ? "Legacy Metadata Fields" : "Metadata Fields"}
-          </p>
+      {structuringOnly ? (
+        <div className="rounded-xl bg-white dark:bg-[#1e2235] border border-slate-200 dark:border-[#2a3147] p-5">
+          {visibleFields.map((field, fieldIdx) => {
+            const fieldImgs = brdId ? getFieldImages(field, fieldIdx) : [];
+            const editableFieldImages = mergeUploadedImageLists(getFieldImgsUploaded(field.key), fieldImgs.map(toUploadedCellImage) as UploadedCellImage[]);
+            const commentKey = normalizeMetadataCommentKey(field.label);
+            return (
+              <div key={field.key} className="space-y-5">
+                <div>
+                  <h3 className="text-[14px] font-bold text-slate-900 dark:text-slate-100">Structuring Requirements</h3>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-[12px] font-semibold text-slate-900 dark:text-slate-100">
+                    {field.label}
+                  </label>
+                  <FieldInput
+                    field={field}
+                    value={values[field.key] ?? ""}
+                    onChange={(v) => setValue(field.key, v)}
+                  />
+                </div>
+
+                {brdId && (
+                  <div className="flex items-center justify-end">
+                    <CellImageUploader
+                      brdId={brdId}
+                      section="metadata"
+                      fieldLabel={field.key}
+                      existingImages={editableFieldImages}
+                      defaultCellText={values[field.key] ?? ""}
+                      onUploaded={img => onFieldUploaded(field.key, img)}
+                      onDeleted={id => onFieldDeleted(field.key, id)}
+                    />
+                  </div>
+                )}
+
+                {editableFieldImages.length > 0 && (
+                  <div className="rounded-lg border border-slate-200 dark:border-[#2a3147] bg-slate-50/70 dark:bg-[#161b2e] p-2.5">
+                    <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                      Attached image{editableFieldImages.length > 1 ? "s" : ""}
+                    </p>
+                    <div className="grid gap-2">
+                      {editableFieldImages.map((img) => (
+                        <BrdImage
+                          key={`preview-${img.id}`}
+                          src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
+                          alt={img.cellText || img.mediaName}
+                          className="max-h-56 w-auto max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]"
+                          loading="lazy"
+                          onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <label className="block text-[12px] font-semibold text-slate-900 dark:text-slate-100">
+                    SME Checkpoint
+                  </label>
+                  <textarea
+                    rows={3}
+                    aria-label="SME Checkpoint"
+                    value={commentValues[commentKey] ?? ""}
+                    onChange={(e) => setComment(field.label, e.target.value)}
+                    placeholder={`SMEs to validate if the ${field.label} is correct`}
+                    className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[64px]"
+                  />
+                </div>
+              </div>
+            );
+          })}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] border-collapse text-[11.5px]">
-            <thead>
-              <tr className="bg-slate-100 dark:bg-[#181d30] border-b border-slate-200 dark:border-[#2a3147]">
-                <BrdTableHeaderCell title="Metadata Element" greenNote="Innodata only - field name from the BRD template" />
-                <BrdTableHeaderCell title="Document Location" greenNote="Source text, date, image, or URL captured from the BRD" />
-                <BrdTableHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
-              </tr>
-            </thead>
-            <tbody>
-              {fields.map((field, fieldIdx) => {
-                const fieldImgs = brdId ? getFieldImages(field, fieldIdx) : [];
-                const editableFieldImages = mergeUploadedImageLists(getFieldImgsUploaded(field.key), fieldImgs.map(toUploadedCellImage) as UploadedCellImage[]);
-                const commentKey = normalizeMetadataCommentKey(field.label);
-                return (
-                  <tr key={field.key} className={fieldIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
-                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>
-                      <div className="flex items-center gap-1.5">
-                        <span>{field.icon}</span>
-                        <span>{field.label}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
-                      <div className="space-y-2">
+      ) : (
+        <div className="rounded-xl bg-slate-50 dark:bg-[#1e2235] border border-slate-200 dark:border-[#2a3147] overflow-hidden">
+          <div className="px-4 pt-3.5 pb-2 border-b border-slate-200 dark:border-[#2a3147]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-black dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+              {format === "old" ? "Legacy Metadata Fields" : "Metadata Fields"}
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] border-collapse text-[11.5px]">
+              <thead>
+                <tr className="bg-slate-100 dark:bg-[#181d30] border-b border-slate-200 dark:border-[#2a3147]">
+                  <BrdTableHeaderCell title="Metadata Element" greenNote="Innodata only - field name from the BRD template" />
+                  <BrdTableHeaderCell title="Document Location" greenNote="Source text, date, image, or URL captured from the BRD" />
+                  <BrdTableHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify" />
+                </tr>
+              </thead>
+              <tbody>
+                {visibleFields.map((field, fieldIdx) => {
+                  const fieldImgs = brdId ? getFieldImages(field, fieldIdx) : [];
+                  const editableFieldImages = mergeUploadedImageLists(getFieldImgsUploaded(field.key), fieldImgs.map(toUploadedCellImage) as UploadedCellImage[]);
+                  const commentKey = normalizeMetadataCommentKey(field.label);
+                  return (
+                    <tr key={field.key} className={fieldIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                      <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>
                         <div className="flex items-center gap-1.5">
-                          <div className="flex-1">
-                            <FieldInput
-                              field={field}
-                              value={values[field.key] ?? ""}
-                              onChange={(v) => setValue(field.key, v)}
-                            />
-                          </div>
-                          {brdId && (
-                            <CellImageUploader
-                              brdId={brdId}
-                              section="metadata"
-                              fieldLabel={field.key}
-                              existingImages={editableFieldImages}
-                              defaultCellText={values[field.key] ?? ""}
-                              onUploaded={img => onFieldUploaded(field.key, img)}
-                              onDeleted={id => onFieldDeleted(field.key, id)}
-                            />
-                          )}
-                          {values[field.key]?.trim() && (
-                            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/30">✓</span>
-                          )}
+                          <span>{field.icon}</span>
+                          <span>{field.label}</span>
                         </div>
-                        {editableFieldImages.length > 0 && (
-                          <div className="rounded-lg border border-slate-200 dark:border-[#2a3147] bg-slate-50/70 dark:bg-[#161b2e] p-2.5">
-                            <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-                              Attached image{editableFieldImages.length > 1 ? "s" : ""}
-                            </p>
-                            <div className="grid gap-2">
-                              {editableFieldImages.map((img) => (
-                                <BrdImage
-                                  key={`preview-${img.id}`}
-                                  src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
-                                  alt={img.cellText || img.mediaName}
-                                  className="max-h-56 w-auto max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]"
-                                  loading="lazy"
-                                  onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-                                />
-                              ))}
+                      </td>
+                      <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex-1">
+                              <FieldInput
+                                field={field}
+                                value={values[field.key] ?? ""}
+                                onChange={(v) => setValue(field.key, v)}
+                              />
                             </div>
+                            {brdId && (
+                              <CellImageUploader
+                                brdId={brdId}
+                                section="metadata"
+                                fieldLabel={field.key}
+                                existingImages={editableFieldImages}
+                                defaultCellText={values[field.key] ?? ""}
+                                onUploaded={img => onFieldUploaded(field.key, img)}
+                                onDeleted={id => onFieldDeleted(field.key, id)}
+                              />
+                            )}
+                            {values[field.key]?.trim() && (
+                              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/30">✓</span>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
-                      <textarea
-                        rows={2}
-                        value={commentValues[commentKey] ?? ""}
-                        onChange={(e) => setComment(field.label, e.target.value)}
-                        placeholder="SME comment for this field"
-                        className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[44px]"
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {customRows.map((row, rowIdx) => {
-                const tableIdx = fields.length + rowIdx;
-                return (
-                  <tr key={row.id} className={tableIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"} onFocus={() => setFocusedCustomRowId(row.id)}>
-                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1 space-y-1">
-                          <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-violet-600 dark:text-violet-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-                            Custom Row
-                          </span>
-                          <input
-                            type="text"
-                            value={row.label}
-                            onChange={(e) => updateCustomRow(row.id, "label", e.target.value)}
-                            placeholder="Custom metadata element"
-                            className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600"
-                          />
+                          {editableFieldImages.length > 0 && (
+                            <div className="rounded-lg border border-slate-200 dark:border-[#2a3147] bg-slate-50/70 dark:bg-[#161b2e] p-2.5">
+                              <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                Attached image{editableFieldImages.length > 1 ? "s" : ""}
+                              </p>
+                              <div className="grid gap-2">
+                                {editableFieldImages.map((img) => (
+                                  <BrdImage
+                                    key={`preview-${img.id}`}
+                                    src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)}
+                                    alt={img.cellText || img.mediaName}
+                                    className="max-h-56 w-auto max-w-full rounded border border-slate-200 dark:border-[#2a3147] bg-white dark:bg-[#1a1f35]"
+                                    loading="lazy"
+                                    onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => deleteCustomRow(row.id)}
-                          className="mt-5 inline-flex items-center justify-center w-8 h-8 rounded-lg border border-rose-200 dark:border-rose-800/50 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all"
-                          aria-label="Delete custom metadata row"
-                          title="Delete row"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 7h12M9 7V5h6v2m-7 3v7m4-7v7m4-7v7M7 7l1 12h8l1-12" />
-                          </svg>
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
-                      <input
-                        type="text"
-                        value={row.value}
-                        onChange={(e) => updateCustomRow(row.id, "value", e.target.value)}
-                        placeholder="Document location"
-                        className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600"
-                      />
-                    </td>
-                    <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
-                      <textarea
-                        rows={2}
-                        value={row.comment}
-                        onChange={(e) => updateCustomRow(row.id, "comment", e.target.value)}
-                        placeholder="SME comment for this row"
-                        className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[44px]"
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                        <textarea
+                          rows={2}
+                          value={commentValues[commentKey] ?? ""}
+                          onChange={(e) => setComment(field.label, e.target.value)}
+                          placeholder="SME comment for this field"
+                          className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[44px]"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!structuringOnly && customRows.map((row, rowIdx) => {
+                  const tableIdx = fields.length + rowIdx;
+                  return (
+                    <tr key={row.id} className={tableIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"} onFocus={() => setFocusedCustomRowId(row.id)}>
+                      <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1 space-y-1">
+                            <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-violet-600 dark:text-violet-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                              Custom Row
+                            </span>
+                            <input
+                              type="text"
+                              value={row.label}
+                              onChange={(e) => updateCustomRow(row.id, "label", e.target.value)}
+                              placeholder="Custom metadata element"
+                              className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => deleteCustomRow(row.id)}
+                            className="mt-5 inline-flex items-center justify-center w-8 h-8 rounded-lg border border-rose-200 dark:border-rose-800/50 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all"
+                            aria-label="Delete custom metadata row"
+                            title="Delete row"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 7h12M9 7V5h6v2m-7 3v7m4-7v7m4-7v7M7 7l1 12h8l1-12" />
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                        <input
+                          type="text"
+                          value={row.value}
+                          onChange={(e) => updateCustomRow(row.id, "value", e.target.value)}
+                          placeholder="Document location"
+                          className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600"
+                        />
+                      </td>
+                      <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
+                        <textarea
+                          rows={2}
+                          value={row.comment}
+                          onChange={(e) => updateCustomRow(row.id, "comment", e.target.value)}
+                          placeholder="SME comment for this row"
+                          className="w-full text-[12px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 resize-y min-h-[44px]"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Actions */}
       <div className="flex items-center justify-end">

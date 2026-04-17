@@ -426,10 +426,13 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
           const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
           all = fallback.data.images ?? [];
         }
-        // Use section tag if present (new records), fall back to tableIndex=2 (old records)
-        const tocImages = all.filter(img =>
-          img.section === "toc" || ((!img.section || img.section === "unknown") && img.tableIndex === 2)
-        );
+        // Use section tag if present (new records), fall back to legacy TOC tableIndex
+        // or a level-like fieldLabel from engineering-provided image metadata.
+        const tocImages = all.filter(img => {
+          const section = (img.section || "").trim().toLowerCase();
+          return section === "toc"
+            || ((!section || section === "unknown") && (img.tableIndex === 2 || !!extractTocImageLevel(img.fieldLabel || "")));
+        });
         setImages(tocImages);
         // Restore manually uploaded images into cellImages state
         const manualImgs = all.filter(img => img.section === "toc" && img.rid?.startsWith("manual-"));
@@ -562,17 +565,20 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   // colIndex → column field key (matches actual Word TOC table structure)
   const TOC_COL_MAP: Record<number, string> = { 0: "level", 1: "name", 2: "required", 3: "definition", 4: "example", 5: "note", 6: "tocRequirements", 7: "smeComments" };
 
+  function extractTocImageLevel(fieldLabel: string): string {
+    const raw = (fieldLabel || "").trim();
+    const match = raw.match(/^level\s*(\d+)$/i) || raw.match(/^(\d+)$/);
+    return match?.[1] ?? "";
+  }
+
   // Match images to a TOC row.
-  // Primary: fieldLabel (= level number e.g. "3") + colIndex — works for new DB records.
+  // Primary: fieldLabel (= level number e.g. "3" or "Level 3") + colIndex — works for new DB records.
   // Fallback: rowIndex (arrayIdx+1 because row 0 is header) + colIndex — works for stale DB records.
   function matchRowImgs(row: TocRow, rowIdx: number): { [col: string]: CellImageMeta[] } {
     if (!images.length) return {};
     const levelStr = row.level.trim();
 
-    const byFieldLabel = images.filter(img => {
-      const fl = (img.fieldLabel || "").trim();
-      return fl === levelStr || fl === `Level ${levelStr}`;
-    });
+    const byFieldLabel = images.filter(img => extractTocImageLevel(img.fieldLabel || "") === levelStr);
 
     const byRowIndex = byFieldLabel.length === 0
       ? images.filter(img => img.rowIndex === rowIdx + 1 && (!img.fieldLabel || img.fieldLabel === ""))
