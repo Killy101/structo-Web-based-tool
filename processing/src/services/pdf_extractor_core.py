@@ -519,6 +519,8 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
             pass
 
         raw = fz.get_text("dict", flags=flags)
+        if not isinstance(raw, dict):
+            continue
         table_lines, table_boxes = _extract_table_lines(fz, page_y_offset)
 
         all_lines: List[PdfLine] = []

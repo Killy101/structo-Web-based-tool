@@ -1,11 +1,14 @@
 import {
   buildBrdExportFilename,
+  buildExportDocumentOutline,
   buildMetadataDocumentLocationText,
+  buildReviewSectionOrder,
   buildWordDocxBlob,
   formatMetadataDateValue,
   getMetadataRowImagesForField,
   prepareBrdExportElement,
 } from "../components/brd/Generate";
+import { buildVisibleFlowStepIds } from "../components/brd/BrdFlow";
 import { buildBrdImageBlobUrl } from "../utils/brdImageUrl";
 
 function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
@@ -35,6 +38,117 @@ describe("buildWordDocxBlob", () => {
   it("handles large BRD exports without overflowing the call stack", () => {
     const largeHtml = `<div>${"<p>large export row</p>".repeat(20000)}</div>`;
     expect(() => buildWordDocxBlob(largeHtml, "Large Export")).not.toThrow();
+  });
+});
+
+describe("buildReviewSectionOrder", () => {
+  it("starts with Structuring Requirements and keeps the BRD sequence aligned for export", () => {
+    expect(buildReviewSectionOrder(true).map((section) => section.id)).toEqual([
+      "section-structuring-requirements",
+      "section-scope",
+      "section-toc",
+      "section-citations",
+      "section-metadata",
+      "section-citation-guide",
+      "section-content-profile",
+      "section-generate",
+    ]);
+  });
+
+  it("builds a linked export outline with nested section entries", () => {
+    expect(
+      buildExportDocumentOutline({
+        format: "old",
+        metadata: { source_name: "Federal Register" },
+        tocData: {
+          tocSortingOrder: "Alphabetical",
+          sections: [
+            { level: "1", name: "Levels" },
+            { level: "2", name: "Exceptions" },
+          ],
+        },
+        contentProfileData: {
+          file_separation: "Separate files per title",
+          rc_naming_convention: "CFR - <Level 2>",
+          zip_naming_convention: "Innodata - CFR.zip",
+        },
+        showCitationGuide: true,
+      }),
+    ).toEqual([
+      {
+        id: "section-structuring-requirements",
+        label: "Structuring Requirements",
+        children: [
+          { id: "section-structuring-field", label: "Source Name" },
+          { id: "section-scope", label: "Scope" },
+          { id: "section-toc-sorting-order", label: "ToC - Sorting Order" },
+        ],
+      },
+      {
+        id: "section-toc",
+        label: "Document Structure",
+        children: [
+          { id: "section-toc-levels", label: "Levels" },
+          { id: "section-toc", label: "Exceptions" },
+        ],
+      },
+      {
+        id: "section-citations",
+        label: "Citation Format Requirements",
+        children: [
+          { id: "section-citable-levels", label: "Citable Levels" },
+          { id: "section-citation-standardization-rules", label: "Citation Standardization Rules" },
+        ],
+      },
+      { id: "section-metadata", label: "Metadata" },
+      {
+        id: "section-file-delivery",
+        label: "File Delivery Requirements",
+        children: [
+          { id: "section-file-separation", label: "File Separation" },
+          { id: "section-rc-file-naming", label: "RC File Naming Conventions" },
+          { id: "section-zip-file-naming", label: "Zip File Naming Conventions" },
+        ],
+      },
+      { id: "section-citation-guide", label: "Citation Style Guide Link" },
+      { id: "section-content-profile", label: "Content Profile" },
+    ]);
+  });
+
+  it("falls back to Levels when document structure names only contain stray break markup", () => {
+    expect(
+      buildExportDocumentOutline({
+        format: "new",
+        metadata: { content_category_name: "Sample Source" },
+        tocData: {
+          sections: [
+            { level: "1", name: "<br/>" },
+          ],
+        },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "section-toc",
+          label: "Document Structure",
+          children: [{ id: "section-toc-levels", label: "Levels" }],
+        }),
+      ]),
+    );
+  });
+
+  it("starts the wizard with Structuring Requirements after upload and keeps Metadata later in the flow", () => {
+    expect(buildVisibleFlowStepIds(false, true)).toEqual([
+      "upload",
+      "structuring",
+      "scope",
+      "toc",
+      "citationRules",
+      "metadata",
+      "citationGuide",
+      "contentProfile",
+      "generate",
+    ]);
   });
 });
 
@@ -97,6 +211,44 @@ describe("prepareBrdExportElement", () => {
     expect(rows).toHaveLength(1);
     expect(prepared.textContent).toContain("Source Name");
     expect(prepared.textContent).not.toContain("Status");
+  });
+
+  it("keeps export-only blocks in the exported document while they stay hidden in the page UI", async () => {
+    document.body.innerHTML = `
+      <div id="page">
+        <div data-export-only="1" style="display:none">
+          <h2>Table of Contents</h2>
+          <p>File Delivery Requirements</p>
+        </div>
+      </div>
+    `;
+
+    const prepared = await prepareBrdExportElement(document.getElementById("page") as HTMLElement);
+    const exportOnly = prepared.querySelector("[data-export-only='1']") as HTMLElement;
+    expect(exportOnly).not.toBeNull();
+    expect(exportOnly.style.display).toBe("block");
+    expect(prepared.textContent).toContain("Table of Contents");
+    expect(prepared.textContent).toContain("File Delivery Requirements");
+  });
+
+  it("keeps the content profile section in the exported BRD", async () => {
+    document.body.innerHTML = `
+      <div id="page">
+        <div>
+          <section id="section-content-profile">
+            <h2>Content Profile</h2>
+            <p>RC Filename</p>
+            <p>sample.rc</p>
+          </section>
+        </div>
+      </div>
+    `;
+
+    const prepared = await prepareBrdExportElement(document.getElementById("page") as HTMLElement);
+    expect(prepared.querySelector("#section-content-profile")).not.toBeNull();
+    expect(prepared.textContent).toContain("Content Profile");
+    expect(prepared.textContent).toContain("RC Filename");
+    expect(prepared.textContent).toContain("sample.rc");
   });
 });
 

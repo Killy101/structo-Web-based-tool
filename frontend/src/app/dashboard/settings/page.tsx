@@ -110,10 +110,9 @@ function buildPolicyPresetFeatures(
           "brd-view-generate",
           "user-management",
           "compare-basic",
-          "compare-pdf-xml-only",
           "user-logs",
         ]
-      : ["dashboard", "brd-view-generate", "compare-basic", "compare-pdf-xml-only"];
+      : ["dashboard", "brd-view-generate", "compare-basic"];
   }
 
   if (slug === "updating") {
@@ -130,7 +129,7 @@ function buildPolicyPresetFeatures(
           "dashboard",
           "brd-view-generate",
           "compare-basic",
-          "compare-merge",
+          "compare-pdf-xml-only",
         ];
   }
 

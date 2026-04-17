@@ -203,7 +203,73 @@ def _inner_html(node) -> str:
     return re.sub(r"^<[^>]+>|</[^>]+>$", "", rendered, count=1).strip()
 
 
-def _apply_run_style(run, style: dict[str, bool]) -> None:
+def _normalize_run_color(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    cleaned = html.unescape(str(value)).strip().strip('"\'')
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("#"):
+        cleaned = cleaned[1:]
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", cleaned):
+        return cleaned.upper()
+
+    rgb_match = re.fullmatch(r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*[\d.]+\s*)?\)", cleaned)
+    if rgb_match:
+        parts = [max(0, min(255, int(part))) for part in rgb_match.groups()[:3]]
+        return "".join(f"{part:02X}" for part in parts)
+
+    named_colors = {
+        "black": "000000",
+        "blue": "0000FF",
+        "green": "008000",
+        "red": "FF0000",
+        "orange": "FFA500",
+        "purple": "800080",
+        "gray": "808080",
+        "grey": "808080",
+        "white": "FFFFFF",
+        "yellow": "FFFF00",
+    }
+    return named_colors.get(cleaned.lower())
+
+
+def _merge_inline_style(style: dict[str, object] | None, node) -> dict[str, object]:
+    merged: dict[str, object] = dict(style or {
+        "bold": False,
+        "italic": False,
+        "underline": False,
+        "strike": False,
+        "color": None,
+    })
+
+    attrs = getattr(node, "attrib", {}) or {}
+    raw_style = str(attrs.get("style") or "")
+    raw_style_lower = raw_style.lower()
+
+    if "font-weight" in raw_style_lower and (
+        "bold" in raw_style_lower or re.search(r"font-weight\s*:\s*[5-9]00", raw_style_lower)
+    ):
+        merged["bold"] = True
+    if "font-style" in raw_style_lower and "italic" in raw_style_lower:
+        merged["italic"] = True
+    if ("text-decoration" in raw_style_lower or "text-decoration-line" in raw_style_lower) and "underline" in raw_style_lower:
+        merged["underline"] = True
+    if ("text-decoration" in raw_style_lower or "text-decoration-line" in raw_style_lower) and "line-through" in raw_style_lower:
+        merged["strike"] = True
+
+    color_match = re.search(r"(?:^|;)\s*color\s*:\s*([^;]+)", raw_style, flags=re.IGNORECASE)
+    color_value = color_match.group(1) if color_match else attrs.get("color")
+    normalized_color = _normalize_run_color(str(color_value) if color_value is not None else None)
+    if normalized_color:
+        merged["color"] = normalized_color
+
+    return merged
+
+
+def _apply_run_style(run, style: dict[str, object]) -> None:
     if style.get("bold"):
         run.bold = True
     if style.get("italic"):
@@ -212,9 +278,16 @@ def _apply_run_style(run, style: dict[str, bool]) -> None:
         run.underline = True
     if style.get("strike"):
         run.font.strike = True
+    if style.get("color"):
+        try:
+            from docx.shared import RGBColor
+
+            run.font.color.rgb = RGBColor.from_string(str(style["color"]))
+        except Exception:
+            pass
 
 
-def _append_text_to_paragraph(paragraph, text: str, style: dict[str, bool]) -> None:
+def _append_text_to_paragraph(paragraph, text: str, style: dict[str, object]) -> None:
     normalized = html.unescape(text.replace("\xa0", " ")).replace("\r\n", "\n").replace("\r", "\n")
     if not normalized:
         return
@@ -228,8 +301,8 @@ def _append_text_to_paragraph(paragraph, text: str, style: dict[str, bool]) -> N
         _apply_run_style(run, style)
 
 
-def _append_inline_html_to_paragraph(paragraph, node, style: dict[str, bool] | None = None) -> None:
-    current_style = dict(style or {"bold": False, "italic": False, "underline": False, "strike": False})
+def _append_inline_html_to_paragraph(paragraph, node, style: dict[str, object] | None = None) -> None:
+    current_style = _merge_inline_style(style, node)
     tag = getattr(node, "tag", None)
     if isinstance(tag, str):
         lowered = tag.lower()
@@ -660,6 +733,61 @@ def _fallback_from_text(text: str, format: str) -> dict:
     url_pattern = re.compile(r"https?://[^\s\)\]]+")
     asrb_pattern = re.compile(r"\bASRB[- ]?\d+\b", re.IGNORECASE)
 
+    known_heading_pattern = re.compile(
+        r"^[\s\u2022\-*{}()\[\]]*("
+        r"table of contents|scope|document structure|metadata|citation(?:s)?|content profile|"
+        r"citation style guide link|toc[^a-z0-9]*[-:\u2013\u2014]?\s*sorting order|"
+        r"toc[^a-z0-9]*[-:\u2013\u2014]?\s*hiding levels"
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    toc_sorting_heading_pattern = re.compile(
+        r"toc[^a-z0-9]*[-:\u2013\u2014]?\s*sorting\s*order",
+        re.IGNORECASE,
+    )
+    toc_hiding_heading_pattern = re.compile(
+        r"toc[^a-z0-9]*[-:\u2013\u2014]?\s*hiding\s*levels",
+        re.IGNORECASE,
+    )
+    citation_style_heading_pattern = re.compile(
+        r"citation\s*style\s*guide(?:\s*link)?",
+        re.IGNORECASE,
+    )
+
+    def _matches_heading(line: str, matcher: str | re.Pattern[str]) -> bool:
+        if isinstance(matcher, str):
+            return matcher in line.lower()
+        return bool(matcher.search(line))
+
+    def collect_section_lines(*heading_terms: str | re.Pattern[str]) -> list[str]:
+        start_idx: int | None = None
+        for idx, line in enumerate(lines):
+            if any(_matches_heading(line, term) for term in heading_terms):
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            return []
+
+        captured: list[str] = []
+        for idx in range(start_idx + 1, len(lines)):
+            candidate = lines[idx]
+            if known_heading_pattern.search(candidate):
+                break
+            if captured and re.match(r"^\d+(?:\.\d+)*\s+", candidate):
+                break
+            captured.append(candidate)
+        return captured
+
+    def inline_heading_value(*patterns: str) -> str:
+        for line in lines:
+            for pattern in patterns:
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    return (match.group(1) or "").strip()
+        return ""
+
     def split_url_and_note(raw_value: str) -> tuple[str, str]:
         raw_value = (raw_value or "").strip()
         if not raw_value:
@@ -704,6 +832,42 @@ def _fallback_from_text(text: str, format: str) -> dict:
                 title  = line
                 level  = 1
             toc_sections.append({"number": number, "title": title, "page": None, "level": level})
+
+    citation_style_guide: dict | None = None
+    citation_block = collect_section_lines(citation_style_heading_pattern)
+    if citation_block:
+        rows: list[dict[str, str]] = []
+        description_lines: list[str] = []
+        for row in citation_block:
+            if "|" in row:
+                parts = [part.strip() for part in row.split("|") if part.strip()]
+                if len(parts) >= 2:
+                    label = parts[0]
+                    value = " | ".join(parts[1:])
+                    if not (label.lower() == "label" and value.lower() in {"value", "link"}):
+                        rows.append({"label": label, "value": value})
+                    continue
+            description_lines.append(row)
+
+        citation_payload: dict[str, object] = {}
+        if description_lines:
+            citation_payload["description"] = "\n".join(description_lines).strip()
+        if rows:
+            citation_payload["rows"] = rows
+        if citation_payload:
+            citation_style_guide = citation_payload
+
+    toc_sorting_order = "\n".join(collect_section_lines(toc_sorting_heading_pattern)).strip()
+    if not toc_sorting_order:
+        toc_sorting_order = inline_heading_value(
+            r"^toc\s*[-:\u2013\u2014]?\s*sorting order\s*[:\-\u2013\u2014]\s*(.+)$"
+        )
+
+    toc_hiding_levels = "\n".join(collect_section_lines(toc_hiding_heading_pattern)).strip()
+    if not toc_hiding_levels:
+        toc_hiding_levels = inline_heading_value(
+            r"^toc\s*[-:\u2013\u2014]?\s*hiding levels(?:\s*\(tech only\))?\s*[:\-\u2013\u2014]\s*(.+)$"
+        )
 
     # ── SCOPE ─────────────────────────────────────────────────────────────────
     in_scope: list[dict] = []
@@ -862,10 +1026,18 @@ def _fallback_from_text(text: str, format: str) -> dict:
         "summary":      f"Scope covers {len(in_scope)} active documents.",
     }
 
+    toc_payload: dict[str, object] = {"sections": toc_sections}
+    if citation_style_guide:
+        toc_payload["citationStyleGuide"] = citation_style_guide
+    if toc_sorting_order:
+        toc_payload["tocSortingOrder"] = toc_sorting_order
+    if toc_hiding_levels:
+        toc_payload["tocHidingLevels"] = toc_hiding_levels
+
     return {
         "extracted_at":    datetime.now().isoformat() + "Z",
         "source_file":     "",
-        "toc":             {"sections": toc_sections},
+        "toc":             toc_payload,
         "metadata":        metadata,
         "scope":           scope_dict,
         "citations":       citations,

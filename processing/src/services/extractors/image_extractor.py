@@ -50,7 +50,11 @@ from lxml import html as lxml_html
 _SECTION_FINGERPRINTS: dict[str, list[str]] = {
     "metadata": [
         "content category", "publication date", "issuing agency",
-        "content uri", "content url", "geography", "language",
+        # NOTE: "content url" intentionally omitted — it also appears in scope
+        # table headers and would cause scope tables to be misclassified as
+        # metadata (metadata is iterated first).  "content uri" is the
+        # metadata-specific spelling.
+        "content uri", "geography", "language",
         "processing date", "last updated", "metadata element",
         "document location", "authoritative source",
     ],
@@ -82,6 +86,8 @@ _HEADING_SECTION_MAP: dict[str, str] = {
     "citation":   "citations",
     "citable":    "citations",
 }
+
+_SME_CHECKPOINT_RE = re.compile(r"\bsme\s*check[-\s]*point\b", re.IGNORECASE)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,6 +155,57 @@ def _heading_section(para_text: str) -> str | None:
     return None
 
 
+def _row_is_header(row) -> bool:
+    """
+    Return True if *row* looks like a header row.
+
+    Detection (first match wins):
+      1. Explicit ``<w:tblHeader>`` marker in the row-properties XML.
+      2. Every non-empty cell in the row contains at least one bold run
+         (bold-text header heuristic).
+    """
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    tr = row._tr
+    trPr = tr.find(f"{{{ns}}}trPr")
+    if trPr is not None and trPr.find(f"{{{ns}}}tblHeader") is not None:
+        return True
+    # Bold heuristic — all non-empty cells have bold runs
+    bold_cells = total_cells = 0
+    for cell in row.cells:
+        if not cell.text.strip():
+            continue
+        total_cells += 1
+        if re.search(r"<w:b\b(?:\s[^>]*)?>", cell._tc.xml):
+            bold_cells += 1
+    return total_cells > 0 and bold_cells == total_cells
+
+
+def _get_column_headers(table) -> dict[int, str]:
+    """
+    Return a mapping from column index → header text for *table*.
+
+    Inspects up to the first 4 rows.  Only rows identified as header rows
+    (via ``_row_is_header``) contribute.  For each column we record the first
+    non-empty header cell text found, keeping only the first line of that text
+    to avoid boilerplate notes that sometimes follow the label on a second line.
+    """
+    headers: dict[int, str] = {}
+    for row in table.rows[:min(4, len(table.rows))]:
+        if not _row_is_header(row):
+            if headers:           # stop once we've left the header block
+                break
+            continue
+        for ci, cell in enumerate(row.cells):
+            if ci in headers:
+                continue          # already captured for this column
+            raw = cell.text.replace("\xa0", " ").strip()
+            if raw and "w:drawing" not in cell._tc.xml:
+                first_line = raw.split("\n")[0].strip()
+                if first_line:
+                    headers[ci] = first_line
+    return headers
+
+
 def _derive_field_label(row, img_col_index: int) -> str:
     """
     Given a table row and the column index that contains the image, return
@@ -156,8 +213,12 @@ def _derive_field_label(row, img_col_index: int) -> str:
 
     Strategy:
       1. Use the leftmost non-empty cell that is NOT the image cell.
-      2. Fall back to the cell immediately left of the image cell.
-      3. Fall back to the image cell's own text (stripped of whitespace).
+      2. Fall back to the image cell's own text (stripped of whitespace).
+
+    Only the **first line** of the cell text is returned so that inline
+    boilerplate notes (e.g. "Innodata only – field name from the BRD template")
+    that sometimes follow the real label on a second line do not contaminate
+    the returned string.
     """
     cells = row.cells
     n = len(cells)
@@ -166,12 +227,29 @@ def _derive_field_label(row, img_col_index: int) -> str:
     for ci in range(n):
         if ci == img_col_index:
             continue
-        text = cells[ci].text.replace("\xa0", " ").strip()
-        if text and "w:drawing" not in cells[ci]._tc.xml:
-            return text
+        raw = cells[ci].text.replace("\xa0", " ").strip()
+        if raw and "w:drawing" not in cells[ci]._tc.xml:
+            first_line = raw.split("\n")[0].strip()
+            return first_line if first_line else raw
 
-    # Last resort: image cell's own text
-    return cells[img_col_index].text.replace("\xa0", " ").strip()
+    # Last resort: image cell's own text (first line only)
+    raw = cells[img_col_index].text.replace("\xa0", " ").strip()
+    return raw.split("\n")[0].strip() if raw else ""
+
+
+def _normalize_inline_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
+
+
+def _derive_section_field_label(text: str, current_section: str, active_label: str = "") -> str:
+    normalized = _normalize_inline_text(text)
+    if _SME_CHECKPOINT_RE.search(normalized):
+        return "SME Checkpoint"
+    if active_label:
+        return active_label
+    if normalized:
+        return normalized[:160]
+    return current_section.title() if current_section else ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,7 +344,9 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
     table_elements = [t._element for t in table_objs]  # corresponding lxml elements
 
     current_heading_section = ""     # section implied by most recent heading
+    current_context_label = ""      # latest semantic field label from nearby paragraphs
     table_counter = 0                # maps lxml <w:tbl> back to table_objs index
+    paragraph_counter = 0
 
     results: list[CellImage] = []
 
@@ -275,6 +355,15 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
 
         # ── Paragraph: update heading hint ───────────────────────────────────
         if tag == "p":
+            paragraph_counter += 1
+            para_text = _normalize_inline_text(
+                "".join(
+                    t.text or ""
+                    for t in child.iter(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+                    )
+                )
+            )
             style_el = child.find(
                 ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle"
             )
@@ -283,19 +372,50 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
                     "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", ""
                 )
                 if style_val.lower().startswith("heading"):
-                    para_text = "".join(
-                        t.text or ""
-                        for t in child.iter(
-                            "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
-                        )
-                    ).strip()
                     hint = _heading_section(para_text)
                     if hint:
                         current_heading_section = hint
+                        current_context_label = ""
+
+            paragraph_xml = getattr(child, "xml", "") or ""
+            if para_text and _SME_CHECKPOINT_RE.search(para_text):
+                current_context_label = "SME Checkpoint"
+            elif para_text and "w:drawing" not in paragraph_xml:
+                current_context_label = ""
+
+            if "w:drawing" in paragraph_xml:
+                embeds = re.findall(r'r:embed="([^"]+)"', paragraph_xml)
+                field_label = _derive_section_field_label(para_text, current_heading_section, current_context_label)
+                for img_idx, rId in enumerate(embeds):
+                    if rId not in rId_map:
+                        continue
+                    media_name, mime_type = rId_map[rId]
+                    img_bytes = zip_images.get(media_name, b"")
+                    if not img_bytes:
+                        continue
+
+                    results.append(CellImage(
+                        table_index=-1,
+                        row_index=paragraph_counter,
+                        col_index=img_idx,
+                        rId=rId,
+                        media_name=media_name,
+                        mime_type=mime_type,
+                        image_bytes=img_bytes,
+                        cell_text=para_text or field_label,
+                        section=current_heading_section or "unknown",
+                        field_label=field_label,
+                    ))
+
+                    print(
+                        f"[DEBUG] Paragraph image found: row={paragraph_counter}, idx={img_idx}, "
+                        f"section={current_heading_section!r}, field_label={field_label!r}"
+                    )
             continue
 
         # ── Table ─────────────────────────────────────────────────────────────
         if tag == "tbl":
+            current_context_label = ""
             if table_counter >= len(table_objs):
                 table_counter += 1
                 continue
@@ -307,7 +427,18 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
             section = _classify_table(table, current_heading_section)
             print(f"[DEBUG] Table {ti}: classified as '{section}'")
 
+            # For non-metadata sections (scope, toc, citations) the label that
+            # identifies the image is the *column header*, not the row's first
+            # cell.  For metadata the per-row label (col 0) is still correct.
+            col_headers: dict[int, str] = (
+                {} if section == "metadata" else _get_column_headers(table)
+            )
+            print(f"[DEBUG] Table {ti}: col_headers={col_headers}")
+
             for ri, row in enumerate(table.rows):
+                # Skip header rows — they don't contain data images
+                if _row_is_header(row):
+                    continue
                 for ci, cell in enumerate(row.cells):
                     xml = cell._tc.xml
                     if "w:drawing" not in xml:
@@ -318,7 +449,10 @@ def extract_cell_images(doc, docx_path: str) -> list[CellImage]:
                         continue
 
                     cell_text   = cell.text.strip().replace("\xa0", " ")
-                    field_label = _derive_field_label(row, ci)
+                    # Prefer the column header label for non-metadata tables;
+                    # fall back to the row-level label for metadata or when the
+                    # column header is not available.
+                    field_label = col_headers.get(ci) or _derive_field_label(row, ci)
 
                     print(
                         f"[DEBUG] Image found: table={ti}, row={ri}, col={ci}, "
@@ -680,9 +814,12 @@ def extract_and_store_images_from_mhtml(path: str, brd_id: str) -> list[dict]:
     if body is None:
         body = root
     current_heading_section = ""
+    current_context_label = ""
     table_index = -1
     seen: set[tuple[int, int, int, str, str]] = set()
+    seen_inline: set[tuple[str, str, str, str]] = set()
     image_records: list[dict] = []
+    inline_row_index = 0
 
     for el in body.iter():
         if not isinstance(el.tag, str):
@@ -693,9 +830,64 @@ def extract_and_store_images_from_mhtml(path: str, brd_id: str) -> list[dict]:
             hint = _heading_section(" ".join(el.itertext()).strip())
             if hint:
                 current_heading_section = hint
+                current_context_label = ""
             continue
 
         if tag != "table":
+            if el.xpath("ancestor::table"):
+                continue
+
+            block_text = _normalize_inline_text(" ".join(el.itertext()))
+            if block_text and _SME_CHECKPOINT_RE.search(block_text):
+                current_context_label = "SME Checkpoint"
+            elif block_text:
+                current_context_label = ""
+
+            imgs = el.xpath(".//img") if tag in {"p", "div", "span"} else []
+            if not imgs:
+                continue
+
+            inline_row_index += 1
+            field_label = _derive_section_field_label(block_text, current_heading_section, current_context_label)
+            for img_idx, img in enumerate(imgs):
+                src = (img.get("src") or "").strip()
+                data_src = (img.get("data-image-src") or "").strip()
+                asset = _resolve_mhtml_asset(assets, src, data_src)
+                if not asset:
+                    continue
+
+                image_bytes, mime_type, media_name = asset
+                mime_type, media_name = _normalise_mhtml_image_asset(
+                    image_bytes,
+                    mime_type,
+                    media_name,
+                    src,
+                    data_src,
+                    img.get("data-linked-resource-default-alias") or "",
+                    img.get("data-linked-resource-content-type") or "",
+                )
+                dedupe_key = (current_heading_section or "unknown", field_label, media_name, src or data_src)
+                if dedupe_key in seen_inline:
+                    continue
+                seen_inline.add(dedupe_key)
+
+                image_records.append({
+                    "tableIndex": -1,
+                    "rowIndex": inline_row_index,
+                    "colIndex": img_idx,
+                    "rid": src or data_src or f"mhtml-inline-{inline_row_index}-{img_idx}",
+                    "mediaName": media_name,
+                    "mimeType": mime_type,
+                    "cellText": block_text or field_label,
+                    "section": current_heading_section or "unknown",
+                    "fieldLabel": field_label,
+                    "imageData": base64.b64encode(image_bytes).decode("utf-8"),
+                })
+
+                print(
+                    f"[DEBUG extract_and_store_images_from_mhtml] inline image={media_name!r} "
+                    f"section={current_heading_section!r} field={field_label!r}"
+                )
             continue
 
         table_index += 1

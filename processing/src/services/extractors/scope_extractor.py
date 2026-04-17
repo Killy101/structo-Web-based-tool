@@ -36,6 +36,7 @@ Supported scope formats
 
 import re
 from .base import extract_url_and_note_from_cell, extract_url_and_note_from_text, extract_url_from_cell
+from .toc_extractor import _cell_value, _extract_section_block, _is_heading_paragraph, _iter_block_items, _normalize_heading
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,20 +170,69 @@ def _normalise_asrb_and_sme(asrb_raw: str, sme_comments: str, fallback_asrb: str
     return asrb_id, cleaned_comments
 
 
+def _extract_scope_sme_checkpoint(doc) -> str:
+    items = list(_iter_block_items(doc))
+    for idx, (kind, block) in enumerate(items):
+        if kind != "paragraph":
+            continue
+        if not _is_heading_paragraph(block):
+            continue
+
+        heading = _normalize_heading(getattr(block, "text", ""))
+        if not heading or not heading.startswith("scope"):
+            continue
+
+        texts, _ = _extract_section_block(items, idx, rich=True)
+        note = "\n".join(texts).strip()
+        if note:
+            return note
+
+    return ""
+
+
+def _with_scope_checkpoint(result: dict, scope_sme_checkpoint: str) -> dict:
+    if scope_sme_checkpoint and isinstance(result, dict) and not result.get("smeCheckpoint"):
+        updated = dict(result)
+        updated["smeCheckpoint"] = scope_sme_checkpoint
+        return updated
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Low-level cell helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _cell_is_strikethrough(cell) -> bool:
     strike_runs = total_runs = 0
-    for para in cell.paragraphs:
-        for run in para.runs:
-            if not run.text.strip():
-                continue
-            total_runs += 1
-            if run.font.strike:
-                strike_runs += 1
+
+    for run in cell._tc.xpath('.//*[local-name()="r"]'):
+        text = "".join((node.text or "") for node in run.xpath('.//*[local-name()="t"]')).strip()
+        if not text:
+            continue
+        total_runs += 1
+        has_strike = bool(
+            run.xpath('./*[local-name()="rPr"]/*[local-name()="strike" or local-name()="dstrike"]')
+        )
+        if has_strike:
+            strike_runs += 1
+
+    if total_runs == 0:
+        for para in cell.paragraphs:
+            for run in para.runs:
+                if not run.text.strip():
+                    continue
+                total_runs += 1
+                if run.font.strike:
+                    strike_runs += 1
+
     return total_runs > 0 and strike_runs == total_runs
+
+
+def _row_is_strikethrough(row, preferred_col: int | None = None) -> bool:
+    cells = row.cells
+    if preferred_col is not None and preferred_col < len(cells) and _cell_is_strikethrough(cells[preferred_col]):
+        return True
+    return any(_cell_is_strikethrough(cell) for cell in cells)
 
 
 def _get_first_run_text(cell) -> str:
@@ -389,7 +439,8 @@ def _detect_column_map(header_rows: list) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _normalise(text: str) -> str:
-    s = re.sub(r"[‐‑‒–—−]+", "-", text.lower())
+    plain = re.sub(r"<[^>]+>", " ", text or "")
+    s = re.sub(r"[‐‑‒–—−]+", "-", plain.lower())
     s = re.sub(r"[\u2018\u2019\u201a\u201b\u2032\u2035]", "'", s)
     s = re.sub(r"[\u201c\u201d\u201e\u201f\u2033\u2036]", '"', s)
     return re.sub(r"\s+", " ", s).strip()
@@ -448,15 +499,21 @@ def _find_data_start_row(table, col_map: dict) -> int:
         content_text = cells[content_col].text.strip() if content_col is not None and content_col < n else ""
         ref_text     = cells[ref_col].text.strip()     if ref_col     is not None and ref_col     < n else ""
         title_lower  = _normalise(title_text)
-        if any(m in title_lower for m in _BOILERPLATE_MARKERS): continue
-        if _INTRO_BLOB_RE.search(title_lower): continue
-        if title_lower.strip().startswith("*"): continue
+        if any(m in title_lower for m in _BOILERPLATE_MARKERS):
+            continue
+        if _INTRO_BLOB_RE.search(title_lower):
+            continue
+        if title_lower.strip().startswith("*"):
+            continue
         has_url = bool(_URL_RE.search(content_text) or _URL_RE.search(ref_text))
-        if not has_url and len(title_lower) > 80: continue
-        if _is_non_data_scope_row(title_text, ref_text, content_text, ""):  continue
-        if has_url: return ri
-        if first_candidate is None and title_text:
+        if not has_url and len(title_lower) > 80:
+            continue
+        if _is_non_data_scope_row(title_text, ref_text, content_text, ""):
+            continue
+        if first_candidate is None and (title_text or has_url):
             first_candidate = ri
+        if has_url and first_candidate is None:
+            return ri
     return first_candidate if first_candidate is not None else len(table.rows)
 
 
@@ -775,21 +832,23 @@ def extract_scope(doc) -> dict:
         print(s)
     # ──────────────────────────────────────────────────────────────────────────
 
+    scope_sme_checkpoint = _extract_scope_sme_checkpoint(doc)
+
     section_table = _find_scope_section_table(doc)
     if section_table is not None:
         ref_url = _get_source_url(doc)
         if len(section_table.columns) >= 2:
-            return _extract_scope_chapter_grid(section_table, ref_url)
-        return _extract_scope_single_col_table(section_table, ref_url)
+            return _with_scope_checkpoint(_extract_scope_chapter_grid(section_table, ref_url), scope_sme_checkpoint)
+        return _with_scope_checkpoint(_extract_scope_single_col_table(section_table, ref_url), scope_sme_checkpoint)
 
     if _is_legacy_format(doc):
         print("[DEBUG scope_extractor] Using legacy format extractor")
-        return extract_scope_legacy(doc)
+        return _with_scope_checkpoint(extract_scope_legacy(doc), scope_sme_checkpoint)
 
     scope_table = _find_scope_table(doc)
     if scope_table is None:
         print("[DEBUG scope_extractor] No scope table found — returning empty scope")
-        return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}
+        return _with_scope_checkpoint({"in_scope": [], "out_of_scope": [], "summary": "Scope table not found."}, scope_sme_checkpoint)
 
     pre_ctx     = _detect_pre_header_context(doc, scope_table)
     global_auth = pre_ctx["issuing_authority"]
@@ -799,9 +858,18 @@ def extract_scope(doc) -> dict:
     col_map     = _detect_column_map(header_rows)
     data_start  = _find_data_start_row(scope_table, col_map)
 
-    def safe_text(row_cells, col_idx):
-        if col_idx is None or col_idx >= len(row_cells): return ""
-        return row_cells[col_idx].text.strip().replace("\xa0", " ")
+    def safe_text(row_cells, col_idx, rich: bool = False):
+        if col_idx is None or col_idx >= len(row_cells):
+            return ""
+        cell = row_cells[col_idx]
+        if rich:
+            try:
+                rich_text = _cell_value(cell, rich=True)
+                if rich_text:
+                    return rich_text.strip()
+            except Exception:
+                pass
+        return cell.text.strip().replace("\xa0", " ")
 
     def safe_url_and_note(row_cells, col_idx):
         if col_idx is None or col_idx >= len(row_cells):
@@ -819,12 +887,12 @@ def extract_scope(doc) -> dict:
     all_entries: list[dict] = []
     for row in scope_table.rows[data_start:]:
         cells       = row.cells
-        doc_title            = safe_text(cells, col_map["title"])
+        doc_title            = safe_text(cells, col_map["title"], rich=True)
         ref_url, _           = safe_url_and_note(cells, col_map["ref_url"])
         content_url, content_note = safe_url_and_note(cells, col_map["content_url"])
         issuing_raw          = safe_text(cells, col_map["authority"]).replace("\n", " ") or global_auth
         asrb_raw             = safe_text(cells, col_map["asrb_id"])
-        sme_comments_raw     = safe_text(cells, col_map["sme"])
+        sme_comments_raw     = safe_text(cells, col_map["sme"], rich=True)
         asrb_id, sme_comments = _normalise_asrb_and_sme(asrb_raw, sme_comments_raw, global_asrb)
         initial_ev           = safe_text(cells, col_map.get("initial_evergreen"))
         date_ing             = safe_text(cells, col_map.get("date_of_ingestion"))
@@ -833,10 +901,7 @@ def extract_scope(doc) -> dict:
             continue
 
         auth_name, auth_code, geography = parse_authority(issuing_raw)
-        is_struck = (
-            col_map["title"] is not None and col_map["title"] < len(cells)
-            and _cell_is_strikethrough(cells[col_map["title"]])
-        )
+        is_struck = _row_is_strikethrough(row, col_map.get("title"))
         all_entries.append({
             "document_title":         doc_title,
             "regulator_url":          ref_url,
@@ -854,10 +919,10 @@ def extract_scope(doc) -> dict:
 
     active = [e for e in all_entries if not e["strikethrough"]]
     struck = [e for e in all_entries if     e["strikethrough"]]
-    return {
+    return _with_scope_checkpoint({
         "in_scope": active, "out_of_scope": struck,
         "summary": f"Scope covers {len(active)} active and {len(struck)} struck-through documents.",
-    }
+    }, scope_sme_checkpoint)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -883,6 +948,18 @@ def _extract_scope_from_mhtml(path: str) -> dict:
         s = re.sub(r"&#[0-9]+;", "", s)
         return re.sub(r"\s+", " ", s).strip()
 
+    def extract_scope_checkpoint_from_html(html_text: str) -> str:
+        section_match = re.search(r"scope(.*?)(?:document structure|citation|toc|</body>)", html_text, re.IGNORECASE | re.DOTALL)
+        if not section_match:
+            return ""
+        segment = section_match.group(1)
+        note_match = re.search(r"sme\s*checkpoint(.*?)(?:<table|document title)", segment, re.IGNORECASE | re.DOTALL)
+        if not note_match:
+            return ""
+        note = strip_tags(note_match.group(1))
+        return re.sub(r"^[:\-\s]+", "", note).strip()
+
+    scope_sme_checkpoint = extract_scope_checkpoint_from_html(decoded)
     tables = re.findall(r"<table[^>]*>(.*?)</table>", decoded, re.DOTALL | re.IGNORECASE)
 
     for table_html in tables:
@@ -893,53 +970,103 @@ def _extract_scope_from_mhtml(path: str) -> dict:
         if "document title" not in header_text or "reference url" not in header_text:
             continue
 
-        header_cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", rows[0], re.DOTALL | re.IGNORECASE)
-        header_texts = [strip_tags(c).lower() for c in header_cells]
+        def is_header_row(row_html: str) -> bool:
+            lowered = strip_tags(row_html).lower()
+            header_markers = [
+                "document title", "reference url", "parent url", "content url",
+                "url for the title", "issuing authority", "innodata to capture",
+                "asrb id", "innodata only", "sme comments", "sme checkpoint",
+                "if anything needs be changed", "please specify",
+                "initial / evergreen", "initial evergreen", "date of ingestion",
+            ]
+            return any(marker in lowered for marker in header_markers)
+
+        header_row_count = 0
+        header_rows = []
+        for row_html in rows[: min(4, len(rows))]:
+            if is_header_row(row_html):
+                header_rows.append(row_html)
+                header_row_count += 1
+            elif header_rows:
+                break
+
+        header_cells_by_col: dict[int, str] = {}
+        for header_row in header_rows or rows[:1]:
+            for idx, cell_html in enumerate(re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", header_row, re.DOTALL | re.IGNORECASE)):
+                header_cells_by_col[idx] = f"{header_cells_by_col.get(idx, '')} {strip_tags(cell_html).lower()}".strip()
 
         def find_col(keywords):
-            for ki, kt in enumerate(header_texts):
-                if any(kw in kt for kw in keywords):
-                    return ki
+            for idx, text in sorted(header_cells_by_col.items()):
+                if any(kw in text for kw in keywords):
+                    return idx
             return None
 
-        title_col   = find_col(["document title"])
-        ref_col     = find_col(["reference url", "parent url"])
-        content_col = find_col(["content url", "url for the title"])
-        auth_col    = find_col(["issuing authority"])
-        asrb_col    = find_col(["asrb id"])
-        sme_col     = find_col(["sme comments", "sme checkpoint"])
+        title_col      = find_col(["document title", "source name"])
+        ref_col        = find_col(["reference url", "parent url", "regulator url", "regulator weblink"])
+        content_col    = find_col(["content url", "url for the title", "url for the source"])
+        auth_col       = find_col(["issuing authority", "innodata to capture"])
+        asrb_col       = find_col(["asrb id", "innodata only"])
+        sme_col        = find_col(["sme comments", "sme checkpoint", "if anything needs be changed", "please specify"])
+        evergreen_col  = find_col(["initial / evergreen", "initial/ evergreen", "initial/evergreen", "initial evergreen"])
+        ingestion_col  = find_col(["date of ingestion", "ingestion date"])
 
         in_scope: list[dict] = []
+        out_of_scope: list[dict] = []
         seen: set[str] = set()
 
-        for row_html in rows[1:]:
+        def preserve_inline_html(cell_html: str) -> str:
+            if not cell_html:
+                return ""
+            html = cell_html.replace("\xa0", " ").replace("&nbsp;", " ")
+            html = re.sub(r"__BRD_RICH_TEXT_\d+__", " ", html)
+            html = re.sub(r"</?(?:p|div|td|tr|table|tbody|thead|th)[^>]*>", "", html, flags=re.IGNORECASE)
+            html = re.sub(r"<br\s*/?>", "<br/>", html, flags=re.IGNORECASE)
+            html = re.sub(r">\s+<", "><", html)
+            return html.strip()
+
+        def gcell_plain(cells_html, idx):
+            if idx is None or idx >= len(cells_html):
+                return ""
+            return strip_tags(cells_html[idx]).strip()
+
+        def gcell_rich(cells_html, idx):
+            if idx is None or idx >= len(cells_html):
+                return ""
+            rich_value = preserve_inline_html(cells_html[idx])
+            plain_value = strip_tags(rich_value).strip()
+            if re.search(r"</?(?:span|font|strong|b|em|i|u|s|strike|del|a)\b|style\s*=\s*['\"][^'\"]*color\s*:", rich_value, re.IGNORECASE):
+                return rich_value
+            return plain_value
+
+        for row_html in rows[header_row_count or 1:]:
             cells_html = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.IGNORECASE)
-            cells = [strip_tags(c) for c in cells_html]
 
-            def gcell(idx):
-                if idx is None or idx >= len(cells): return ""
-                return cells[idx].strip()
-
-            doc_title = gcell(title_col)
+            doc_title = gcell_rich(cells_html, title_col)
             if not doc_title:
                 continue
 
-            title_low = doc_title.lower()
+            title_low = strip_tags(doc_title).lower()
             if any(m in title_low for m in _BOILERPLATE_MARKERS):
                 continue
             if _row_is_header_text(title_low):
                 continue
 
-            ref_url, _ = extract_url_and_note_from_text(gcell(ref_col))
-            content_url, content_note = extract_url_and_note_from_text(gcell(content_col))
+            reference_cell = gcell_rich(cells_html, ref_col)
+            content_cell = gcell_rich(cells_html, content_col)
+            ref_url, _ = extract_url_and_note_from_text(gcell_plain(cells_html, ref_col))
+            content_url_plain, content_note = extract_url_and_note_from_text(gcell_plain(cells_html, content_col))
             ref_url = re.split(r"\s+NOTE\s*:", ref_url)[0].strip()
-            content_url = re.split(r"\s+NOTE\s*:", content_url)[0].strip()
-            issuing_raw = gcell(auth_col)
-            asrb_raw    = gcell(asrb_col)
-            sme_raw     = gcell(sme_col)
+            content_url_plain = re.split(r"\s+NOTE\s*:", content_url_plain)[0].strip()
+            regulator_value = reference_cell if re.search(r"color\s*:|<a\b", reference_cell, re.IGNORECASE) else ref_url
+            content_value = content_cell if re.search(r"color\s*:|<a\b", content_cell, re.IGNORECASE) else content_url_plain
+            issuing_raw = gcell_rich(cells_html, auth_col)
+            asrb_raw = gcell_plain(cells_html, asrb_col)
+            sme_raw = gcell_rich(cells_html, sme_col)
+            initial_ev = gcell_rich(cells_html, evergreen_col)
+            date_ing = gcell_rich(cells_html, ingestion_col)
             asrb_id, sme_comments = _normalise_asrb_and_sme(asrb_raw, sme_raw)
 
-            if _is_non_data_scope_row(doc_title, ref_url, content_url, sme_comments):
+            if _is_non_data_scope_row(doc_title, ref_url, content_url_plain, sme_comments):
                 continue
             if doc_title in seen:
                 continue
@@ -951,28 +1078,44 @@ def _extract_scope_from_mhtml(path: str) -> dict:
             auth_code = m.group(2).strip() if m else ""
             geography = m.group(3).strip() if m else ""
 
-            in_scope.append({
+            entry = {
                 "document_title":         doc_title,
-                "regulator_url":          ref_url,
-                "content_url":            content_url,
+                "regulator_url":          regulator_value,
+                "content_url":            content_value,
                 "content_note":           content_note,
                 "issuing_authority":      auth_name,
                 "issuing_authority_code": auth_code,
                 "geography":              geography,
                 "asrb_id":                asrb_id,
                 "sme_comments":           sme_comments,
-                "initial_evergreen":      "",
-                "date_of_ingestion":      "",
+                "initial_evergreen":      initial_ev,
+                "date_of_ingestion":      date_ing,
                 "strikethrough":          False,
-            })
+            }
+
+            row_is_struck = bool(
+                re.search(r"<(?:s|strike|del)\b", row_html, re.IGNORECASE)
+                or re.search(r"text-decoration\s*:\s*line-through", row_html, re.IGNORECASE)
+            )
+            if row_is_struck:
+                entry["strikethrough"] = True
+                out_of_scope.append(entry)
+            else:
+                in_scope.append(entry)
 
         return {
             "in_scope":     in_scope,
-            "out_of_scope": [],
-            "summary":      f"Scope covers {len(in_scope)} active documents (MHTML format).",
+            "out_of_scope": out_of_scope,
+            "summary":      f"Scope covers {len(in_scope)} active and {len(out_of_scope)} struck-through documents (MHTML format).",
+            **({"smeCheckpoint": scope_sme_checkpoint} if scope_sme_checkpoint else {}),
         }
 
-    return {"in_scope": [], "out_of_scope": [], "summary": "Scope table not found in MHTML."}
+    return {
+        "in_scope": [],
+        "out_of_scope": [],
+        "summary": "Scope table not found in MHTML.",
+        **({"smeCheckpoint": scope_sme_checkpoint} if scope_sme_checkpoint else {}),
+    }
 
 
 def _row_is_header_text(text_lower: str) -> bool:

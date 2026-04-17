@@ -16,6 +16,8 @@ match the frontend CitationRow interface:
 
 import re
 
+from .toc_extractor import _cell_value, _clean_rich_text, _extract_section_block, _is_heading_paragraph, _iter_block_items, _normalize_heading
+
 
 # ─────────────────────────────────────────────
 # Helpers
@@ -23,7 +25,10 @@ import re
 
 def _clean(text: str) -> str:
     normalized = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"\s+", " ", normalized).strip()
+    cleaned = re.sub(r"\s+", " ", normalized).strip()
+    if cleaned.lower() in {"n/a", "na", "none", "null", "tbd", "-", "--", "—", "not applicable"}:
+        return ""
+    return cleaned
 
 
 def _normalise_level(raw: str) -> str:
@@ -34,9 +39,50 @@ def _normalise_level(raw: str) -> str:
 
 
 def _normalise_citation_rule(raw: str) -> str:
-    text = _clean(raw)
+    rich_tag_pattern = re.compile(r"</?(?:span|font|strong|b|em|i|u|s|strike|del|br|a|p|div)\b", re.IGNORECASE)
+    text = _clean_rich_text(raw) if rich_tag_pattern.search(raw or "") else _clean(raw)
     text = re.sub(r"(?i)(\S)(example\s*:)", r"\1 \2", text)
     return text
+
+
+def _extract_section_note(doc, *keywords: str) -> str:
+    items = list(_iter_block_items(doc))
+    toc_noise_terms = (
+        "metadata",
+        "details",
+        "exceptions",
+        "updates",
+        "how to identify",
+        "frequency of updates",
+        "file delivery requirements",
+        "file separation",
+        "file naming conventions",
+        "citation style guide",
+    )
+
+    for idx, (kind, block) in enumerate(items):
+        if kind != "paragraph":
+            continue
+        if not _is_heading_paragraph(block):
+            continue
+
+        heading = _normalize_heading(getattr(block, "text", ""))
+        if not heading or not all(keyword in heading for keyword in keywords):
+            continue
+
+        texts, _ = _extract_section_block(items, idx, rich=True)
+        note = "\n".join(texts).strip()
+        if not note:
+            continue
+
+        normalized_note = _normalize_heading(note)
+        if "sme checkpoint" not in normalized_note and not any(term in normalized_note for term in keywords):
+            if any(term in normalized_note for term in toc_noise_terms):
+                continue
+
+        return note
+
+    return ""
 
 
 def _is_citable_table(table) -> bool:
@@ -48,14 +94,44 @@ def _is_citable_table(table) -> bool:
 
 
 def _is_citation_rules_table(table) -> bool:
-    """Rules table, including combined `Citable Levels` layouts with a `Rules` column."""
+    """Rules table, including combined layouts with explicit Rules / Source of Law columns."""
     if not table.rows:
         return False
-    header = " ".join(c.text for c in table.rows[0].cells).lower()
-    has_level = "level" in header
-    has_rules = "citation rules" in header or re.search(r"\brules?\b", header) is not None
-    has_supporting_cols = "source" in header or "citable" in header
-    return has_level and has_rules and has_supporting_cols
+
+    header_cells = [_clean(c.text).lower() for c in table.rows[0].cells]
+    has_level = any(cell.startswith("level") or "citation level" in cell for cell in header_cells)
+    has_source_of_law = any("source of law" in cell for cell in header_cells)
+    has_explicit_rules_col = any(
+        cell == "rules" or cell.startswith("citation rules") or cell.startswith("citation rule")
+        for cell in header_cells
+    )
+
+    return has_level and (has_source_of_law or has_explicit_rules_col)
+
+
+def _merge_missing_citable_levels(references: list[dict], citable_map: dict[str, str]) -> list[dict]:
+    by_level: dict[str, dict] = {}
+    for ref in references:
+        lvl = str(ref.get("level", "")).strip()
+        if lvl:
+            merged = dict(ref)
+            if not merged.get("isCitable") and lvl in citable_map:
+                merged["isCitable"] = citable_map[lvl]
+            by_level[lvl] = merged
+
+    for lvl, citable in citable_map.items():
+        if lvl in by_level:
+            continue
+        by_level[lvl] = {
+            "id": lvl,
+            "level": lvl,
+            "citationRules": "",
+            "sourceOfLaw": "",
+            "isCitable": citable,
+            "smeComments": "",
+        }
+
+    return sorted(by_level.values(), key=lambda ref: int(ref.get("level") or 0))
 
 
 # ─────────────────────────────────────────────
@@ -68,6 +144,12 @@ def extract_citations(doc) -> dict:
     Rules tables.  Falls back to extract_citations_legacy() when the legacy
     2-column table format is detected.
     """
+    citation_level_sme_checkpoint = _extract_section_note(doc, "citable", "level")
+    citation_rules_sme_checkpoint = (
+        _extract_section_note(doc, "citation", "standardization")
+        or _extract_section_note(doc, "citation", "rule")
+    )
+
     # ── Step 1: build citable map  { level_str → "Y" | "N" } ────────────────
     citable_map: dict[str, str] = {}
     for table in doc.tables:
@@ -88,9 +170,11 @@ def extract_citations(doc) -> dict:
     if not any(_is_citation_rules_table(t) for t in doc.tables):
         result = extract_citations_legacy(doc)
         # Merge citable_map from standard table (if any) into legacy result
-        for ref in result["references"]:
-            if not ref["isCitable"] and ref["level"] in citable_map:
-                ref["isCitable"] = citable_map[ref["level"]]
+        result["references"] = _merge_missing_citable_levels(result.get("references", []), citable_map)
+        if citation_level_sme_checkpoint:
+            result["citationLevelSmeCheckpoint"] = citation_level_sme_checkpoint
+        if citation_rules_sme_checkpoint:
+            result["citationRulesSmeCheckpoint"] = citation_rules_sme_checkpoint
         return result
 
     references: list[dict] = []
@@ -120,13 +204,17 @@ def extract_citations(doc) -> dict:
             cells = row.cells
             n = len(cells)
 
-            def cell(idx: int | None) -> str:
-                return _clean(cells[idx].text) if idx is not None and idx < n else ""
+            def cell(idx: int | None, rich: bool = False) -> str:
+                if idx is None or idx >= n:
+                    return ""
+                if rich:
+                    return _clean_rich_text(_cell_value(cells[idx], rich=True))
+                return _clean(cells[idx].text)
 
             lvl_raw       = cell(col_level)
-            citation_rule = _normalise_citation_rule(cell(col_rules))
-            source_of_law = cell(col_source)
-            sme_comments  = cell(col_sme)
+            citation_rule = _normalise_citation_rule(cell(col_rules, rich=True))
+            source_of_law = cell(col_source, rich=True)
+            sme_comments  = cell(col_sme, rich=True)
 
             lvl = _normalise_level(lvl_raw)
             if not lvl:
@@ -137,9 +225,11 @@ def extract_citations(doc) -> dict:
             if raw_citable:
                 citable = "Y" if raw_citable.startswith("Y") else "N" if raw_citable.startswith("N") else raw_citable
 
-            # Use level-2 citation rule as the overall style description
-            if lvl == "2" and citation_rule and citation_rule.upper() != "N":
-                citation_style = citation_rule
+            # Prefer level-2 citation rule as the overall style description,
+            # but fall back to the first meaningful populated rule.
+            if citation_rule and citation_rule.upper() != "N":
+                if lvl == "2" or citation_style.startswith("Hierarchical pipe-separated"):
+                    citation_style = citation_rule
 
             references.append({
                 "id":            str(ri),
@@ -152,10 +242,15 @@ def extract_citations(doc) -> dict:
 
         break   # only the first matching table
 
-    return {
+    payload = {
         "citation_style": citation_style,
-        "references":     references,
+        "references": _merge_missing_citable_levels(references, citable_map),
     }
+    if citation_level_sme_checkpoint:
+        payload["citationLevelSmeCheckpoint"] = citation_level_sme_checkpoint
+    if citation_rules_sme_checkpoint:
+        payload["citationRulesSmeCheckpoint"] = citation_rules_sme_checkpoint
+    return payload
 
 
 # ─────────────────────────────────────────────
@@ -230,11 +325,15 @@ def extract_citations_legacy(doc) -> dict:
             cells = row.cells
             n = len(cells)
 
-            def cell(idx: int) -> str:
-                return _clean(cells[idx].text) if idx < n else ""
+            def cell(idx: int, rich: bool = False) -> str:
+                if idx >= n:
+                    return ""
+                if rich:
+                    return _clean_rich_text(_cell_value(cells[idx], rich=True))
+                return _clean(cells[idx].text)
 
             lvl_raw       = cell(col_level)
-            citation_rule = _normalise_citation_rule(cell(col_rules))
+            citation_rule = _normalise_citation_rule(cell(col_rules, rich=True))
             lvl           = _normalise_level(lvl_raw)
 
             if not lvl:

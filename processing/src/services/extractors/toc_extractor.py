@@ -12,6 +12,7 @@ This maps directly to the frontend TocRow interface:
 
 import html as html_lib
 import re
+from typing import Any
 
 # Helpers
 
@@ -89,23 +90,322 @@ def _clean_rich_text(text: str) -> str:
     return normalized.strip()
 
 
+def _normalize_heading(text: str) -> str:
+    normalized = _clean(text).lower().replace("\u00a0", " ")
+    normalized = normalized.replace("*", " ").replace("{", " ").replace("}", " ")
+    normalized = re.sub(r"^[\s\u2022•·\-–—#:]+", "", normalized)
+    normalized = re.sub(r"\(\s*#.*?\)", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip(" :-")
+
+
+_SECTION_HEADING_PATTERNS: tuple[str, ...] = (
+    r"^metadata(?:\s+details?)?(?:\s*\([^)]*\))?$",
+    r"^details?(?:\s*\([^)]*\))?$",
+    r"^exceptions?(?:\s*\([^)]*\))?$",
+    r"^updates?(?:\s*\([^)]*\))?$",
+    r"^scope(?:\s*\([^)]*\))?$",
+    r"^how to identify(?:\s*\([^)]*\))?$",
+    r"^frequency of updates(?:\s*\([^)]*\))?$",
+    r"^(?:content category|source) to be monitored for updates.*$",
+    r"^file delivery requirements(?:\s*\([^)]*\))?$",
+    r"^file separation(?:\s*\([^)]*\))?$",
+    r"^file naming conventions(?:\s*\([^)]*\))?$",
+    r"^rc file naming conventions(?:\s*\([^)]*\))?$",
+    r"^zip file naming conventions(?:\s*\([^)]*\))?$",
+    r"^brd signed[- ]off by sme(?:\s*\([^)]*\))?$",
+    r"^(?:toc\s+with\s+)?document structure(?:\s+levels?)?(?:\s*\([^)]*\))?$",
+    r"^citation style guide(?:\s+link)?(?:\s*\([^)]*\))?$",
+    r"^citable levels?(?:\s*\([^)]*\))?$",
+    r"^citation(?:\s+format\s+requirements|\s+standardization)?\s+rules?(?:\s*\([^)]*\))?$",
+    r"^toc\b.*sorting order(?:\s*\([^)]*\))?$",
+    r"^toc\b.*hiding levels?(?:\s*\([^)]*\))?$",
+    r"^content profil(?:e|ing)(?:\s*\([^)]*\))?$",
+    r"^references?(?:\s*\([^)]*\))?$",
+)
+
+
+def _heading_level(paragraph: Any) -> int | None:
+    style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
+    match = re.search(r"Heading\s*(\d+)", style_name, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _looks_like_section_heading(text: str) -> bool:
+    normalized = _normalize_heading(text)
+    if not normalized or len(normalized) > 120:
+        return False
+
+    # Treat only compact title-like phrases as section headings. This avoids
+    # misclassifying explanatory sentences such as
+    # "Citation rules stand for how the citations should appear in ELA." as a
+    # new heading, which would prematurely truncate the section note block.
+    return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in _SECTION_HEADING_PATTERNS)
+
+
+def _is_heading_paragraph(paragraph: Any) -> bool:
+    if _heading_level(paragraph) is not None:
+        return True
+    return _looks_like_section_heading(getattr(paragraph, "text", ""))
+
+
+def _iter_block_items(doc):
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    body = doc.element.body
+    for child in body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            yield "paragraph", Paragraph(child, doc)
+        elif tag == "tbl":
+            yield "table", Table(child, doc)
+
+
+def _get_hyperlink_target(paragraph: Any, hyperlink) -> str:
+    rel_id = hyperlink.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+    if rel_id:
+        try:
+            return str(paragraph.part.rels[rel_id].target_ref or "").strip()
+        except Exception:
+            return ""
+
+    anchor = hyperlink.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}anchor")
+    return f"#{anchor}" if anchor else ""
+
+
+def _paragraph_value(paragraph: Any, rich: bool = False) -> str:
+    if not rich:
+        return _clean(paragraph.text)
+
+    fragments: list[str] = []
+    for child in paragraph._p.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "r":
+            fragment = _format_run_element(child, paragraph)
+            if fragment:
+                fragments.append(fragment)
+        elif tag == "hyperlink":
+            hyperlink_parts = [
+                _format_run_element(run_element, paragraph)
+                for run_element in child.xpath('.//*[local-name()="r"]')
+            ]
+            hyperlink_text = "".join(part for part in hyperlink_parts if part).strip()
+            if hyperlink_text:
+                href = _get_hyperlink_target(paragraph, child)
+                if href:
+                    fragments.append(f'<a href="{html_lib.escape(href)}">{hyperlink_text}</a>')
+                else:
+                    fragments.append(hyperlink_text)
+
+    return _clean_rich_text("".join(fragments))
+
+
+def _paragraph_block_text(paragraph: Any, rich: bool = False) -> str:
+    plain_text = _clean(paragraph.text)
+    if not plain_text:
+        return ""
+
+    text = _paragraph_value(paragraph, rich=rich) if rich else plain_text
+    style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
+    if "list" in style_name.lower() and not re.match(r"^[\u2022\-\*]\s+", plain_text):
+        return f"• {text}"
+    return text
+
+
+def _extract_section_block(items, start_idx: int, rich: bool = False) -> tuple[list[str], list[Any]]:
+    texts: list[str] = []
+    tables: list[Any] = []
+
+    for index in range(start_idx + 1, len(items)):
+        kind, block = items[index]
+        if kind == "paragraph":
+            paragraph = block
+            if _is_heading_paragraph(paragraph):
+                break
+            text = _paragraph_block_text(paragraph, rich=rich)
+            if text:
+                texts.append(text)
+        elif kind == "table":
+            tables.append(block)
+
+    return texts, tables
+
+
+def _extract_citation_style_guide(items, start_idx: int) -> dict[str, Any] | None:
+    texts, tables = _extract_section_block(items, start_idx, rich=True)
+    rows: list[dict[str, str]] = []
+    description_parts = [text for text in texts if text]
+
+    def looks_like_non_guide_table(table) -> bool:
+        if not table.rows:
+            return False
+        header_cells = [_clean(cell.text).lower() for cell in table.rows[0].cells]
+        joined = " | ".join(header_cells)
+        return any(marker in joined for marker in [
+            "document title", "reference url", "content url", "issuing authority",
+            "metadata element", "document location", "source name", "content category name",
+            "level", "required", "definition", "toc requirements", "source of law",
+        ])
+
+    for table in tables:
+        if looks_like_non_guide_table(table):
+            continue
+        for row in table.rows:
+            rich_cells = [_cell_value(cell, rich=True) for cell in row.cells]
+            plain_cells = [_clean(cell.text) for cell in row.cells]
+            nonempty = [
+                (plain, rich)
+                for plain, rich in zip(plain_cells, rich_cells)
+                if plain or re.sub(r"<[^>]+>", "", rich or "").strip()
+            ]
+            if not nonempty:
+                continue
+
+            normalized_first = _normalize_heading(nonempty[0][0])
+            if normalized_first in {"label", "value"}:
+                continue
+
+            if len(nonempty) == 1:
+                single_plain, single_rich = nonempty[0]
+                single_value = _clean_rich_text(single_rich or html_lib.escape(single_plain))
+
+                if normalized_first in {"sme checkpoint", "sme check point", "sme check-point"}:
+                    if single_value:
+                        description_parts.append(single_value)
+                    continue
+
+                if len(row.cells) > 1 and plain_cells[0].strip():
+                    rows.append({"label": plain_cells[0].strip(), "value": ""})
+                    continue
+
+                if single_value and normalized_first not in {"label", "value"}:
+                    description_parts.append(single_value)
+                continue
+
+            label = nonempty[0][0]
+            value = _clean_rich_text("<br/>".join(rich for _, rich in nonempty[1:] if rich))
+
+            if normalized_first in {"sme checkpoint", "sme check point", "sme check-point"}:
+                description_value = value or html_lib.escape(label)
+                if description_value:
+                    description_parts.append(description_value)
+                continue
+
+            if not label and not value:
+                continue
+            rows.append({"label": label, "value": value})
+
+    description = "<br/>".join(part for part in description_parts if part).strip()
+    if not rows and not description:
+        return None
+
+    payload: dict[str, Any] = {}
+    if description:
+        payload["description"] = description
+    if rows:
+        payload["rows"] = rows
+    return payload
+
+
+def _extract_additional_sections(doc) -> dict[str, Any]:
+    items = list(_iter_block_items(doc))
+    extras: dict[str, Any] = {}
+
+    for idx, (kind, block) in enumerate(items):
+        if kind != "paragraph":
+            continue
+        if not _is_heading_paragraph(block):
+            continue
+
+        heading = _normalize_heading(getattr(block, "text", ""))
+        if not heading:
+            continue
+
+        if "citation style guide link" in heading and "citationStyleGuide" not in extras:
+            citation_style = _extract_citation_style_guide(items, idx)
+            if citation_style:
+                extras["citationStyleGuide"] = citation_style
+            continue
+
+        if "toc" in heading and "sorting order" in heading and "tocSortingOrder" not in extras:
+            texts, _ = _extract_section_block(items, idx, rich=True)
+            text = "\n".join(texts).strip()
+            if text:
+                extras["tocSortingOrder"] = text
+            continue
+
+        if "toc" in heading and "hiding levels" in heading and "tocHidingLevels" not in extras:
+            texts, _ = _extract_section_block(items, idx, rich=True)
+            text = "\n".join(texts).strip()
+            if text:
+                extras["tocHidingLevels"] = text
+
+    return extras
+
+
 def _format_run(run) -> str:
     text = run.text.replace("\xa0", " ")
     if not text:
         return ""
 
+    font = getattr(run, "font", None)
+    style = getattr(run, "style", None)
+    style_name = getattr(style, "name", "") or ""
+    style_id = getattr(style, "style_id", "") or ""
+    style_lower = f"{style_name} {style_id}".lower()
+    element_xml = getattr(getattr(run, "_element", None), "xml", "") or ""
+
+    is_underlined = bool(
+        getattr(run, "underline", False)
+        or getattr(font, "underline", False)
+        or "underline" in style_lower
+        or re.search(r"<w:u\b", element_xml)
+    )
+    is_italic = bool(
+        getattr(run, "italic", False)
+        or getattr(font, "italic", False)
+        or "emphasis" in style_lower
+        or "italic" in style_lower
+        or re.search(r"<w:i(?:Cs)?\b", element_xml)
+    )
+    is_bold = bool(
+        getattr(run, "bold", False)
+        or getattr(font, "bold", False)
+        or "strong" in style_lower
+        or "bold" in style_lower
+        or re.search(r"<w:b(?:Cs)?\b", element_xml)
+    )
+
     formatted = html_lib.escape(text).replace("\n", "<br/>")
-    if bool(getattr(run, "underline", False)):
+    if is_underlined:
         formatted = f"<u>{formatted}</u>"
-    if bool(getattr(run, "italic", False)):
+    if is_italic:
         formatted = f"<em>{formatted}</em>"
 
-    font = getattr(run, "font", None)
-    if bool(getattr(font, "strike", False) or getattr(font, "double_strike", False)):
+    if bool(getattr(font, "strike", False) or getattr(font, "double_strike", False) or re.search(r"<w:(?:strike|dstrike)\b", element_xml)):
         formatted = f"<s>{formatted}</s>"
-    if bool(getattr(run, "bold", False)):
+    if is_bold:
         formatted = f"<strong>{formatted}</strong>"
+
+    color = getattr(getattr(font, "color", None), "rgb", None)
+    if not color:
+        match = re.search(r'<w:color[^>]*w:val="([0-9A-Fa-f]{6,8})"', element_xml)
+        if match:
+            color = match.group(1)
+    if color:
+        formatted = f'<span style="color: #{html_lib.escape(str(color))}">{formatted}</span>'
     return formatted
+
+
+def _format_run_element(run_element, paragraph) -> str:
+    from docx.text.run import Run
+
+    try:
+        return _format_run(Run(run_element, paragraph))
+    except Exception:
+        text = "".join((node.text or "") for node in run_element.xpath('.//*[local-name()="t"]'))
+        return html_lib.escape(text).replace("\n", "<br/>") if text else ""
 
 
 def _cell_value(cell, rich: bool = False) -> str:
@@ -114,9 +414,32 @@ def _cell_value(cell, rich: bool = False) -> str:
 
     paragraphs: list[str] = []
     for paragraph in getattr(cell, "paragraphs", []):
-        run_html = "".join(_format_run(run) for run in paragraph.runs)
-        if run_html.strip():
-            paragraphs.append(run_html)
+        fragments: list[str] = []
+        for child in paragraph._p.iterchildren():
+            tag = child.tag.rsplit("}", 1)[-1]
+            if tag == "r":
+                fragment = _format_run_element(child, paragraph)
+                if fragment:
+                    fragments.append(fragment)
+            elif tag == "hyperlink":
+                hyperlink_parts = [
+                    _format_run_element(run_element, paragraph)
+                    for run_element in child.xpath('.//*[local-name()="r"]')
+                ]
+                hyperlink_html = "".join(part for part in hyperlink_parts if part)
+                if not hyperlink_html:
+                    text = "".join((node.text or "") for node in child.xpath('.//*[local-name()="t"]'))
+                    if text:
+                        hyperlink_html = html_lib.escape(text).replace("\n", "<br/>")
+                if hyperlink_html:
+                    href = _get_hyperlink_target(paragraph, child)
+                    if href:
+                        fragments.append(f'<a href="{html_lib.escape(href)}">{hyperlink_html}</a>')
+                    else:
+                        fragments.append(hyperlink_html)
+
+        if fragments:
+            paragraphs.append("".join(fragments))
             continue
 
         plain = _clean(paragraph.text)
@@ -198,12 +521,15 @@ def extract_toc(doc) -> dict:
     Find the Document Structure table and extract each level row.
     Falls back to extract_toc_legacy() for paragraph-based legacy BRDs.
     """
+    extras = _extract_additional_sections(doc)
+
     # Legacy BRDs store levels as paragraphs, not a table
     for table in doc.tables:
         if _is_toc_structure_table(table):
             break
     else:
-        return extract_toc_legacy(doc)
+        legacy = extract_toc_legacy(doc)
+        return {**legacy, **extras}
 
     for table in doc.tables:
         if not _is_toc_structure_table(table):
@@ -252,9 +578,9 @@ def extract_toc(doc) -> dict:
 
         # Found and processed the table — return immediately
         if sections:
-            return {"sections": sections}
+            return {"sections": sections, **extras}
 
-    return {"sections": []}
+    return {"sections": [], **extras}
 
 
 # ─────────────────────────────────────────────
@@ -399,4 +725,5 @@ def extract_toc_legacy(doc) -> dict:
 
     _flush()
 
-    return {"sections": sections}
+    extras = _extract_additional_sections(doc)
+    return {"sections": sections, **extras}

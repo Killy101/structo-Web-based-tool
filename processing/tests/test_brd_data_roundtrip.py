@@ -15,6 +15,12 @@ class BrdDataRoundTripTests(unittest.TestCase):
         brd = BRDData(
             format="old",
             metadata={"_format": "old", "Source Name": "Example Source"},
+            citation_style_guide={
+                "description": "SME Checkpoint",
+                "rows": [{"label": "Product Owner", "value": "Raut, Divya"}],
+            },
+            toc_sorting_order="Sort numerically in descending order.",
+            toc_hiding_levels="Level 8-14 not to be included in the TOC.",
             levels=[
                 LevelData(
                     level=3,
@@ -39,6 +45,9 @@ class BrdDataRoundTripTests(unittest.TestCase):
         self.assertEqual(toc_row["note"], "should have header text annotations captured")
         self.assertEqual(toc_row["tocRequirements"], "separate with a colon")
         self.assertEqual(toc_row["smeComments"], "Can we add section numbers on the right-hand side?")
+        self.assertEqual(payload["toc"]["citationStyleGuide"]["rows"][0]["label"], "Product Owner")
+        self.assertEqual(payload["toc"]["tocSortingOrder"], "Sort numerically in descending order.")
+        self.assertEqual(payload["toc"]["tocHidingLevels"], "Level 8-14 not to be included in the TOC.")
 
         citation_row = payload["citations"]["references"][0]
         self.assertEqual(citation_row["smeComments"], 'Can we abbreviate Chapter to "Ch."?')

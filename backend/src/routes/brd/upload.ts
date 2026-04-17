@@ -26,19 +26,40 @@ const upload = multer({
   },
 })
 
+interface FormatFingerprint {
+  extension: string
+  container: string
+  template: string
+  label: string
+}
+
+interface ProcessingWarning {
+  code: string
+  severity: string
+  message: string
+}
+
+interface ProcessingDiagnostics {
+  summary?: Record<string, unknown>
+  warnings?: ProcessingWarning[]
+}
+
 interface ProcessingResult {
-  filename:         string
-  char_count:       number
-  detected_format?: string   // "new" | "old" — auto-detected by Python
-  scope:            Record<string, unknown>
-  metadata:         Record<string, unknown>
-  toc:              Record<string, unknown>
-  citations:        Record<string, unknown>
-  content_profile?: Record<string, unknown>
-  contentProfile?:  Record<string, unknown>
-  brd_config?:      Record<string, unknown>
-  brdConfig?:       Record<string, unknown>
-  image_metadata?:  ImageMeta[]
+  filename:           string
+  char_count:         number
+  detected_format?:   string   // "new" | "old" — auto-detected by Python
+  scope:              Record<string, unknown>
+  metadata:           Record<string, unknown>
+  toc:                Record<string, unknown>
+  citations:          Record<string, unknown>
+  content_profile?:   Record<string, unknown>
+  contentProfile?:    Record<string, unknown>
+  brd_config?:        Record<string, unknown>
+  brdConfig?:         Record<string, unknown>
+  image_metadata?:    ImageMeta[]
+  diagnostics?:       ProcessingDiagnostics
+  format_fingerprint?: FormatFingerprint
+  formatFingerprint?:  FormatFingerprint
 }
 
 interface ImageMeta {
@@ -201,16 +222,19 @@ router.post(
           ],
         )
 
-        // Delete old images and insert new ones as BYTEA
-        await client.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
+        // Soft-delete active images so previous versions remain immutable.
+        await client.query(`UPDATE brd_cell_images SET deleted_at = NOW() WHERE brd_id = $1 AND deleted_at IS NULL`, [brdId])
 
-        for (const img of (extracted.image_metadata ?? [])) {
+        const revisionTag = Date.now().toString(36)
+        for (let i = 0; i < (extracted.image_metadata ?? []).length; i++) {
+          const img = extracted.image_metadata![i]
           const imageBytes = Buffer.from(img.imageData, 'base64')
+          const snapshotRid = `${img.rid || 'img'}-rev-${revisionTag}-${i}`
           await client.query(
             `INSERT INTO brd_cell_images
                (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, snapshotRid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
           )
         }
       })
@@ -233,7 +257,16 @@ router.post(
         console.warn('Failed to send BRD upload notification:', notifyErr)
       }
 
-      // ── 6. Return extracted data (strip binary imageData from response) ───
+      // ── 6. Log upload + processing activity ──────────────────────────────
+      const actorId = (req as any).user?.userId ?? null
+      if (actorId) {
+        pool.query(
+          `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_UPLOADED', $2)`,
+          [actorId, `Uploaded and processed "${title}" (${brdId}, file: ${file.originalname})`],
+        ).catch((e: unknown) => console.warn('Failed to log BRD upload:', e))
+      }
+
+      // ── 7. Return extracted data (strip binary imageData from response) ───
       const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || []
 
       return res.json({
@@ -249,6 +282,8 @@ router.post(
         contentProfile: extractedContentProfile,
         brdConfig: cleanBrdConfig,
         imageMetadata: responseImageMetadata,
+        diagnostics: extracted.diagnostics ?? null,
+        formatFingerprint: extracted.format_fingerprint ?? extracted.formatFingerprint ?? null,
       })
 
     } catch (err) {
@@ -281,13 +316,14 @@ router.post(
     try {
       // Confirm BRD exists and is not deleted
       const { rows } = await pool.query(
-        `SELECT brd_id, status, deleted_at FROM brds WHERE brd_id = $1`,
+        `SELECT brd_id, title, status, deleted_at FROM brds WHERE brd_id = $1`,
         [brdId],
       )
       if (!rows[0] || rows[0].deleted_at !== null) {
         return res.status(404).json({ error: 'BRD not found' })
       }
       const currentStatus: string = rows[0].status ?? 'DRAFT'
+      const existingTitle: string = rows[0].title ?? brdId
 
       // Fetch existing sections as fallback
       const { rows: existingRows } = await pool.query(
@@ -340,17 +376,29 @@ router.post(
           [brdId, newScope, newMetadata, newToc, newCitations, newContentProfile, newBrdConfig],
         )
 
-        await client.query(`DELETE FROM brd_cell_images WHERE brd_id = $1`, [brdId])
-        for (const img of (extracted.image_metadata ?? [])) {
+        await client.query(`UPDATE brd_cell_images SET deleted_at = NOW() WHERE brd_id = $1 AND deleted_at IS NULL`, [brdId])
+        const revisionTag = Date.now().toString(36)
+        for (let i = 0; i < (extracted.image_metadata ?? []).length; i++) {
+          const img = extracted.image_metadata![i]
           const imageBytes = Buffer.from(img.imageData, 'base64')
+          const snapshotRid = `${img.rid || 'img'}-rev-${revisionTag}-${i}`
           await client.query(
             `INSERT INTO brd_cell_images
                (brd_id, table_index, row_index, col_index, rid, media_name, mime_type, cell_text, section, field_label, image_data)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [brdId, img.tableIndex, img.rowIndex, img.colIndex, img.rid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
+            [brdId, img.tableIndex, img.rowIndex, img.colIndex, snapshotRid, img.mediaName, img.mimeType, img.cellText || '', img.section ?? 'unknown', img.fieldLabel ?? '', imageBytes],
           )
         }
       })
+
+      // Log re-upload activity (fire-and-forget)
+      const reUploadActorId = (req as any).user?.userId ?? null
+      if (reUploadActorId) {
+        pool.query(
+          `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_RE_UPLOADED', $2)`,
+          [reUploadActorId, `Re-uploaded source file for "${existingTitle}" (${brdId}, file: ${file.originalname})`],
+        ).catch((e: unknown) => console.warn('Failed to log BRD re-upload:', e))
+      }
 
       const responseImageMetadata = extracted.image_metadata?.map(({ imageData, ...rest }) => rest) || []
 
@@ -365,6 +413,8 @@ router.post(
         contentProfile: extractedContentProfile,
         brdConfig:      extractedBrdConfig ?? null,
         imageMetadata:  responseImageMetadata,
+        diagnostics:    extracted.diagnostics ?? null,
+        formatFingerprint: extracted.format_fingerprint ?? extracted.formatFingerprint ?? null,
       })
     } catch (err) {
       console.log('[POST /brd/re-upload/:brdId]', err)

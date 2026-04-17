@@ -8,6 +8,7 @@ import rateLimit from 'express-rate-limit'
 import { PASSWORD_POLICY, validatePasswordPolicy, generateCompliantPassword } from '../lib/password-policy'
 import { getSecurityPolicy } from '../lib/get-security-policy'
 import { sendPasswordEmail } from '../lib/email'
+import { isSuperAdminRole, normalizeRole } from '../middleware/authorize'
 
 const router = Router()
 
@@ -24,17 +25,42 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<'ADMIN' | 'USER', str
     USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
   if (slug === 'production') return {
-    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
+    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'user-logs'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic'],
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-merge'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
   }
   return {
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],
     USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
+}
+
+function applyTeamRoleFeatureGuards(teamSlug: string | null, role: string, features: string[]): string[] {
+  const slug = String(teamSlug ?? '').toLowerCase()
+  let next = Array.from(new Set(features))
+
+  if (slug === 'pre-production' || slug === 'production') {
+    next = next.filter((f) => f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
+  }
+
+  if (slug === 'updating' && (next.includes('compare-basic') || next.includes('compare-merge'))) {
+    next = Array.from(new Set([...next, 'compare-pdf-xml-only']))
+  }
+
+  // Team Pre-Production USER: read-only BRD sources, no History.
+  if (slug === 'pre-production' && role === 'USER') {
+    next = next.filter((f) => f !== '*' && f !== 'user-logs')
+  }
+
+  // Production USER: no History.
+  if (slug === 'production' && role === 'USER') {
+    next = next.filter((f) => f !== '*' && f !== 'user-logs')
+  }
+
+  return next
 }
 
 function resolvePolicyRole(role: string): 'ADMIN' | 'USER' | null {
@@ -45,6 +71,7 @@ function resolvePolicyRole(role: string): 'ADMIN' | 'USER' | null {
 
 const CAN_CHANGE_PASSWORD: Record<string, string[]> = {
   SUPER_ADMIN: ['ADMIN', 'USER'],
+  SADMIN:      ['ADMIN', 'USER'],
   ADMIN:       ['USER'],
 }
 
@@ -79,8 +106,8 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       const { rows } = await pool.query(
         `SELECT u.*, t.name as "teamName", t.slug as "teamSlug", t.id as "teamIdVal"
          FROM users u LEFT JOIN teams t ON u.team_id = t.id
-         WHERE LOWER(u.user_id) = LOWER($1) AND u.role = 'SUPER_ADMIN' LIMIT 1`,
-        [trimmedUserId],
+         WHERE LOWER(u.user_id) = LOWER($1) AND u.role::text = ANY($2::text[]) LIMIT 1`,
+        [trimmedUserId, ['SUPER_ADMIN', 'SADMIN']],
       )
       userRow = rows[0]
     }
@@ -114,10 +141,11 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     const createdAtMs = new Date(userRow.created_at).getTime()
     const changedAtMs = new Date(userRow.password_changed_at).getTime()
     const sameAsInitialPassword = Math.abs(changedAtMs - createdAtMs) <= 60_000
-    const mustChangePassword = userRow.role !== 'SUPER_ADMIN' && (passwordHistoryCount === 0 || (passwordHistoryCount === 1 && sameAsInitialPassword))
+    const normalizedRole = normalizeRole(userRow.role)
+    const mustChangePassword = !isSuperAdminRole(userRow.role) && (passwordHistoryCount === 0 || (passwordHistoryCount === 1 && sameAsInitialPassword))
 
     const token = jwt.sign(
-      { userId: userRow.id, role: userRow.role, teamId: userRow.team_id, mustChangePassword },
+      { userId: userRow.id, role: normalizedRole, teamId: userRow.team_id, mustChangePassword },
       process.env.JWT_SECRET!,
       { expiresIn: '7d' },
     )
@@ -126,7 +154,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       token,
       user: {
         id: userRow.id, userId: userRow.user_id, firstName: userRow.first_name, lastName: userRow.last_name,
-        role: userRow.role, teamId: userRow.team_id, teamName: userRow.teamName ?? null, mustChangePassword,
+        role: normalizedRole, teamId: userRow.team_id, teamName: userRow.teamName ?? null, mustChangePassword,
       },
     })
   } catch (error) {
@@ -153,11 +181,13 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
     const user = rows[0]
     if (!user) return res.status(404).json({ error: 'User not found' })
 
+    const normalizedRole = normalizeRole(user.role)
+
     let effectiveFeatures: string[] = []
-    if (user.role === 'SUPER_ADMIN') {
+    if (isSuperAdminRole(normalizedRole)) {
       effectiveFeatures = ['*']
     } else if (user.team?.slug) {
-      const policyRole = resolvePolicyRole(user.role)
+      const policyRole = resolvePolicyRole(normalizedRole)
       if (!policyRole) return res.json({ user: { ...user, effectiveFeatures } })
 
       const { rows: policyRows } = await pool.query(
@@ -169,9 +199,11 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
       if (user.userRole && !user.userRole.slug.startsWith(TEAM_POLICY_PREFIX)) {
         effectiveFeatures = Array.from(new Set([...effectiveFeatures, ...user.userRole.features]))
       }
+
+      effectiveFeatures = applyTeamRoleFeatureGuards(user.team.slug, normalizedRole, effectiveFeatures)
     }
 
-    res.json({ user: { ...user, effectiveFeatures } })
+    res.json({ user: { ...user, role: normalizedRole, effectiveFeatures } })
   } catch (error) {
     console.log('Get user error:', error)
     res.status(500).json({ error: 'Internal server error' })
@@ -191,7 +223,7 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
 router.post('/change-password', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { targetUserId, currentPassword, newPassword } = req.body
-    const actorRole = req.user!.role
+    const actorRole = normalizeRole(req.user!.role)
 
     const secPolicy = await getSecurityPolicy()
     const policyError = validatePasswordPolicy(String(newPassword ?? ''), secPolicy)
@@ -236,7 +268,8 @@ router.post('/change-password', authenticate, async (req: AuthRequest, res: Resp
     const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [Number(targetUserId)])
     const target = targetRows[0]
     if (!target) return res.status(404).json({ error: 'User not found' })
-    if (!allowedTargetRoles.includes(target.role)) return res.status(403).json({ error: `You cannot change passwords for ${target.role} users` })
+    const targetRole = normalizeRole(target.role)
+    if (!allowedTargetRoles.includes(targetRole)) return res.status(403).json({ error: `You cannot change passwords for ${targetRole} users` })
 
     if (actorRole === 'ADMIN') {
       const actorTeamId = req.user!.teamId
@@ -278,7 +311,7 @@ router.post('/change-password', authenticate, async (req: AuthRequest, res: Resp
 router.post('/reset-user-password', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { targetUserId } = req.body
-    const actorRole = req.user!.role
+    const actorRole = normalizeRole(req.user!.role)
 
     if (!targetUserId) return res.status(400).json({ error: 'Target user ID is required' })
     const allowedTargetRoles = CAN_CHANGE_PASSWORD[actorRole]
@@ -287,7 +320,8 @@ router.post('/reset-user-password', authenticate, async (req: AuthRequest, res: 
     const { rows: targetRows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [Number(targetUserId)])
     const target = targetRows[0]
     if (!target) return res.status(404).json({ error: 'User not found' })
-    if (!allowedTargetRoles.includes(target.role)) return res.status(403).json({ error: `You cannot reset passwords for ${target.role} users` })
+    const targetRole = normalizeRole(target.role)
+    if (!allowedTargetRoles.includes(targetRole)) return res.status(403).json({ error: `You cannot reset passwords for ${targetRole} users` })
 
     if (actorRole === 'ADMIN') {
       const actorTeamId = req.user!.teamId

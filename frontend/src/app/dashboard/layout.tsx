@@ -291,6 +291,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     (pathname === "/dashboard" && !hasFeature("dashboard")) ||
     (pathname.startsWith("/dashboard/users") &&
       !hasFeature("user-management")) ||
+    (pathname.startsWith("/dashboard/history") &&
+      !hasFeature("user-logs")) ||
     (pathname.startsWith("/dashboard/brd") &&
       !hasFeature(["brd-process", "brd-view-generate"])) ||
     (pathname.startsWith("/dashboard/compare") &&

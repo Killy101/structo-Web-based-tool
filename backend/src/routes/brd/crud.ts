@@ -81,7 +81,10 @@ function getMetaString(meta: Record<string, unknown> | null, keys: string[]): st
   return ''
 }
 
-function derivedFormat(format: string, meta: Record<string, unknown> | null): 'old' | 'new' {
+export function derivedFormat(format: string, meta: Record<string, unknown> | null): 'old' | 'new' {
+  const normalizedFormat = String(format ?? '').toLowerCase()
+  if (normalizedFormat === 'old' || normalizedFormat === 'new') return normalizedFormat as 'old' | 'new'
+
   const storedFmt = String(meta?._format ?? '').toLowerCase()
   const sourceName = getMetaString(meta, ['source_name', 'sourceName', 'Source Name'])
   const sourceType = getMetaString(meta, ['source_type', 'sourceType', 'Source Type'])
@@ -92,10 +95,43 @@ function derivedFormat(format: string, meta: Record<string, unknown> | null): 'o
     'Content Category',
   ])
 
+  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
   if (contentCategory) return 'new'
   if (sourceName && sourceType) return 'old'
-  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
-  return format === 'OLD' ? 'old' : 'new'
+  return 'new'
+}
+
+const PROCESS_TYPE_OPTIONS = new Set([
+  'New source - Initial',
+  'Updating - Initial',
+  'New source - Evergreen',
+  'Updating - Evergreen',
+])
+
+export function resolveProcessType(format: 'old' | 'new', scope: Record<string, unknown> | null): string {
+  const explicitType = getMetaString(scope, [
+    'process_type',
+    'processType',
+    'process_type_override',
+    'processTypeOverride',
+    'brd_process_type',
+    'brdProcessType',
+  ])
+  const normalizedExplicit = [...PROCESS_TYPE_OPTIONS].find(
+    (option) => option.toLowerCase() === explicitType.toLowerCase(),
+  )
+  if (normalizedExplicit) return normalizedExplicit
+
+  const inScope = Array.isArray(scope?.in_scope) ? scope.in_scope : []
+  const outOfScope = Array.isArray(scope?.out_of_scope) ? scope.out_of_scope : []
+  const allRows = [...inScope, ...outOfScope] as Array<Record<string, unknown>>
+  const cadenceValues = allRows
+    .map((row) => String(row.initial_evergreen ?? row.initialEvergreen ?? '').trim())
+    .filter(Boolean)
+
+  const cadence = cadenceValues.some((value) => /\bevergreen\b/i.test(value)) ? 'Evergreen' : 'Initial'
+  const sourceType = format === 'old' ? 'Updating' : 'New source'
+  return `${sourceType} - ${cadence}`
 }
 
 // ── GET /brd — list all BRDs ───────────────────────────────────────────────
@@ -112,7 +148,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
     const { rows } = await pool.query(
       `SELECT b.brd_id as "brdId", b.title, b.format, b.status,
               b.updated_at as "updatedAt",
-              s.metadata,
+              s.metadata, s.scope,
               v.version_num as "latestVersionNum", v.label as "latestVersionLabel"
        FROM brds b
        LEFT JOIN brd_sections s ON s.brd_id = b.brd_id
@@ -129,6 +165,11 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
       const meta = (b.metadata ?? null) as Record<string, unknown> | null
       const geography = (meta?.geography as string) || (meta?.Geography as string) || resolveGeography(meta)
       const fmt = derivedFormat(b.format, meta)
+      const processTypeContext = {
+        ...((b.scope ?? {}) as Record<string, unknown>),
+        ...((meta ?? {}) as Record<string, unknown>),
+      }
+      const processType = resolveProcessType(fmt, processTypeContext)
       const displayName = b.title.charAt(0).toUpperCase() + b.title.slice(1)
       const latestVersion =
         (typeof b.latestVersionLabel === 'string' && b.latestVersionLabel.trim())
@@ -139,6 +180,7 @@ router.get('/', async (_req: AuthRequest, res: Response) => {
         title:       displayName,
         format:      fmt,
         status:      b.status,
+        processType,
         version:     latestVersion,
         lastUpdated: new Date(b.updatedAt).toISOString().split('T')[0],
         geography,
@@ -369,18 +411,21 @@ router.post('/:brdId/query', authenticate, async (req: AuthRequest, res: Respons
 router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
   try {
     const accessPolicy = getBrdAccessPolicy(res)
-    const { status, title, format } = req.body
+    const { status, title, format, processType } = req.body
     const normalizedStatus = status ? normalizeBrdStatus(status) : undefined
+    const normalizedProcessType = typeof processType === 'string'
+      ? [...PROCESS_TYPE_OPTIONS].find((option) => option.toLowerCase() === processType.trim().toLowerCase())
+      : undefined
 
     if (normalizedStatus && !accessPolicy.canChangeStatus) {
       return res.status(403).json({ error: 'Only Pre-Production team can change BRD status.' })
     }
-    if ((title !== undefined || format !== undefined) && !accessPolicy.canEdit) {
+    if ((title !== undefined || format !== undefined || processType !== undefined) && !accessPolicy.canEdit) {
       return res.status(403).json({ error: 'Only Pre-Production team can edit BRDs.' })
     }
 
     const { rows } = await pool.query(
-      `SELECT deleted_at as "deletedAt", status FROM brds WHERE brd_id = $1`,
+      `SELECT deleted_at as "deletedAt", status, title FROM brds WHERE brd_id = $1`,
       [String(req.params.brdId)],
     )
     const existing = rows[0]
@@ -400,6 +445,9 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
     if (dbFormat && dbFormat !== 'NEW' && dbFormat !== 'OLD') {
       return res.status(400).json({ error: `Invalid format: "${format}". Must be new or old.` })
     }
+    if (processType !== undefined && !normalizedProcessType) {
+      return res.status(400).json({ error: `Invalid process type: "${processType}".` })
+    }
 
     const sets: string[] = ['updated_at = NOW()']
     const params: unknown[] = []
@@ -410,29 +458,114 @@ router.patch('/:brdId', async (req: AuthRequest, res: Response) => {
     if (dbFormat)          { sets.push(`format = $${idx++}`); params.push(dbFormat) }
 
     params.push(String(req.params.brdId))
+    const brdId = String(req.params.brdId)
     await pool.query(
       `UPDATE brds SET ${sets.join(', ')} WHERE brd_id = $${idx}`,
       params,
     )
 
-    return res.json({ success: true, brdId: String(req.params.brdId) })
+    if (normalizedProcessType) {
+      await pool.query(
+        `INSERT INTO brd_sections (brd_id, metadata)
+         VALUES ($1, $2::jsonb)
+         ON CONFLICT (brd_id) DO UPDATE
+           SET metadata = COALESCE(brd_sections.metadata, '{}'::jsonb) || $2::jsonb,
+               updated_at = NOW()`,
+        [brdId, JSON.stringify({ process_type: normalizedProcessType })],
+      )
+    }
+
+    // Log the status/field change (fire-and-forget)
+    const patchActorId = (req as any).user?.userId ?? null
+    if (patchActorId) {
+      const brdTitle = existing.title ?? brdId
+      const changeDesc = normalizedStatus
+        ? `Status changed to ${normalizedStatus} for "${brdTitle}" (${brdId})`
+        : `Updated "${brdTitle}" (${brdId})`
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_STATUS_UPDATED', $2)`,
+        [patchActorId, changeDesc],
+      ).catch((e: unknown) => console.warn('Failed to log BRD status update:', e))
+    }
+
+    return res.json({ success: true, brdId })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
+  }
+})
+
+// ── DELETE /brd/:brdId/discard — creator-only hard-delete for DRAFT uploads ──
+// Called by the frontend "Discard & Exit" action.  Any authenticated user may
+// discard their OWN DRAFT BRD without needing admin/delete permissions.
+// Preconditions:
+//   • BRD exists and is not already soft-deleted
+//   • BRD status is DRAFT (never saved / confirmed by the user)
+//   • Requesting user is the creator  OR  has canDelete permission (admins)
+router.delete('/:brdId/discard', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const brdId   = String(req.params.brdId)
+    const userId  = req.user?.userId
+    const policy  = getBrdAccessPolicy(res)
+
+    const { rows } = await pool.query(
+      `SELECT brd_id, title, status, deleted_at, created_by_id FROM brds WHERE brd_id = $1`,
+      [brdId],
+    )
+    if (!rows[0] || rows[0].deleted_at !== null) {
+      return res.status(404).json({ error: 'BRD not found' })
+    }
+
+    const isOwner  = String(rows[0].created_by_id) === String(userId)
+    const isDraft  = rows[0].status === 'DRAFT'
+    const canForce = policy.canDelete  // admins can discard any BRD
+
+    if (!isDraft && !canForce) {
+      return res.status(400).json({ error: 'Only DRAFT BRDs can be discarded' })
+    }
+    if (!isOwner && !canForce) {
+      return res.status(403).json({ error: 'You can only discard your own BRDs' })
+    }
+
+    const discardTitle = rows[0].title ?? brdId
+    // Hard-delete — cascades to brd_sections, brd_cell_images, brd_versions
+    await pool.query(`DELETE FROM brds WHERE brd_id = $1`, [brdId])
+
+    if (userId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_DISCARDED', $2)`,
+        [userId, `Discarded DRAFT "${discardTitle}" (${brdId})`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD discard:', e))
+    }
+
+    return res.json({ success: true })
+  } catch (err) {
+    console.log('[DELETE /brd/:brdId/discard]', err)
+    return res.status(500).json({ error: 'Internal server error' })
   }
 })
 
 // ── DELETE /brd/:brdId — soft delete ──────────────────────────────────────
 router.delete('/:brdId', requireBrdDelete, async (req: Request, res: Response) => {
   try {
+    const brdId = String(req.params.brdId)
     const { rows } = await pool.query(
-      `SELECT deleted_at FROM brds WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      `SELECT deleted_at, title FROM brds WHERE brd_id = $1`,
+      [brdId],
     )
     if (!rows[0] || rows[0].deleted_at !== null) return res.status(404).json({ error: 'BRD not found' })
     await pool.query(
       `UPDATE brds SET deleted_at = NOW(), updated_at = NOW() WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      [brdId],
     )
+
+    const deleteActorId = (req as any).user?.userId ?? null
+    if (deleteActorId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_DELETED', $2)`,
+        [deleteActorId, `Soft-deleted "${rows[0].title ?? brdId}" (${brdId})`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD delete:', e))
+    }
+
     return res.json({ success: true })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
@@ -442,16 +575,26 @@ router.delete('/:brdId', requireBrdDelete, async (req: Request, res: Response) =
 // ── POST /brd/:brdId/restore — restore a soft-deleted BRD ─────────────────
 router.post('/:brdId/restore', requireBrdTrashAccess, authorize(['SUPER_ADMIN', 'ADMIN']), async (req: Request, res: Response) => {
   try {
+    const brdId = String(req.params.brdId)
     const { rows } = await pool.query(
-      `SELECT deleted_at FROM brds WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      `SELECT deleted_at, title FROM brds WHERE brd_id = $1`,
+      [brdId],
     )
     if (!rows[0]) return res.status(404).json({ error: 'BRD not found' })
     if (rows[0].deleted_at === null) return res.status(400).json({ error: 'BRD is not deleted' })
     await pool.query(
       `UPDATE brds SET deleted_at = NULL, updated_at = NOW() WHERE brd_id = $1`,
-      [String(req.params.brdId)],
+      [brdId],
     )
+
+    const restoreActorId = (req as any).user?.userId ?? null
+    if (restoreActorId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_RESTORED', $2)`,
+        [restoreActorId, `Restored "${rows[0].title ?? brdId}" (${brdId}) from trash`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD restore:', e))
+    }
+
     return res.json({ success: true })
   } catch {
     return res.status(404).json({ error: 'BRD not found' })
@@ -463,15 +606,24 @@ router.delete('/:brdId/permanent', requireBrdTrashAccess, authorize(['SUPER_ADMI
   try {
     const brdId = String(req.params.brdId)
     const { rows } = await pool.query(
-      `SELECT deleted_at FROM brds WHERE brd_id = $1`,
+      `SELECT deleted_at, title FROM brds WHERE brd_id = $1`,
       [brdId],
     )
     if (!rows[0]) return res.status(404).json({ error: 'BRD not found' })
     if (rows[0].deleted_at === null) return res.status(400).json({ error: 'BRD must be soft-deleted before permanent delete' })
 
+    const permTitle = rows[0].title ?? brdId
     // All related rows (brd_sections, brd_cell_images, brd_versions) are deleted
     // by ON DELETE CASCADE constraints defined in the schema.
     await pool.query(`DELETE FROM brds WHERE brd_id = $1`, [brdId])
+
+    const permActorId = (req as any).user?.userId ?? null
+    if (permActorId) {
+      pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_PERMANENTLY_DELETED', $2)`,
+        [permActorId, `Permanently deleted "${permTitle}" (${brdId})`],
+      ).catch((e: unknown) => console.warn('Failed to log BRD permanent delete:', e))
+    }
 
     return res.json({ success: true })
   } catch (err) {

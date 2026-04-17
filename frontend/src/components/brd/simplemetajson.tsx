@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui";
+import { mergeWithPreservedSections, validateMetajsonSchema } from "@/lib/metajsonValidation";
 import { copyToClipboard } from "@/utils";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -157,7 +158,7 @@ export default function SimpleMetajson({
   open,
   onClose,
   metajson,
-  filename = "metajson.json",
+  filename = "meta.json",
   onDownload,
   onSave,
 }: SimpleMetajsonProps) {
@@ -271,7 +272,15 @@ export default function SimpleMetajson({
   function handleValidate() {
     const result = tryParseJson(raw);
     if (result.ok) {
-      setLiveJson(sanitizeSimpleMetajson(result.value));
+      const sanitized = sanitizeSimpleMetajson(result.value);
+      const validation = validateMetajsonSchema(sanitized, { requireTransforms: false });
+      if (!validation.valid) {
+        setLiveJson(null);
+        setParseError({ message: validation.errors[0] || "Metajson structure is invalid", line: null });
+        setValidated(false);
+        return;
+      }
+      setLiveJson(sanitized);
       setParseError(null);
       setValidated(true);
     } else {
@@ -290,17 +299,29 @@ export default function SimpleMetajson({
   function handleSave() {
     const json = liveJson ?? (metajson ? sanitizeSimpleMetajson(metajson) : null);
     if (!json || parseError) return;
+
+    const merged = mergeWithPreservedSections(json, metajson);
+    const validation = validateMetajsonSchema(merged, { requireTransforms: !!(metajson?.levelPatterns || metajson?.pathTransform) });
+    if (!validation.valid) {
+      setParseError({ message: validation.errors[0] || "Metajson structure is invalid", line: null });
+      setValidated(false);
+      return;
+    }
+
     setSavedJson(json);
     setSaveFlash(true);
     setTimeout(() => setSaveFlash(false), 2000);
-    if (onSave) onSave(json);
+    setValidated(true);
+    if (onSave) onSave(merged);
   }
 
   function handleDownload() {
     const json = liveJson ?? (metajson ? sanitizeSimpleMetajson(metajson) : null);
     if (!json) return;
-    if (onDownload) { onDownload(json, filename); return; }
-    const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
+
+    const merged = mergeWithPreservedSections(json, metajson);
+    if (onDownload) { onDownload(merged, filename); return; }
+    const blob = new Blob([JSON.stringify(merged, null, 2)], { type: "application/json" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url; a.download = filename;
@@ -582,7 +603,7 @@ export default function SimpleMetajson({
                     <svg className="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
                     </svg>
-                    <span className="text-emerald-600 dark:text-emerald-400">Valid JSON</span>
+                    <span className="text-emerald-600 dark:text-emerald-400">Valid metajson</span>
                   </>
                 ) : editMode ? (
                   savedJson

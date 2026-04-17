@@ -132,10 +132,16 @@ class BRDData:
     # ── Scope ──────────────────────────────────────────────────────────────────
     scope_entries: list[ScopeEntry] = field(default_factory=list)   # active (not struck)
     out_of_scope: list[ScopeEntry] = field(default_factory=list)    # struck-through
+    scope_sme_checkpoint: str = ""
 
     # ── Document structure ─────────────────────────────────────────────────────
     levels: list[LevelData] = field(default_factory=list)
     # Sorted ascending by level.level.  Includes only levels >= 2.
+    citation_style_guide: dict[str, Any] | None = None
+    toc_sorting_order: str = ""
+    toc_hiding_levels: str = ""
+    citation_level_sme_checkpoint: str = ""
+    citation_rules_sme_checkpoint: str = ""
 
     # ── Content profile ────────────────────────────────────────────────────────
     content_profile_levels: list[ContentProfileLevel] = field(default_factory=list)
@@ -627,7 +633,7 @@ def _extract_brd_config_overrides(doc_text: str) -> BRDConfigOverrides:
 
 # ── Section-level extraction delegates ───────────────────────────────────────
 
-def _extract_scope_entries(doc) -> tuple[list[ScopeEntry], list[ScopeEntry]]:
+def _extract_scope_entries(doc) -> tuple[list[ScopeEntry], list[ScopeEntry], str]:
     """
     Delegates to the existing scope extractor, then converts its dict output
     to ScopeEntry dataclasses with cleaned fields.
@@ -637,6 +643,7 @@ def _extract_scope_entries(doc) -> tuple[list[ScopeEntry], list[ScopeEntry]]:
     raw = extract_scope(doc)
     active: list[ScopeEntry] = []
     struck: list[ScopeEntry] = []
+    scope_sme_checkpoint = _clean_multiline(str(raw.get("smeCheckpoint") or raw.get("scopeSmeCheckpoint") or ""))
 
     def _to_entry(d: dict) -> ScopeEntry:
         return ScopeEntry(
@@ -663,7 +670,7 @@ def _extract_scope_entries(doc) -> tuple[list[ScopeEntry], list[ScopeEntry]]:
         if isinstance(entry, dict):
             struck.append(_to_entry(entry))
 
-    return active, struck
+    return active, struck, scope_sme_checkpoint
 
 
 def _extract_metadata_normalized(doc, format_: str) -> dict[str, str]:
@@ -791,7 +798,33 @@ def _examples_from_citation_rule(citation_rules: str) -> list[str]:
     return examples
 
 
-def _build_levels(doc) -> list[LevelData]:
+def _normalize_citation_style_guide(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    description = _clean_multiline(str(raw.get("description") or ""))
+    rows: list[dict[str, str]] = []
+    for row in raw.get("rows", []):
+        if not isinstance(row, dict):
+            continue
+        label = _clean(str(row.get("label") or ""))
+        value = str(row.get("value") or "").strip()
+        if not label and not value:
+            continue
+        rows.append({"label": label, "value": value})
+
+    if not description and not rows:
+        return None
+
+    payload: dict[str, Any] = {}
+    if description:
+        payload["description"] = description
+    if rows:
+        payload["rows"] = rows
+    return payload
+
+
+def _build_levels(doc) -> tuple[list[LevelData], dict[str, Any]]:
     """
     Merge TOC and citation tables into a single sorted list of LevelData.
 
@@ -811,6 +844,14 @@ def _build_levels(doc) -> list[LevelData]:
     toc_raw = extract_toc(doc)
     citations_raw = extract_citations(doc)
 
+    toc_extras: dict[str, Any] = {
+        "citation_style_guide": _normalize_citation_style_guide(toc_raw.get("citationStyleGuide")),
+        "toc_sorting_order": _clean_multiline(str(toc_raw.get("tocSortingOrder") or "")),
+        "toc_hiding_levels": _clean_multiline(str(toc_raw.get("tocHidingLevels") or "")),
+        "citation_level_sme_checkpoint": _clean_multiline(str(citations_raw.get("citationLevelSmeCheckpoint") or citations_raw.get("citableLevelsSmeCheckpoint") or "")),
+        "citation_rules_sme_checkpoint": _clean_multiline(str(citations_raw.get("citationRulesSmeCheckpoint") or "")),
+    }
+
     # Build citation index: level_str → citation row dict
     citation_index: dict[str, dict] = {}
     for ref in citations_raw.get("references", []):
@@ -829,7 +870,7 @@ def _build_levels(doc) -> list[LevelData]:
 
         raw_level = str(section.get("level") or section.get("id") or "")
         level_num = _normalize_level(raw_level)
-        if level_num is None or level_num < 2:
+        if level_num is None or level_num < 0:
             continue
         if level_num in seen:
             continue
@@ -895,7 +936,7 @@ def _build_levels(doc) -> list[LevelData]:
     # Also include levels that appear in citations but not in TOC
     for lvl_str, cit in citation_index.items():
         level_num = _normalize_level(lvl_str)
-        if level_num is None or level_num < 2 or level_num in seen:
+        if level_num is None or level_num < 0 or level_num in seen:
             continue
         seen.add(level_num)
 
@@ -918,7 +959,7 @@ def _build_levels(doc) -> list[LevelData]:
         )
 
     levels.sort(key=lambda lv: lv.level)
-    return levels
+    return levels, toc_extras
 
 
 def _build_content_profile_levels(
@@ -1032,10 +1073,10 @@ def extract_brd(docx_path: str, brd_id: str | None = None) -> BRDData:
     language_display = _display.get(language_key, raw_language)
 
     # ── 3. Scope ───────────────────────────────────────────────────────────────
-    scope_entries, out_of_scope = _extract_scope_entries(doc)
+    scope_entries, out_of_scope, scope_sme_checkpoint = _extract_scope_entries(doc)
 
     # ── 4. Levels (TOC + citations merged) ────────────────────────────────────
-    levels = _build_levels(doc)
+    levels, toc_extras = _build_levels(doc)
 
     # ── 5. Content profile (enriches LevelData.redjay_xml_tag as side-effect) ─
     cp_levels, cp_rc_filename, cp_hardcoded_path = _build_content_profile_levels(doc, levels)
@@ -1061,7 +1102,13 @@ def extract_brd(docx_path: str, brd_id: str | None = None) -> BRDData:
         metadata=metadata,
         scope_entries=scope_entries,
         out_of_scope=out_of_scope,
+        scope_sme_checkpoint=scope_sme_checkpoint,
         levels=levels,
+        citation_style_guide=toc_extras.get("citation_style_guide"),
+        toc_sorting_order=toc_extras.get("toc_sorting_order", ""),
+        toc_hiding_levels=toc_extras.get("toc_hiding_levels", ""),
+        citation_level_sme_checkpoint=toc_extras.get("citation_level_sme_checkpoint", ""),
+        citation_rules_sme_checkpoint=toc_extras.get("citation_rules_sme_checkpoint", ""),
         content_profile_levels=cp_levels,
         heading_annotation="Level 2",
         rc_filename=cp_rc_filename,
@@ -1144,6 +1191,7 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
             }
             for e in brd.out_of_scope
         ],
+        **({"smeCheckpoint": brd.scope_sme_checkpoint} if brd.scope_sme_checkpoint else {}),
     }
 
     citations_dict = {
@@ -1156,7 +1204,9 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
                 "smeComments":   lv.citation_sme_comments,
             }
             for lv in brd.levels
-        ]
+        ],
+        **({"citationLevelSmeCheckpoint": brd.citation_level_sme_checkpoint} if brd.citation_level_sme_checkpoint else {}),
+        **({"citationRulesSmeCheckpoint": brd.citation_rules_sme_checkpoint} if brd.citation_rules_sme_checkpoint else {}),
     }
 
     cp_level_count = len(brd.content_profile_levels)
@@ -1181,7 +1231,7 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
         ],
     }
 
-    toc_dict = {
+    toc_dict: dict[str, Any] = {
         "sections": [
             {
                 "id":              str(lv.level),
@@ -1197,6 +1247,12 @@ def brd_to_metajson_input(brd: BRDData) -> dict[str, Any]:
             for lv in brd.levels
         ]
     }
+    if brd.citation_style_guide:
+        toc_dict["citationStyleGuide"] = brd.citation_style_guide
+    if brd.toc_sorting_order:
+        toc_dict["tocSortingOrder"] = brd.toc_sorting_order
+    if brd.toc_hiding_levels:
+        toc_dict["tocHidingLevels"] = brd.toc_hiding_levels
 
     brd_config: dict[str, Any] = {}
     if brd.config.level_patterns:

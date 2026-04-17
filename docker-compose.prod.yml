@@ -78,6 +78,24 @@ services:
       - processing_data:/app/data
     env_file:
       - ./processing/.env.production
+    environment:
+      # Cap concurrent diff jobs per Uvicorn worker (4 workers × 5 = 20 max system-wide).
+      # Sized for the Updating team (~20 simultaneous users). Lower on smaller hosts.
+      - MAX_CONCURRENT_DIFFS=${MAX_CONCURRENT_DIFFS:-5}
+      # Hard timeout per compare job in seconds (5 minutes).
+      - COMPARE_TIMEOUT_SECONDS=${COMPARE_TIMEOUT_SECONDS:-300}
+    deploy:
+      resources:
+        limits:
+          # 8 GB RAM — 20 simultaneous compares × ~300–400 MB each ≈ 6–8 GB peak.
+          # Raise further if average documents are very large (> 100 pages).
+          memory: 8G
+          # 4 CPU cores — each compare spawns 2 internal threads (load + render).
+          # 20 users × 2 threads = 40 threads, but they rarely all peak at once.
+          cpus: '4.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
     restart: unless-stopped
 
 networks:

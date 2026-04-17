@@ -1,9 +1,12 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdImage from "./BrdImage";
 import BrdTableHeaderCell from "./BrdTableHeaderCell";
+import RichTextEditableField from "./RichTextEditableField";
 import React, { useEffect, useRef, useState } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import { brdRichTextToPlain, extractBrdRichTextHref, hasBrdRichTextColor, hasBrdRichTextMarkup, sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
+import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 /* ─────────────── types ─────────────── */
 interface ScopeRow {
@@ -19,7 +22,25 @@ interface ScopeEntry {
   stable_key?: string; stableKey?: string;
 }
 
-interface Props { initialData?: Record<string, unknown>; brdId?: string; onDataChange?: (data: Record<string, unknown>) => void; }
+interface Props {
+  initialData?: Record<string, unknown>;
+  citationStyleGuide?: Record<string, unknown>;
+  brdId?: string;
+  onDataChange?: (data: Record<string, unknown>) => void;
+}
+
+interface CellImageMeta {
+  id: number;
+  tableIndex: number;
+  rowIndex: number;
+  colIndex: number;
+  rid: string;
+  mediaName: string;
+  mimeType: string;
+  cellText: string;
+  section?: string;
+  fieldLabel?: string;
+}
 
 /* ─────────────── validation types ─────────────── */
 type Severity = "error" | "warning";
@@ -96,7 +117,7 @@ function toRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string): Scop
     initialEvergreen: e.initial_evergreen ?? "", dateOfIngestion: e.date_of_ingestion ?? "",
   };
 }
-function rowsToScopeData(rows: ScopeRow[]): Record<string, unknown> {
+function rowsToScopeData(rows: ScopeRow[], scopeSmeCheckpoint = ""): Record<string, unknown> {
   const inScope  = rows.filter(r => !r.isOutOfScope).map(r => ({
     document_title: r.title, regulator_url: r.referenceLink, content_url: r.contentUrl, content_note: r.contentNote,
     issuing_authority: r.issuingAuth, asrb_id: r.asrbId, sme_comments: r.smeComments, stable_key: r.stableKey,
@@ -107,7 +128,11 @@ function rowsToScopeData(rows: ScopeRow[]): Record<string, unknown> {
     issuing_authority: r.issuingAuth, asrb_id: r.asrbId, sme_comments: r.smeComments, stable_key: r.stableKey,
     initial_evergreen: r.initialEvergreen, date_of_ingestion: r.dateOfIngestion, strikethrough: true,
   }));
-  return { in_scope: inScope, out_of_scope: outOfScope };
+  return {
+    in_scope: inScope,
+    out_of_scope: outOfScope,
+    smeCheckpoint: scopeSmeCheckpoint,
+  };
 }
 
 function buildRows(d?: Record<string, unknown>): ScopeRow[] {
@@ -147,12 +172,20 @@ function hasExtraCols(rows: ScopeRow[]) {
   return { evergreen: rows.some((r) => r.initialEvergreen), ingestion: rows.some((r) => r.dateOfIngestion) };
 }
 
+
 /* ─────────────── link checker ─────────────── */
+function normalizeScopeLinkValue(value: string): string {
+  return extractBrdRichTextHref(value) || brdRichTextToPlain(value).trim();
+}
+
 async function checkLink(url: string): Promise<"ok" | "broken"> {
+  const normalizedUrl = normalizeScopeLinkValue(url);
+  if (!normalizedUrl) return "broken";
+
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
-    await fetch(url, { method: "HEAD", mode: "no-cors", signal: ctrl.signal, redirect: "follow" });
+    await fetch(normalizedUrl, { method: "HEAD", mode: "no-cors", signal: ctrl.signal, redirect: "follow" });
     clearTimeout(timer);
     return "ok";
   } catch {
@@ -203,8 +236,9 @@ async function runValidation(
   // Duplicate content URLs
   const urlMap = new Map<string, ScopeRow[]>();
   rows.forEach(r => {
-    if (!r.contentUrl.trim()) return;
-    const key = r.contentUrl.trim().toLowerCase();
+    const normalizedUrl = normalizeScopeLinkValue(r.contentUrl);
+    if (!normalizedUrl) return;
+    const key = normalizedUrl.toLowerCase();
     if (!urlMap.has(key)) urlMap.set(key, []);
     urlMap.get(key)!.push(r);
   });
@@ -227,8 +261,10 @@ async function runValidation(
   // Link checks
   const linksToCheck: Array<{ row: ScopeRow; field: "referenceLink" | "contentUrl"; url: string }> = [];
   rows.forEach(r => {
-    if (r.referenceLink.trim()) linksToCheck.push({ row: r, field: "referenceLink", url: r.referenceLink.trim() });
-    if (r.contentUrl.trim()) linksToCheck.push({ row: r, field: "contentUrl", url: r.contentUrl.trim() });
+    const referenceLink = normalizeScopeLinkValue(r.referenceLink);
+    const contentUrl = normalizeScopeLinkValue(r.contentUrl);
+    if (referenceLink) linksToCheck.push({ row: r, field: "referenceLink", url: referenceLink });
+    if (contentUrl) linksToCheck.push({ row: r, field: "contentUrl", url: contentUrl });
   });
   const totalLinks = linksToCheck.length;
   let checkedCount = 0;
@@ -602,10 +638,11 @@ const CELL = "px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] align-to
 /* ─────────────── inline editable cell ─────────────── */
 // Uses local draft state so typing doesn't trigger parent re-renders mid-edit.
 // onChange is only called on commit (Enter / click-outside), not on every keystroke.
-function InlineCell({ value, placeholder, onChange, href, strikethrough, wrap }: {
+function InlineCell({ value, placeholder, onChange, href, strikethrough, wrap, sourceTone }: {
   value: string; placeholder: string; strikethrough?: boolean;
   onChange: (val: string) => void; href?: boolean;
-   wrap?: boolean;
+  wrap?: boolean;
+  sourceTone?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft,   setDraft]   = useState(value);
@@ -651,15 +688,50 @@ function InlineCell({ value, placeholder, onChange, href, strikethrough, wrap }:
       </div>
     );
   }
-  const baseText = strikethrough ? "line-through text-slate-400 dark:text-slate-600" : "";
-  if (!value) return (
+  const plainValue = brdRichTextToPlain(value).trim();
+  const linkValue = normalizeScopeLinkValue(value);
+  const richMarkup = hasBrdRichTextMarkup(value);
+  const displayToneClass = strikethrough
+    ? "line-through text-red-600 dark:text-red-400"
+    : sourceTone
+      ? "text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
+      : "text-slate-700 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200";
+
+  if (!plainValue) return (
     <span onClick={e => { e.stopPropagation(); setEditing(true); }}
       className="text-slate-300 dark:text-slate-700 italic cursor-text hover:text-slate-400 select-none text-[11px]">—</span>
   );
   if (href) return (
     <div className="flex items-center gap-1 group/link min-w-0">
-      <a href={value} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-      className={`text-blue-600 dark:text-blue-400 hover:underline text-[11px] truncate block ${baseText}`} title={value}>{value}</a>      <button onClick={e => { e.stopPropagation(); setEditing(true); }}
+      <div className="min-w-0 flex-1">
+        {richMarkup ? (
+          <span
+            onClick={e => {
+              if ((e.target as HTMLElement).closest("a")) {
+                e.stopPropagation();
+                return;
+              }
+              e.stopPropagation();
+              setEditing(true);
+            }}
+            className={`cursor-text text-[11px] transition-colors block break-words ${displayToneClass}`}
+            title={plainValue || "Click to edit"}
+            dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(value) }}
+          />
+        ) : (
+          <a
+            href={linkValue || value}
+            target="_blank"
+            rel="noreferrer"
+            onClick={e => e.stopPropagation()}
+            className={`hover:underline text-[11px] truncate block ${strikethrough ? "line-through text-red-600 dark:text-red-400" : sourceTone ? "text-red-700 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}
+            title={linkValue || value}
+          >
+            {linkValue || value}
+          </a>
+        )}
+      </div>
+      <button onClick={e => { e.stopPropagation(); setEditing(true); }}
         className="opacity-0 group-hover/link:opacity-100 flex-shrink-0 w-4 h-4 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all">
         <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
@@ -668,8 +740,12 @@ function InlineCell({ value, placeholder, onChange, href, strikethrough, wrap }:
     </div>
   );
   return (
-    <span onClick={e => { e.stopPropagation(); setEditing(true); }}
-    className={`cursor-text text-[11.5px] text-slate-700 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors block ${wrap ? "whitespace-normal break-words" : "truncate"} ${baseText}`}     title="Click to edit">{value}</span>
+    <span
+      onClick={e => { e.stopPropagation(); setEditing(true); }}
+      className={`cursor-text text-[11.5px] transition-colors block ${wrap ? "whitespace-normal break-words" : "truncate"} ${displayToneClass}`}
+      title={plainValue || "Click to edit"}
+      dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(value) }}
+    />
   );
 }
 
@@ -913,6 +989,7 @@ function ValidationModal({ validation, onClose, onHighlight, filterRowId }: Moda
 export default function Scope({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows]                         = useState<ScopeRow[]>([]);
   const [saved, setSaved]                       = useState(false);
+  const [scopeSmeCheckpoint, setScopeSmeCheckpoint] = useState("");
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
   const [showModal, setShowModal]               = useState(false);
   const [filterRowId, setFilterRowId]           = useState<string | null>(null);
@@ -920,22 +997,134 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
     phase: "idle", progress: 0, currentStep: "", issues: [], checkedCount: 0, totalLinks: 0,
   });
   const highlightRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
   const isInitializing = useRef(false);
   const rowsRef = useRef<ScopeRow[]>([]);
+  const [images, setImages] = useState<CellImageMeta[]>([]);
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   const API_BASE_SCOPE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
   function getCellImgs(a: string, b: string): UploadedCellImage[] { return cellImages[cellKey(a, b)] ?? []; }
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
-  function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
+  function onCellDeleted(_a: string, _b: string, id: number) {
+    setImages(prev => prev.filter(img => img.id !== id));
+    setCellImages(prev => removeUploadedImageFromMap(prev, id));
+  }
+
+  const SCOPE_COL_MAP: Record<number, string> = { 0: "title", 1: "referenceLink", 2: "contentUrl", 3: "issuingAuth", 4: "asrbId", 5: "smeComments" };
+  function normalizeScopeLabel(value: string) { return value.trim().toLowerCase().replace(/\s+/g, " "); }
+  function getScopeColumnCandidates(row: ScopeRow, col: string): string[] {
+    switch (col) {
+      case "title":
+        return [row.title];
+      case "referenceLink":
+        return [row.referenceLink];
+      case "contentUrl":
+        return [row.contentUrl, row.contentNote];
+      case "issuingAuth":
+        return [row.issuingAuth];
+      case "asrbId":
+        return [row.asrbId];
+      case "smeComments":
+        return [row.smeComments];
+      default:
+        return [];
+    }
+  }
+  function getPersistedCellImages(row: ScopeRow, rowIdx: number, col: string): UploadedCellImage[] {
+    const expectedCol = Object.entries(SCOPE_COL_MAP).find(([, key]) => key === col)?.[0];
+    if (!expectedCol) return [];
+    const expectedColIndex = Number(expectedCol);
+    const exactFieldKeys = [row.stableKey, cellKey(row.stableKey, col)]
+      .map(normalizeScopeLabel)
+      .filter(Boolean);
+    const valueCandidates = getScopeColumnCandidates(row, col)
+      .map(normalizeScopeLabel)
+      .filter(Boolean);
+
+    return images
+      .filter((img) => {
+        if (img.colIndex !== expectedColIndex) return false;
+
+        const rowIndexMatches = img.rowIndex === rowIdx + 1;
+        const fieldLabel = normalizeScopeLabel(img.fieldLabel ?? "");
+
+        if (!fieldLabel) return rowIndexMatches;
+        if (exactFieldKeys.includes(fieldLabel)) return true;
+
+        if (valueCandidates.includes(fieldLabel)) {
+          if (rowIndexMatches) return true;
+
+          const matchingRows = rowsRef.current.filter((candidateRow) => (
+            getScopeColumnCandidates(candidateRow, col)
+              .map(normalizeScopeLabel)
+              .filter(Boolean)
+              .includes(fieldLabel)
+          ));
+
+          return matchingRows.length === 1 && matchingRows[0]?.stableKey === row.stableKey;
+        }
+
+        return false;
+      })
+      .map((img) => toUploadedCellImage(img) as UploadedCellImage);
+  }
+
+  function getPersistedScopeCheckpointImages(): UploadedCellImage[] {
+    const scopeSpecificLabels = [
+      cellKey("scope", "smeCheckpoint"),
+      "Scope SME Checkpoint",
+      "Scope Checkpoint",
+    ].map(normalizeScopeLabel).filter(Boolean);
+    const genericCheckpointLabels = ["SME Checkpoint", "SME Check-point"]
+      .map(normalizeScopeLabel)
+      .filter(Boolean);
+    const textCandidates = [scopeSmeCheckpoint, brdRichTextToPlain(scopeSmeCheckpoint)]
+      .map(normalizeScopeLabel)
+      .filter(Boolean);
+
+    return images
+      .filter((img) => {
+        const isCheckpointSource = img.tableIndex < 0 || img.rowIndex <= 0 || img.rid?.startsWith("manual-");
+        if (!isCheckpointSource) return false;
+
+        const section = normalizeScopeLabel(img.section ?? "");
+        const fieldLabel = normalizeScopeLabel(img.fieldLabel ?? "");
+        const cellText = normalizeScopeLabel(img.cellText ?? "");
+        const matchesText = !!cellText && textCandidates.includes(cellText);
+
+        if (fieldLabel && scopeSpecificLabels.includes(fieldLabel)) return true;
+        if (fieldLabel && genericCheckpointLabels.includes(fieldLabel)) {
+          return section === "scope" || matchesText;
+        }
+
+        return matchesText;
+      })
+      .map((img) => toUploadedCellImage(img) as UploadedCellImage);
+  }
+
+  const scopeCheckpointImages = mergeUploadedImageLists(
+    getCellImgs("scope", "smeCheckpoint"),
+    getPersistedScopeCheckpointImages(),
+  );
 
   useEffect(() => {
     const nextRows = buildRows(initialData);
-    if (scopeRowsEqualIgnoringIds(rowsRef.current, nextRows)) return;
+    const nextScopeSmeCheckpoint = typeof initialData?.smeCheckpoint === "string"
+      ? initialData.smeCheckpoint
+      : typeof initialData?.scopeSmeCheckpoint === "string"
+        ? initialData.scopeSmeCheckpoint
+        : typeof initialData?.scope_sme_checkpoint === "string"
+          ? initialData.scope_sme_checkpoint
+          : "";
+    if (scopeRowsEqualIgnoringIds(rowsRef.current, nextRows) && scopeSmeCheckpoint === nextScopeSmeCheckpoint) return;
 
     isInitializing.current = true;
     setRows(nextRows);
+    setScopeSmeCheckpoint(nextScopeSmeCheckpoint);
     setSaved(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
   useEffect(() => {
@@ -944,20 +1133,22 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
 
   useEffect(() => {
     if (!brdId) return;
-    api.get<{ images: Array<{ id: number; mediaName: string; mimeType: string; cellText: string; section: string; fieldLabel: string; rid: string }> }>(`/brd/${brdId}/images?section=scope`, { timeout: 30000 })
+    api.get<{ images: Array<{ id: number; tableIndex: number; rowIndex: number; colIndex: number; mediaName: string; mimeType: string; cellText: string; section?: string; fieldLabel?: string; rid: string }> }>(`/brd/${brdId}/images?section=scope`, { timeout: 30000 })
       .then(res => {
         const scoped = res.data.images ?? [];
         if (scoped.length > 0) return scoped;
-        return api.get<{ images: Array<{ id: number; mediaName: string; mimeType: string; cellText: string; section: string; fieldLabel: string; rid: string }> }>(`/brd/${brdId}/images`, { timeout: 30000 }).then(fallback => fallback.data.images ?? []);
+        return api.get<{ images: Array<{ id: number; tableIndex: number; rowIndex: number; colIndex: number; mediaName: string; mimeType: string; cellText: string; section?: string; fieldLabel?: string; rid: string }> }>(`/brd/${brdId}/images`, { timeout: 30000 }).then(fallback => fallback.data.images ?? []);
       })
       .then(allImages => {
+        const scopedImages = (allImages ?? []).filter(img => img.section === "scope" || img.section === "unknown" || !img.section);
+        setImages(scopedImages);
         const manualImgs = (allImages ?? []).filter(img => img.section === "scope" && img.rid?.startsWith("manual-"));
         const restored: Record<string, UploadedCellImage[]> = {};
         manualImgs.forEach(img => {
           const key = img.fieldLabel ?? "";
           if (!key) return;
           if (!restored[key]) restored[key] = [];
-          restored[key].push({ id: img.id, mediaName: img.mediaName, mimeType: img.mimeType, cellText: img.cellText, section: img.section, fieldLabel: img.fieldLabel });
+          restored[key].push({ id: img.id, mediaName: img.mediaName, mimeType: img.mimeType, cellText: img.cellText, section: img.section ?? "scope", fieldLabel: img.fieldLabel ?? "" });
         });
         setCellImages(restored);
       })
@@ -966,9 +1157,9 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
 
   useEffect(() => {
     if (isInitializing.current) { isInitializing.current = false; return; }
-    if (onDataChange) onDataChange(rowsToScopeData(rows));
+    if (onDataChange) onDataChange(rowsToScopeData(rows, scopeSmeCheckpoint));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows]);
+  }, [rows, scopeSmeCheckpoint]);
 
   useEffect(() => {
     if (!highlightedRowId) return;
@@ -983,18 +1174,79 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
   const showReportButton = validation.phase === "done" && validation.issues.length > 0;
 
   function addRow() {
+    const id = Date.now().toString();
     const r: ScopeRow = {
-      id: Date.now().toString(), stableKey: `new-${Date.now()}`, title: "", referenceLink: "", contentUrl: "", contentNote: "",
+      id, stableKey: `new-${Date.now()}`, title: "", referenceLink: "", contentUrl: "", contentNote: "",
       issuingAuth: "", asrbId: "", smeComments: "", initialEvergreen: "",
       dateOfIngestion: "", isOutOfScope: false,
     };
     setRows(p => [...p, r]);
+    setActiveRowId(id);
   }
   function updateRow(id: string, field: string, value: string | boolean) {
     setRows(p => p.map(r => r.id === id ? { ...r, [field]: value } : r));
   }
   function removeRow(id: string) { setRows(p => p.filter(r => r.id !== id)); }
+
+  // ── Keyboard shortcuts: Ctrl+Shift+A = add row, Ctrl+Shift+D = delete focused/last row ──
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const _kbRef = useRef({ rows, focusedRowId, addRow, removeRow });
+  _kbRef.current = { rows, focusedRowId, addRow, removeRow };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.ctrlKey || !e.shiftKey) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (e.key === "A" || e.key === "a") {
+        e.preventDefault();
+        _kbRef.current.addRow();
+      } else if (e.key === "D" || e.key === "d") {
+        e.preventDefault();
+        const { rows: r, focusedRowId: fid } = _kbRef.current;
+        const target = fid ?? (r.length > 0 ? r[r.length - 1].id : null);
+        if (target) _kbRef.current.removeRow(target);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // ── End keyboard shortcuts ──────────────────────────────────────────────────
+
   function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const root = containerRef.current;
+      if (!root) return;
+      const activeElement = document.activeElement;
+      const targetNode = e.target as Node | null;
+      const withinEditor = (activeElement ? root.contains(activeElement) : false)
+        || (targetNode ? root.contains(targetNode) : false)
+        || activeRowId !== null;
+      if (!withinEditor) return;
+
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = !!target && (
+        target.tagName === "INPUT"
+        || target.tagName === "TEXTAREA"
+        || target.isContentEditable
+      );
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        addRow();
+        return;
+      }
+
+      if (e.key === "Delete" && !isTypingTarget && activeRowId) {
+        e.preventDefault();
+        removeRow(activeRowId);
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [activeRowId, rows.length]);
   function openModalForRow(rowId: string) { setFilterRowId(rowId); setShowModal(true); }
 
   function handleGenerateReport() {
@@ -1027,7 +1279,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
   }, {});
 
   return (
-    <div>
+    <div ref={containerRef}>
       <div className="rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
         {/* Toolbar */}
         <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-lg border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-700/40">
@@ -1072,7 +1324,41 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
         {/* Hint */}
         <p className="text-[10.5px] text-slate-400 dark:text-slate-600 mb-2 ml-0.5" style={MONO}>
           Click any cell to edit · <span style={{ textDecoration: "line-through" }}>S</span> = strikethrough toggle · hover row for actions
+          {" "}· <kbd className="font-mono">Ctrl+Shift+A</kbd> add · <kbd className="font-mono">Ctrl+Shift+D</kbd> delete row
         </p>
+
+        <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden mb-3">
+          <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={MONO}>Scope · SME Checkpoint</p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={scopeSmeCheckpoint}
+              onChange={setScopeSmeCheckpoint}
+              rows={4}
+              labelPrefix="SME Checkpoint"
+              placeholder="Add the SME checkpoint guidance for the scope section"
+            />
+            {scopeCheckpointImages.map(img => (
+              <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-2 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+            ))}
+            {brdId && (
+              <div className="mt-2">
+                <CellImageUploader
+                  brdId={brdId}
+                  section="scope"
+                  fieldLabel={cellKey("scope", "smeCheckpoint")}
+                  rowIndex={0}
+                  colIndex={0}
+                  existingImages={scopeCheckpointImages}
+                  defaultCellText={scopeSmeCheckpoint}
+                  onUploaded={img => onCellUploaded("scope", "smeCheckpoint", img)}
+                  onDeleted={id => onCellDeleted("scope", "smeCheckpoint", id)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Table */}
         <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
@@ -1115,77 +1401,102 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                     "group/row transition-colors",
                     isHighlighted
                       ? "bg-amber-50 dark:bg-amber-500/10 ring-2 ring-amber-400/40"
-                      : idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]",
-                    !isHighlighted && "hover:bg-blue-50/20 dark:hover:bg-[#1e2235]/50",
-                    oos ? "opacity-60" : "",
+                      : oos
+                        ? "bg-red-50/70 dark:bg-red-500/10"
+                        : idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]",
+                    !isHighlighted && !oos && "hover:bg-blue-50/20 dark:hover:bg-[#1e2235]/50",
                   ].join(" ");
 
+                  const rowHasSourceTone = [
+                    row.title,
+                    row.referenceLink,
+                    row.contentUrl,
+                    row.contentNote,
+                    row.issuingAuth,
+                    row.smeComments,
+                    row.initialEvergreen,
+                    row.dateOfIngestion,
+                  ].some(hasBrdRichTextColor);
+                  const titleImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "title"), getPersistedCellImages(row, idx, "title"));
+                  const referenceLinkImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "referenceLink"), getPersistedCellImages(row, idx, "referenceLink"));
+                  const contentUrlImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "contentUrl"), getPersistedCellImages(row, idx, "contentUrl"));
+                  const issuingAuthImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "issuingAuth"), getPersistedCellImages(row, idx, "issuingAuth"));
+                  const asrbIdImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "asrbId"), getPersistedCellImages(row, idx, "asrbId"));
+                  const smeCommentImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "smeComments"), getPersistedCellImages(row, idx, "smeComments"));
                   return (
-                    <tr key={row.id} className={rowCls} tabIndex={-1} ref={el => { highlightRefs.current[row.id] = el; }}>
+                    <tr key={row.id} className={rowCls} tabIndex={-1} ref={el => { highlightRefs.current[row.id] = el; }} onFocus={() => setFocusedRowId(row.id)}>
                      <td className={CELL} style={{ minWidth: 200, maxWidth: 320 }}>
                         <div className="group">
                           <div className="flex items-start gap-1.5">
                             {rowIssues > 0 && (<button onClick={e => { e.stopPropagation(); openModalForRow(row.id); }} title="View issues" className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center hover:bg-red-600 transition-colors border-none p-0 cursor-pointer">{rowIssues}</button>)}
-                            <InlineCell value={row.title} placeholder="Document title…" wrap strikethrough={oos} onChange={val => updateRow(row.id, "title", val)}/>
+                            <div className="min-w-0 flex-1">
+                              {oos && (
+                                <span className="mb-1 inline-flex items-center rounded-full border border-red-200 dark:border-red-800/40 bg-red-100 dark:bg-red-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-red-700 dark:text-red-300">
+                                  Excluded
+                                </span>
+                              )}
+                              <InlineCell value={row.title} placeholder="Document title…" wrap strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "title", val)}/>
+                            </div>
                           </div>
-                          {getCellImgs(row.stableKey, "title").map(img => (
+                          {titleImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} existingImages={getCellImgs(row.stableKey, "title")} defaultCellText={row.title} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} rowIndex={idx + 1} colIndex={0} existingImages={titleImages} defaultCellText={row.title} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 160, width: 160 }}>
                         <div className="group">
-                          <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "referenceLink", val)}/>
-                          {getCellImgs(row.stableKey, "referenceLink").map(img => (
+                          <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "referenceLink", val)}/>
+                          {referenceLinkImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} existingImages={getCellImgs(row.stableKey, "referenceLink")} defaultCellText={row.referenceLink} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} rowIndex={idx + 1} colIndex={1} existingImages={referenceLinkImages} defaultCellText={row.referenceLink} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 180, width: 180 }}>
                         <div className="group">
-                          <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} onChange={val => updateRow(row.id, "contentUrl", val)}/>
-                          {row.contentNote && (
-                            <div className={`mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400 whitespace-pre-wrap ${oos ? "line-through" : ""}`}>
-                              {row.contentNote}
-                            </div>
+                          <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "contentUrl", val)}/>
+                          {brdRichTextToPlain(row.contentNote).trim() && (
+                            <div
+                              className={`mt-1 text-[10px] leading-relaxed whitespace-pre-wrap ${oos ? "line-through text-red-500 dark:text-red-400" : "text-slate-500 dark:text-slate-400"}`}
+                              dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.contentNote) }}
+                            />
                           )}
-                          {getCellImgs(row.stableKey, "contentUrl").map(img => (
+                          {contentUrlImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} existingImages={getCellImgs(row.stableKey, "contentUrl")} defaultCellText={row.contentUrl || row.contentNote} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} rowIndex={idx + 1} colIndex={2} existingImages={contentUrlImages} defaultCellText={row.contentUrl || row.contentNote} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
                         <div className="group">
-                          <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
-                          {getCellImgs(row.stableKey, "issuingAuth").map(img => (
+                          <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
+                          {issuingAuthImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} existingImages={getCellImgs(row.stableKey, "issuingAuth")} defaultCellText={row.issuingAuth} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} rowIndex={idx + 1} colIndex={3} existingImages={issuingAuthImages} defaultCellText={row.issuingAuth} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
                         <div className="group" onClick={e => e.stopPropagation()}>
-                          <InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} onChange={val => updateRow(row.id, "asrbId", val)}/>
-                          {getCellImgs(row.stableKey, "asrbId").map(img => (
+                          <InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "asrbId", val)}/>
+                          {asrbIdImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} existingImages={getCellImgs(row.stableKey, "asrbId")} defaultCellText={row.asrbId} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} rowIndex={idx + 1} colIndex={4} existingImages={asrbIdImages} defaultCellText={row.asrbId} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
                         <div className="group">
-                          <InlineCell value={row.smeComments} placeholder="Comments…" wrap strikethrough={oos} onChange={val => updateRow(row.id, "smeComments", val)}/>
-                          {getCellImgs(row.stableKey, "smeComments").map(img => (
+                          <InlineCell value={row.smeComments} placeholder="Comments…" wrap strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "smeComments", val)}/>
+                          {smeCommentImages.map(img => (
                             <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
                           ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} existingImages={getCellImgs(row.stableKey, "smeComments")} defaultCellText={row.smeComments} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
+                          {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} rowIndex={idx + 1} colIndex={5} existingImages={smeCommentImages} defaultCellText={row.smeComments} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
                         </div>
                       </td>
-                      {extra.evergreen && <td className={CELL}><InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} onChange={val => updateRow(row.id, "initialEvergreen", val)}/></td>}
-                      {extra.ingestion && <td className={CELL}><InlineCell value={row.dateOfIngestion} placeholder="Date…" strikethrough={oos} onChange={val => updateRow(row.id, "dateOfIngestion", val)}/></td>}
+                      {extra.evergreen && <td className={CELL}><InlineCell value={row.initialEvergreen} placeholder="Initial / Evergreen…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "initialEvergreen", val)}/></td>}
+                      {extra.ingestion && <td className={CELL}><InlineCell value={row.dateOfIngestion} placeholder="Date…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "dateOfIngestion", val)}/></td>}
                       <td className="px-2 py-2 text-center align-top">
                         <div className="flex items-center justify-center">
                           <RowToolbar row={row} onUpdate={updateRow} onRemove={removeRow}/>
@@ -1200,7 +1511,7 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
           {rows.length > 0 && (
             <div className="px-4 py-2 bg-slate-50 dark:bg-[#1e2235] border-t border-slate-200 dark:border-[#2a3147] flex items-center justify-between">
               <p className="text-[10.5px] text-slate-500 dark:text-slate-600 m-0" style={MONO}>
-                {rows.length} {rows.length === 1 ? "document" : "documents"} · {rows.filter(r => r.isOutOfScope).length} struck through
+                {rows.length} {rows.length === 1 ? "document" : "documents"} · {rows.filter(r => r.isOutOfScope).length} excluded or archived
               </p>
               {rows.some(r => r.isOutOfScope) && (
                 <button onClick={() => setRows(p => p.map(r => ({ ...r, isOutOfScope: false })))}

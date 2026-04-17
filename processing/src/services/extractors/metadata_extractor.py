@@ -35,6 +35,8 @@ def _clean(value: str) -> str:
     value = " ".join(value.split())
     # Strip all varieties of surrounding quotes (straight and curly)
     value = value.strip("\"'\u201c\u201d\u2018\u2019\u00ab\u00bb")
+    if value.lower() in {"n/a", "na", "none", "null", "tbd", "-", "--", "—", "not applicable"}:
+        return ""
     return value
 
 
@@ -67,6 +69,122 @@ def _append_named_comment(target: list[str], label: str, comment: str) -> None:
     entry = f"{label}: {comment}" if label else comment
     if entry not in target:
         target.append(entry)
+
+
+def _split_contributors(value: str) -> list[str]:
+    text = (value or "").replace("\xa0", " ").strip()
+    if not text:
+        return []
+
+    newline_or_semicolon_parts = [
+        _clean(part) for part in re.split(r"(?:\r?\n)+|\s*;\s*", text) if _clean(part)
+    ]
+    if len(newline_or_semicolon_parts) > 1:
+        return newline_or_semicolon_parts
+
+    named_entries = [
+        _clean(match)
+        for match in re.findall(r"[^,;\n]+,\s*[^,(;\n]+(?:\s*\([^)]*\))?", text)
+        if _clean(match)
+    ]
+    if named_entries and len(named_entries) > 1:
+        return named_entries
+
+    paired_parts = [_clean(part) for part in re.split(r"\s*,\s*", text) if _clean(part)]
+    if len(paired_parts) >= 4 and len(paired_parts) % 2 == 0:
+        paired_names = [
+            _clean(f"{paired_parts[idx]}, {paired_parts[idx + 1]}")
+            for idx in range(0, len(paired_parts), 2)
+        ]
+        if len(paired_names) > 1:
+            return paired_names
+
+    return [_clean(text)]
+
+
+_METADATA_HINTS = {
+    "metadata element", "document location", "content category name", "source name",
+    "authoritative source", "issuing agency", "content uri", "content url",
+    "publication date", "effective date", "processing date", "document type",
+}
+
+_NON_METADATA_HINTS = {
+    "document title", "reference url", "content url url for the title", "citable levels",
+    "citation rules", "toc requirements", "is level citable?", "source of law",
+}
+
+_IGNORED_METADATA_LABELS = {
+    "metadata element", "document location", "document type",
+    "innodata last edit date", "innodata fields changed",
+    "elevate last edit date", "elevate fields changed",
+}
+
+
+def _looks_like_metadata_table(table) -> bool:
+    if not table.rows:
+        return False
+
+    sample = []
+    for row in table.rows[: min(3, len(table.rows))]:
+        for cell in row.cells[: min(3, len(row.cells))]:
+            text = _clean(cell.text.replace("\xa0", " ")).lower()
+            if text:
+                sample.append(text)
+
+    if not sample:
+        return False
+
+    joined = " | ".join(sample)
+    if any(marker in joined for marker in _NON_METADATA_HINTS) and "metadata element" not in joined:
+        return False
+
+    return any(marker in joined for marker in _METADATA_HINTS)
+
+
+def _iter_candidate_metadata_tables(doc):
+    candidates = [table for table in doc.tables if _looks_like_metadata_table(table)]
+    return candidates if candidates else doc.tables
+
+
+def _extract_structuring_checkpoints(doc) -> dict:
+    checkpoints = {
+        "source_name_sme_checkpoint": "",
+        "content_category_name_sme_checkpoint": "",
+        "structuring_sme_checkpoint": "",
+    }
+
+    paragraphs = list(doc.paragraphs)
+    for index, paragraph in enumerate(paragraphs):
+        title = _clean(para_text(paragraph).replace("\xa0", " ")).lower().strip("*: ")
+        if not title:
+            continue
+
+        key = ""
+        if "source name" in title:
+            key = "source_name_sme_checkpoint"
+        elif "content category name" in title or title == "content category":
+            key = "content_category_name_sme_checkpoint"
+
+        if not key:
+            continue
+
+        captured: list[str] = []
+        for following in paragraphs[index + 1:]:
+            text = para_text(following).replace("\xa0", " ").strip()
+            if (heading_level(following) or 0) >= 1 and text:
+                break
+            if text:
+                captured.append(text)
+
+        note = "\n".join(captured).strip()
+        if note:
+            checkpoints[key] = note
+
+    checkpoints["structuring_sme_checkpoint"] = (
+        checkpoints["content_category_name_sme_checkpoint"]
+        or checkpoints["source_name_sme_checkpoint"]
+    )
+    return checkpoints
 
 
 def _is_legacy_format(doc) -> bool:
@@ -153,6 +271,9 @@ def _extract_metadata_new(doc) -> dict:
         "summary":                   "",
         "status":                    "",
         "sme_comments":              "",
+        "source_name_sme_checkpoint": "",
+        "content_category_name_sme_checkpoint": "",
+        "structuring_sme_checkpoint": "",
         "product_owner":             "",
         "sme":                       "",
         "contributors":              [],
@@ -173,6 +294,7 @@ def _extract_metadata_new(doc) -> dict:
         "authoritative source":      "authoritative_source",
         "source type":               "source_type",
         "content type":              "content_type",
+        "document type":             "content_type",
         "publication date":          "publication_date",
         "last updated date":         "last_updated_date",
         "effective date":            "effective_date",
@@ -203,7 +325,7 @@ def _extract_metadata_new(doc) -> dict:
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     sme_comment_lines: list[str] = []
 
-    for table in doc.tables:
+    for table in _iter_candidate_metadata_tables(doc):
         for row in table.rows:
             cells = row.cells
             if len(cells) < 2:
@@ -230,8 +352,7 @@ def _extract_metadata_new(doc) -> dict:
                 if pattern in label:
                     matched = True
                     if field == "contributors":
-                        parts = re.split(r"[\n,]+", value)
-                        metadata["contributors"] = [p.strip() for p in parts if p.strip()]
+                        metadata["contributors"] = _split_contributors(value)
                     elif field == "content_uri":
                         url, note = extract_url_and_note_from_text(value)
                         metadata["content_uri"] = url or value
@@ -243,7 +364,7 @@ def _extract_metadata_new(doc) -> dict:
                     if comment_value:
                         _append_named_comment(sme_comment_lines, raw_label, comment_value)
                     break
-            if label and not matched:
+            if label and not matched and label not in _IGNORED_METADATA_LABELS:
                 print(f"[DEBUG metadata_extractor] unmatched label: {ascii(label[:60])}")
 
     for field in (
@@ -266,6 +387,8 @@ def _extract_metadata_new(doc) -> dict:
         metadata["issuing_agency"] = metadata["authoritative_source"]
     if not metadata["name"]:
         metadata["name"] = metadata["document_title"]
+
+    metadata.update(_extract_structuring_checkpoints(doc))
 
     metadata["language"] = _infer_language(
         metadata.get("geography", ""),
@@ -313,6 +436,9 @@ def extract_metadata_legacy(doc) -> dict:
         "summary":                   "",
         "status":                    "",
         "sme_comments":              "",
+        "source_name_sme_checkpoint": "",
+        "content_category_name_sme_checkpoint": "",
+        "structuring_sme_checkpoint": "",
         "product_owner":             "",
         "sme":                       "",
         "contributors":              [],
@@ -338,6 +464,7 @@ def extract_metadata_legacy(doc) -> dict:
         "source name":               "content_category_name",
         "source type":               "source_type",
         "content type":              "content_type",
+        "document type":             "content_type",
         "publication date":          "publication_date",
         "last updated date":         "last_updated_date",
         "effective date":            "effective_date",
@@ -368,7 +495,7 @@ def extract_metadata_legacy(doc) -> dict:
     sorted_key_map = sorted(key_map.items(), key=lambda x: -len(x[0]))
     sme_comment_lines: list[str] = []
 
-    for table in doc.tables:
+    for table in _iter_candidate_metadata_tables(doc):
         for row in table.rows:
             cells = row.cells
             if len(cells) < 2:
@@ -396,8 +523,7 @@ def extract_metadata_legacy(doc) -> dict:
             for pattern, field in sorted_key_map:
                 if pattern in label:
                     if field == "contributors":
-                        parts = re.split(r"[\n,]+", value)
-                        metadata["contributors"] = [p.strip() for p in parts if p.strip()]
+                        metadata["contributors"] = _split_contributors(value)
                     elif field == "content_uri":
                         url, note = extract_url_and_note_from_text(value)
                         metadata["content_uri"] = url or value
@@ -430,6 +556,8 @@ def extract_metadata_legacy(doc) -> dict:
         metadata["authoritative_source"] = metadata["issuing_agency"]
     if not metadata["name"]:
         metadata["name"] = metadata["document_title"]
+
+    metadata.update(_extract_structuring_checkpoints(doc))
 
     metadata["language"] = _infer_language(
         metadata.get("geography", ""),

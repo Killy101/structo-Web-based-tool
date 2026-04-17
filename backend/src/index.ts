@@ -111,6 +111,10 @@ async function runStartupMigrations() {
     await pool.query(`ALTER TABLE brd_versions ADD COLUMN IF NOT EXISTS image_ids JSONB`)
     console.log('[migrations] brd_versions.image_ids OK')
 
+    await pool.query(`ALTER TABLE brd_cell_images ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id_deleted ON brd_cell_images (brd_id, deleted_at)`)
+    console.log('[migrations] brd_cell_images.deleted_at OK')
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS inbound_emails (
         id               SERIAL PRIMARY KEY,
@@ -133,6 +137,13 @@ async function runStartupMigrations() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_inbound_emails_processed ON inbound_emails (processed)`)
     console.log('[migrations] inbound_emails table OK')
 
+    // Performance indexes for user/team/log queries (safe to run on existing DBs)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_team_id ON users (team_id)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_role_status ON users (role, status)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_logs_user_id ON user_logs (user_id)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_logs_action_created_at ON user_logs (action, created_at DESC)`)
+    console.log('[migrations] performance indexes OK')
+
     // Fix SERIAL sequences that may be out of sync with existing data
     await pool.query(`
       SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 0) + 1)
@@ -144,7 +155,11 @@ async function runStartupMigrations() {
   }
 }
 
-runStartupMigrations().then(() => {
+runStartupMigrations().then(async () => {
+  if (process.env.NODE_ENV !== 'production') {
+    await seedDevUserIfNeeded()
+  }
+
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
   })

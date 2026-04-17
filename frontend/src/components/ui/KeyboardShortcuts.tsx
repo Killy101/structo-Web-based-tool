@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
 interface Shortcut {
@@ -12,13 +12,30 @@ const SHORTCUTS: Shortcut[] = [
   // Navigation
   { keys: ["Alt", "1"], description: "Go to Dashboard", category: "Navigation" },
   { keys: ["Alt", "2"], description: "Go to BRD Sources", category: "Navigation" },
+  { keys: ["Alt", "N"], description: "New BRD (on BRD page)", category: "Navigation" },
   { keys: ["Alt", "3"], description: "Go to Compare", category: "Navigation" },
   { keys: ["Alt", "H"], description: "Go to History", category: "Navigation" },
   { keys: ["Alt", "U"], description: "Go to User Management", category: "Navigation" },
+  // BRD
+  { keys: ["↑"], description: "Scroll up in BRD list", category: "BRD" },
+  { keys: ["↓"], description: "Scroll down in BRD list", category: "BRD" },
+  // Compare
+  { keys: ["↑"], description: "Previous change / chunk", category: "Compare" },
+  { keys: ["↓"], description: "Next change / chunk", category: "Compare" },
+  { keys: ["←"], description: "Shrink left pane (side-by-side)", category: "Compare" },
+  { keys: ["→"], description: "Expand left pane (side-by-side)", category: "Compare" },
   // UI
   { keys: ["?"], description: "Toggle this shortcuts panel", category: "Interface" },
   { keys: ["Esc"], description: "Close any open panel or modal", category: "Interface" },
   { keys: ["Alt", "A"], description: "Toggle Live Activity feed", category: "Interface" },
+  // BRD Workflow
+  { keys: ["Ctrl", "→"], description: "Next step in BRD workflow", category: "BRD Workflow" },
+  { keys: ["Ctrl", "←"], description: "Previous step in BRD workflow", category: "BRD Workflow" },
+  { keys: ["Ctrl", "Enter"], description: "Confirm & advance to next step", category: "BRD Workflow" },
+  { keys: ["Ctrl", "Shift", "A"], description: "Add a new row (Scope / TOC / Citations / Metadata)", category: "BRD Workflow" },
+  { keys: ["Ctrl", "Shift", "D"], description: "Delete focused row (or last row if none focused)", category: "BRD Workflow" },
+  { keys: ["Esc"], description: "Close / exit BRD workflow", category: "BRD Workflow" },
+  { keys: ["?"], description: "Show BRD shortcuts panel (inside BRD)", category: "BRD Workflow" },
 ];
 
 const CATEGORIES = Array.from(new Set(SHORTCUTS.map(s => s.category)));
@@ -202,12 +219,12 @@ export default function KeyboardShortcuts() {
                       <span style={{ fontSize: 13, color: "#94a3b8" }}>{s.description}</span>
                       <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
                         {s.keys.map((k, ki) => (
-                          <>
-                            <Key key={k} label={k} />
+                          <React.Fragment key={`${k}-${ki}`}>
+                            <Key label={k} />
                             {ki < s.keys.length - 1 && (
-                              <span key={`plus-${ki}`} style={{ fontSize: 10, color: "#334155", fontWeight: 700 }}>+</span>
+                              <span style={{ fontSize: 10, color: "#334155", fontWeight: 700 }}>+</span>
                             )}
-                          </>
+                          </React.Fragment>
                         ))}
                       </div>
                     </div>

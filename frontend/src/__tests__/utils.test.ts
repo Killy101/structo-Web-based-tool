@@ -71,6 +71,10 @@ describe("canCreate", () => {
     expect(canCreate("SUPER_ADMIN", "ADMIN")).toBe(true);
   });
 
+  it("allows SADMIN to create ADMIN", () => {
+    expect(canCreate("SADMIN", "ADMIN")).toBe(true);
+  });
+
   it("allows ADMIN to create USER", () => {
     expect(canCreate("ADMIN", "USER")).toBe(true);
   });
@@ -127,9 +131,12 @@ describe("teamHasAccess", () => {
 
 // ─── ROLE_LABELS ──────────────────────────────────────────
 describe("ROLE_LABELS", () => {
-  it("has labels for all 5 roles", () => {
-    expect(Object.keys(ROLE_LABELS)).toHaveLength(5);
+  it("has labels for the supported base roles and aliases", () => {
+    expect(Object.keys(ROLE_LABELS)).toEqual(
+      expect.arrayContaining(["SUPER_ADMIN", "SADMIN", "ADMIN", "USER"]),
+    );
     expect(ROLE_LABELS.SUPER_ADMIN).toBe("Super Admin");
+    expect(ROLE_LABELS.SADMIN).toBe("Super Admin");
     expect(ROLE_LABELS.USER).toBe("User");
   });
 });

@@ -1,0 +1,21 @@
+{
+  "title": "Local nodemon config schema",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "watch": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "ext": {
+      "type": "string"
+    },
+    "exec": {
+      "type": "string"
+    },
+    "ignore": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

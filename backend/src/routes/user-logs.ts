@@ -17,21 +17,12 @@ router.get(
       let paramIdx = 1
 
       if (actorRole === 'ADMIN') {
-        const { rows: adminRows } = await pool.query(
-          `SELECT team_id FROM users WHERE id = $1`,
-          [req.user!.userId],
-        )
-        const teamId = adminRows[0]?.team_id
+        const teamId = req.user!.teamId
         if (!teamId) return res.json({ logs: [] })
 
-        const { rows: members } = await pool.query(
-          `SELECT id FROM users WHERE team_id = $1`,
-          [teamId],
-        )
-        const memberIds = members.map((m: any) => m.id)
-
-        conditions.push(`ul.user_id = ANY($${paramIdx++})`)
-        params.push(memberIds)
+        // Filter to team members via subquery — avoids 2 separate round-trips
+        conditions.push(`ul.user_id IN (SELECT id FROM users WHERE team_id = $${paramIdx++})`)
+        params.push(teamId)
 
         // Admins must not see their own login/logout
         conditions.push(
@@ -78,6 +69,51 @@ router.get(
     }
   },
 )
+
+// ── DELETE /user-logs/cleanup — purge logs older than N months (default: 1) ──
+// SUPER_ADMIN only — irreversible, always logs what was deleted.
+router.delete(
+  '/cleanup',
+  authenticate,
+  authorize(['SUPER_ADMIN']),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const months = Math.max(1, parseInt((req.query.months as string) || '1', 10))
+      const { rowCount } = await pool.query(
+        `DELETE FROM user_logs WHERE created_at < NOW() - ($1 || ' months')::interval`,
+        [months],
+      )
+      const deleted = rowCount ?? 0
+
+      // Audit the cleanup itself so it is visible in fresh logs
+      await pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'LOGS_CLEANUP', $2)`,
+        [req.user!.userId, `Deleted ${deleted} log entries older than ${months} month${months !== 1 ? 's' : ''}`],
+      )
+
+      return res.json({ success: true, deleted, months })
+    } catch (error) {
+      console.log('Logs cleanup error:', error)
+      return res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
+router.post('/compare', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { fileA, fileB } = req.body
+    if (!fileA || !fileB) return res.status(400).json({ error: 'fileA and fileB are required' })
+
+    await pool.query(
+      `INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'BRD_COMPARE_RUN', $2)`,
+      [req.user!.userId, `Compared "${fileA}" vs "${fileB}"`],
+    )
+    return res.status(201).json({ success: true })
+  } catch (error) {
+    console.log('Log compare error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
 router.get('/my', authenticate, async (req: AuthRequest, res: Response) => {
   try {

@@ -233,12 +233,16 @@ CREATE TABLE IF NOT EXISTS brd_cell_images (
   section      TEXT        NOT NULL DEFAULT 'unknown',
   field_label  TEXT        NOT NULL DEFAULT '',
   image_data   BYTEA,
+  deleted_at   TIMESTAMPTZ,
   extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (brd_id, table_index, row_index, col_index, rid)
 );
 
+ALTER TABLE brd_cell_images ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id         ON brd_cell_images (brd_id);
 CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id_section ON brd_cell_images (brd_id, section);
+CREATE INDEX IF NOT EXISTS idx_brd_cell_images_brd_id_deleted ON brd_cell_images (brd_id, deleted_at);
 
 -- ── brd_versions ─────────────────────────────────────────────────────────────
 

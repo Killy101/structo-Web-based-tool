@@ -1,4 +1,4 @@
-export type CompareType = 'direct' | 'chunk' | 'diff' | 'direct-diff';
+export type CompareType = "wf2" | "wf3" | "direct" | "chunk";
 
 export interface CompareEvent {
   type: CompareType;
@@ -6,10 +6,10 @@ export interface CompareEvent {
   timestamp: string;
 }
 
-const STORAGE_KEY = 'structo_compare_analytics';
+const STORAGE_KEY = "structo_compare_analytics";
 
 export function trackCompareUsage(type: CompareType, userId: string): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   const events = getCompareEvents();
   events.push({ type, userId, timestamp: new Date().toISOString() });
   try {
@@ -20,7 +20,7 @@ export function trackCompareUsage(type: CompareType, userId: string): void {
 }
 
 export function getCompareEvents(): CompareEvent[] {
-  if (typeof window === 'undefined') return [];
+  if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? (JSON.parse(raw) as CompareEvent[]) : [];
@@ -47,14 +47,14 @@ export function getCompareUsageByDay(days = 7): {
   });
 
   const directCounts = Array(days).fill(0) as number[];
-  const chunkCounts  = Array(days).fill(0) as number[];
+  const chunkCounts = Array(days).fill(0) as number[];
 
-  events.forEach(e => {
+  events.forEach((e) => {
     const ts = new Date(e.timestamp).getTime();
     const daysAgo = Math.floor((Date.now() - ts) / DAY);
     const idx = days - 1 - daysAgo;
     if (idx >= 0 && idx < days) {
-      if (e.type === 'direct') directCounts[idx]++;
+      if (e.type === "direct") directCounts[idx]++;
       else chunkCounts[idx]++;
     }
   });
@@ -71,14 +71,14 @@ export function getCompareUsageTotals(): {
   chunkUnique: number;
 } {
   const events = getCompareEvents();
-  const direct = events.filter(e => e.type === 'direct');
-  const chunk  = events.filter(e => e.type === 'chunk');
-  const directUnique = new Set(direct.map(e => e.userId)).size;
-  const chunkUnique  = new Set(chunk.map(e => e.userId)).size;
+  const direct = events.filter((e) => e.type === "direct");
+  const chunk = events.filter((e) => e.type === "chunk");
+  const directUnique = new Set(direct.map((e) => e.userId)).size;
+  const chunkUnique = new Set(chunk.map((e) => e.userId)).size;
   return {
     direct: direct.length,
-    chunk:  chunk.length,
-    total:  events.length,
+    chunk: chunk.length,
+    total: events.length,
     directUnique,
     chunkUnique,
   };

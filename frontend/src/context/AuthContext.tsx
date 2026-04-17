@@ -22,6 +22,14 @@ interface AuthCtx {
 
 const AuthContext = createContext<AuthCtx | null>(null);
 
+function normalizeUserRole<T extends User | null>(user: T): T {
+  if (!user) return user;
+  return {
+    ...user,
+    role: user.role === "SADMIN" ? "SUPER_ADMIN" : user.role,
+  } as T;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -30,7 +38,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshUser = useCallback(async () => {
     try {
       const { user } = await authApi.me();
-      setUser(user);
+      setUser(normalizeUserRole(user as User));
     } catch (error) {
       // Only remove token for auth errors (401/403).
       // Keep the token for transient network errors so the user
@@ -66,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
           const { user } = await authApi.me();
-          setUser(user);
+          setUser(normalizeUserRole(user as User));
           break; // success — exit loop
         } catch (error) {
           if (
@@ -100,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (userId: string, password: string) => {
     const res = await authApi.login(userId, password);
     setToken(res.token);
-    setUser(res.user as unknown as User);
+    setUser(normalizeUserRole(res.user as unknown as User));
   };
 
   const logout = async () => {

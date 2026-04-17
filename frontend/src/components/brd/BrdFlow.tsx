@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Upload from "./Upload";
+import CitationGuide from "./CitationGuide";
 import Scope from "./Scope";
 import Metadata from "./Metadata";
 import ContentProfile from "./ContentProf";
@@ -9,6 +10,7 @@ import Toc from "./TOC";
 import Citation from "./Citation";
 import Generate from "./Generate";
 import api from "@/app/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 interface Props {
   onClose?: () => void;
@@ -44,20 +46,37 @@ interface BrdDetailResponse {
   brdConfig?:      Record<string, unknown>;
 }
 
-const STEPS      = ["Upload", "Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
-const EDIT_STEPS = ["Scope", "Metadata", "TOC", "Citation Rules", "Content Profiling", "Generate"];
+export const FULL_FLOW_STEP_IDS = ["upload", "structuring", "scope", "toc", "citationRules", "metadata", "citationGuide", "contentProfile", "generate"] as const;
+type FlowStepId = (typeof FULL_FLOW_STEP_IDS)[number];
 
-const STEP_META = [
-  { icon: "↑", desc: "Start by uploading your source documents" },
-  { icon: "◎", desc: "Define boundaries, objectives, and scope" },
-  { icon: "≡", desc: "Add project details and stakeholders" },
-  { icon: "✦", desc: "Generate and customize the table of contents" },
-  { icon: "§", desc: "Define citation formatting and standardization rules" },
-  { icon: "⬡", desc: "Analyze and structure content" },
-  { icon: "✦", desc: "Review and generate the final BRD document" },
-];
+export function buildVisibleFlowStepIds(isEditMode: boolean, canViewRestrictedFields: boolean): readonly FlowStepId[] {
+  return (isEditMode ? FULL_FLOW_STEP_IDS.slice(1) : FULL_FLOW_STEP_IDS)
+    .filter((id) => canViewRestrictedFields || id !== "citationGuide");
+}
 
-const EDIT_STEP_META = STEP_META.slice(1);
+const STEP_LABELS: Record<FlowStepId, string> = {
+  upload: "Upload",
+  structuring: "Structuring Requirements",
+  scope: "Scope",
+  toc: "Document Structure",
+  citationRules: "Citation Format Requirements",
+  metadata: "Metadata",
+  citationGuide: "Citation Style Guide Link",
+  contentProfile: "Content Profile",
+  generate: "Generate",
+};
+
+const STEP_META_BY_ID: Record<FlowStepId, { icon: string; desc: string }> = {
+  upload: { icon: "↑", desc: "Start by uploading your source documents" },
+  structuring: { icon: "≡", desc: "Review the source-specific structuring requirements and SME checkpoint" },
+  scope: { icon: "◎", desc: "Define boundaries, objectives, and scope" },
+  toc: { icon: "✦", desc: "Review ToC sorting, hiding levels, and document structure" },
+  citationRules: { icon: "§", desc: "Define citable levels and citation standardization rules" },
+  metadata: { icon: "▦", desc: "Review the full metadata fields captured from the BRD" },
+  citationGuide: { icon: "⌁", desc: "Capture citation style guide links and source-specific guidance" },
+  contentProfile: { icon: "⬡", desc: "Analyze the content profile" },
+  generate: { icon: "✦", desc: "Review and generate the final BRD document" },
+};
 
 // ── Exit / Save confirmation modal ────────────────────────────────────────────
 function SaveAndExitModal({
@@ -167,16 +186,24 @@ export default function BrdFlow({
 }: Props) {
   const isEditMode = !!initialMeta?.brdId;
   const cameFromGenerate = isEditMode; // always show "Back to Generate" in edit mode
+  const { user } = useAuth();
 
-  const toEditStep   = (s: number) => Math.max(0, s - 1);
-  const fromEditStep = (s: number) => s + 1;
+  const teamSlug = String(user?.team?.slug ?? "").toLowerCase();
+  const isPrivilegedUser = user?.role === "SUPER_ADMIN" || (teamSlug === "pre-production" && user?.role === "ADMIN");
+  const initialStatus = String(initialMeta?.status ?? "").toUpperCase();
+  const initialCanViewRestrictedFields = !["APPROVED", "ON_HOLD"].includes(initialStatus) || isPrivilegedUser;
 
-  const steps    = isEditMode ? EDIT_STEPS     : STEPS;
-  const stepMeta = isEditMode ? EDIT_STEP_META : STEP_META;
-
-  const clampedInitial = isEditMode
-    ? Math.max(0, Math.min(toEditStep(initialStep), EDIT_STEPS.length - 1))
-    : Math.max(0, Math.min(initialStep, STEPS.length - 1));
+  const visibleInitialStepIds = buildVisibleFlowStepIds(isEditMode, initialCanViewRestrictedFields);
+  const requestedInitialStepId = FULL_FLOW_STEP_IDS[Math.max(0, Math.min(initialStep, FULL_FLOW_STEP_IDS.length - 1))] ?? (isEditMode ? "structuring" : "upload");
+  const clampedInitial = Math.max(
+    0,
+    visibleInitialStepIds.indexOf(requestedInitialStepId) >= 0
+      ? visibleInitialStepIds.indexOf(requestedInitialStepId)
+      : 0,
+  );
+  const flowStepIds = visibleInitialStepIds;
+  const steps = flowStepIds.map((id) => STEP_LABELS[id]);
+  const stepMeta = flowStepIds.map((id) => STEP_META_BY_ID[id]);
 
   const [step,            setStep]            = useState(clampedInitial);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
@@ -188,6 +215,11 @@ export default function BrdFlow({
   );
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError,   setViewError]   = useState<string | null>(null);
+
+  // Tracks the BRD id as soon as Upload creates it in the DB — before the user
+  // clicks "Continue".  Lets us discard the BRD on exit even when uploadMeta is
+  // still null (step-0 exit before clicking Continue).
+  const pendingUploadBrdId = useRef<string | null>(null);
 
   // ── FIX: per-section draft buffers ────────────────────────────────────────
   // These refs accumulate onDataChange updates WITHOUT triggering re-renders
@@ -241,8 +273,9 @@ export default function BrdFlow({
   }
   // ── End FIX ───────────────────────────────────────────────────────────────
 
-  const isLastStep     = step === steps.length - 1;
-  const isGenerateStep = isLastStep;
+  const activeStepId = flowStepIds[step] ?? flowStepIds[flowStepIds.length - 1] ?? "upload";
+  const isLastStep = step === steps.length - 1;
+  const isGenerateStep = activeStepId === "generate";
 
   useEffect(() => {
     if (!initialMeta?.brdId) return;
@@ -288,19 +321,94 @@ export default function BrdFlow({
     initialSnapshotRef.current = buildFlowSnapshot(uploadMeta);
   }, [uploadMeta]);
 
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement).tagName;
+    const inInput =
+      tag === "INPUT" || tag === "TEXTAREA" ||
+      (e.target as HTMLElement).isContentEditable;
+
+    // ? → toggle shortcuts panel (not in text fields)
+    if (e.key === "?" && !e.ctrlKey && !e.metaKey && !inInput) {
+      e.preventDefault();
+      setShowShortcuts(v => !v);
+      return;
+    }
+
+    // Escape → close shortcuts panel or request exit
+    if (e.key === "Escape") {
+      if (showShortcuts) { setShowShortcuts(false); return; }
+      // Let modals handle their own Escape; only fire requestClose when idle
+      if (!showExitConfirm) requestClose();
+      return;
+    }
+
+    // Don't fire navigation shortcuts while typing
+    if (inInput) return;
+
+    // Alt + → or Ctrl + → → Next step
+    if ((e.altKey || e.ctrlKey) && (e.key === "ArrowRight" || e.key === "Right")) {
+      e.preventDefault();
+      if (!isLastStep && (isEditMode || step !== 0 || uploadMeta)) next();
+      return;
+    }
+
+    // Alt + ← or Ctrl + ← → Previous step
+    if ((e.altKey || e.ctrlKey) && (e.key === "ArrowLeft" || e.key === "Left")) {
+      e.preventDefault();
+      if (step > 0) prev();
+      return;
+    }
+
+    // Ctrl + Enter → Next step
+    if (e.ctrlKey && e.key === "Enter") {
+      e.preventDefault();
+      if (!isLastStep && (isEditMode || step !== 0 || uploadMeta)) next();
+      return;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, isLastStep, isEditMode, uploadMeta, showShortcuts, showExitConfirm]);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
+  // ── End keyboard shortcuts ─────────────────────────────────────────────────
+
   function requestClose() {
     const pending = getPendingUploadMeta();
-    const isBlankUpload = !isEditMode && step === 0 && !pending;
-    if (isGenerateStep || isBlankUpload || !hasPendingChanges()) {
+    // If the user processed a file on step 0 but hasn't clicked Continue yet,
+    // a BRD already exists in the DB — treat it as "has changes" so the
+    // confirmation modal is shown and handleDiscardAndExit can delete it.
+    const hasPendingUpload = !isEditMode && step === 0 && pendingUploadBrdId.current !== null;
+    const isBlankUpload = !isEditMode && step === 0 && !pending && !hasPendingUpload;
+    if (isGenerateStep || isBlankUpload || (!hasPendingUpload && !hasPendingChanges())) {
       onClose?.();
       return;
     }
     setShowExitConfirm(true);
   }
 
-  function handleDiscardAndExit() {
+  async function handleDiscardAndExit() {
     setIsSaving(true);
     setShowExitConfirm(false);
+    // For new (non-edit) uploads, hard-delete the BRD so it never appears on
+    // the dashboard.  The /discard endpoint works for any authenticated user
+    // who is the creator of a DRAFT BRD — no admin role required.
+    // pendingUploadBrdId covers the step-0 case where uploadMeta is still null
+    // (file processed but "Continue" not yet clicked).
+    const brdId = uploadMeta?.brdId ?? pendingUploadBrdId.current;
+    if (!isEditMode && brdId) {
+      try {
+        await api.delete(`/brd/${brdId}/discard`);
+      } catch (err) {
+        console.warn("[BrdFlow] Failed to discard BRD:", err);
+      }
+    }
+    pendingUploadBrdId.current = null;
+    setIsSaving(false);
     onClose?.();
   }
 
@@ -321,74 +429,95 @@ export default function BrdFlow({
   }
 
   function handleEditFromGenerate(targetFullStep: number) {
-    // No need to flush here — Generate doesn't have editable draft fields
-    setStep(isEditMode ? toEditStep(targetFullStep) : targetFullStep);
+    const targetStepId = FULL_FLOW_STEP_IDS[Math.max(0, Math.min(targetFullStep, FULL_FLOW_STEP_IDS.length - 1))] ?? "generate";
+    const nextIndex = flowStepIds.indexOf(targetStepId);
+    setStep(nextIndex >= 0 ? nextIndex : Math.max(0, flowStepIds.indexOf("scope")));
   }
 
 function renderStepContent() {
-  const fullStep = isEditMode ? fromEditStep(step) : step;
-
-  switch (fullStep) {
-    case 0:
+  switch (activeStepId) {
+    case "upload":
       return (
         <Upload
+          onBrdCreated={(id) => { pendingUploadBrdId.current = id; }}
           onComplete={(data) => {
+            // BRD is now tracked in uploadMeta — clear the early ref
+            pendingUploadBrdId.current = null;
             setUploadMeta(data as UploadFlowData);
             next();
           }}
         />
       );
 
-    case 1:
+    case "citationGuide": {
+      const tocData = (tocDraft.current ?? uploadMeta?.toc ?? {}) as Record<string, unknown>;
+      return (
+        <CitationGuide
+          initialData={tocData as { citationStyleGuide?: { description?: string; rows?: Array<{ label?: string; value?: string }> } }}
+          onDataChange={(data) => {
+            tocDraft.current = { ...tocData, ...data };
+          }}
+        />
+      );
+    }
+
+    case "scope":
       return <Scope
         initialData={uploadMeta?.scope}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
         onDataChange={(data) => { scopeDraft.current = data; }}
       />;
 
-    case 2:
+    case "structuring":
       return (
         <Metadata
+          viewMode="structuring"
           format={uploadMeta?.format ?? "new"}
           title={getBestTitle()}
-          // ── FIX: always pass the stable uploadMeta.metadata, never the
-          //         draft output — this prevents the init loop that erases fields
-          initialData={uploadMeta?.metadata}
+          initialData={(metadataDraft.current ?? uploadMeta?.metadata) as Record<string, unknown> | undefined}
+          scopeData={(scopeDraft.current ?? uploadMeta?.scope) as Record<string, unknown> | undefined}
           brdId={uploadMeta?.brdId}
-          // ── FIX: write to ref, not directly into uploadMeta ──
           onDataChange={(data) => { metadataDraft.current = data; }}
         />
       );
 
-    case 3: {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tocData = uploadMeta?.toc as any;
+    case "metadata":
+      return (
+        <Metadata
+          viewMode="full"
+          format={uploadMeta?.format ?? "new"}
+          title={getBestTitle()}
+          initialData={(metadataDraft.current ?? uploadMeta?.metadata) as Record<string, unknown> | undefined}
+          scopeData={(scopeDraft.current ?? uploadMeta?.scope) as Record<string, unknown> | undefined}
+          brdId={uploadMeta?.brdId}
+          onDataChange={(data) => { metadataDraft.current = data; }}
+        />
+      );
+
+    case "toc": {
+      const tocData = (tocDraft.current ?? uploadMeta?.toc ?? {}) as Record<string, unknown>;
       return <Toc
-        initialData={tocData}
+        initialData={tocData as { sections?: Array<{ id?: string; level?: string; name?: string; required?: string; definition?: string; example?: string; note?: string; tocRequirements?: string; smeComments?: string; }>; tocSortingOrder?: string; tocHidingLevels?: string; citationStyleGuide?: { description?: string; rows?: Array<{ label?: string; value?: string }> } }}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
-        onDataChange={(data) => { tocDraft.current = data; }}
+        onDataChange={(data) => { tocDraft.current = { ...tocData, ...data }; }}
       />;
     }
 
-    case 4:
+    case "citationRules":
       return <Citation
         initialData={uploadMeta?.citations}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
         onDataChange={(data) => { citationsDraft.current = data; }}
       />;
 
-    case 5:
+    case "contentProfile":
       return <ContentProfile
         initialData={uploadMeta?.contentProfile}
         brdId={uploadMeta?.brdId}
-        // ── FIX: write to ref, not directly into uploadMeta ──
         onDataChange={(data) => { contentProfileDraft.current = data; }}
       />;
 
-    case 6: {
+    case "generate":
       return (
         <Generate
           brdId={uploadMeta?.brdId}
@@ -408,7 +537,6 @@ function renderStepContent() {
           onComplete={onClose}
         />
       );
-    }
 
     default:
       return null;
@@ -475,6 +603,17 @@ function renderStepContent() {
                 Back to Generate
               </button>
             )}
+            {/* Keyboard shortcuts toggle */}
+            <button
+              onClick={() => setShowShortcuts(v => !v)}
+              title="Keyboard shortcuts (?)"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <rect x="2" y="4" width="20" height="16" rx="2" strokeWidth={2} strokeLinecap="round"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h.01M12 8h.01M17 8h.01M7 12h.01M12 12h.01M17 12h.01M7 16h10" />
+              </svg>
+            </button>
             <button
               onClick={requestClose}
               className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
@@ -536,7 +675,12 @@ function renderStepContent() {
                 Back
               </button>
 
-              <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
+              <div className="flex flex-col items-center gap-0.5">
+                <p className="text-[11px] text-slate-400 dark:text-slate-600">All changes are saved automatically</p>
+                <p className="text-[10px] text-slate-300 dark:text-slate-700 hidden sm:block">
+                  <kbd className="font-mono">Ctrl+←</kbd> · <kbd className="font-mono">Ctrl+→</kbd> to navigate · <kbd className="font-mono">?</kbd> for shortcuts
+                </p>
+              </div>
 
               <button
                 onClick={next}
@@ -564,6 +708,81 @@ function renderStepContent() {
           onConfirm={handleDiscardAndExit}
           onCancel={() => setShowExitConfirm(false)}
         />
+      )}
+
+      {/* Keyboard shortcuts panel */}
+      {showShortcuts && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
+            onClick={() => setShowShortcuts(false)}
+          />
+          <div className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(400px,90vw)]">
+            <div className="bg-white dark:bg-[#0b1a2e] rounded-2xl border border-slate-200 dark:border-blue-900/40 shadow-2xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-blue-900/30">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="2" y="4" width="20" height="16" rx="2" strokeWidth={2} strokeLinecap="round"/>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h.01M12 8h.01M17 8h.01M7 12h.01M12 12h.01M17 12h.01M7 16h10" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-900 dark:text-slate-100">BRD Keyboard Shortcuts</p>
+                    <p className="text-xs text-slate-400">Press <kbd className="font-mono">?</kbd> to open / close</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowShortcuts(false)}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Shortcut rows */}
+              <div className="px-5 py-4 space-y-1">
+                {[
+                  { keys: ["Ctrl", "→"],       desc: "Next step" },
+                  { keys: ["Ctrl", "←"],       desc: "Previous step" },
+                  { keys: ["Alt",  "→"],       desc: "Next step (alternative)" },
+                  { keys: ["Alt",  "←"],       desc: "Previous step (alternative)" },
+                  { keys: ["Ctrl", "Enter"],   desc: "Next step (confirm & advance)" },
+                  { keys: ["Ctrl", "Shift", "A"], desc: "Add row (Scope / TOC / Citations / Metadata)" },
+                  { keys: ["Ctrl", "Shift", "D"], desc: "Delete focused row (or last row)" },
+                  { keys: ["Esc"],             desc: "Close workflow / exit" },
+                  { keys: ["?"],               desc: "Toggle this shortcuts panel" },
+                ].map(({ keys, desc }) => (
+                  <div
+                    key={desc}
+                    className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-slate-50 dark:hover:bg-blue-500/5 transition-colors"
+                  >
+                    <span className="text-sm text-slate-600 dark:text-slate-300">{desc}</span>
+                    <div className="flex items-center gap-1">
+                      {keys.map((k, i) => (
+                        <span key={k} className="flex items-center gap-1">
+                          <kbd className="inline-flex items-center justify-center px-1.5 py-0.5 min-w-[24px] h-[22px] rounded text-[11px] font-mono font-semibold bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 border-b-2 text-blue-600 dark:text-blue-400">
+                            {k}
+                          </kbd>
+                          {i < keys.length - 1 && (
+                            <span className="text-[10px] font-bold text-slate-300 dark:text-slate-600">+</span>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="px-5 py-3 border-t border-slate-100 dark:border-blue-900/30 text-center">
+                <p className="text-[11px] text-slate-400 dark:text-slate-600">Shortcuts are disabled while typing in text fields</p>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </>
   );

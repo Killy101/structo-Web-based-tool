@@ -1,6 +1,7 @@
 "use client";
 import React, {
   forwardRef,
+  useCallback,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -8,12 +9,27 @@ import React, {
 import { useTheme } from "../../context/ThemContext";
 import type { Chunk, ChunkKind, DiffPaneHandle, PaneData, TagConfig } from "./types";
 
+interface HeaderStat {
+  label: string;
+  count: number;
+  colorClass: string;
+  title: string;
+}
+
 interface Props {
   pane: PaneData;
   chunks: Chunk[];
   activeChunkId: number | null;
   filename: string;
   side: "a" | "b";
+  /** Called when the user clicks a highlighted chunk span in this pane */
+  onChunkClick?: (chunkId: number) => void;
+  /** Called with scroll fraction (0–1) when the user manually scrolls this pane */
+  onScrollFraction?: (scrollFraction: number) => void;
+  /** Per-pane change-count badges rendered in the header */
+  headerStats?: HeaderStat[];
+  /** Called when the user clicks the "Jump to first change" button */
+  onJumpToFirst?: () => void;
 }
 
 /* ── Active-chunk outline/border colours (word bg comes from backend tags) ── */
@@ -100,8 +116,9 @@ function buildLines(pane: PaneData) {
 }
 
 const DiffPane = forwardRef<DiffPaneHandle, Props>(
-  ({ pane, chunks, activeChunkId, filename, side }, ref) => {
-    const scrollRef = useRef<HTMLDivElement>(null);
+  ({ pane, chunks, activeChunkId, filename, side, onChunkClick, onScrollFraction, headerStats, onJumpToFirst }, ref) => {
+    const scrollRef  = useRef<HTMLDivElement>(null);
+    const syncingRef = useRef(false);   // true while a programmatic scroll is in flight
     const { dark } = useTheme();
 
     useImperativeHandle(ref, () => ({
@@ -109,10 +126,15 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         const container = scrollRef.current;
         if (!container) return;
 
+        // Suppress the scroll-fraction callback while we drive the scroll
+        syncingRef.current = true;
+        const clearSync = () => { syncingRef.current = false; };
+
         // Try exact match first
         const el = container.querySelector(`[data-chunk-id="${chunkId}"]`) as HTMLElement | null;
         if (el) {
           el.scrollIntoView({ behavior: "smooth", block: "center" });
+          setTimeout(clearSync, 500);
           return;
         }
 
@@ -120,15 +142,14 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         if (scrollFraction !== undefined) {
           const maxScroll = container.scrollHeight - container.clientHeight;
           if (maxScroll > 0) {
-            container.scrollTo({
-              top: scrollFraction * maxScroll,
-              behavior: "smooth",
-            });
+            container.scrollTo({ top: scrollFraction * maxScroll, behavior: "smooth" });
+            setTimeout(clearSync, 500);
             return;
           }
         }
 
-        // Fallback 2: find the nearest neighbor chunk that exists in this pane
+        // Fallback 2: find the nearest neighbour chunk that exists in this pane
+        syncingRef.current = false; // nothing scrolled yet
         if (!orderedIds) return;
         const idx = orderedIds.indexOf(chunkId);
         if (idx < 0) return;
@@ -139,11 +160,22 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
             if (ni < 0 || ni >= orderedIds.length) continue;
             const neighbor = container.querySelector(`[data-chunk-id="${orderedIds[ni]}"]`) as HTMLElement | null;
             if (neighbor) {
+              syncingRef.current = true;
               neighbor.scrollIntoView({ behavior: "smooth", block: "center" });
+              setTimeout(clearSync, 500);
               return;
             }
           }
         }
+      },
+
+      scrollToFraction(fraction: number) {
+        const container = scrollRef.current;
+        if (!container) return;
+        syncingRef.current = true;
+        const maxScroll = container.scrollHeight - container.clientHeight;
+        container.scrollTo({ top: fraction * maxScroll, behavior: "smooth" });
+        setTimeout(() => { syncingRef.current = false; }, 500);
       },
     }), []);
 
@@ -167,59 +199,137 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
 
     const sideBadge = side === "a" ? "bg-rose-500 text-white" : "bg-emerald-500 text-white";
 
-    /* ── Pre-build all line nodes, only recompute when data or active chunk changes ── */
+    /* ── Pre-build all line nodes.
+     *
+     * IMPORTANT: activeChunkId is intentionally NOT in the dependency array.
+     * Rebuilding 5 000–50 000 React nodes on every chunk click was extremely
+     * slow for large documents. Instead, the active-chunk highlight is applied
+     * via a tiny injected <style> rule (see activeChunkCSS below) so only a
+     * string update happens on selection changes, not a full node rebuild.
+     *
+     * Every span that belongs to a chunk carries data-chunk-id so the CSS
+     * selector can target all of them at once. The first span of each chunk
+     * also serves as the DOM anchor for scrollToChunk().
+     * ── */
     const renderedNodes = useMemo(() => {
       const nodes: React.ReactNode[] = [];
-      const anchoredChunks = new Set<number>();
 
       for (let li = 0; li < lines.length; li++) {
         const segs = lines[li];
         const lineNodes: React.ReactNode[] = [];
         for (let si = 0; si < segs.length; si++) {
           const seg = segs[si];
-          const baseStyle = tagStyles[seg.tagName] ?? {};
-          const isActive = seg.chunkId !== null && seg.chunkId === activeChunkId;
-          const kind = seg.chunkId !== null ? kindMap.get(seg.chunkId) : undefined;
-          const ahl = isActive && kind ? ACTIVE_HL[kind] : undefined;
-
-          const style: React.CSSProperties = ahl
-            ? {
-                ...baseStyle,
-                backgroundColor: baseStyle.backgroundColor || ahl.bg,
-                borderRadius: "2px",
-                outline: `2px solid ${ahl.border}`,
-                outlineOffset: "0px",
-              }
-            : baseStyle;
-
-          const attrs: Record<string, string> = {};
-          if (seg.chunkId !== null && !anchoredChunks.has(seg.chunkId)) {
-            attrs["data-chunk-id"] = String(seg.chunkId);
-            anchoredChunks.add(seg.chunkId);
-          }
+          const style = tagStyles[seg.tagName] ?? {};
 
           lineNodes.push(
-            <span key={si} style={style} {...attrs}>{seg.text}</span>
+            seg.chunkId !== null
+              ? <span key={si} style={style} data-chunk-id={String(seg.chunkId)}>{seg.text}</span>
+              : <span key={si} style={style}>{seg.text}</span>
           );
         }
-        nodes.push(<div key={li}>{lineNodes}</div>);
+        /* content-visibility:auto tells the browser to skip layout/paint for
+         * lines outside the viewport, giving near-virtual-scroll performance
+         * without a JS virtualization library. containIntrinsicHeight provides
+         * a size hint so the scrollbar stays stable. */
+        nodes.push(
+          <div key={li} style={{ contentVisibility: "auto", containIntrinsicHeight: "auto 1.6em" }}>
+            {lineNodes}
+          </div>
+        );
       }
       return nodes;
-    }, [lines, tagStyles, activeChunkId, kindMap]);
+    }, [lines, tagStyles]); // ← activeChunkId removed; kindMap no longer needed here
+
+    /* Active-chunk highlight as an injected CSS rule.
+     * Only this tiny string regenerates on every chunk click — not the full
+     * node tree. The selector targets all data-chunk-id spans of that chunk. */
+    const activeChunkCSS = useMemo(() => {
+      if (activeChunkId === null) return "";
+      const kind = kindMap.get(activeChunkId);
+      if (!kind) return "";
+      const ahl = ACTIVE_HL[kind];
+      return (
+        `[data-chunk-id="${activeChunkId}"] {` +
+        ` background-color: ${ahl.bg} !important;` +
+        ` border-radius: 2px;` +
+        ` outline: 2px solid ${ahl.border};` +
+        ` outline-offset: 0px;` +
+        ` }`
+      );
+    }, [activeChunkId, kindMap]);
+
+    /* ── Click-to-select: clicking any highlighted span selects its chunk ── */
+    const handleChunkClick = useCallback((e: React.MouseEvent) => {
+      if (!onChunkClick) return;
+      const target = e.target as HTMLElement;
+      const chunkSpan = target.closest("[data-chunk-id]") as HTMLElement | null;
+      if (chunkSpan?.dataset.chunkId) {
+        const id = Number(chunkSpan.dataset.chunkId);
+        if (!isNaN(id)) onChunkClick(id);
+      }
+    }, [onChunkClick]);
+
+    /* ── Scroll sync: emit fraction to parent when user scrolls manually ── */
+    const handleScroll = useCallback(() => {
+      if (syncingRef.current) return;
+      const container = scrollRef.current;
+      if (!container || !onScrollFraction) return;
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      if (maxScroll > 0) onScrollFraction(container.scrollTop / maxScroll);
+    }, [onScrollFraction]);
+
+    const hasStats = headerStats && headerStats.length > 0;
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
-        <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
-          <span className={`text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}`}>
-            {side.toUpperCase()}
-          </span>
-          <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">{filename}</span>
+        {/* ── Panel header ──────────────────────────────────────────────────── */}
+        <div className="flex-shrink-0 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}`}>
+              {side.toUpperCase()}
+            </span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate flex-1 min-w-0">
+              {filename}
+            </span>
+
+            {/* Change-count badges */}
+            {hasStats && (
+              <div className="flex-shrink-0 flex items-center gap-1.5">
+                {headerStats!.map((stat) => (
+                  <span
+                    key={stat.label}
+                    title={stat.title}
+                    className={`text-[9px] font-mono font-bold ${stat.colorClass} select-none`}
+                  >
+                    {stat.label}{stat.count}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Jump-to-first-change button */}
+            {onJumpToFirst && hasStats && (
+              <button
+                onClick={onJumpToFirst}
+                title="Jump to first change in this panel"
+                className="flex-shrink-0 flex items-center gap-0.5 text-[9px] font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors px-1.5 py-0.5 rounded hover:bg-slate-200 dark:hover:bg-white/10"
+              >
+                <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                </svg>
+                Jump
+              </button>
+            )}
+          </div>
         </div>
 
         <div
           ref={scrollRef}
           className="flex-1 min-h-0 overflow-auto"
+          onScroll={handleScroll}
+          onClick={handleChunkClick}
         >
+          {activeChunkCSS && <style>{activeChunkCSS}</style>}
           <pre
             className="text-[11.5px] whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-[#c8d8e8] px-3 py-1"
             style={{ lineHeight: "1.6", overflowWrap: "break-word", wordBreak: "break-word" }}

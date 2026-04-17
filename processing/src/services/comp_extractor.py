@@ -111,17 +111,19 @@ import html
 # tkinter removed — headless service mode
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
   
 try:
     import fitz
 except ImportError:
     raise ImportError("PyMuPDF not found.  Run:  pip install pymupdf")
 
+_rfuzz: Any = None
 try:
-    from rapidfuzz import fuzz as _rfuzz
+    import importlib
+    _rfuzz = importlib.import_module("rapidfuzz.fuzz")
     _USE_RAPIDFUZZ = True
-except ImportError:
+except Exception:
     _USE_RAPIDFUZZ = False
 
 
@@ -187,6 +189,7 @@ _RE_HF_MARKER    = re.compile(r'\b(?:f|c|e|m|s)\d+[a-z]?\b')
 _RE_HF_BARE      = re.compile(r'^[fcemsx]\d+[a-z]?$')
 _RE_HF_SECREF    = re.compile(r'\b(?:s\.|sch\.|para\.|art\.|reg\.)\s*\d')
 _RE_HF_BODYSTART = re.compile(r'^(?:word|words|s\.\s*\d|reg\.|sch\.|para\.)')
+_RE_COMPILATION_LINE = re.compile(r'\bcompilation\s+no\.?\s*\d+\b', re.I)
 
 # _promote_section_number_headings
 _RE_TITLE_CASE   = re.compile(r'^[A-Z][a-z]')
@@ -400,6 +403,18 @@ def _compact_amendment_markers(text: str) -> str:
     )
 
     return s
+
+
+def _should_preserve_from_hf_strip(line_txt: str) -> bool:
+    """Return True for semantically meaningful top/bottom lines.
+
+    Compilation/version lines often appear in page header zones. If we treat
+    them as repeating header/footer noise, true version changes (e.g. 172 -> 173)
+    are lost before diffing.
+    """
+    if not line_txt:
+        return False
+    return bool(_RE_COMPILATION_LINE.search(line_txt))
 
 
 def _canonical_amendment_marker(text: str) -> Optional[str]:
@@ -988,128 +1003,174 @@ def _promote_isolated_provision_markers(lines: List[PdfLine]) -> None:
 
 def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     """Returns list[PdfLine] for the whole document (all pages concatenated).
-    Strips repeating page headers and footers to reduce false positives."""
+    Strips repeating page headers and footers to reduce false positives.
+
+    Pages are processed in parallel (ThreadPoolExecutor, separate fitz.Document
+    per worker) for a 2-4x speedup on documents with 20+ pages.
+    Cross-page post-processing runs sequentially after all pages are collected.
+    """
     import time as _time
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
     _t_start = _time.perf_counter()
 
-    doc   = fitz.open(path)
+    # Open once to count pages and detect headers/footers, then close.
+    doc = fitz.open(path)
     total = len(doc)
 
-    # Detect repeating header/footer patterns sampled across the whole document
-    hf_noise = _detect_header_footer_patterns(doc)
+    # Skip header/footer sampling for very small PDFs (no repeated patterns).
+    if total >= 6:
+        hf_noise = _detect_header_footer_patterns(doc)
+    else:
+        hf_noise = set()
+    doc.close()
+
     _t_hf = _time.perf_counter()
     print(f"  [load_pdf] header/footer detect: {_t_hf - _t_start:.2f}s  ({total} pages)", flush=True)
 
-    lines = []
+    # Read bytes once — each worker opens its own fitz.Document from this
+    # immutable buffer so no document handle is shared between threads.
+    with open(path, "rb") as _f:
+        _pdf_bytes = _f.read()
+
     page_gap = 80.0
 
-    # Aggregate timing accumulators
-    _acc_text = 0.0
-    _acc_tables = 0.0
-    _acc_parse = 0.0
-    _acc_merge = 0.0
+    # Determine text-extraction flags once (same for every page).
+    _flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
+    try:
+        _flags |= fitz.TEXT_DEHYPHENATE
+    except AttributeError:
+        pass  # older PyMuPDF without TEXT_DEHYPHENATE
 
-    for i in range(total):
-        fz  = doc[i]
-        h   = fz.rect.height or 1
-        page_y_offset = i * (h + page_gap)
-        # TEXT_DEHYPHENATE: join soft-hyphenated words across lines automatically
-        flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
-        try:
-            flags |= fitz.TEXT_DEHYPHENATE
-        except AttributeError:
-            pass  # older PyMuPDF without TEXT_DEHYPHENATE
-        _pt0 = _time.perf_counter()
-        raw = fz.get_text("dict", flags=flags)
-        _pt1 = _time.perf_counter()
-        _acc_text += _pt1 - _pt0
+    # ── Per-page extraction (called from worker threads) ──────────────────────
+    def _extract_pages(page_indices: list) -> List[Tuple[int, List[PdfLine]]]:
+        """Open a private fitz.Document and process the given page indices.
+        Returns [(page_idx, merged_lines), ...] in the order they were processed.
+        """
+        local_doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
+        results: List[Tuple[int, List[PdfLine]]] = []
 
-        # Skip table detection — find_tables() is extremely slow on large PDFs
-        # (267s for 767 pages). Regular text extraction already captures table
-        # content, which is sufficient for diffing.
-        table_lines, table_boxes = [], []
-        _pt2 = _time.perf_counter()
-        _acc_tables += _pt2 - _pt1
+        for i in page_indices:
+            fz = local_doc[i]
+            h  = fz.rect.height or 1
+            page_y_offset = i * (h + page_gap)
 
-        _pt3 = _time.perf_counter()
-        all_lines = []
-        for block in raw["blocks"]:
-            if block.get("type") != 0:
-                continue
-            for line in block["lines"]:
-                line_bbox = tuple(round(v, 1) for v in line.get("bbox", (0, 0, 0, 0)))
-                if table_boxes and any(_rect_intersects(line_bbox, tb) for tb in table_boxes):
+            raw = fz.get_text("dict", flags=_flags)
+
+            all_lines: List[PdfLine] = []
+            for block in raw["blocks"]:
+                if block.get("type") != 0:
                     continue
-                spans = [_parse_span(s) for s in line["spans"] if s["text"].strip()]
-                if not spans:
-                    continue
-                local_y = round(line["bbox"][1], 1)
-                y    = round(page_y_offset + local_y, 1)
-                xmin = round(min(s.x for s in spans), 1)
-
-                # Skip header/footer lines (top or bottom 12% of page)
-                rel_top = local_y / h
-                rel_bot = (h - local_y) / h
-                if rel_top <= 0.12 or rel_bot <= 0.12:
-                    line_txt = _norm_cmp(' '.join(s.text for s in spans))
-                    marker_like = (
-                        bool(_RE_HF_PAREN.search(line_txt)) or
-                        bool(_RE_HF_BRACKET.search(line_txt)) or
-                        bool(_RE_HF_MARKER.search(line_txt)) or
-                        bool(_RE_HF_BARE.match(line_txt)) or
-                        bool(_RE_HF_SECREF.search(line_txt)) or
-                        bool(_RE_HF_BODYSTART.search(line_txt))
-                    )
-                    if line_txt in hf_noise and not marker_like:
+                for line in block["lines"]:
+                    spans = [_parse_span(s) for s in line["spans"] if s["text"].strip()]
+                    if not spans:
                         continue
+                    local_y = round(line["bbox"][1], 1)
+                    y    = round(page_y_offset + local_y, 1)
+                    xmin = round(min(s.x for s in spans), 1)
 
-                all_lines.append(PdfLine(y=y, x_min=xmin, spans=spans))
+                    # Skip header/footer lines (top or bottom 12% of page).
+                    rel_top = local_y / h
+                    rel_bot = (h - local_y) / h
+                    if rel_top <= 0.12 or rel_bot <= 0.12:
+                        line_txt = _norm_cmp(" ".join(s.text for s in spans))
+                        marker_like = (
+                            bool(_RE_HF_PAREN.search(line_txt)) or
+                            bool(_RE_HF_BRACKET.search(line_txt)) or
+                            bool(_RE_HF_MARKER.search(line_txt)) or
+                            bool(_RE_HF_BARE.match(line_txt)) or
+                            bool(_RE_HF_SECREF.search(line_txt)) or
+                            bool(_RE_HF_BODYSTART.search(line_txt))
+                        )
+                        if _should_preserve_from_hf_strip(line_txt):
+                            marker_like = True
+                        if line_txt in hf_noise and not marker_like:
+                            continue
 
-        all_lines.extend(table_lines)
-        _pt4 = _time.perf_counter()
-        _acc_parse += _pt4 - _pt3
+                    all_lines.append(PdfLine(y=y, x_min=xmin, spans=spans))
 
-        # Sort by y first with 2pt bucket (finer than old 4pt to avoid
-        # interleaving rows that sit close together), then by x within a row.
-        all_lines.sort(key=lambda l: (round(l.y / 2) * 2, l.x_min))
+            # Sort by y-bucket then x (same logic as before).
+            all_lines.sort(key=lambda l: (round(l.y / 2) * 2, l.x_min))
 
-        # Merge spans that sit on the same physical line (y within 6pt).
-        # 6pt catches lines where superscripts/different font sizes shift
-        # the reported y baseline by 1-5pt (common with small annotation fonts).
-        merged = []
-        for pl in all_lines:
-            if merged and abs(pl.y - merged[-1].y) <= 6:
-                merged[-1].spans.extend(pl.spans)
-                merged[-1].x_min = min(merged[-1].x_min, pl.x_min)
-                # Re-sort by x to maintain left-to-right reading order
-                merged[-1].spans.sort(key=lambda s: s.x)
-            else:
-                merged.append(PdfLine(y=pl.y, x_min=pl.x_min,
-                                      spans=sorted(pl.spans, key=lambda s: s.x)))
+            # Merge spans on the same physical line (y within 6pt).
+            merged: List[PdfLine] = []
+            for pl in all_lines:
+                if merged and abs(pl.y - merged[-1].y) <= 6:
+                    merged[-1].spans.extend(pl.spans)
+                    merged[-1].x_min = min(merged[-1].x_min, pl.x_min)
+                    merged[-1].spans.sort(key=lambda s: s.x)
+                else:
+                    merged.append(PdfLine(y=pl.y, x_min=pl.x_min,
+                                          spans=sorted(pl.spans, key=lambda s: s.x)))
 
-        _merge_two_column_amendment_markers(merged)
-        _merge_amendment_section_blocks(merged)  # Aggressive section-aware merger
-        _promote_isolated_provision_markers(merged)
-        _promote_section_number_headings(merged)
-        _pt5 = _time.perf_counter()
-        _acc_merge += _pt5 - _pt4
-        lines.extend(merged)
+            _merge_two_column_amendment_markers(merged)
+            _merge_amendment_section_blocks(merged)
+            _promote_isolated_provision_markers(merged)
+            _promote_section_number_headings(merged)
 
-        if progress_cb:
-            progress_cb(i + 1, total)
+            results.append((i, merged))
+
+            if progress_cb:
+                progress_cb(i + 1, total)
+
+        local_doc.close()
+        return results
+
+    # ── Determine worker count and split pages into chunks ────────────────────
+    # Use 1 worker per ~25 pages, capped at 4 to bound memory pressure.
+    # Sequential fallback for tiny documents (overhead not worth it).
+    if total <= 15:
+        n_workers = 1
+    elif total <= 60:
+        n_workers = 2
+    elif total <= 150:
+        n_workers = 3
+    else:
+        n_workers = 4
+
+    chunk_size = (total + n_workers - 1) // n_workers
+    page_chunks = [
+        list(range(i, min(i + chunk_size, total)))
+        for i in range(0, total, chunk_size)
+    ]
+
+    _t_pre = _time.perf_counter()
+
+    if n_workers > 1:
+        with _TPE(max_workers=n_workers) as pool:
+            chunk_results = list(pool.map(_extract_pages, page_chunks))
+    else:
+        chunk_results = [_extract_pages(page_chunks[0])]
 
     _t_loop = _time.perf_counter()
-    print(f"  [load_pdf] page loop: text={_acc_text:.2f}s  tables={_acc_tables:.2f}s  parse={_acc_parse:.2f}s  merge={_acc_merge:.2f}s  loop_total={_t_loop - _t_hf:.2f}s", flush=True)
+    print(
+        f"  [load_pdf] parallel extract ({n_workers} workers, {total} pages): "
+        f"{_t_loop - _t_pre:.2f}s",
+        flush=True,
+    )
 
-    # Cross-page attachment: run AFTER all pages concatenated so F-markers at
-    # page bottom can find body text at the top of the next page.
+    # Flatten and sort by page index to restore document order.
+    all_page_results: List[Tuple[int, List[PdfLine]]] = []
+    for chunk_result in chunk_results:
+        all_page_results.extend(chunk_result)
+    all_page_results.sort(key=lambda x: x[0])
+
+    lines: List[PdfLine] = []
+    for _, page_lines in all_page_results:
+        lines.extend(page_lines)
+
+    # ── Cross-page post-processing (must remain sequential) ───────────────────
+    # _attach_isolated_amendment_markers needs to see page-boundary neighbours.
     _attach_isolated_amendment_markers(lines)
     _sanitize_hybrid_ocr_lines(lines)
 
     _t_end = _time.perf_counter()
-    print(f"  [load_pdf] post-process: {_t_end - _t_loop:.2f}s  TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines)", flush=True)
+    print(
+        f"  [load_pdf] post-process: {_t_end - _t_loop:.2f}s  "
+        f"TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines)",
+        flush=True,
+    )
 
-    doc.close()
     return lines
 
 
@@ -1576,6 +1637,10 @@ class Block:
     lines:   List[PdfLine]
     x_min:   float
     y:       float
+    _emp_changed: dict = field(default_factory=dict, repr=False)
+    _mod_diff_words: Optional[list] = field(default=None, repr=False)
+    _mod_sw_words: Optional[list] = field(default=None, repr=False)
+    _mod_line_map: Optional[dict] = field(default=None, repr=False)
 
 
 # Patterns that START a new block (anchor line)
@@ -3940,7 +4005,7 @@ def compute_diff(
     lines_b: List[PdfLine],
     xml_text_a: Optional[str] = None,
     xml_text_b: Optional[str] = None,
-    on_progress: Optional[callable] = None,
+    on_progress: Optional[Callable[[str, int], None]] = None,
 ) -> Tuple[List[Block], List[Block], List[Chunk]]:
     """
     Full pipeline: segment -> match -> diff.
@@ -4332,9 +4397,9 @@ def compute_diff(
                 continue
             first = del_words[0]
 
-            best_sim  = 0.72
-            best_ai   = None
-            best_aci  = None
+            best_sim: float = 0.72
+            best_ai: Optional[int] = None
+            best_aci: Optional[int] = None
 
             # Only compare against add chunks that share the same first token
             # (provision anchor like "(a)", "F5", "c2pt" etc.) — massive prune
@@ -4353,7 +4418,7 @@ def compute_diff(
                     best_ai  = ai
                     best_aci = aci
 
-            if best_aci is not None:
+            if best_aci is not None and best_ai is not None:
                 ach = add_chunks[best_ai][1]
                 if (_should_suppress_chunk(dch.text_a, ach.text_b) or
                         (best_sim >= 0.92 and
@@ -4655,6 +4720,32 @@ def compute_diff(
     if noise_suppress:
         print(f"  [compute_diff] noise-suppress: {len(noise_suppress)} chunks", flush=True)
         chunks = [ch for ci, ch in enumerate(chunks) if ci not in noise_suppress]
+
+    # ── ALL-PUNCTUATION MICRO-FRAGMENT SUPPRESSION ────────────────────────────
+    # ADD/DEL chunks whose text contains NO alphanumeric characters (letters or
+    # digits) are almost certainly PDF artefacts: line-end hyphens, stray em
+    # dashes, orphan commas from reflow, bracket fragments from citation breaks.
+    # Real legal changes always contain at least one word or number, so
+    # suppressing pure-symbol chunks is safe and eliminates a common class of
+    # false positives that are too short for the fuzzy-block pass (len < 3).
+    _RE_ALNUM_CHECK = re.compile(r'[a-z0-9]', re.I)
+    punct_frag_suppress = set()
+    for ci, ch in enumerate(chunks):
+        if ch.kind not in (KIND_ADD, KIND_DEL):
+            continue
+        raw = ((ch.text_b if ch.kind == KIND_ADD else ch.text_a) or '').strip()
+        if not raw:
+            punct_frag_suppress.add(ci)
+            continue
+        # Only consider short strings — long punctuation-rich text may be real
+        if len(raw) > 12:
+            continue
+        # Suppress if no alphanumeric characters at all
+        if not _RE_ALNUM_CHECK.search(raw):
+            punct_frag_suppress.add(ci)
+    if punct_frag_suppress:
+        print(f"  [compute_diff] all-punct-suppress: {len(punct_frag_suppress)} chunks", flush=True)
+        chunks = [ch for ci, ch in enumerate(chunks) if ci not in punct_frag_suppress]
 
     # ── XML CROSS-VALIDATION (tri-source) ────────────────────────────────────
     # When XML ground truth is provided, build an index from each XML document
@@ -5040,8 +5131,8 @@ def _joined_equivalent(text_a: str, text_b: str) -> bool:
             return True
         # Slightly relaxed: subset numbers with very high overlap
         if s_sim >= 0.88:
-            nums_a = set(re.findall(r'\b\d+[a-z]?\b', na))
-            nums_b = set(re.findall(r'\b\d+[a-z]?\b', nb))
+            nums_a = _numeric_tokens(na)
+            nums_b = _numeric_tokens(nb)
             if (nums_a <= nums_b or nums_b <= nums_a) and _word_overlap_ratio(na, nb) >= 0.85:
                 return True
     # Content-only comparison: strip inline amendment markers [F48] etc.
@@ -5340,11 +5431,17 @@ def _convert_adjacent_del_add_runs_to_mod(chunks: List[Chunk]) -> List[Chunk]:
         else:
             min_sim, min_overlap = 0.78, 0.74
 
+        numbers_or_numeric_mod = (
+            _numbers_match(na, nb) or
+            _is_high_confidence_numeric_mod(na, nb, sim, overlap)
+        )
+        overlap_ok = overlap >= min_overlap or (numbers_or_numeric_mod and overlap >= 0.30)
+
         should_convert = (
             not _should_suppress_chunk(joined_a, joined_b) and
-            _numbers_match(na, nb) and
+            numbers_or_numeric_mod and
             sim >= min_sim and
-            overlap >= min_overlap
+            overlap_ok
         )
 
         if should_convert:
@@ -5463,7 +5560,12 @@ def _convert_high_similarity_del_add_to_mod(chunks: List[Chunk]) -> List[Chunk]:
             sim = max(_similarity(dn, an), _char_similarity(dn, an))
             if sim < 0.72:
                 continue
-            if not _numbers_match(dn, an):
+            overlap = _word_overlap_ratio(dn, an)
+            numbers_or_numeric_mod = (
+                _numbers_match(dn, an) or
+                _is_high_confidence_numeric_mod(dn, an, sim, overlap)
+            )
+            if not numbers_or_numeric_mod:
                 continue
             pos_bonus = 1.0 - (abs(ai - di) / 60.0)
             score = sim + max(0.0, pos_bonus) * 0.03
@@ -5510,6 +5612,53 @@ def _word_overlap_ratio(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def _numeric_tokens(text: str) -> set[str]:
+        """Extract numeric-like tokens, including those attached to words.
+
+        Examples matched:
+            - "172"
+            - "14" from dates like 14/03/2026
+            - "176" from strings like "Sabotage176"
+            - "10a"
+        """
+        return set(re.findall(r'(?<!\d)\d+[a-z]?(?!\d)', text, flags=re.I))
+
+
+def _is_high_confidence_numeric_mod(na: str, nb: str, sim: float, overlap: float) -> bool:
+    """Allow MOD conversion when numbers changed but textual scaffold is the same.
+
+    This addresses lines like:
+      "Compilation No. 172 Compilation date: 18/02/2026"
+      "Compilation No. 173 Compilation date: 14/03/2026"
+    where strict numeric-equality guards would otherwise keep DEL+ADD pairs.
+    """
+    nums_a = _numeric_tokens(na)
+    nums_b = _numeric_tokens(nb)
+    if not nums_a or not nums_b or nums_a == nums_b:
+        return False
+
+    wa, wb = na.split(), nb.split()
+    if len(wa) >= 2 and len(wb) >= 2:
+        same_prefix = wa[0] == wb[0] and wa[1] == wb[1]
+        if same_prefix and sim >= 0.90:
+            return True
+
+    # Compare the textual scaffold with numbers removed.
+    # This catches cases like "Sabotage176" -> "Sabotage175" where overlap
+    # metrics can look deceptively low due tokenization differences.
+    sa = re.sub(r'(?<!\d)\d+[a-z]?(?!\d)', ' ', na, flags=re.I)
+    sb = re.sub(r'(?<!\d)\d+[a-z]?(?!\d)', ' ', nb, flags=re.I)
+    sa = re.sub(r'\s+', ' ', sa).strip()
+    sb = re.sub(r'\s+', ' ', sb).strip()
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+
+    scaffold_sim = max(_similarity(sa, sb), _char_similarity(sa, sb))
+    return scaffold_sim >= 0.94 and sim >= 0.90 and overlap >= 0.30
+
+
 def _is_reflow_only(a: str, b: str) -> bool:
     """
     True when two strings contain the same legal content but differ only in
@@ -5539,8 +5688,8 @@ def _numbers_match(a: str, b: str) -> bool:
     """True when numeric tokens of the shorter text are all present in the longer.
     Distinguishes reflow (same numbers, different wrapping) from real changes
     (different years, schedule references, section numbers)."""
-    nums_a = set(re.findall(r'\b\d+[a-z]?\b', a))
-    nums_b = set(re.findall(r'\b\d+[a-z]?\b', b))
+    nums_a = _numeric_tokens(a)
+    nums_b = _numeric_tokens(b)
     if not nums_a and not nums_b:
         return True
     shorter = nums_a if len(nums_a) <= len(nums_b) else nums_b
@@ -5567,8 +5716,8 @@ def _is_linewrap_reflow(na: str, nb: str) -> bool:
     if difflib.SequenceMatcher(None, wa, wb, autojunk=False).ratio() < 0.90:
         return False
     # Symmetric number check: both must have the same set of numbers
-    nums_a = set(re.findall(r'\b\d+[a-z]?\b', na))
-    nums_b = set(re.findall(r'\b\d+[a-z]?\b', nb))
+    nums_a = _numeric_tokens(na)
+    nums_b = _numeric_tokens(nb)
     if nums_a != nums_b:
         return False
     return _word_overlap_ratio(na, nb) >= 0.85
@@ -5722,8 +5871,10 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
             return m.group(1), m.group(2).strip()
         m = re.match(rf'^\s*{_LEAD_F}({_PROV_TOK})\s+(.+)$', s, re.I)
         if m:
-            lead = re.match(_LEAD_F, s, re.I).group(0)
-            return m.group(1), (lead + m.group(2)).strip()
+            lead_match = re.match(_LEAD_F, s, re.I)
+            if lead_match:
+                lead = lead_match.group(0)
+                return m.group(1), (lead + m.group(2)).strip()
         return None, s.strip()
 
     ma, ta = _strip_front_marker(na)
@@ -6057,7 +6208,7 @@ _TRIVIAL_WORD_PAT = re.compile(
     r'^[\W]*(?:[a-z]{1,3}|\d{1,4}|[ivxlcdm]{1,6})[\W]*$', re.I)
 
 
-def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: List[Block] = None) -> dict:
+def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: Optional[List[Block]] = None) -> dict:
     """
     Build render data for one pane.
     Returns {"segments": [...], "tag_cfgs": {...}, "offsets": {...}, "offset_ends": {...}}
@@ -6316,17 +6467,17 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
 
                         # Map each diff word to a line index via all_sw
                         # (zip by position; extra diff words stay on last line)
-                        dw_line: list = []  # [(word, is_changed, line_idx)]
+                        dw_line_entries: list = []  # [(word, is_changed, line_idx, span)]
                         for di2, (dw2, is_c) in enumerate(diff_words):
                             li2 = all_sw[di2][2] if di2 < len(all_sw) else (all_sw[-1][2] if all_sw else 0)
                             sp2 = all_sw[di2][1] if di2 < len(all_sw) else (all_sw[-1][1] if all_sw else None)
-                            dw_line.append((dw2, is_c, li2, sp2))
+                            dw_line_entries.append((dw2, is_c, li2, sp2))
 
-                        block._mod_diff_words = dw_line
+                        block._mod_diff_words = dw_line_entries
                         block._mod_sw_words   = all_sw
 
                 # Emit words belonging to this line index
-                dw_line = getattr(block, "_mod_diff_words", None)
+                dw_line = block._mod_diff_words
 
                 if dw_line is None:
                     # Trivial suppressed: emit plain spans for this line

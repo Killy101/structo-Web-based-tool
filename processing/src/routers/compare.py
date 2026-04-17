@@ -37,12 +37,29 @@ from fastapi.responses import ORJSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 try:
-    import orjson as _orjson
+    import orjson as _orjson  # type: ignore[import-not-found]
     _has_orjson = True
 except ImportError:
     _has_orjson = False
 
 logger = logging.getLogger(__name__)
+
+# ── Concurrency guard ─────────────────────────────────────────────────────────
+# Each Uvicorn worker process has its own copy of this counter, so the actual
+# system-wide ceiling is MAX_CONCURRENT_DIFFS × number-of-workers.
+# Default: 5 concurrent diffs per worker (= up to 20 on 4-worker production),
+# which matches the known Updating-team workload of ~20 simultaneous users.
+# Set MAX_CONCURRENT_DIFFS in .env to tune per deployment.
+_MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "5"))
+_active_diffs: int = 0
+
+# Estimated seconds until a busy slot is likely free — sent as Retry-After.
+# Clients should use this value (+ random jitter) before retrying.
+_RETRY_AFTER_SECONDS: int = 30
+
+# Per-job wall-clock timeout. Large PDFs can take 60–120 s; 300 s is generous.
+# Set COMPARE_TIMEOUT_SECONDS in .env to override.
+_COMPARE_TIMEOUT_SECONDS: int = int(os.environ.get("COMPARE_TIMEOUT_SECONDS", "300"))
 
 # ── Import the pure diff engine ───────────────────────────────────────────────
 #
@@ -136,7 +153,7 @@ router = APIRouter(prefix="/compare", tags=["compare"])
 
 # ── Serialisation helpers ─────────────────────────────────────────────────────
 
-def _chunk_to_dict(ch: object, idx: int) -> dict:
+def _chunk_to_dict(ch, idx: int) -> dict:
     d = {
         "id":         idx,
         "kind":       ch.kind,          # "add" | "del" | "mod" | "emp"
@@ -202,7 +219,7 @@ def _pane_to_json(data: dict) -> dict:
     }
 
 
-def _dict_to_chunk(d: dict) -> object:
+def _dict_to_chunk(d: dict):
     return ce.Chunk(
         kind=d["kind"],
         block_a=d.get("block_a", -1),
@@ -360,6 +377,19 @@ async def diff_pdfs_stream(
       {"t":"r","d":{...result...}}             — final result
       {"t":"e","msg":"..."}                    — error
     """
+    # ── Concurrency gate ──────────────────────────────────────────────────────
+    global _active_diffs
+    if _active_diffs >= _MAX_CONCURRENT_DIFFS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Server is busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons are "
+                "already running. Please wait a moment and try again."
+            ),
+            headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
+        )
+    _active_diffs += 1
+
     data_a = await old_file.read()
     data_b = await new_file.read()
     xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
@@ -379,16 +409,36 @@ async def diff_pdfs_stream(
 
             t0 = time.perf_counter()
 
-            # Stage 1 — load PDFs in parallel (ThreadPoolExecutor is safe here:
-            # fitz/PyMuPDF releases the GIL during file I/O and page rendering)
-            q.put(_json.dumps({"t": "p", "s": "old", "p": 0, "n": 1}) + "\n")
+            # Stage 1 — load PDFs in parallel with per-page progress.
+            # Quick open to get page counts for accurate progress reporting.
+            try:
+                import fitz as _fitz_quick
+                _da = _fitz_quick.open(tmp_a); _n_a = len(_da); _da.close()
+                _db = _fitz_quick.open(tmp_b); _n_b = len(_db); _db.close()
+            except Exception:
+                _n_a = _n_b = 1
+
+            # Thread-safe per-page callbacks (Queue.put is always thread-safe).
+            # Throttle to at most 1 event per 5% of pages to avoid flooding the
+            # NDJSON stream with hundreds of tiny messages on large documents.
+            _throttle_a = max(1, _n_a // 20)
+            _throttle_b = max(1, _n_b // 20)
+
+            def _prog_old(page: int, total: int):
+                if page == total or page % _throttle_a == 0:
+                    q.put(_json.dumps({"t": "p", "s": "old", "p": page, "n": total}) + "\n")
+
+            def _prog_new(page: int, total: int):
+                if page == total or page % _throttle_b == 0:
+                    q.put(_json.dumps({"t": "p", "s": "new", "p": page, "n": total}) + "\n")
+
+            q.put(_json.dumps({"t": "p", "s": "old", "p": 0, "n": _n_a}) + "\n")
             with ThreadPoolExecutor(max_workers=2) as load_pool:
-                fut_a = load_pool.submit(ce.load_pdf, tmp_a)
-                fut_b = load_pool.submit(ce.load_pdf, tmp_b)
+                fut_a = load_pool.submit(ce.load_pdf, tmp_a, _prog_old)
+                fut_b = load_pool.submit(ce.load_pdf, tmp_b, _prog_new)
                 lines_a = fut_a.result()
-                q.put(_json.dumps({"t": "p", "s": "old", "p": 1, "n": 1}) + "\n")
                 lines_b = fut_b.result()
-            q.put(_json.dumps({"t": "p", "s": "new", "p": 1, "n": 1}) + "\n")
+            q.put(_json.dumps({"t": "p", "s": "new", "p": _n_b, "n": _n_b}) + "\n")
 
             t1 = time.perf_counter()
             print(f"[TIMING] load_pdf parallel: {len(lines_a)}+{len(lines_b)} lines, {t1-t0:.2f}s", flush=True)
@@ -451,7 +501,7 @@ async def diff_pdfs_stream(
 
             # Serialize the big result with orjson when available
             if _has_orjson:
-                result_bytes = b'{"t":"r","d":' + _orjson.dumps(payload) + b'}\n'
+                result_bytes = b'{"t":"r","d":' + _orjson.dumps(payload) + b'}\n'  # type: ignore[name-defined]
             else:
                 result_bytes = (_json.dumps({"t": "r", "d": payload}) + "\n").encode()
 
@@ -475,29 +525,48 @@ async def diff_pdfs_stream(
                         pass
 
     async def _generate():
+        global _active_diffs
         loop = asyncio.get_event_loop()
         fut = loop.run_in_executor(None, _run)
+        deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
 
-        while True:
-            try:
-                item = q.get_nowait()
-                if item is None:
+        try:
+            while True:
+                # ── Timeout guard ─────────────────────────────────────────────
+                if loop.time() > deadline:
+                    logger.warning("diff/stream timed out after %ss", _COMPARE_TIMEOUT_SECONDS)
+                    yield (
+                        _json.dumps({
+                            "t": "e",
+                            "msg": (
+                                f"Compare job timed out after {_COMPARE_TIMEOUT_SECONDS}s. "
+                                "Try splitting the document into smaller sections."
+                            ),
+                        }) + "\n"
+                    ).encode()
                     break
-                yield item if isinstance(item, bytes) else item.encode()
-            except _queue_mod.Empty:
-                if fut.done():
-                    # Drain remaining items
-                    while not q.empty():
-                        item = q.get_nowait()
-                        if item is None:
-                            break
-                        yield item if isinstance(item, bytes) else item.encode()
-                    # Check for executor exceptions
-                    exc = fut.exception()
-                    if exc:
-                        yield (_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode()
-                    break
-                await asyncio.sleep(0.05)
+
+                try:
+                    item = q.get_nowait()
+                    if item is None:
+                        break
+                    yield item if isinstance(item, bytes) else item.encode()
+                except _queue_mod.Empty:
+                    if fut.done():
+                        # Drain remaining items
+                        while not q.empty():
+                            item = q.get_nowait()
+                            if item is None:
+                                break
+                            yield item if isinstance(item, bytes) else item.encode()
+                        # Check for executor exceptions
+                        exc = fut.exception()
+                        if exc:
+                            yield (_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode()
+                        break
+                    await asyncio.sleep(0.05)
+        finally:
+            _active_diffs -= 1
 
     return StreamingResponse(
         _generate(),

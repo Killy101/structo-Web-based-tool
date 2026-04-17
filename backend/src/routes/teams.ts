@@ -9,10 +9,15 @@ const TEAM_POLICY_PREFIX = '__TEAM_ROLE_POLICY__'
 const POLICY_ROLES = ['ADMIN', 'USER'] as const
 type PolicyRole = (typeof POLICY_ROLES)[number]
 
+// Cache: track which team slugs have had policies ensured recently.
+// Avoids repeated UPSERT queries on every GET /policies request.
+const ensuredPoliciesAt = new Map<string, number>()
+const ENSURE_POLICY_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
 const FEATURE_CATALOG: Record<string, string> = {
   dashboard: 'Dashboard', 'brd-process': 'BRD Process', 'brd-view-generate': 'BRD View and Generate Sources',
-  'user-management': 'User Management', 'compare-basic': 'Compare',
-  'compare-merge': 'Compare Merge', 'compare-pdf-xml-only': 'Compare PDF + XML Only', 'user-logs': 'User Logs',
+  'user-management': 'User Management', 'compare-basic': 'Workflow 1 · Chunk & Compare',
+  'compare-merge': 'Merge XML Chunks', 'compare-pdf-xml-only': 'Workflow 2 · Compare & Apply', 'user-logs': 'User Logs',
 }
 
 function humanizeFeatureKey(key: string): string {
@@ -30,12 +35,12 @@ function defaultTeamRoleFeatures(teamSlug: string): Record<PolicyRole, string[]>
     USER:  ['dashboard', 'brd-process', 'compare-basic'],
   }
   if (slug === 'production') return {
-    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
+    ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'user-logs'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic'],
   }
   if (slug === 'updating') return {
     ADMIN: ['dashboard', 'brd-view-generate', 'user-management', 'compare-basic', 'compare-pdf-xml-only', 'user-logs'],
-    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-merge'],
+    USER:  ['dashboard', 'brd-view-generate', 'compare-basic', 'compare-pdf-xml-only'],
   }
   return {
     ADMIN: ['dashboard', 'brd-process', 'user-management', 'compare-basic', 'user-logs'],
@@ -48,14 +53,36 @@ async function ensureTeamPolicies(teamSlug: string) {
   await Promise.all(
     POLICY_ROLES.map(async (role) => {
       const slug = policySlug(teamSlug, role)
+      const name = `Team Policy: ${teamSlug} (${role})`
+      const { rows: existing } = await pool.query(
+        `SELECT id FROM user_roles WHERE slug = $1 OR name = $2 LIMIT 1`,
+        [slug, name],
+      )
+
+      if (existing[0]?.id) {
+        await pool.query(
+          `UPDATE user_roles
+           SET slug = $1, name = $2, features = $3, updated_at = NOW()
+           WHERE id = $4`,
+          [slug, name, defaults[role], existing[0].id],
+        )
+        return
+      }
+
       await pool.query(
         `INSERT INTO user_roles (name, slug, features)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (slug) DO NOTHING`,
-        [`Team Policy: ${teamSlug} (${role})`, slug, defaults[role]],
+         VALUES ($1, $2, $3)`,
+        [name, slug, defaults[role]],
       )
     }),
   )
+}
+
+async function ensureTeamPoliciesIfStale(teamSlug: string) {
+  const lastEnsured = ensuredPoliciesAt.get(teamSlug)
+  if (lastEnsured && Date.now() - lastEnsured < ENSURE_POLICY_CACHE_TTL_MS) return
+  await ensureTeamPolicies(teamSlug)
+  ensuredPoliciesAt.set(teamSlug, Date.now())
 }
 
 async function renameTeamPolicies(oldSlug: string, nextSlug: string) {
@@ -143,6 +170,7 @@ router.post('/', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthReque
     )
     const team = created[0]
     await ensureTeamPolicies(team.slug)
+    ensuredPoliciesAt.set(team.slug, Date.now())
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_CREATED', $2)`, [req.user!.userId, `Created team "${name.trim()}"`])
     res.status(201).json({ message: 'Team created', team })
   } catch (error) {
@@ -174,6 +202,8 @@ router.patch('/:id', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthR
       [name.trim(), slug, targetId],
     )
     await renameTeamPolicies(team.slug, updated[0].slug)
+    ensuredPoliciesAt.delete(team.slug)
+    ensuredPoliciesAt.set(updated[0].slug, Date.now())
     await pool.query(`INSERT INTO user_logs (user_id, action, details) VALUES ($1, 'TEAM_RENAMED', $2)`, [req.user!.userId, `Renamed team "${team.name}" to "${name.trim()}"`])
     res.json({ message: 'Team updated', team: updated[0] })
   } catch (error) {
@@ -206,6 +236,8 @@ router.get('/policies', authenticate, authorize(['SUPER_ADMIN']), async (_req: A
   try {
     const { rows: teams } = await pool.query(`SELECT id, name, slug FROM teams ORDER BY created_at ASC`)
 
+    await Promise.all(teams.map((team: any) => ensureTeamPoliciesIfStale(team.slug)))
+
     const { rows: policyRows } = await pool.query(
       `SELECT id, name, slug, features, updated_at as "updatedAt" FROM user_roles WHERE slug LIKE $1`,
       [`${TEAM_POLICY_PREFIX}%`],
@@ -213,7 +245,6 @@ router.get('/policies', authenticate, authorize(['SUPER_ADMIN']), async (_req: A
     const bySlug = new Map(policyRows.map((r: any) => [r.slug, r]))
 
     const items = await Promise.all(teams.map(async (team: any) => {
-      await ensureTeamPolicies(team.slug)
       const admin = bySlug.get(policySlug(team.slug, 'ADMIN'))
       const user  = bySlug.get(policySlug(team.slug, 'USER'))
       return {
@@ -250,6 +281,7 @@ router.patch('/:id/policies/:role', authenticate, authorize(['SUPER_ADMIN']), as
     if (!team) return res.status(404).json({ error: 'Team not found' })
 
     await ensureTeamPolicies(team.slug)
+    ensuredPoliciesAt.set(team.slug, Date.now())
 
     const { rows: updated } = await pool.query(
       `UPDATE user_roles SET features = $1, updated_at = NOW() WHERE slug = $2

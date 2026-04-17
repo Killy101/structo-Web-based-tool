@@ -2,10 +2,12 @@
 import CellImageUploader, { UploadedCellImage } from "./CellImageUploader";
 import BrdImage from "./BrdImage";
 import BrdTableHeaderCell from "./BrdTableHeaderCell";
+import RichTextEditableField from "./RichTextEditableField";
 import React, { useEffect, useState, useRef } from "react";
 import api from "@/app/lib/api";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
 import { brdRichTextToPlain, sanitizeBrdRichTextHtml } from "@/utils/brdRichText";
+import { mergeUploadedImageLists, removeUploadedImageFromMap, toUploadedCellImage } from "@/utils/brdEditorImages";
 
 interface TocRow {
   id: string;
@@ -42,6 +44,28 @@ interface CellImageMeta {
 
 const INITIAL_ROWS: TocRow[] = [];
 
+function ensureTraceableLevels(rows: TocRow[]): TocRow[] {
+  const existingLevels = new Set(rows.map((row) => row.level.trim()));
+  const nextRows = [...rows];
+
+  const buildPlaceholder = (level: "0" | "1"): TocRow => ({
+    id: `hardcoded-${level}`,
+    level,
+    name: "",
+    required: "true",
+    definition: level === "0" ? "Hardcoded root path" : "Hardcoded child path",
+    example: "",
+    note: "Add the hardcoded path used to trace this BRD source.",
+    tocRequirements: "",
+    smeComments: "",
+  });
+
+  if (!existingLevels.has("0")) nextRows.push(buildPlaceholder("0"));
+  if (!existingLevels.has("1")) nextRows.push(buildPlaceholder("1"));
+
+  return nextRows.sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
+}
+
 interface Props {
   initialData?: {
     sections?: Array<{
@@ -55,10 +79,18 @@ interface Props {
       tocRequirements?: string;
       smeComments?: string;
     }>;
+    tocSortingOrder?: string;
+    tocHidingLevels?: string;
+    citationStyleGuide?: {
+      description?: string;
+      rows?: Array<{ label?: string; value?: string }>;
+    };
   };
   brdId?: string;
   onDataChange?: (data: Record<string, unknown>) => void;
 }
+
+
 
 function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
   const sections = Array.isArray(initialData?.sections) ? initialData.sections : [];
@@ -169,37 +201,38 @@ function buildRowsFromToc(initialData?: Props["initialData"]): TocRow[] {
   }
 
   const timestamp = Date.now();
-  return sections
-    .filter((section): section is NonNullable<typeof sections[number]> =>
-      typeof section === "object" && section !== null
-    )
-    .map((section, index) => {
-      const rawLevel = String(section.level ?? section.id ?? index + 1);
-      const levelMatch = rawLevel.match(/\*{1,2}(\d+)\*{1,2}|\b(\d+)\b/);
-      const level = levelMatch
-        ? (levelMatch[1] ?? levelMatch[2] ?? rawLevel)
-        : rawLevel;
+  return ensureTraceableLevels(
+    sections
+      .filter((section): section is NonNullable<typeof sections[number]> =>
+        typeof section === "object" && section !== null
+      )
+      .map((section, index) => {
+        const rawLevel = String(section.level ?? section.id ?? index + 1);
+        const levelMatch = rawLevel.match(/\*{1,2}(\d+)\*{1,2}|\b(\d+)\b/);
+        const level = levelMatch
+          ? (levelMatch[1] ?? levelMatch[2] ?? rawLevel)
+          : rawLevel;
 
-      return {
-        id: `${timestamp}-${index}`,
-        level: level.trim(),
-        name: section.name ?? "",
-        required: mapRequiredValue(section.required),
-        definition: section.definition ?? "",
-        example: section.example ?? "",
-        note: section.note ?? "",
-        tocRequirements: section.tocRequirements ?? "",
-        smeComments: section.smeComments ?? "",
-        // Restore previously captured original values from saved data
-        _prevName:             (section as Record<string, unknown>)._prevName as string | undefined,
-        _prevDefinition:       (section as Record<string, unknown>)._prevDefinition as string | undefined,
-        _prevExample:          (section as Record<string, unknown>)._prevExample as string | undefined,
-        _prevNote:             (section as Record<string, unknown>)._prevNote as string | undefined,
-        _prevTocRequirements:  (section as Record<string, unknown>)._prevTocRequirements as string | undefined,
-        _prevSmeComments:      (section as Record<string, unknown>)._prevSmeComments as string | undefined,
-      };
-    })
-    .sort((a, b) => (parseInt(a.level) || 0) - (parseInt(b.level) || 0));
+        return {
+          id: `${timestamp}-${index}`,
+          level: level.trim(),
+          name: section.name ?? "",
+          required: mapRequiredValue(section.required),
+          definition: section.definition ?? "",
+          example: section.example ?? "",
+          note: section.note ?? "",
+          tocRequirements: section.tocRequirements ?? "",
+          smeComments: section.smeComments ?? "",
+          // Restore previously captured original values from saved data
+          _prevName:             (section as Record<string, unknown>)._prevName as string | undefined,
+          _prevDefinition:       (section as Record<string, unknown>)._prevDefinition as string | undefined,
+          _prevExample:          (section as Record<string, unknown>)._prevExample as string | undefined,
+          _prevNote:             (section as Record<string, unknown>)._prevNote as string | undefined,
+          _prevTocRequirements:  (section as Record<string, unknown>)._prevTocRequirements as string | undefined,
+          _prevSmeComments:      (section as Record<string, unknown>)._prevSmeComments as string | undefined,
+        };
+      })
+  );
 }
 
 function normalizeRowForCompare(row: TocRow) {
@@ -309,30 +342,51 @@ function RichTextValue({ value }: { value: string }) {
   );
 }
 
+function hasMeaningfulRichText(value: string): boolean {
+  return brdRichTextToPlain(value).trim().length > 0;
+}
+
 export default function TOC({ initialData, brdId, onDataChange }: Props) {
   const [rows, setRows] = useState<TocRow[]>(INITIAL_ROWS);
+  const [tocSortingOrder, setTocSortingOrder] = useState("");
+  const [tocHidingLevels, setTocHidingLevels] = useState("");
   const [editingCell, setEditingCell] = useState<{ rowId: string; col: string } | null>(null);
   const [saved, setSaved] = useState(false);
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
   const [images, setImages] = useState<CellImageMeta[]>([]);
   const [cellImages, setCellImages] = useState<Record<string, UploadedCellImage[]>>({});
   const API_BASE_TOC = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
   function cellKey(a: string, b: string) { return `${a}-${b}`; }
   function getCellImgs(a: string, b: string): UploadedCellImage[] { return cellImages[cellKey(a, b)] ?? []; }
   function onCellUploaded(a: string, b: string, img: UploadedCellImage) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: [...(prev[k] ?? []), img] })); }
-  function onCellDeleted(a: string, b: string, id: number) { const k = cellKey(a, b); setCellImages(prev => ({ ...prev, [k]: (prev[k] ?? []).filter(i => i.id !== id) })); }
+  function onCellDeleted(_a: string, _b: string, id: number) {
+    setImages(prev => prev.filter(img => img.id !== id));
+    setCellImages(prev => removeUploadedImageFromMap(prev, id));
+  }
   const isInitializing = useRef(false);
   const rowsRef = useRef<TocRow[]>(INITIAL_ROWS);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
   useEffect(() => {
     const newRows = buildRowsFromToc(initialData);
-    if (rowsEqualIgnoringIds(rowsRef.current, newRows)) return;
+    const nextSortingOrderRaw = String(initialData?.tocSortingOrder ?? "");
+    const nextHidingLevelsRaw = String(initialData?.tocHidingLevels ?? "");
+    const nextSortingOrder = hasMeaningfulRichText(nextSortingOrderRaw) ? nextSortingOrderRaw.trim() : "";
+    const nextHidingLevels = hasMeaningfulRichText(nextHidingLevelsRaw) ? nextHidingLevelsRaw.trim() : "";
+    const rowsUnchanged = rowsEqualIgnoringIds(rowsRef.current, newRows);
+    const sortingUnchanged = tocSortingOrder === nextSortingOrder;
+    const hidingUnchanged = tocHidingLevels === nextHidingLevels;
+
+    if (rowsUnchanged && sortingUnchanged && hidingUnchanged) return;
 
     isInitializing.current = true;
     setRows(newRows);
+    setTocSortingOrder(nextSortingOrder);
+    setTocHidingLevels(nextHidingLevels);
     setEditingCell(null);
     setSaved(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
   useEffect(() => {
@@ -342,12 +396,12 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   useEffect(() => {
     if (!onDataChange) return;
     if (isInitializing.current) { isInitializing.current = false; return; }
+
     onDataChange({
       sections: rows.map(r => ({
         level: r.level, name: r.name, required: r.required,
         definition: r.definition, example: r.example, note: r.note,
         tocRequirements: r.tocRequirements, smeComments: r.smeComments,
-        // Persist captured originals so they survive save/reload cycles
         ...(r._prevName            && { _prevName: r._prevName }),
         ...(r._prevDefinition      && { _prevDefinition: r._prevDefinition }),
         ...(r._prevExample         && { _prevExample: r._prevExample }),
@@ -355,9 +409,11 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         ...(r._prevTocRequirements && { _prevTocRequirements: r._prevTocRequirements }),
         ...(r._prevSmeComments     && { _prevSmeComments: r._prevSmeComments }),
       })),
+      ...(tocSortingOrder && { tocSortingOrder }),
+      ...(tocHidingLevels && { tocHidingLevels }),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows]);
+  }, [rows, tocSortingOrder, tocHidingLevels]);
 
   useEffect(() => {
     if (!brdId) return;
@@ -369,10 +425,13 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
           const fallback = await api.get<{ images: CellImageMeta[] }>(`/brd/${brdId}/images`, { timeout: 30000 });
           all = fallback.data.images ?? [];
         }
-        // Use section tag if present (new records), fall back to tableIndex=2 (old records)
-        const tocImages = all.filter(img =>
-          img.section === "toc" || ((!img.section || img.section === "unknown") && img.tableIndex === 2)
-        );
+        // Use section tag if present (new records), fall back to legacy TOC tableIndex
+        // or a level-like fieldLabel from engineering-provided image metadata.
+        const tocImages = all.filter(img => {
+          const section = (img.section || "").trim().toLowerCase();
+          return section === "toc"
+            || ((!section || section === "unknown") && (img.tableIndex === 2 || !!extractTocImageLevel(img.fieldLabel || "")));
+        });
         setImages(tocImages);
         // Restore manually uploaded images into cellImages state
         const manualImgs = all.filter(img => img.section === "toc" && img.rid?.startsWith("manual-"));
@@ -429,43 +488,124 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     };
     setRows((prev) => [...prev, newRow]);
     setEditingCell({ rowId: newRow.id, col: "name" });
+    setActiveRowId(newRow.id);
   }
 
   function deleteRow(id: string) {
     setRows((prev) => prev.filter((r) => r.id !== id));
+    if (editingCell?.rowId === id) setEditingCell(null);
+    if (activeRowId === id) setActiveRowId(null);
   }
+
+  // ── Keyboard shortcuts: Ctrl+Shift+A = add row, Ctrl+Shift+D = delete focused/last row ──
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const _kbRef = useRef({ rows, focusedRowId, addRow, deleteRow });
+  _kbRef.current = { rows, focusedRowId, addRow, deleteRow };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.ctrlKey || !e.shiftKey) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (e.key === "A" || e.key === "a") {
+        e.preventDefault();
+        _kbRef.current.addRow();
+      } else if (e.key === "D" || e.key === "d") {
+        e.preventDefault();
+        const { rows: r, focusedRowId: fid } = _kbRef.current;
+        const target = fid ?? (r.length > 0 ? r[r.length - 1].id : null);
+        if (target) _kbRef.current.deleteRow(target);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // ── End keyboard shortcuts ──────────────────────────────────────────────────
 
   function handleSave() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const root = containerRef.current;
+      if (!root) return;
+      const activeElement = document.activeElement;
+      const targetNode = e.target as Node | null;
+      const withinEditor = (activeElement ? root.contains(activeElement) : false)
+        || (targetNode ? root.contains(targetNode) : false)
+        || activeRowId !== null;
+      if (!withinEditor) return;
+
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = !!target && (
+        target.tagName === "INPUT"
+        || target.tagName === "TEXTAREA"
+        || target.isContentEditable
+      );
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        addRow();
+        return;
+      }
+
+      if (e.key === "Delete" && !isTypingTarget && activeRowId) {
+        e.preventDefault();
+        deleteRow(activeRowId);
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRowId, rows.length, editingCell]);
+
   // colIndex → column field key (matches actual Word TOC table structure)
   const TOC_COL_MAP: Record<number, string> = { 0: "level", 1: "name", 2: "required", 3: "definition", 4: "example", 5: "note", 6: "tocRequirements", 7: "smeComments" };
+  const TOC_FIELD_TO_COL_INDEX = Object.fromEntries(
+    Object.entries(TOC_COL_MAP).map(([index, key]) => [key, Number(index)]),
+  ) as Record<string, number>;
+
+  function extractTocImageLevel(fieldLabel: string): string {
+    const raw = (fieldLabel || "").trim();
+    const match = raw.match(/^level\s*(\d+)$/i) || raw.match(/^(\d+)$/);
+    return match?.[1] ?? "";
+  }
+
+  function buildTocRowImageKeys(row: TocRow, rowIdx: number, col: string): string[] {
+    return [
+      cellKey(`${row.level}-${rowIdx + 1}`, col),
+      cellKey(row.level, col),
+    ].map((value) => value.trim().toLowerCase()).filter(Boolean);
+  }
 
   // Match images to a TOC row.
-  // Primary: fieldLabel (= level number e.g. "3") + colIndex — works for new DB records.
-  // Fallback: rowIndex (arrayIdx+1 because row 0 is header) + colIndex — works for stale DB records.
+  // Prefer exact row+column keys from manual uploads, then fall back to legacy level labels,
+  // finally use rowIndex+colIndex for stale extracted records.
   function matchRowImgs(row: TocRow, rowIdx: number): { [col: string]: CellImageMeta[] } {
     if (!images.length) return {};
     const levelStr = row.level.trim();
-
-    const byFieldLabel = images.filter(img => {
-      const fl = (img.fieldLabel || "").trim();
-      return fl === levelStr || fl === `Level ${levelStr}`;
-    });
-
-    const byRowIndex = byFieldLabel.length === 0
-      ? images.filter(img => img.rowIndex === rowIdx + 1 && (!img.fieldLabel || img.fieldLabel === ""))
-      : [];
-
-    const matched = byFieldLabel.length > 0 ? byFieldLabel : byRowIndex;
+    const sameLevelRows = rowsRef.current.filter((candidate) => candidate.level.trim() === levelStr);
     const byCol: { [col: string]: CellImageMeta[] } = {};
-    matched.forEach(img => {
-      const colKey = TOC_COL_MAP[img.colIndex] ?? "note";
+
+    images.forEach((img) => {
+      const colKey = TOC_COL_MAP[img.colIndex];
+      if (!colKey) return;
+
+      const fieldLabel = (img.fieldLabel || "").trim().toLowerCase();
+      const rowIndexMatches = img.rowIndex === rowIdx + 1;
+      const exactKeys = buildTocRowImageKeys(row, rowIdx, colKey);
+      const isExactMatch = !!fieldLabel && exactKeys.includes(fieldLabel);
+      const isLevelMatch = extractTocImageLevel(img.fieldLabel || "") === levelStr && (sameLevelRows.length === 1 || rowIndexMatches);
+      const isLegacyRowFallback = rowIndexMatches && !fieldLabel;
+
+      if (!isExactMatch && !isLevelMatch && !isLegacyRowFallback) return;
+
       if (!byCol[colKey]) byCol[colKey] = [];
       byCol[colKey].push(img);
     });
+
     return byCol;
   }
 
@@ -473,7 +613,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
     const isEditing = editingCell?.rowId === row.id && editingCell?.col === col;
     const rawValue = row[col as keyof TocRow] as string;
     const value = formatTocCellForDisplay(rawValue, col);
-
+    const editorValue = brdRichTextToPlain(rawValue) || rawValue;
 
     // Handle different column types
     if (col === "required") {
@@ -524,7 +664,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
         return (
           <textarea
             autoFocus
-            value={rawValue}
+            value={editorValue}
             rows={2}
             onChange={(e) => updateCell(row.id, col, e.target.value)}
                         className="w-full text-[11.5px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-none text-slate-700 dark:text-slate-200 leading-snug"
@@ -551,7 +691,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
       return (
         <textarea
           autoFocus
-          value={rawValue}
+          value={editorValue}
           rows={2}
           onChange={(e) => updateCell(row.id, col, e.target.value)}
                     className="w-full text-[11.5px] bg-white dark:bg-[#252d45] border border-blue-400 dark:border-blue-500 rounded px-2 py-1 outline-none resize-none text-slate-700 dark:text-slate-200 leading-snug"
@@ -571,7 +711,43 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
   }
 
   return (
-    <div className="space-y-4 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
+    <div ref={containerRef} className="space-y-4 rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
+      <div className="space-y-3">
+        <div className="rounded-xl border border-blue-200 dark:border-blue-700/40 overflow-hidden">
+          <div className="px-3 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-700/40">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-800 dark:text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+              ToC - Sorting Order 
+            </p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={tocSortingOrder}
+              onChange={setTocSortingOrder}
+              rows={3}
+              labelPrefix="SME Checkpoint"
+              placeholder="Specify the SME checkpoint guidance for ToC sorting order"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-[#2a3147] overflow-hidden">
+          <div className="px-3 py-2 bg-slate-100 dark:bg-[#1e2235] border-b border-slate-200 dark:border-[#2a3147]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 dark:text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+              ToC - Hiding Level (Tech Only)
+            </p>
+          </div>
+          <div className="p-3">
+            <RichTextEditableField
+              value={tocHidingLevels}
+              onChange={setTocHidingLevels}
+              rows={3}
+              labelPrefix="SME Checkpoint"
+              placeholder="Specify levels to hide in ToC"
+            />
+          </div>
+        </div>
+      </div>
+
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-700/40">
         <div>
@@ -580,6 +756,7 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
           </p>
           <p className="text-[11.5px] text-slate-500 dark:text-slate-500 mt-0.5">
             Click any cell to edit · {rows.length} sections
+            {" "}· <kbd className="font-mono text-[10px]">Ctrl+Shift+A</kbd> add · <kbd className="font-mono text-[10px]">Ctrl+Shift+D</kbd> delete
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -629,21 +806,29 @@ export default function TOC({ initialData, brdId, onDataChange }: Props) {
                 const rowImgsByCol = matchRowImgs(row, idx);
                 return (
                   <React.Fragment key={row.id}>
-                    <tr className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`}>
-                      {COLUMNS.map((col) => (
-                        <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
-                          <div className="group">
-                          {renderCell(row, col.key)}
-                          {rowImgsByCol[col.key]?.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
-                          {getCellImgs(row.level, col.key).map(img => (
-                            <BrdImage key={`m-${img.id}`} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
-                          {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(row.level, col.key)} existingImages={getCellImgs(row.level, col.key)} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(row.level, col.key, img)} onDeleted={id => onCellDeleted(row.level, col.key, id)}/>}
-                        </div>
-                        </td>
-                      ))}
+                    <tr className={`group transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/60 dark:bg-[#1a1f35]"} hover:bg-blue-50/30 dark:hover:bg-blue-500/5`} onFocus={() => setFocusedRowId(row.id)}>
+                      {COLUMNS.map((col) => {
+                        const rowImageKey = `${row.level}-${idx + 1}`;
+                        const legacyEditableImages = rows.filter((candidate) => candidate.level.trim() === row.level.trim()).length === 1
+                          ? getCellImgs(row.level, col.key)
+                          : [];
+                        const editableImages = mergeUploadedImageLists(
+                          getCellImgs(rowImageKey, col.key),
+                          legacyEditableImages,
+                          (rowImgsByCol[col.key] ?? []).map(toUploadedCellImage) as UploadedCellImage[],
+                        );
+                        return (
+                          <td key={col.key} className={`${col.width} px-3 py-2 align-top border-r border-slate-100 dark:border-[#2a3147] last:border-r-0`}>
+                            <div className="group">
+                              {renderCell(row, col.key)}
+                              {editableImages.map((img) => (
+                                <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_TOC)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
+                              ))}
+                              {brdId && <CellImageUploader brdId={brdId} section="toc" fieldLabel={cellKey(rowImageKey, col.key)} rowIndex={idx + 1} colIndex={TOC_FIELD_TO_COL_INDEX[col.key]} existingImages={editableImages} defaultCellText={String(row[col.key as keyof TocRow] ?? "")} onUploaded={img => onCellUploaded(rowImageKey, col.key, img)} onDeleted={id => onCellDeleted(rowImageKey, col.key, id)}/>}
+                            </div>
+                          </td>
+                        );
+                      })}
                       <td className="w-8 px-2 py-2 align-top">
                         <button onClick={() => deleteRow(row.id)} className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-slate-400 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all">
                           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
