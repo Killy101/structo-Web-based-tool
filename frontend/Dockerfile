@@ -1,7 +1,7 @@
 # ── Stage 1: Development (hot reload via volume mount) ────────────────────────
-# node:20-slim uses Debian (glibc), required by @next/swc-linux-x64-gnu.
+# node:22-slim uses Debian (glibc), required by @next/swc-linux-x64-gnu.
 # Alpine (musl) lacks ld-linux-x86-64.so.2, causing SWC native bindings to fail.
-FROM node:20-slim AS development
+FROM node:22-slim AS development
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ CMD ["npm", "run", "dev"]
 
 
 # ── Stage 2: Builder ───────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -34,7 +34,7 @@ RUN npm run build
 
 
 # ── Stage 3: Production (minimal image) ───────────────────────────────────────
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
