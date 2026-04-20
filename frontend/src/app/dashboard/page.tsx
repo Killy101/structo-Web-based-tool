@@ -498,6 +498,25 @@ export default function DashboardPage() {
     return buckets;
   }, [logs]);
 
+  /* ── KPI trend badges ── */
+  const kpiTrends = useMemo(() => {
+    const now = Date.now();
+    const DAY = 86_400_000;
+    // Logins: today vs yesterday (from lineData buckets)
+    const todayL = lineData[6] ?? 0;
+    const yestL  = lineData[5] ?? 0;
+    const loginTrend = yestL === 0
+      ? (todayL > 0 ? { dir: "up" as const, pct: null } : null)
+      : { dir: (todayL >= yestL ? "up" : "down") as "up" | "down", pct: Math.abs(Math.round(((todayL - yestL) / yestL) * 100)) };
+    // Events: last 7 days vs previous 7 days
+    const last7 = logs.filter(l => now - new Date(l.createdAt).getTime() < 7 * DAY).length;
+    const prev7 = logs.filter(l => { const d = now - new Date(l.createdAt).getTime(); return d >= 7 * DAY && d < 14 * DAY; }).length;
+    const eventTrend = prev7 === 0
+      ? null
+      : { dir: (last7 >= prev7 ? "up" : "down") as "up" | "down", pct: Math.abs(Math.round(((last7 - prev7) / prev7) * 100)) };
+    return { loginTrend, eventTrend };
+  }, [lineData, logs]);
+
   /* Donut rings */
   const RING_C = [
     { l:"BRDs",  v:totalBrds,  color:"#2563eb", trackL:"#dbeafe", trackD:"rgba(37,99,235,.22)" },
@@ -517,12 +536,43 @@ export default function DashboardPage() {
   const brdStatuses = brdsByStatus;
 
   if (isLoading || brdLoad || logLoad) {
+    const Bone = ({ w, h, r = 6 }: { w: number | string; h: number; r?: number }) => (
+      <div style={{ width: w, height: h, borderRadius: r, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+    );
     return (
-      <div className="db flex items-center justify-center h-full" style={{ background: "var(--c-bg)" }}>
+      <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 28px" }}>
         <style>{CSS}</style>
-        <div className="flex flex-col items-center gap-3">
-          <TetrisLoading size="sm" speed="fast" loadingText="" />
-          <p className="jb text-[10px] tracking-widest uppercase" style={{ color: "var(--c-sub)" }}>Loading</p>
+        {/* KPI row skeleton */}
+        <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
+          {[0,1,2,3].map(i => (
+            <div key={i} className="card" style={{ padding: "16px 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <Bone w={80} h={11} />
+                <Bone w={24} h={24} r={8} />
+              </div>
+              <Bone w={56} h={26} />
+              <Bone w={100} h={10} />
+            </div>
+          ))}
+        </div>
+        {/* Main grid skeleton */}
+        <div className="db-grid gap-5">
+          <div className="flex flex-col gap-4 min-w-0">
+            <div className="card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, height: 230 }}>
+              <Bone w={120} h={13} />
+              <Bone w={60} h={24} />
+              <div style={{ flex: 1, borderRadius: 8, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+            </div>
+            <div className="card" style={{ height: 290, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+          </div>
+          <div className="flex flex-col gap-4 min-w-0">
+            <div className="card" style={{ height: 260, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+            <div className="card" style={{ height: 260, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+          </div>
+          <div className="db-col3 flex flex-col gap-4">
+            <div className="card" style={{ height: 220, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+            <div className="card" style={{ height: 290, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+          </div>
         </div>
       </div>
     );
@@ -548,12 +598,12 @@ export default function DashboardPage() {
 
       {/* ══ FULL-WIDTH KPI ROW ══ */}
       <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
-        {[
-          { label: "BRD Sources",  val: totalBrds,                          sub: "total registered",   color: "#2563eb" },
-          { label: "Users",        val: totalUsers,                          sub: "registered accounts", color: "#0f766e" },
-          { label: "Logins Today", val: lineData[6] ?? 0,                    sub: "login events today",  color: "#7c3aed" },
-          { label: "Total Events", val: acts.length,                         sub: "activity log entries", color: "#b45309" },
-        ].map((k, i) => (
+        {([
+          { label: "BRD Sources",  val: totalBrds,       sub: "total registered",    color: "#2563eb", trend: null },
+          { label: "Users",        val: totalUsers,       sub: "registered accounts", color: "#0f766e", trend: null },
+          { label: "Logins Today", val: lineData[6] ?? 0, sub: "vs yesterday",        color: "#7c3aed", trend: kpiTrends.loginTrend },
+          { label: "Total Events", val: acts.length,      sub: "vs last 7 days",      color: "#b45309", trend: kpiTrends.eventTrend },
+        ] as { label: string; val: number; sub: string; color: string; trend: { dir: "up" | "down"; pct: number | null } | null }[]).map((k, i) => (
           <div key={k.label} className={`${C} u d${i+1}`} style={{ padding: "16px 18px 14px" }}>
             <div className="flex items-center justify-between mb-2">
               <p className="text-[11px] font-medium" style={{ color:"var(--c-sub)" }}>{k.label}</p>
@@ -564,7 +614,18 @@ export default function DashboardPage() {
             <p className="jb text-[28px] font-bold leading-none" style={{ color:"var(--c-txt)" }}>
               <CountUp to={k.val} />
             </p>
-            <p className="text-[10px] mt-2" style={{ color:"var(--c-sub)" }}>{k.sub}</p>
+            <div className="flex items-center justify-between mt-2">
+              {k.trend ? (
+                <span className="flex items-center gap-1 text-[10px] font-semibold"
+                  style={{ color: k.trend.dir === "up" ? "#22c55e" : "#ef4444" }}>
+                  {k.trend.dir === "up" ? "↑" : "↓"}
+                  {k.trend.pct !== null ? `${k.trend.pct}%` : "new"}
+                  <span className="font-normal" style={{ color: "var(--c-sub)" }}>{k.sub}</span>
+                </span>
+              ) : (
+                <p className="text-[10px]" style={{ color:"var(--c-sub)" }}>{k.sub}</p>
+              )}
+            </div>
           </div>
         ))}
       </div>

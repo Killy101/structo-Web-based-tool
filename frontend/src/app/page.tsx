@@ -102,17 +102,26 @@ export default function HomePage() {
   useScrollReveal();
   const router = useRouter();
   const [covered, setCovered] = useState(false);
+  const [showEye, setShowEye] = useState(false);
+  const [lightMode, setLightMode] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-scroll-behavior", "smooth");
+    try {
+      if (localStorage.getItem("landing-theme") === "light") setLightMode(true);
+    } catch {}
   }, []);
-  const [showEye, setShowEye] = useState(false);
-  const [lightMode, setLightMode] = useState(false);
 
-  // No e.preventDefault needed — these are buttons, not anchor tags
+  const toggleTheme = useCallback(() => {
+    const next = !lightMode;
+    setLightMode(next);
+    try { localStorage.setItem("landing-theme", next ? "light" : "dark"); } catch {}
+  }, [lightMode]);
+
   const goToLogin = useCallback(() => {
-    setCovered(true); // black screen appears THIS frame
-    setShowEye(true); // eye animation starts on top
+    setCovered(true);
+    setShowEye(true);
   }, []);
 
   const handleEyeDone = useCallback(() => {
@@ -121,7 +130,6 @@ export default function HomePage() {
 
   return (
     <>
-      {/* Instant black cover — hides landing page the moment user clicks */}
       {covered && (
         <div
           style={{
@@ -134,7 +142,6 @@ export default function HomePage() {
         />
       )}
 
-      {/* Eye transition plays on top of the black cover */}
       {showEye && <EyeTransition onComplete={handleEyeDone} />}
 
       <div className={`${styles.page} ${lightMode ? styles.lightMode : ""}`}>
@@ -161,7 +168,7 @@ export default function HomePage() {
             <a href="#features" className={styles.navLink}>Features</a>
           </div>
           <button
-            onClick={() => setLightMode(v => !v)}
+            onClick={toggleTheme}
             className={styles.themeToggle}
             aria-label={lightMode ? "Switch to dark mode" : "Switch to light mode"}
             title={lightMode ? "Dark mode" : "Light mode"}
@@ -179,10 +186,35 @@ export default function HomePage() {
               </svg>
             )}
           </button>
-          {/* button instead of <a> — no preventDefault needed */}
           <button onClick={goToLogin} className={styles.loginBtn}>
             Login
           </button>
+          {/* Hamburger — visible only on mobile */}
+          <button
+            className={styles.hamburger}
+            onClick={() => setMobileMenuOpen(v => !v)}
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileMenuOpen}
+          >
+            {mobileMenuOpen ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+            )}
+          </button>
+
+          {/* Mobile dropdown menu */}
+          {mobileMenuOpen && (
+            <div className={styles.mobileMenu}>
+              <a href="#" className={styles.mobileNavLink} onClick={() => setMobileMenuOpen(false)}>Home</a>
+              <a href="#about" className={styles.mobileNavLink} onClick={() => setMobileMenuOpen(false)}>About Us</a>
+              <a href="#features" className={styles.mobileNavLink} onClick={() => setMobileMenuOpen(false)}>Features</a>
+              <button className={styles.mobileLoginBtn} onClick={() => { setMobileMenuOpen(false); goToLogin(); }}>
+                Login to Structo
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+          )}
         </nav>
 
         {/* Hero */}
