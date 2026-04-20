@@ -172,6 +172,36 @@ function hasExtraCols(rows: ScopeRow[]) {
   return { evergreen: rows.some((r) => r.initialEvergreen), ingestion: rows.some((r) => r.dateOfIngestion) };
 }
 
+function ScopeCellImageStrip({
+  images,
+  brdId,
+  apiBase,
+}: {
+  images: UploadedCellImage[];
+  brdId?: string;
+  apiBase: string;
+}) {
+  if (!brdId || images.length === 0) return null;
+
+  return (
+    <div className="mt-1 flex max-w-[104px] flex-wrap gap-1 overflow-hidden">
+      {images.map((img) => (
+        <div
+          key={img.id}
+          className="h-14 w-20 overflow-hidden rounded-md border border-slate-200 bg-white p-1 dark:border-[#2a3147] dark:bg-[#161b2e]"
+        >
+          <BrdImage
+            src={buildBrdImageBlobUrl(brdId, img.id, apiBase)}
+            alt={img.cellText || img.mediaName}
+            className="h-full w-full rounded object-contain"
+            loading="lazy"
+            onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /* ─────────────── link checker ─────────────── */
 function normalizeScopeLinkValue(value: string): string {
@@ -634,6 +664,13 @@ function downloadExcelReport(issues: ValidationIssue[], totalLinks: number, allR
 /* ─────────────── style constants ─────────────── */
 const MONO = { fontFamily: "'DM Mono', monospace" } as const;
 const CELL = "px-3 py-2 border-r border-slate-100 dark:border-[#2a3147] align-top";
+const REQUIRED_SCOPE_FIELDS = ["title", "referenceLink", "contentUrl", "issuingAuth"] as const;
+type RequiredScopeField = typeof REQUIRED_SCOPE_FIELDS[number];
+
+function getMissingScopeFields(row: ScopeRow): RequiredScopeField[] {
+  if (row.isOutOfScope) return [];
+  return REQUIRED_SCOPE_FIELDS.filter((field) => !brdRichTextToPlain(row[field] ?? "").trim());
+}
 
 /* ─────────────── inline editable cell ─────────────── */
 // Uses local draft state so typing doesn't trigger parent re-renders mid-edit.
@@ -1036,9 +1073,8 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
     const expectedCol = Object.entries(SCOPE_COL_MAP).find(([, key]) => key === col)?.[0];
     if (!expectedCol) return [];
     const expectedColIndex = Number(expectedCol);
-    const exactFieldKeys = [row.stableKey, cellKey(row.stableKey, col)]
-      .map(normalizeScopeLabel)
-      .filter(Boolean);
+    const exactFieldKey = normalizeScopeLabel(cellKey(row.stableKey, col));
+    const legacyRowFieldKey = normalizeScopeLabel(row.stableKey);
     const valueCandidates = getScopeColumnCandidates(row, col)
       .map(normalizeScopeLabel)
       .filter(Boolean);
@@ -1051,7 +1087,11 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
         const fieldLabel = normalizeScopeLabel(img.fieldLabel ?? "");
 
         if (!fieldLabel) return rowIndexMatches;
-        if (exactFieldKeys.includes(fieldLabel)) return true;
+        if (fieldLabel === exactFieldKey) return true;
+
+        if (fieldLabel === legacyRowFieldKey) {
+          return rowIndexMatches && col === "title";
+        }
 
         if (valueCandidates.includes(fieldLabel)) {
           if (rowIndexMatches) return true;
@@ -1277,16 +1317,22 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
     if (i.rowId) acc[i.rowId] = (acc[i.rowId] ?? 0) + 1;
     return acc;
   }, {});
+  const rowsNeedingReview = rows.filter((row) => getMissingScopeFields(row).length > 0).length;
 
   return (
     <div ref={containerRef}>
       <div className="rounded-2xl border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/30 p-4">
         {/* Toolbar */}
         <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-lg border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-700/40">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-base text-blue-600 dark:text-blue-400">≡</span>
             <h3 className="text-[13px] font-semibold text-blue-800 dark:text-blue-300 tracking-tight">Scope Documents</h3>
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-600/40" style={MONO}>{rows.length}</span>
+            {rowsNeedingReview > 0 && (
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-600/40" style={MONO}>
+                {rowsNeedingReview} {rowsNeedingReview === 1 ? "row needs review" : "rows need review"}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={handleValidate}
@@ -1417,6 +1463,9 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                     row.initialEvergreen,
                     row.dateOfIngestion,
                   ].some(hasBrdRichTextColor);
+                  const missingFields = getMissingScopeFields(row);
+                  const rowNeedsReview = missingFields.length > 0;
+                  const hasMissingField = (field: RequiredScopeField) => missingFields.includes(field);
                   const titleImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "title"), getPersistedCellImages(row, idx, "title"));
                   const referenceLinkImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "referenceLink"), getPersistedCellImages(row, idx, "referenceLink"));
                   const contentUrlImages = mergeUploadedImageLists(getCellImgs(row.stableKey, "contentUrl"), getPersistedCellImages(row, idx, "contentUrl"));
@@ -1435,63 +1484,68 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
                                   Excluded
                                 </span>
                               )}
-                              <InlineCell value={row.title} placeholder="Document title…" wrap strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "title", val)}/>
+                              {rowNeedsReview && !oos && (
+                                <span className="mb-1 inline-flex items-center rounded-full border border-amber-200 dark:border-amber-700/40 bg-amber-100 dark:bg-amber-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-amber-700 dark:text-amber-300">
+                                  Needs review
+                                </span>
+                              )}
+                              <div className={hasMissingField("title") ? "rounded-md border border-amber-300 dark:border-amber-700/40 bg-amber-50/70 dark:bg-amber-500/10 px-2 py-1" : ""}>
+                                <InlineCell value={row.title} placeholder="Document title…" wrap strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "title", val)}/>
+                                {hasMissingField("title") && <p className="mt-1 text-[9px] font-semibold text-amber-700 dark:text-amber-300">Required</p>}
+                              </div>
                             </div>
                           </div>
-                          {titleImages.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
+                          <ScopeCellImageStrip images={titleImages} brdId={brdId} apiBase={API_BASE_SCOPE} />
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "title")} rowIndex={idx + 1} colIndex={0} existingImages={titleImages} defaultCellText={row.title} onUploaded={img => onCellUploaded(row.stableKey, "title", img)} onDeleted={id => onCellDeleted(row.stableKey, "title", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 160, width: 160 }}>
                         <div className="group">
-                          <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "referenceLink", val)}/>
-                          {referenceLinkImages.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
+                          <div className={hasMissingField("referenceLink") ? "rounded-md border border-amber-300 dark:border-amber-700/40 bg-amber-50/70 dark:bg-amber-500/10 px-2 py-1" : ""}>
+                            <InlineCell value={row.referenceLink} placeholder="https://…" href strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "referenceLink", val)}/>
+                            {hasMissingField("referenceLink") && <p className="mt-1 text-[9px] font-semibold text-amber-700 dark:text-amber-300">Required</p>}
+                          </div>
+                          <ScopeCellImageStrip images={referenceLinkImages} brdId={brdId} apiBase={API_BASE_SCOPE} />
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "referenceLink")} rowIndex={idx + 1} colIndex={1} existingImages={referenceLinkImages} defaultCellText={row.referenceLink} onUploaded={img => onCellUploaded(row.stableKey, "referenceLink", img)} onDeleted={id => onCellDeleted(row.stableKey, "referenceLink", id)}/>}
                         </div>
                       </td>
                       <td className={CELL} style={{ maxWidth: 180, width: 180 }}>
                         <div className="group">
-                          <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "contentUrl", val)}/>
+                          <div className={hasMissingField("contentUrl") ? "rounded-md border border-amber-300 dark:border-amber-700/40 bg-amber-50/70 dark:bg-amber-500/10 px-2 py-1" : ""}>
+                            <InlineCell value={row.contentUrl} placeholder="https://…" href strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "contentUrl", val)}/>
+                            {hasMissingField("contentUrl") && <p className="mt-1 text-[9px] font-semibold text-amber-700 dark:text-amber-300">Required</p>}
+                          </div>
                           {brdRichTextToPlain(row.contentNote).trim() && (
                             <div
                               className={`mt-1 text-[10px] leading-relaxed whitespace-pre-wrap ${oos ? "line-through text-red-500 dark:text-red-400" : "text-slate-500 dark:text-slate-400"}`}
                               dangerouslySetInnerHTML={{ __html: sanitizeBrdRichTextHtml(row.contentNote) }}
                             />
                           )}
-                          {contentUrlImages.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
+                          <ScopeCellImageStrip images={contentUrlImages} brdId={brdId} apiBase={API_BASE_SCOPE} />
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "contentUrl")} rowIndex={idx + 1} colIndex={2} existingImages={contentUrlImages} defaultCellText={row.contentUrl || row.contentNote} onUploaded={img => onCellUploaded(row.stableKey, "contentUrl", img)} onDeleted={id => onCellDeleted(row.stableKey, "contentUrl", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
                         <div className="group">
-                          <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
-                          {issuingAuthImages.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
+                          <div className={hasMissingField("issuingAuth") ? "rounded-md border border-amber-300 dark:border-amber-700/40 bg-amber-50/70 dark:bg-amber-500/10 px-2 py-1" : ""}>
+                            <InlineCell value={row.issuingAuth} placeholder="Authority…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "issuingAuth", val)}/>
+                            {hasMissingField("issuingAuth") && <p className="mt-1 text-[9px] font-semibold text-amber-700 dark:text-amber-300">Required</p>}
+                          </div>
+                          <ScopeCellImageStrip images={issuingAuthImages} brdId={brdId} apiBase={API_BASE_SCOPE} />
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "issuingAuth")} rowIndex={idx + 1} colIndex={3} existingImages={issuingAuthImages} defaultCellText={row.issuingAuth} onUploaded={img => onCellUploaded(row.stableKey, "issuingAuth", img)} onDeleted={id => onCellDeleted(row.stableKey, "issuingAuth", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
                         <div className="group" onClick={e => e.stopPropagation()}>
                           <InlineCell value={row.asrbId} placeholder="ASRB…" strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "asrbId", val)}/>
-                          {asrbIdImages.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
+                          <ScopeCellImageStrip images={asrbIdImages} brdId={brdId} apiBase={API_BASE_SCOPE} />
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "asrbId")} rowIndex={idx + 1} colIndex={4} existingImages={asrbIdImages} defaultCellText={row.asrbId} onUploaded={img => onCellUploaded(row.stableKey, "asrbId", img)} onDeleted={id => onCellDeleted(row.stableKey, "asrbId", id)}/>}
                         </div>
                       </td>
                       <td className={CELL}>
                         <div className="group">
                           <InlineCell value={row.smeComments} placeholder="Comments…" wrap strikethrough={oos} sourceTone={rowHasSourceTone} onChange={val => updateRow(row.id, "smeComments", val)}/>
-                          {smeCommentImages.map(img => (
-                            <BrdImage key={img.id} src={buildBrdImageBlobUrl(brdId, img.id, API_BASE_SCOPE)} alt={img.cellText || img.mediaName} className="mt-1 max-w-full rounded border border-slate-200 dark:border-[#2a3147]" loading="lazy" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}/>
-                          ))}
+                          <ScopeCellImageStrip images={smeCommentImages} brdId={brdId} apiBase={API_BASE_SCOPE} />
                           {brdId && <CellImageUploader brdId={brdId} section="scope" fieldLabel={cellKey(row.stableKey, "smeComments")} rowIndex={idx + 1} colIndex={5} existingImages={smeCommentImages} defaultCellText={row.smeComments} onUploaded={img => onCellUploaded(row.stableKey, "smeComments", img)} onDeleted={id => onCellDeleted(row.stableKey, "smeComments", id)}/>}
                         </div>
                       </td>

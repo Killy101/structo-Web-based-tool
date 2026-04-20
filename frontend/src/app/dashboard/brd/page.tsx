@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "reac
 import BrdFlow from "@/components/brd/BrdFlow";
 import Generate from "@/components/brd/Generate";
 import api from "@/app/lib/api";
+import { buildReuploadSummary, type ReuploadSummary } from "./reuploadSummary";
 import { useAuth } from "../../../context/AuthContext";
 
 type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
@@ -38,6 +39,17 @@ interface BrdVersionDetail extends BrdVersionSummary {
   contentProfile?: Record<string, unknown>;
   brdConfig?:      Record<string, unknown>;
   imageIds?:       number[] | null;
+}
+
+interface BrdDetailSnapshot {
+  title?: string;
+  format?: "new" | "old";
+  status?: BrdStatus;
+  scope?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  toc?: Record<string, unknown>;
+  citations?: Record<string, unknown>;
+  contentProfile?: Record<string, unknown>;
 }
 
 function displayTitle(brd: Brd): string {
@@ -531,6 +543,115 @@ function VersionHistoryModal({
   );
 }
 
+function ReuploadSummaryModal({
+  summary,
+  onClose,
+  onOpenBrd,
+}: {
+  summary: ReuploadSummary;
+  onClose: () => void;
+  onOpenBrd: () => void;
+}) {
+  const HEALTH_BADGE = {
+    Extracted: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800/40",
+    "Partially extracted": "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800/40",
+    "Needs review": "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800/40",
+  } as const;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-2xl z-10">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="h-1 w-full bg-gradient-to-r from-teal-500 to-blue-600" />
+          <div className="p-6 space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">Re-upload summary</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {summary.fileName} was processed for <span className="font-semibold text-slate-700 dark:text-slate-200">{summary.title}</span>.
+                </p>
+              </div>
+              <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3.5 py-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Changed sections</div>
+                <div className="mt-1 text-lg font-bold text-slate-800 dark:text-slate-100">{summary.changedSections.length}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3.5 py-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Needs review</div>
+                <div className="mt-1 text-lg font-bold text-slate-800 dark:text-slate-100">{summary.needsReviewCount}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3.5 py-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Format</div>
+                <div className="mt-1 text-sm font-bold text-slate-800 dark:text-slate-100">{summary.format === "old" ? "Old Version" : "New Version"}</div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/70 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                Section extraction health
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {summary.sections.map((section) => (
+                  <div key={section.key} className="px-3.5 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">{section.label}</span>
+                        {section.changed && (
+                          <span className="inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-[10px] font-semibold text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/40">
+                            Updated
+                          </span>
+                        )}
+                      </div>
+                      {section.missingFields.length > 0 && (
+                        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                          Missing: {section.missingFields.join(", ")}
+                        </div>
+                      )}
+                    </div>
+                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold ${HEALTH_BADGE[section.status]}`}>
+                      {section.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {summary.missingItems.length > 0 && (
+              <div className="rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 px-3.5 py-3">
+                <div className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">Review suggested</div>
+                <ul className="mt-1 space-y-1 text-[11px] text-amber-700 dark:text-amber-200 list-disc pl-4">
+                  {summary.missingItems.slice(0, 6).map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2.5 pt-1">
+              <button
+                onClick={onClose}
+                className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+              >
+                Stay on dashboard
+              </button>
+              <button
+                onClick={onOpenBrd}
+                className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.98] transition-all"
+              >
+                Open updated BRD
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────
 export default function BrdPage() {
   const { user } = useAuth();
@@ -544,6 +665,7 @@ export default function BrdPage() {
   const [flowInitialStep, setFlowInitialStep] = useState(0);
   const [flowFinalMode,   setFlowFinalMode]   = useState<"generate" | "view">("generate");
   const [flowInitialMeta, setFlowInitialMeta] = useState<{ format: "new" | "old"; brdId: string; title: string; status?: BrdStatus } | null>(null);
+  const [reuploadSummary, setReuploadSummary] = useState<ReuploadSummary | null>(null);
   const [fetchError,      setFetchError]      = useState<string | null>(null);
   const [page,            setPage]            = useState(1);
   const [rowsPerPage,     setRowsPerPage]     = useState(10);
@@ -776,25 +898,39 @@ export default function BrdPage() {
     setFetchError(null);
 
     try {
+      const beforeSnapshot = await api.get<BrdDetailSnapshot>(`/brd/${targetId}`)
+        .then((response) => response.data)
+        .catch(() => null);
+
       const formData = new FormData();
       formData.append("file", file);
-      await api.post(`/brd/re-upload/${targetId}`, formData, {
+      const { data } = await api.post<{ title?: string; format?: "new" | "old"; status?: BrdStatus }>(`/brd/re-upload/${targetId}`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
         timeout: 300000, // large BRD re-processing can take several minutes
       });
       await fetchBrds();
 
-      if (targetBrd) {
-        setFlowFinalMode("generate");
-        setFlowInitialStep(1);
-        setFlowInitialMeta({
-          format: targetBrd.format,
-          brdId: targetBrd.id,
-          title: displayTitle(targetBrd),
-          status: targetBrd.status,
-        });
-        setShowBrdFlow(true);
-      }
+      const refreshedTitle = data?.title?.trim() || (targetBrd ? displayTitle(targetBrd) : targetId);
+      const refreshedFormat = data?.format ?? targetBrd?.format ?? "new";
+      const refreshedStatus = data?.status ?? targetBrd?.status ?? "DRAFT";
+      const afterSnapshot = await api.get<BrdDetailSnapshot>(`/brd/${targetId}`)
+        .then((response) => response.data)
+        .catch(() => null);
+
+      setFlowFinalMode("generate");
+      setFlowInitialStep(1);
+      setFlowInitialMeta({
+        format: refreshedFormat,
+        brdId: targetId,
+        title: refreshedTitle,
+        status: refreshedStatus,
+      });
+      setReuploadSummary(buildReuploadSummary(beforeSnapshot, {
+        ...afterSnapshot,
+        title: refreshedTitle,
+        format: refreshedFormat,
+        status: refreshedStatus,
+      }, file.name));
     } catch (err) {
       const error = err as { response?: { data?: { error?: string } }; message?: string };
       setFetchError(error?.response?.data?.error ?? error?.message ?? "Re-upload failed");
@@ -898,6 +1034,7 @@ export default function BrdPage() {
 
   const startNewBrd = () => {
     if (!canCreateBrd) return;
+    setReuploadSummary(null);
     setFlowFinalMode("generate");
     setFlowInitialStep(0);
     setFlowInitialMeta(null);
@@ -1627,6 +1764,18 @@ export default function BrdPage() {
       {/* ── History Modal ── */}
       {historyBrd && canAccessVersionHistory && (
         <VersionHistoryModal brd={historyBrd} onClose={() => setHistoryBrd(null)} canEditVersions={canAccessVersionHistory} />
+      )}
+
+      {/* ── Re-upload Summary Modal ── */}
+      {reuploadSummary && (
+        <ReuploadSummaryModal
+          summary={reuploadSummary}
+          onClose={() => setReuploadSummary(null)}
+          onOpenBrd={() => {
+            setReuploadSummary(null);
+            setShowBrdFlow(true);
+          }}
+        />
       )}
 
       {/* ── Status Modal ── */}

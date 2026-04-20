@@ -358,6 +358,7 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
   if (format === "old") {
     return {
       sourceName:              p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
+      contentCategoryName:     p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
       authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
       sourceType:              p("source_type", "sourceType", "Source Type"),
       contentType:             p("content_type", "contentType", "Content Type"),
@@ -383,7 +384,8 @@ function buildTemplateMetadataValues(format: Format, metadata?: Record<string, u
     };
   }
   return {
-    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    sourceName:              p("source_name", "sourceName", "Source Name", "content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
     authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
     sourceType:              p("source_type", "sourceType", "Source Type"),
     contentType:             p("content_type", "contentType", "Content Type"),
@@ -1682,6 +1684,9 @@ function TocTable({ tocData, brdId, images, showRestrictedFields = true }: { toc
 
       {rows.length > 0 && (
         <div id="section-toc-levels" className={TBL_WRAP}>
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-indigo-50 dark:bg-indigo-500/10">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-indigo-800 dark:text-indigo-300" style={MONO}>Document Structure Levels</p>
+          </div>
           <table className="w-full border-collapse" style={{ minWidth: 1080 }}>
             <thead><tr>
               <BrdHeaderCell title="Level" greenNote="Innodata only - From regulator website" className="w-16" />
@@ -1850,6 +1855,9 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
 
       {citations.length > 0 && (
       <div className={TBL_WRAP}>
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-amber-50 dark:bg-amber-500/10">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={MONO}>Citable Levels and Citation Standardization Rules</p>
+      </div>
       <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 720 }}>
         <thead><tr>
           <BrdHeaderCell title="Level" greenNote="Citation level" />
@@ -2060,7 +2068,9 @@ async function inlineExportImages(root: HTMLElement): Promise<void> {
     img.removeAttribute("loading");
     img.removeAttribute("decoding");
     img.style.maxWidth = img.style.maxWidth || "100%";
+    img.style.maxHeight = img.style.maxHeight || "128px";
     img.style.height = img.style.height || "auto";
+    img.style.objectFit = img.style.objectFit || "contain";
     img.style.display = img.style.display || "block";
     img.style.margin = img.style.margin || "6px 0";
     img.style.pageBreakInside = img.style.pageBreakInside || "avoid";

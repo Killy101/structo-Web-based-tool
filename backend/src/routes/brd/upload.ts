@@ -7,6 +7,7 @@ import fs from 'fs'
 import path from 'path'
 import pool from '../../lib/db'
 import { withTransaction } from '../../lib/db'
+import { serializeBrdSectionsForStorage } from '../../lib/brdUploadStorage'
 import { uploadLimiter, processingLimiter } from '../../middleware/rateLimits'
 import { requireBrdCreate, requireBrdEdit } from '../../middleware/brd-access'
 import { notifyMany } from '../../lib/notify'
@@ -129,6 +130,7 @@ function buildTitle(meta: Record<string, string>, originalName: string): string 
   return rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1)
 }
 
+
 router.post(
   '/upload',
   requireBrdCreate,
@@ -182,16 +184,16 @@ router.post(
       const title = buildTitle(meta, file.originalname)
       const detectedFormat = extracted.detected_format === 'old' ? 'old' : 'new'
 
-      // Strip runtime-only fields from brdConfig before storing
-      const rawBrdConfig = extracted.brd_config || extracted.brdConfig || null
-      let cleanBrdConfig: Record<string, unknown> | null = null
-      if (rawBrdConfig && typeof rawBrdConfig === 'object' && !Array.isArray(rawBrdConfig)) {
-        const { pathTransform, path_transform, levelPatterns, level_patterns, ...rest } = rawBrdConfig as Record<string, unknown>
-        void pathTransform; void path_transform; void levelPatterns; void level_patterns
-        cleanBrdConfig = rest
-      }
-
-      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile ?? null
+      const {
+        scope: storedScope,
+        metadata: storedMetadata,
+        toc: storedToc,
+        citations: storedCitations,
+        contentProfile: storedContentProfile,
+        brdConfig: storedBrdConfig,
+        extractedContentProfile,
+        cleanBrdConfig,
+      } = serializeBrdSectionsForStorage(extracted)
 
       // ── 4. Persist everything in a transaction ────────────────────────────
       await withTransaction(async (client) => {
@@ -213,12 +215,12 @@ router.post(
                  content_profile = $6, brd_config = $7, updated_at = NOW()`,
           [
             brdId,
-            JSON.stringify(extracted.scope ?? null),
-            JSON.stringify(extracted.metadata ?? null),
-            JSON.stringify(extracted.toc ?? null),
-            JSON.stringify(extracted.citations ?? null),
-            JSON.stringify(extractedContentProfile),
-            JSON.stringify(cleanBrdConfig),
+            storedScope,
+            storedMetadata,
+            storedToc,
+            storedCitations,
+            storedContentProfile,
+            storedBrdConfig,
           ],
         )
 
@@ -352,21 +354,29 @@ router.post(
 
       const extracted = (await pyRes.json()) as ProcessingResult
 
-      // Use extracted value if present, otherwise fall back to existing DB value
-      const newScope     = extracted.scope     !== undefined && extracted.scope     !== null ? JSON.stringify(extracted.scope)     : (existing.scope     ?? null)
-      const newMetadata  = extracted.metadata  !== undefined && extracted.metadata  !== null ? JSON.stringify(extracted.metadata)  : (existing.metadata  ?? null)
-      const newToc       = extracted.toc       !== undefined && extracted.toc       !== null ? JSON.stringify(extracted.toc)       : (existing.toc       ?? null)
-      const newCitations = extracted.citations !== undefined && extracted.citations !== null ? JSON.stringify(extracted.citations) : (existing.citations  ?? null)
-
-      const extractedContentProfile = extracted.content_profile ?? extracted.contentProfile
-      const newContentProfile = extractedContentProfile !== undefined && extractedContentProfile !== null
-        ? JSON.stringify(extractedContentProfile) : (existing.content_profile ?? null)
-
-      const extractedBrdConfig = extracted.brd_config || extracted.brdConfig
-      const newBrdConfig = extractedBrdConfig !== undefined && extractedBrdConfig !== null
-        ? JSON.stringify(extractedBrdConfig) : (existing.brd_config ?? null)
+      const meta = (extracted.metadata ?? {}) as Record<string, string>
+      const refreshedTitle = buildTitle(meta, file.originalname) || existingTitle
+      const detectedFormat = extracted.detected_format === 'old' ? 'old' : 'new'
+      const {
+        scope: newScope,
+        metadata: newMetadata,
+        toc: newToc,
+        citations: newCitations,
+        contentProfile: newContentProfile,
+        brdConfig: newBrdConfig,
+        extractedContentProfile,
+        cleanBrdConfig,
+      } = serializeBrdSectionsForStorage(extracted, existing)
 
       await withTransaction(async (client) => {
+        await client.query(
+          `UPDATE brds
+              SET title = $2,
+                  format = $3,
+                  updated_at = NOW()
+            WHERE brd_id = $1`,
+          [brdId, refreshedTitle, detectedFormat === 'old' ? 'OLD' : 'NEW'],
+        )
         await client.query(
           `INSERT INTO brd_sections (brd_id, scope, metadata, toc, citations, content_profile, brd_config)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -404,16 +414,17 @@ router.post(
 
       return res.json({
         brdId,
-        status:         currentStatus,
-        format:         extracted.detected_format === 'old' ? 'old' : 'new',
-        scope:          extracted.scope,
-        metadata:       extracted.metadata,
-        toc:            extracted.toc,
-        citations:      extracted.citations,
+        title: refreshedTitle,
+        status: currentStatus,
+        format: detectedFormat,
+        scope: extracted.scope,
+        metadata: extracted.metadata,
+        toc: extracted.toc,
+        citations: extracted.citations,
         contentProfile: extractedContentProfile,
-        brdConfig:      extractedBrdConfig ?? null,
-        imageMetadata:  responseImageMetadata,
-        diagnostics:    extracted.diagnostics ?? null,
+        brdConfig: cleanBrdConfig,
+        imageMetadata: responseImageMetadata,
+        diagnostics: extracted.diagnostics ?? null,
         formatFingerprint: extracted.format_fingerprint ?? extracted.formatFingerprint ?? null,
       })
     } catch (err) {

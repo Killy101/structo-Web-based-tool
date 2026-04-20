@@ -114,4 +114,83 @@ describe("BRD dashboard process type editing", () => {
       expect(processTypeSelect).toHaveAttribute("data-process-type-tone", "green");
     });
   });
+
+  it("shows a re-upload summary after a draft BRD is re-uploaded", async () => {
+    let detailFetchCount = 0;
+
+    mockedApi.get.mockImplementation((url: string) => {
+      if (url === "/brd") {
+        return Promise.resolve({
+          data: [
+            {
+              id: "BRD-001",
+              title: "Sample BRD",
+              status: "DRAFT",
+              processType: "New source - Initial",
+              version: "v1.0",
+              lastUpdated: "2026-04-15",
+              geography: "Europe",
+              format: "new",
+            },
+          ],
+        }) as never;
+      }
+
+      if (url === "/brd/BRD-001") {
+        detailFetchCount += 1;
+        return Promise.resolve({
+          data: detailFetchCount === 1
+            ? {
+                title: "Sample BRD",
+                format: "new",
+                status: "DRAFT",
+                metadata: {
+                  content_category_name: "Payments",
+                  jurisdiction: "Europe",
+                  document_title: "Draft",
+                  summary: "Before upload",
+                },
+                toc: { document_structure: ["1", "2"] },
+                citations: { references: ["Ref A"] },
+              }
+            : {
+                title: "Updated BRD",
+                format: "old",
+                status: "DRAFT",
+                metadata: {
+                  source_name: "Payments Source",
+                  jurisdiction: "Europe",
+                  document_title: "Final",
+                },
+                toc: { document_structure: ["1", "2", "3"] },
+                citations: {},
+              },
+        }) as never;
+      }
+
+      return Promise.resolve({ data: [] }) as never;
+    });
+
+    mockedApi.post.mockResolvedValue({
+      data: { title: "Updated BRD", format: "old", status: "DRAFT" },
+    } as never);
+
+    render(<BrdPage />);
+
+    const reuploadButton = (await screen.findAllByTitle(/re-upload final brd/i))
+      .find((element) => element.tagName === "BUTTON") as HTMLButtonElement;
+
+    fireEvent.click(reuploadButton);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["final brd"], "final.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(await screen.findByText(/re-upload summary/i)).toBeInTheDocument();
+    expect(screen.getByText(/section extraction health/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open updated brd/i })).toBeInTheDocument();
+  });
 });

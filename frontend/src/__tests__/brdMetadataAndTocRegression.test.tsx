@@ -109,6 +109,79 @@ describe("BRD metadata and document structure regressions", () => {
     });
   });
 
+  it("keeps scope cell screenshots visually contained within the uploaded cell", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 91,
+            tableIndex: 1,
+            rowIndex: 1,
+            colIndex: 2,
+            rid: "rId91",
+            mediaName: "scope-content-url.png",
+            mimeType: "image/png",
+            cellText: "Scope cell screenshot",
+            section: "scope",
+            fieldLabel: "scope-row-1-contentUrl",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <Scope
+        brdId="BRD-123"
+        initialData={{
+          in_scope: [
+            {
+              stable_key: "scope-row-1",
+              document_title: "Japan Investment Advisers Association",
+              regulator_url: "https://example.com/regulator",
+              content_url: "https://example.com/content",
+              issuing_authority: "JIAA",
+              asrb_id: "ASRB-1",
+              sme_comments: "Ready",
+            },
+          ],
+        }}
+      />,
+    );
+
+    const image = await screen.findByAltText(/scope cell screenshot/i);
+    expect(screen.getAllByAltText(/scope cell screenshot/i)).toHaveLength(1);
+    expect(image).toHaveClass("max-h-32");
+    expect(image).toHaveClass("object-contain");
+    expect(image.parentElement).toHaveClass("h-14");
+    expect(image.parentElement).toHaveClass("w-20");
+  });
+
+  it("flags scope rows with missing required fields inline", async () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    render(
+      <Scope
+        brdId="BRD-123"
+        initialData={{
+          in_scope: [
+            {
+              stable_key: "scope-row-review",
+              document_title: "Review this row",
+              regulator_url: "",
+              content_url: "",
+              issuing_authority: "",
+              asrb_id: "",
+              sme_comments: "",
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(await screen.findByText(/1 row needs review/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/^Required$/i).length).toBeGreaterThan(0);
+  });
+
   it("renders a dedicated Structuring Requirements processing view without the metadata grid", () => {
     render(
       <Metadata
@@ -165,6 +238,15 @@ describe("BRD metadata and document structure regressions", () => {
 
     expect(screen.queryByText(/BRD \/ Process Type/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/managed from the BRD Dashboard/i)).not.toBeInTheDocument();
+  });
+
+  it("highlights missing required metadata fields inline for review", () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    render(<Metadata format="old" brdId="BRD-123" initialData={{}} />);
+
+    expect(screen.getByText(/fields need review/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/federal register/i)).toHaveAttribute("data-missing-field", "true");
   });
 
   it("shows uploaded metadata images in the Generate step after processing", async () => {

@@ -990,10 +990,42 @@ def _extract_scope_from_mhtml(path: str) -> dict:
             elif header_rows:
                 break
 
+        def iter_row_cells_with_spans(row_html: str):
+            pattern = re.compile(r"<(t[dh])\b([^>]*)>(.*?)</\1>", re.DOTALL | re.IGNORECASE)
+            for match in pattern.finditer(row_html):
+                attrs = match.group(2) or ""
+                cell_html = match.group(3) or ""
+                colspan_match = re.search(r"colspan\s*=\s*['\"]?(\d+)", attrs, re.IGNORECASE)
+                rowspan_match = re.search(r"rowspan\s*=\s*['\"]?(\d+)", attrs, re.IGNORECASE)
+                colspan = int(colspan_match.group(1)) if colspan_match else 1
+                rowspan = int(rowspan_match.group(1)) if rowspan_match else 1
+                yield cell_html, max(1, colspan), max(1, rowspan)
+
         header_cells_by_col: dict[int, str] = {}
+        rowspan_tracker: dict[int, int] = {}
         for header_row in header_rows or rows[:1]:
-            for idx, cell_html in enumerate(re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", header_row, re.DOTALL | re.IGNORECASE)):
-                header_cells_by_col[idx] = f"{header_cells_by_col.get(idx, '')} {strip_tags(cell_html).lower()}".strip()
+            col_idx = 0
+
+            def advance_to_open_col() -> None:
+                nonlocal col_idx
+                while rowspan_tracker.get(col_idx, 0) > 0:
+                    col_idx += 1
+
+            for cell_html, colspan, rowspan in iter_row_cells_with_spans(header_row):
+                advance_to_open_col()
+                cell_text = strip_tags(cell_html).lower()
+                for offset in range(colspan):
+                    target_col = col_idx + offset
+                    header_cells_by_col[target_col] = f"{header_cells_by_col.get(target_col, '')} {cell_text}".strip()
+                    if rowspan > 1:
+                        rowspan_tracker[target_col] = max(rowspan_tracker.get(target_col, 0), rowspan)
+                col_idx += colspan
+
+            rowspan_tracker = {
+                idx: remaining - 1
+                for idx, remaining in rowspan_tracker.items()
+                if remaining - 1 > 0
+            }
 
         def find_col(keywords):
             for idx, text in sorted(header_cells_by_col.items()):

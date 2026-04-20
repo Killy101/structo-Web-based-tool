@@ -231,6 +231,29 @@ describe("prepareBrdExportElement", () => {
     expect(prepared.textContent).toContain("File Delivery Requirements");
   });
 
+  it("constrains embedded BRD images so cell screenshots stay inside their exported table cell", async () => {
+    document.body.innerHTML = `
+      <div id="page">
+        <table>
+          <tbody>
+            <tr>
+              <td>
+                <img src="data:image/png;base64,AAAA" alt="scope-preview" data-brd-export-image="1" />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const prepared = await prepareBrdExportElement(document.getElementById("page") as HTMLElement);
+    const image = prepared.querySelector("img[data-brd-export-image='1']") as HTMLImageElement;
+
+    expect(image.style.maxWidth).toBe("100%");
+    expect(image.style.maxHeight).toBe("128px");
+    expect(image.style.objectFit).toBe("contain");
+  });
+
   it("keeps the content profile section in the exported BRD", async () => {
     document.body.innerHTML = `
       <div id="page">

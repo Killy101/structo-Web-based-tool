@@ -35,6 +35,13 @@ export default function BrdImage({
 
   if (!resolvedSrc) return null;
 
+  const resolvedClassName = [
+    "block max-w-full h-auto max-h-32 object-contain",
+    className,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
@@ -45,7 +52,7 @@ export default function BrdImage({
       sizes={sizes}
       loading={loading}
       decoding="async"
-      className={className}
+      className={resolvedClassName}
       onLoad={(event) => {
         event.currentTarget.style.display = "";
       }}

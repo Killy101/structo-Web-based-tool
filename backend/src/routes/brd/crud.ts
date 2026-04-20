@@ -83,8 +83,6 @@ function getMetaString(meta: Record<string, unknown> | null, keys: string[]): st
 
 export function derivedFormat(format: string, meta: Record<string, unknown> | null): 'old' | 'new' {
   const normalizedFormat = String(format ?? '').toLowerCase()
-  if (normalizedFormat === 'old' || normalizedFormat === 'new') return normalizedFormat as 'old' | 'new'
-
   const storedFmt = String(meta?._format ?? '').toLowerCase()
   const sourceName = getMetaString(meta, ['source_name', 'sourceName', 'Source Name'])
   const sourceType = getMetaString(meta, ['source_type', 'sourceType', 'Source Type'])
@@ -95,9 +93,11 @@ export function derivedFormat(format: string, meta: Record<string, unknown> | nu
     'Content Category',
   ])
 
-  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
-  if (contentCategory) return 'new'
+  if (contentCategory && !sourceName) return 'new'
+  if (sourceName && !contentCategory) return 'old'
   if (sourceName && sourceType) return 'old'
+  if (storedFmt === 'old' || storedFmt === 'new') return storedFmt as 'old' | 'new'
+  if (normalizedFormat === 'old' || normalizedFormat === 'new') return normalizedFormat as 'old' | 'new'
   return 'new'
 }
 

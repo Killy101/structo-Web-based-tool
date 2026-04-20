@@ -52,6 +52,15 @@ interface CustomMetadataRow {
   comment: string;
 }
 
+const REQUIRED_METADATA_KEYS: Record<Format, string[]> = {
+  old: ["sourceName", "authoritativeSource", "contentType", "contentUrl", "summary", "geography", "language"],
+  new: ["contentCategoryName", "authoritativeSource", "contentType", "contentUri", "summary", "geography", "language"],
+};
+
+function isBlankMetadataValue(value: string | undefined): boolean {
+  return !(value ?? "").trim();
+}
+
 const OLD_FIELDS: FieldConfig[] = [
   { key: "sourceName",              label: "Source Name",                type: "text", placeholder: "e.g., Federal Register",                  icon: "◈" },
   { key: "authoritativeSource",     label: "Authoritative Source",       type: "text", placeholder: "e.g., Code of Federal Regulations",       icon: "≡" },
@@ -115,13 +124,15 @@ function FieldInput({
   field,
   value,
   onChange,
+  highlight = false,
 }: {
   field: FieldConfig;
   value: string;
   onChange: (v: string) => void;
+  highlight?: boolean;
 }) {
   const base =
-    "w-full text-[12.5px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border border-slate-300 dark:border-[#2a3147] rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600";
+    `w-full text-[12.5px] font-medium text-black dark:text-slate-200 bg-white dark:bg-[#252d45] border rounded-lg px-3 py-2 outline-none transition-all focus:border-blue-400 dark:focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-500/10 placeholder:text-slate-500 dark:placeholder:text-slate-600 ${highlight ? "border-amber-400 bg-amber-50/70 dark:bg-amber-500/10 dark:border-amber-700/50" : "border-slate-300 dark:border-[#2a3147]"}`;
   return (
     <input
       type={field.type}
@@ -129,6 +140,8 @@ function FieldInput({
       onChange={(e) => onChange(e.target.value)}
       placeholder={field.placeholder}
       className={base}
+      aria-invalid={highlight}
+      data-missing-field={highlight ? "true" : "false"}
     />
   );
 }
@@ -332,6 +345,10 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     });
     return keys;
   }, [fields]);
+  const requiredFieldKeys = useMemo(() => {
+    if (structuringOnly) return new Set(visibleFields.map((field) => field.key));
+    return new Set(REQUIRED_METADATA_KEYS[format].filter((key) => visibleFields.some((field) => field.key === key)));
+  }, [format, structuringOnly, visibleFields]);
   const [values, setValues]               = useState<Record<string, string>>({});
   const [commentValues, setCommentValues] = useState<Record<string, string>>({});
   const [customRows, setCustomRows]       = useState<CustomMetadataRow[]>([]);
@@ -383,6 +400,15 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
     onDataChange(buildOutgoingMetadata(format, values, commentValues, fields, customRows, initialData));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, commentValues, customRows]);
+
+  const missingFieldKeys = useMemo(() => {
+    return new Set(
+      visibleFields
+        .filter((field) => requiredFieldKeys.has(field.key) && isBlankMetadataValue(values[field.key]))
+        .map((field) => field.key)
+    );
+  }, [requiredFieldKeys, values, visibleFields]);
+  const missingFieldCount = missingFieldKeys.size;
 
   useEffect(() => {
     if (!brdId) return;
@@ -522,11 +548,16 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-violet-800 dark:text-violet-300" style={{ fontFamily: "'DM Mono', monospace" }}>
             {structuringOnly ? "Structuring Requirements" : "Metadata"}
           </p>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider border ${format === "new" ? "bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-700/40" : "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700/40"}`}>
               <span className="text-[9px]">{format === "new" ? "◉" : "◈"}</span>
               {format === "new" ? "New Format" : "Legacy Format"}
             </span>
+            {missingFieldCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700/40">
+                ⚠ {missingFieldCount} {missingFieldCount === 1 ? "field needs review" : "fields need review"}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -608,14 +639,30 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-[12px] font-semibold text-slate-900 dark:text-slate-100">
-                    {field.label}
-                  </label>
-                  <FieldInput
-                    field={field}
-                    value={values[field.key] ?? ""}
-                    onChange={(v) => setValue(field.key, v)}
-                  />
+                  {(() => {
+                    const fieldMissing = missingFieldKeys.has(field.key);
+                    return (
+                      <>
+                        <label className="block text-[12px] font-semibold text-slate-900 dark:text-slate-100">
+                          <span>{field.label}</span>
+                          {fieldMissing && (
+                            <span className="ml-2 inline-flex items-center rounded-full border border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                              Required
+                            </span>
+                          )}
+                        </label>
+                        <FieldInput
+                          field={field}
+                          value={values[field.key] ?? ""}
+                          onChange={(v) => setValue(field.key, v)}
+                          highlight={fieldMissing}
+                        />
+                        {fieldMissing && (
+                          <p className="text-[10px] font-medium text-amber-700 dark:text-amber-300">Required field needs review.</p>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {brdId && (
@@ -692,12 +739,18 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                   const fieldImgs = brdId ? getFieldImages(field, fieldIdx) : [];
                   const editableFieldImages = mergeUploadedImageLists(getFieldImgsUploaded(field.key), fieldImgs.map(toUploadedCellImage) as UploadedCellImage[]);
                   const commentKey = normalizeMetadataCommentKey(field.label);
+                  const fieldMissing = missingFieldKeys.has(field.key);
                   return (
-                    <tr key={field.key} className={fieldIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
+                    <tr key={field.key} className={fieldMissing ? "bg-amber-50/60 dark:bg-amber-500/5" : fieldIdx % 2 === 0 ? "bg-white dark:bg-[#161b2e]" : "bg-slate-50/40 dark:bg-[#1a1f35]"}>
                       <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147] text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400 whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span>{field.icon}</span>
                           <span>{field.label}</span>
+                          {fieldMissing && (
+                            <span className="inline-flex items-center rounded-full border border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold text-amber-700 dark:text-amber-300">
+                              Required
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2 align-top border-t border-slate-100 dark:border-[#2a3147]">
@@ -708,6 +761,7 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                                 field={field}
                                 value={values[field.key] ?? ""}
                                 onChange={(v) => setValue(field.key, v)}
+                                highlight={fieldMissing}
                               />
                             </div>
                             {brdId && (
@@ -727,6 +781,12 @@ export default function Metadata({ format, brdId, title, onComplete, initialData
                               <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-700/30">✓</span>
                             )}
                           </div>
+                          {fieldMissing && (
+                            <p className="text-[10px] font-medium text-amber-700 dark:text-amber-300">Required field needs review.</p>
+                          )}
+                          {fieldMissing && (
+                            <p className="text-[10px] font-medium text-amber-700 dark:text-amber-300">Required field needs review.</p>
+                          )}
                           {editableFieldImages.length > 0 && (
                             <div className="rounded-lg border border-slate-200 dark:border-[#2a3147] bg-slate-50/70 dark:bg-[#161b2e] p-2.5">
                               <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400" style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -854,6 +914,7 @@ function buildMetadataValues(
   if (format === "old") {
     return {
       sourceName:              p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
+      contentCategoryName:     p("content_category_name", "contentCategoryName", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
       authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
       sourceType:              p("source_type", "sourceType", "Source Type"),
       contentType:             p("content_type", "contentType", "Content Type"),
@@ -881,7 +942,8 @@ function buildMetadataValues(
   }
 
   return {
-    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    sourceName:              p("source_name", "sourceName", "Source Name", "content_category_name", "contentCategoryName", "Content Category Name", "document_title", "documentTitle", "title", "name"),
+    contentCategoryName:     p("content_category_name", "contentCategoryName", "Content Category Name", "source_name", "sourceName", "Source Name", "document_title", "documentTitle", "title", "name"),
     authoritativeSource:     p("authoritative_source", "authoritativeSource", "Authoritative Source", "issuing_agency", "issuingAgency", "Issuing Agency"),
     sourceType:              p("source_type", "sourceType", "Source Type"),
     contentType:             p("content_type", "contentType", "Content Type"),
