@@ -649,6 +649,95 @@ describe("BRD metadata and document structure regressions", () => {
     });
   });
 
+  it("shows extracted SME comment text in the scope table even when the source contains office html noise", async () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    render(
+      <Scope
+        brdId="BRD-123"
+        initialData={{
+          in_scope: [
+            {
+              stable_key: "scope-row-sme",
+              document_title: "Shanghai Clearing House Rules",
+              regulator_url: "https://example.com/reference",
+              content_url: "https://example.com/content",
+              issuing_authority: "Shanghai Clearing House",
+              asrb_id: "ASRB1435",
+              sme_comments: '<s>Please remove the + at the end of the weblink.</s><span style="mso-no-proof:yes"><!--[if gte vml 1]><v:shape id="_x0000_i1025"></v:shape><![endif]--></span><br/>Please change the weblink to: <a href="https://example.com/fixed">https://example.com/fixed</a>',
+            },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Please change the weblink to:/i)).toBeInTheDocument();
+    });
+    expect(screen.getByRole("link", { name: /example\.com\/fixed/i })).toHaveAttribute("href", "https://example.com/fixed");
+  });
+
+  it("keeps an uploaded scope image on one row even when stored stable keys are blank", async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        images: [
+          {
+            id: 97,
+            tableIndex: 7,
+            rowIndex: 2,
+            colIndex: 5,
+            rid: "manual-97",
+            mediaName: "scope-row-blank-key.png",
+            mimeType: "image/png",
+            cellText: "Only second row screenshot",
+            section: "scope",
+            fieldLabel: "-smecomments",
+          },
+        ],
+      },
+    } as never);
+
+    render(
+      <Scope
+        brdId="BRD-123"
+        initialData={{
+          in_scope: [
+            {
+              stable_key: "",
+              document_title: "Doc One",
+              regulator_url: "https://example.com/one",
+              content_url: "https://example.com/content-one",
+              issuing_authority: "Authority One",
+              asrb_id: "ASRB-1",
+              sme_comments: "Comment One",
+            },
+            {
+              stable_key: "",
+              document_title: "Doc Two",
+              regulator_url: "https://example.com/two",
+              content_url: "https://example.com/content-two",
+              issuing_authority: "Authority Two",
+              asrb_id: "ASRB-2",
+              sme_comments: "Comment Two",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText(/only second row screenshot/i)).toHaveLength(1);
+    });
+
+    const firstRow = screen.getByText("Doc One").closest("tr");
+    const secondRow = screen.getByText("Doc Two").closest("tr");
+
+    expect(firstRow).not.toBeNull();
+    expect(secondRow).not.toBeNull();
+    expect(within(firstRow as HTMLElement).queryByAltText(/only second row screenshot/i)).not.toBeInTheDocument();
+    expect(within(secondRow as HTMLElement).getByAltText(/only second row screenshot/i)).toBeInTheDocument();
+  });
+
   it("allows citation SME checkpoint text to be cleared and propagated", async () => {
     const onDataChange = jest.fn();
 
@@ -787,5 +876,30 @@ describe("BRD metadata and document structure regressions", () => {
     expect(screen.getAllByText(/Citation Format Requirements/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Citable Levels/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Citation Standardization Rules/i).length).toBeGreaterThan(0);
+  });
+
+  it("renders citable levels separately from citation standardization rules in the review export layout", async () => {
+    mockedApi.get.mockResolvedValue({ data: { images: [] } } as never);
+
+    render(
+      <Generate
+        brdId="BRD-CIT-SEPARATE"
+        format="new"
+        status="DRAFT"
+        initialData={{
+          citations: {
+            references: [
+              { level: "2", isCitable: "Y", citationRules: "Level 2 | Level 3", sourceOfLaw: "Level 2", smeComments: "Reviewed" },
+            ],
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Citable Levels/i).length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText(/Citable Levels and Citation Standardization Rules/i)).not.toBeInTheDocument();
   });
 });

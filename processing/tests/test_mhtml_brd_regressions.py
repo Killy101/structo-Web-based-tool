@@ -1,3 +1,4 @@
+import base64
 import tempfile
 import textwrap
 import unittest
@@ -282,6 +283,122 @@ class MhtmlBrdRegressionTests(unittest.TestCase):
         self.assertEqual(row["issuing_authority"], "Shanghai Clearing House")
         self.assertEqual(row["asrb_id"], "ASRB1435")
         self.assertEqual(row["sme_comments"], "Please change the weblink to the regulator-preferred URL.")
+
+    def test_mhtml_scope_keeps_rows_active_when_only_sme_comment_contains_strikethrough(self):
+        mhtml = textwrap.dedent(
+            '''\
+            MIME-Version: 1.0
+            Content-Type: multipart/related; boundary="BOUNDARY"
+
+            --BOUNDARY
+            Content-Type: text/html; charset=UTF-8
+            Content-Transfer-Encoding: quoted-printable
+            Content-Location: file:///C:/exported.html
+
+            <html>
+              <body>
+                <h2>Scope</h2>
+                <table border="1">
+                  <tr>
+                    <th>Document Title</th>
+                    <th>Reference URL</th>
+                    <th>Content URL</th>
+                    <th>Issuing Authority</th>
+                    <th>ASRB ID</th>
+                    <th>SME Comments</th>
+                  </tr>
+                  <tr>
+                    <td>Shanghai Clearing House Rules</td>
+                    <td>https://example.com/reference</td>
+                    <td>https://example.com/content</td>
+                    <td>Shanghai Clearing House</td>
+                    <td>ASRB1435</td>
+                    <td><span style="text-decoration:line-through">Please remove the .at the end of the weblink.</span><br/>Please change the weblink to the regulator-preferred URL.</td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+
+            --BOUNDARY--
+            '''
+        )
+
+        with tempfile.NamedTemporaryFile("w", suffix=".doc", delete=False, encoding="utf-8") as handle:
+            handle.write(mhtml)
+            doc_path = handle.name
+
+        try:
+            scope = extract_scope_from_file(doc_path)
+        finally:
+            Path(doc_path).unlink(missing_ok=True)
+
+        self.assertEqual(len(scope["in_scope"]), 1)
+        self.assertEqual(len(scope["out_of_scope"]), 0)
+        self.assertIn("Please change the weblink", scope["in_scope"][0]["sme_comments"])
+
+    def test_mhtml_scope_extracts_sme_comments_from_base64_encoded_web_archive(self):
+        html = textwrap.dedent(
+            '''\
+            <html>
+              <body>
+                <h2>Scope</h2>
+                <table border="1">
+                  <tr>
+                    <th rowspan="2">Document title as appearing on regulator weblink</th>
+                    <th rowspan="2">Reference URL Parent URL for the content category</th>
+                    <th rowspan="2">Content URL URL for the title under the content category</th>
+                    <th colspan="2">Issuing Agency Data</th>
+                    <th>SME Comments SME Checkpoint If anything needs be changed, specify here</th>
+                  </tr>
+                  <tr>
+                    <th>Issuing Authority</th>
+                    <th>ASRB ID</th>
+                    <th>If anything needs be changed, specify here</th>
+                  </tr>
+                  <tr>
+                    <td>Provisions of the Shanghai Clearing House</td>
+                    <td>https://example.com/reference</td>
+                    <td>https://example.com/content</td>
+                    <td>Shanghai Clearing House</td>
+                    <td>ASRB1435</td>
+                    <td>Please remove the .at the end of the weblink.</td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+            '''
+        ).encode("utf-8")
+        encoded_html = base64.b64encode(html).decode("ascii")
+        mhtml = textwrap.dedent(
+            f'''\
+            MIME-Version: 1.0
+            Content-Type: multipart/related; boundary="BOUNDARY"
+
+            --BOUNDARY
+            Content-Type: text/html; charset="unicode"
+            Content-Transfer-Encoding: base64
+            Content-Location: file:///C:/exported.html
+
+            {encoded_html}
+
+            --BOUNDARY--
+            '''
+        )
+
+        with tempfile.NamedTemporaryFile("w", suffix=".doc", delete=False, encoding="utf-8") as handle:
+            handle.write(mhtml)
+            doc_path = handle.name
+
+        try:
+            scope = extract_scope_from_file(doc_path)
+        finally:
+            Path(doc_path).unlink(missing_ok=True)
+
+        self.assertEqual(len(scope["in_scope"]), 1)
+        row = scope["in_scope"][0]
+        self.assertEqual(row["issuing_authority"], "Shanghai Clearing House")
+        self.assertEqual(row["asrb_id"], "ASRB1435")
+        self.assertEqual(row["sme_comments"], "Please remove the .at the end of the weblink.")
 
     def test_mhtml_scope_preserves_red_rich_text_rows(self):
         mhtml = textwrap.dedent(

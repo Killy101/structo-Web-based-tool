@@ -112,8 +112,6 @@ export default function DiffViewer({
   const paneBRef     = useRef<DiffPaneHandle>(null);
   const xmlRef       = useRef<HTMLDivElement>(null);
   const locateSeqRef = useRef(0);
-  const syncRafRef = useRef<number | null>(null);
-  const syncPendingRef = useRef<{ source: "old" | "new" | "xml"; fraction: number } | null>(null);
   const xmlSyncingRef = useRef(false);
 
   // ── Resizable splitters ───────────────────────────────────────────────────
@@ -240,35 +238,17 @@ export default function DiffViewer({
 
   const schedulePanelSync = useCallback(
     (source: "old" | "new" | "xml", scrollFraction: number) => {
-      syncPendingRef.current = {
-        source,
-        fraction: Math.max(0, Math.min(1, scrollFraction)),
-      };
+      const fraction = Math.max(0, Math.min(1, scrollFraction));
 
-      if (syncRafRef.current !== null) return;
-
-      syncRafRef.current = requestAnimationFrame(() => {
-        const pending = syncPendingRef.current;
-        syncRafRef.current = null;
-        if (!pending) return;
-
-        if (pending.source === "old") {
-          paneBRef.current?.scrollToFraction(pending.fraction);
-          syncXmlScroll(pending.fraction);
-          return;
-        }
-
-        if (pending.source === "new") {
-          paneARef.current?.scrollToFraction(pending.fraction);
-          syncXmlScroll(pending.fraction);
-          return;
-        }
-
-        if (!xmlSyncingRef.current) {
-          paneARef.current?.scrollToFraction(pending.fraction);
-          paneBRef.current?.scrollToFraction(pending.fraction);
-        }
-      });
+      if (source !== "old") {
+        paneARef.current?.scrollToFraction(fraction);
+      }
+      if (source !== "new") {
+        paneBRef.current?.scrollToFraction(fraction);
+      }
+      if (source !== "xml") {
+        syncXmlScroll(fraction);
+      }
     },
     [syncXmlScroll],
   );
@@ -288,13 +268,6 @@ export default function DiffViewer({
     [schedulePanelSync],
   );
 
-  useEffect(() => {
-    return () => {
-      if (syncRafRef.current !== null) {
-        cancelAnimationFrame(syncRafRef.current);
-      }
-    };
-  }, []);
 
   // ── Select chunk — scrolls all 4 panels ──────────────────────────────────
   const selectChunk = useCallback(async (id: number) => {

@@ -19,6 +19,19 @@ function decodeCommonEntities(value: string): string {
     .replace(/&#39;|&#x27;|&apos;/gi, "'");
 }
 
+function stripOfficeHtmlNoise(value: string): string {
+  return value
+    .replace(/<\?xml[\s\S]*?\?>/gi, " ")
+    .replace(/<(?:style|script)\b[\s\S]*?<\/(?:style|script)>/gi, " ")
+    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, " ")
+    .replace(/<!\[if[\s\S]*?<!\[endif\]>/gi, " ")
+    .replace(/<xml\b[\s\S]*?<\/xml>/gi, " ")
+    .replace(/<\/?(?:html|head|body|meta|link)[^>]*>/gi, " ")
+    .replace(/<\/?(?:o|v|w|m|st1):[^>]*>/gi, " ")
+    .replace(/<img\b[^>]*>/gi, " ")
+    .replace(/<o:p>\s*<\/o:p>/gi, " ");
+}
+
 function stripTags(value: string): string {
   return value.replace(/<[^>]+>/g, "");
 }
@@ -84,7 +97,7 @@ function buildAnchorTag(href: string, label?: string, preserveSourceColor = fals
 export function sanitizeBrdRichTextHtml(value: string): string {
   if (!value) return "";
 
-  let text = decodeCommonEntities(value.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+  let text = stripOfficeHtmlNoise(decodeCommonEntities(value.replace(/\r\n/g, "\n").replace(/\r/g, "\n")));
   text = text.replace(/__BRD_RICH_TEXT_\d+__/g, " ");
   const preserved: Array<[string, string]> = [];
   let idx = 0;
@@ -144,7 +157,7 @@ export function hasBrdRichTextColor(value: string): boolean {
 export function extractBrdRichTextHref(value: string): string {
   if (!value) return "";
 
-  const decoded = decodeCommonEntities(value);
+  const decoded = stripOfficeHtmlNoise(decodeCommonEntities(value));
   const anchorMatch = decoded.match(/<a\b[^>]*href=(['"])(.*?)\1/i);
   if (anchorMatch) {
     return sanitizeUrl(anchorMatch[2]) ?? anchorMatch[2].trim();
@@ -161,7 +174,7 @@ export function extractBrdRichTextHref(value: string): string {
 export function brdRichTextToPlain(value: string): string {
   if (!value) return "";
 
-  const normalized = value
+  const normalized = stripOfficeHtmlNoise(value)
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/__BRD_RICH_TEXT_\d+__/g, " ")

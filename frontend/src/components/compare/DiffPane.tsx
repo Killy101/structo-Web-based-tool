@@ -54,7 +54,7 @@ const DARK_FG_MAP: Record<string, string> = {
   "#3d007a": "#c4b5fd",  // EMP fg → violet-300
 };
 
-function tagToStyle(cfg: TagConfig, dark: boolean): React.CSSProperties {
+function tagToStyle(cfg: TagConfig, dark: boolean, allowUnderline = false): React.CSSProperties {
   const s: React.CSSProperties = {};
   if (cfg.background) {
     s.backgroundColor = dark ? (DARK_BG_MAP[cfg.background.toLowerCase()] ?? cfg.background) : cfg.background;
@@ -66,8 +66,10 @@ function tagToStyle(cfg: TagConfig, dark: boolean): React.CSSProperties {
     if (cfg.font.style.includes("bold"))   s.fontWeight = "bold";
     if (cfg.font.style.includes("italic")) s.fontStyle  = "italic";
   }
-  if (cfg.underline)  s.textDecoration = "underline";
-  if (cfg.overstrike) s.textDecoration = "line-through";
+  const decorations: string[] = [];
+  if (allowUnderline && cfg.underline) decorations.push("underline");
+  if (cfg.overstrike) decorations.push("line-through");
+  if (decorations.length > 0) s.textDecoration = decorations.join(" ");
   return s;
 }
 
@@ -173,9 +175,9 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         const container = scrollRef.current;
         if (!container) return;
         syncingRef.current = true;
-        const maxScroll = container.scrollHeight - container.clientHeight;
-        container.scrollTo({ top: fraction * maxScroll, behavior: "smooth" });
-        setTimeout(() => { syncingRef.current = false; }, 500);
+        const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+        container.scrollTop = Math.max(0, Math.min(1, fraction)) * maxScroll;
+        requestAnimationFrame(() => { syncingRef.current = false; });
       },
     }), []);
 
@@ -187,15 +189,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       for (const c of chunks) m.set(c.id, c.kind);
       return m;
     }, [chunks]);
-
-    const tagStyles = useMemo(() => {
-      const m: Record<string, React.CSSProperties> = {};
-      for (const [name, cfg] of Object.entries(pane.tag_cfgs)) {
-        const s = tagToStyle(cfg, dark);
-        m[name] = s;
-      }
-      return m;
-    }, [pane.tag_cfgs, dark]);
 
     const sideBadge = side === "a" ? "bg-rose-500 text-white" : "bg-emerald-500 text-white";
 
@@ -219,7 +212,9 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         const lineNodes: React.ReactNode[] = [];
         for (let si = 0; si < segs.length; si++) {
           const seg = segs[si];
-          const style = tagStyles[seg.tagName] ?? {};
+          const cfg = pane.tag_cfgs[seg.tagName] ?? {};
+          const isChangedSegment = seg.chunkId !== null && kindMap.has(seg.chunkId);
+          const style = tagToStyle(cfg, dark, isChangedSegment);
 
           lineNodes.push(
             seg.chunkId !== null
@@ -227,18 +222,21 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
               : <span key={si} style={style}>{seg.text}</span>
           );
         }
-        /* content-visibility:auto tells the browser to skip layout/paint for
-         * lines outside the viewport, giving near-virtual-scroll performance
-         * without a JS virtualization library. containIntrinsicHeight provides
-         * a size hint so the scrollbar stays stable. */
         nodes.push(
-          <div key={li} style={{ contentVisibility: "auto", containIntrinsicHeight: "auto 1.6em" }}>
-            {lineNodes}
+          <div
+            key={li}
+            className="grid grid-cols-[52px_minmax(0,1fr)] gap-3"
+            style={{ contentVisibility: "auto", containIntrinsicHeight: "auto 1.6em" }}
+          >
+            <span className="select-none border-r border-slate-200 pr-2 text-right text-[10px] font-medium tabular-nums text-slate-400 dark:border-white/10 dark:text-slate-500">
+              {li + 1}
+            </span>
+            <span className="whitespace-pre-wrap break-words">{lineNodes.length > 0 ? lineNodes : " "}</span>
           </div>
         );
       }
       return nodes;
-    }, [lines, tagStyles]); // ← activeChunkId removed; kindMap no longer needed here
+    }, [lines, pane.tag_cfgs, dark, kindMap]);
 
     /* Active-chunk highlight as an injected CSS rule.
      * Only this tiny string regenerates on every chunk click — not the full
@@ -325,17 +323,18 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
 
         <div
           ref={scrollRef}
+          data-testid={`diff-pane-scroll-${side}`}
           className="flex-1 min-h-0 overflow-auto"
           onScroll={handleScroll}
           onClick={handleChunkClick}
         >
           {activeChunkCSS && <style>{activeChunkCSS}</style>}
-          <pre
-            className="text-[11.5px] whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-[#c8d8e8] px-3 py-1"
+          <div
+            className="font-mono text-[11.5px] text-slate-700 dark:text-[#c8d8e8] px-3 py-1"
             style={{ lineHeight: "1.6", overflowWrap: "break-word", wordBreak: "break-word" }}
           >
             {renderedNodes}
-          </pre>
+          </div>
         </div>
       </div>
     );

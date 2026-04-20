@@ -929,16 +929,83 @@ def extract_scope(doc) -> dict:
 # MHTML / legacy .doc parser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _decode_mhtml_payload(payload: bytes | bytearray | str | None, charset: str | None = None) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+
+    raw = bytes(payload)
+    normalized = (charset or "").strip().lower()
+    alias_map = {
+        "unicode": "utf-16le",
+        "utf16": "utf-16",
+        "utf16le": "utf-16le",
+        "utf16be": "utf-16be",
+    }
+
+    candidates: list[str] = []
+    if normalized:
+        candidates.append(alias_map.get(normalized, normalized))
+    if b"\x00" in raw:
+        candidates.extend(["utf-16", "utf-16le", "utf-16be"])
+    candidates.extend(["utf-8", "latin-1"])
+
+    seen: set[str] = set()
+    for encoding in candidates:
+        if not encoding or encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            text = raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if text.strip("\x00\r\n\t "):
+            return text
+
+    return raw.decode("utf-8", errors="replace")
+
+
 def _extract_scope_from_mhtml(path: str) -> dict:
     import quopri
+    from email import policy
+    from email.parser import BytesParser
 
     with open(path, "rb") as f:
         raw = f.read()
 
+    decoded = ""
     try:
-        decoded = quopri.decodestring(raw).decode("utf-8", errors="replace")
+        message = BytesParser(policy=policy.default).parsebytes(raw)
+        if message.is_multipart():
+            html_parts: list[str] = []
+            for part in message.walk():
+                if (part.get_content_type() or "").lower() != "text/html":
+                    continue
+                raw_payload = part.get_payload(decode=True)
+                payload: bytes | bytearray | str | None
+                if isinstance(raw_payload, (bytes, bytearray, str)) or raw_payload is None:
+                    payload = raw_payload
+                else:
+                    payload = str(raw_payload)
+                html_text = _decode_mhtml_payload(payload, part.get_content_charset())
+                if html_text.strip():
+                    html_parts.append(html_text)
+            if html_parts:
+                decoded = "\n".join(html_parts)
     except Exception:
-        decoded = raw.decode("utf-8", errors="replace")
+        decoded = ""
+
+    if not decoded.strip():
+        try:
+            decoded = _decode_mhtml_payload(quopri.decodestring(raw), "utf-8")
+        except Exception:
+            decoded = _decode_mhtml_payload(raw, "utf-8")
+
+    match = re.search(r"(<html\b.*?</html>)", decoded, re.IGNORECASE | re.DOTALL)
+    if match:
+        decoded = match.group(1)
+    decoded = decoded.replace("\x00", "")
 
     def strip_tags(s: str) -> str:
         s = re.sub(r"<[^>]+>", " ", s)
@@ -1070,6 +1137,15 @@ def _extract_scope_from_mhtml(path: str) -> dict:
                 return rich_value
             return plain_value
 
+        def cell_has_strikethrough(cells_html, idx):
+            if idx is None or idx >= len(cells_html):
+                return False
+            cell_html = cells_html[idx] or ""
+            return bool(
+                re.search(r"<(?:s|strike|del)\b", cell_html, re.IGNORECASE)
+                or re.search(r"text-decoration\s*:\s*line-through", cell_html, re.IGNORECASE)
+            )
+
         for row_html in rows[header_row_count or 1:]:
             cells_html = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.IGNORECASE)
 
@@ -1125,10 +1201,7 @@ def _extract_scope_from_mhtml(path: str) -> dict:
                 "strikethrough":          False,
             }
 
-            row_is_struck = bool(
-                re.search(r"<(?:s|strike|del)\b", row_html, re.IGNORECASE)
-                or re.search(r"text-decoration\s*:\s*line-through", row_html, re.IGNORECASE)
-            )
+            row_is_struck = cell_has_strikethrough(cells_html, title_col)
             if row_is_struck:
                 entry["strikethrough"] = True
                 out_of_scope.append(entry)
@@ -1160,8 +1233,15 @@ def _row_is_header_text(text_lower: str) -> bool:
 def _is_mhtml_doc(path: str) -> bool:
     try:
         with open(path, "rb") as f:
-            header = f.read(256)
-        return b"MIME-Version" in header or b"multipart/related" in header or b"Exported From Confluence" in header
+            header = f.read(4096)
+        lowered = header.lower()
+        return (
+            b"mime-version" in lowered
+            or b"multipart/related" in lowered
+            or b"exported from confluence" in lowered
+            or b"content-location:" in lowered
+            or b"<html" in lowered
+        )
     except Exception:
         return False
 

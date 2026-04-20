@@ -539,9 +539,10 @@ function toScopeRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string):
   const auth = e.issuing_authority ? `${e.issuing_authority}${e.issuing_authority_code ? ` (${e.issuing_authority_code})` : ""}` : "";
   const { asrbId, smeComments } = normalizeAsrbAndSme(e.asrb_id, e.sme_comments);
   const { url: contentUrl, note: contentNote } = repairSplitUrl(e.content_url, e.content_note);
+  const safeStableKey = stableKey.trim() || id;
   return {
     id,
-    stableKey,
+    stableKey: safeStableKey,
     isOutOfScope: oos || !!e.strikethrough,
     title: e.document_title ?? "",
     referenceLink: e.regulator_url ?? "",
@@ -557,8 +558,17 @@ function toScopeRow(e: ScopeEntry, id: string, oos: boolean, stableKey: string):
 function buildScopeRows(d?: Record<string, unknown>): ScopeRow[] {
   if (!d) return [];
   const now = Date.now().toString(); const rows: ScopeRow[] = [];
-  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-in-${i}`, false, e.stable_key ?? e.stableKey ?? `in-${i}`)));
-  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-out-${i}`, true, e.stable_key ?? e.stableKey ?? `out-${i}`)));
+  const resolveStableKey = (entry: ScopeEntry, fallback: string) => {
+    const raw = typeof entry.stable_key === "string"
+      ? entry.stable_key
+      : typeof entry.stableKey === "string"
+        ? entry.stableKey
+        : "";
+    const trimmed = raw.trim();
+    return trimmed || fallback;
+  };
+  asScopeEntryArray(d.in_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-in-${i}`, false, resolveStableKey(e, `in-${i}`))));
+  asScopeEntryArray(d.out_of_scope).forEach((e, i) => rows.push(toScopeRow(e, `${now}-out-${i}`, true, resolveStableKey(e, `out-${i}`))));
   return rows;
 }
 function hasExtraCols(rows: ScopeRow[]) {
@@ -1224,6 +1234,13 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
       asrbId: [field, "asrb id"],
       smeComments: [field, "sme comments"],
     }[field].map(normalizeScopeImageKey);
+    const genericColLabels = [
+      normalizeScopeImageKey(field),
+      normalizeScopeImageKey(field.replace(/([A-Z])/g, " $1")),
+      normalizeScopeImageKey(`scope-${field}`),
+      normalizeScopeImageKey(`scope row ${field}`),
+      normalizeScopeImageKey(`-${field}`),
+    ].filter(Boolean);
 
     images.filter(isScopeImage).forEach((image) => {
       if (seen.has(image.id)) return;
@@ -1234,9 +1251,10 @@ function ScopeTable({ scopeData, brdId, images }: { scopeData?: Record<string, u
       const exactStableMatch = !!labelKey && labelKey === stableKey;
       const exactCellTextMatch = !!fallbackKey && cellTextKey === fallbackKey && sameCell;
       const exactAliasMatch = !!labelKey && fieldAliases.includes(labelKey) && sameCell;
+      const genericColMatch = !!labelKey && (genericColLabels.includes(labelKey) || genericColLabels.some((label) => label && labelKey.endsWith(label))) && sameCell;
       const legacyCellMatch = sameCell && !labelKey;
 
-      if (exactStableMatch || exactCellTextMatch || exactAliasMatch || legacyCellMatch) {
+      if (exactStableMatch || exactCellTextMatch || exactAliasMatch || genericColMatch || legacyCellMatch) {
         seen.add(image.id);
         result.push(image);
       }
@@ -1854,49 +1872,69 @@ function CitationTable({ citationsData, brdId, images }: { citationsData?: Recor
       )}
 
       {citations.length > 0 && (
-      <div className={TBL_WRAP}>
-      <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-amber-50 dark:bg-amber-500/10">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={MONO}>Citable Levels and Citation Standardization Rules</p>
-      </div>
-      <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 720 }}>
-        <thead><tr>
-          <BrdHeaderCell title="Level" greenNote="Citation level" />
-          <BrdHeaderCell title="Citable Levels" checkpoint="SME Checkpoint" blueNote={citableLevelsNote || "Indicate which levels are citable."} />
-          <BrdHeaderCell title="Citation Standardization Rules" checkpoint="SME Checkpoint" blueNote={citationRulesNote || "This should include the levels that form the citation and the punctuations or symbols between the Levels."} />
-          <BrdHeaderCell title="Source of Law" checkpoint="SME Checkpoint" blueNote={sourceOfLawNote || "SME to indicate which Level should be Source of Law."} />
-          <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify here" />
-        </tr></thead>
-        <tbody>
-          {citations.map((row, i) => {
-            const lvl = `Level ${asString(row.level)}`;
-            const getImgs = (col: string) => {
-              const byLabel = imagesByLevelCol.get(`${lvl}__${col}`) || [];
-              if (byLabel.length > 0) return byLabel;
-              return imagesByLevelCol.get(`__row_${i + 1}__${col}`) || [];
-            };
-            return (
-              <tr key={i} className={i%2===0?"bg-white dark:bg-transparent":"bg-slate-50/40 dark:bg-[#1a1f35]/40"}>
-                <td className={`w-14 ${TD}`}><LevelBadge val={asString(row.level)}/></td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  <CitableBadge val={asString(row.isCitable)} />
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {formatDisplay(asString(row.citationRules)) || "—"}
-                  {getImgs("citationRules").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {formatDisplay(asString(row.sourceOfLaw)) || "—"}
-                </td>
-                <td className={`${TD} whitespace-pre-wrap break-words`}>
-                  {formatDisplay(asString(row.smeComments)) || "—"}
-                  {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+        <div className="space-y-3">
+          <div className={TBL_WRAP}>
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-amber-50 dark:bg-amber-500/10">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={MONO}>Citable Levels</p>
+            </div>
+            <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 420 }}>
+              <thead><tr>
+                <BrdHeaderCell title="Level" greenNote="Citation level" />
+                <BrdHeaderCell title="Citable Levels" checkpoint="SME Checkpoint" blueNote={citableLevelsNote || "Indicate which levels are citable."} />
+              </tr></thead>
+              <tbody>
+                {citations.map((row, i) => (
+                  <tr key={`citable-${i}`} className={i%2===0?"bg-white dark:bg-transparent":"bg-slate-50/40 dark:bg-[#1a1f35]/40"}>
+                    <td className={`w-14 ${TD}`}><LevelBadge val={asString(row.level)}/></td>
+                    <td className={`${TD} whitespace-pre-wrap break-words`}>
+                      <CitableBadge val={asString(row.isCitable)} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className={TBL_WRAP}>
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-[#2a3147] bg-amber-50 dark:bg-amber-500/10">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-800 dark:text-amber-300" style={MONO}>Citation Standardization Rules</p>
+            </div>
+            <table className="w-full text-[11.5px] border-collapse" style={{ minWidth: 720 }}>
+              <thead><tr>
+                <BrdHeaderCell title="Level" greenNote="Citation level" />
+                <BrdHeaderCell title="Citation Standardization Rules" checkpoint="SME Checkpoint" blueNote={citationRulesNote || "This should include the levels that form the citation and the punctuations or symbols between the Levels."} />
+                <BrdHeaderCell title="Source of Law" checkpoint="SME Checkpoint" blueNote={sourceOfLawNote || "SME to indicate which Level should be Source of Law."} />
+                <BrdHeaderCell title="SME Comments" checkpoint="SME Checkpoint" blueNote="If anything needs be changed, please specify here" />
+              </tr></thead>
+              <tbody>
+                {citations.map((row, i) => {
+                  const lvl = `Level ${asString(row.level)}`;
+                  const getImgs = (col: string) => {
+                    const byLabel = imagesByLevelCol.get(`${lvl}__${col}`) || [];
+                    if (byLabel.length > 0) return byLabel;
+                    return imagesByLevelCol.get(`__row_${i + 1}__${col}`) || [];
+                  };
+                  return (
+                    <tr key={`rules-${i}`} className={i%2===0?"bg-white dark:bg-transparent":"bg-slate-50/40 dark:bg-[#1a1f35]/40"}>
+                      <td className={`w-14 ${TD}`}><LevelBadge val={asString(row.level)}/></td>
+                      <td className={`${TD} whitespace-pre-wrap break-words`}>
+                        {formatDisplay(asString(row.citationRules)) || "—"}
+                        {getImgs("citationRules").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                      </td>
+                      <td className={`${TD} whitespace-pre-wrap break-words`}>
+                        {formatDisplay(asString(row.sourceOfLaw)) || "—"}
+                      </td>
+                      <td className={`${TD} whitespace-pre-wrap break-words`}>
+                        {formatDisplay(asString(row.smeComments)) || "—"}
+                        {getImgs("smeComments").map(img => <InlineImageCell key={img.id} brdId={brdId} image={img} />)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );

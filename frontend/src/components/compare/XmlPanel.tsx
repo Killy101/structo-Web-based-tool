@@ -113,7 +113,7 @@ function XmlBody({
         const lineStart = lineStarts[idx];
         return (
           <div key={`${startLineNumber + idx}-${lineStart}`} className="grid grid-cols-[56px_minmax(0,1fr)] gap-2">
-            <span className="select-none text-right pr-2 text-slate-400 dark:text-slate-600">{startLineNumber + idx}</span>
+            <span className="select-none border-r border-slate-200 pr-2 text-right text-[10px] font-medium tabular-nums text-slate-500 dark:border-white/10 dark:text-slate-500">{startLineNumber + idx}</span>
             <span className="whitespace-pre-wrap break-words">{_renderHighlightedLine(lineText, lineStart, navSpan)}</span>
           </div>
         );
@@ -233,6 +233,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
         {xmlText ? (
           <div
             ref={ref}
+            data-testid="xml-panel-scroll"
             className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
             onScroll={handleScroll}
           >
