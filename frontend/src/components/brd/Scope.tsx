@@ -1252,7 +1252,17 @@ export default function Scope({ initialData, brdId, onDataChange }: Props) {
   }, []);
   // ── End keyboard shortcuts ──────────────────────────────────────────────────
 
-  function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2000); }
+  async function handleSave() {
+    if (brdId) {
+      try {
+        await api.put(`/brd/${brdId}/sections/scope`, { data: rowsToScopeData(rows, scopeSmeCheckpoint) });
+      } catch (err) {
+        console.error("[Scope] Save failed:", err);
+      }
+    }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
