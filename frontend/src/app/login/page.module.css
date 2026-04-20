@@ -956,6 +956,7 @@
     padding: 44px 28px 56px;
     align-items: flex-start;
     justify-content: center;
+    overflow-y: auto;
   }
 
   .formContainer {

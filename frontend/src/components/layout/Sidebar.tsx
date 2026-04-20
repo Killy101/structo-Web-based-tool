@@ -268,7 +268,7 @@ function LogoutModal({
   );
 }
 
-export default function Sidebar({ collapsed, onToggle, hoverMode }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, onMobileClose, hoverMode }: SidebarProps) {
   const [hovered, setHovered] = useState(false);
   const pathname = usePathname();
   const { user, logout } = useAuth();
@@ -374,7 +374,7 @@ export default function Sidebar({ collapsed, onToggle, hoverMode }: SidebarProps
               <Link
                 key={item.href}
                 href={item.href}
-                // onClick removed: onMobileClose was undefined
+                onClick={onMobileClose}
                 title={
                   collapsed
                     ? `${item.label}${allowed ? "" : " (No access)"}`
@@ -622,6 +622,7 @@ export default function Sidebar({ collapsed, onToggle, hoverMode }: SidebarProps
           {user?.role === "SUPER_ADMIN" && (
             <Link
               href="/dashboard/settings"
+              onClick={onMobileClose}
               title={collapsed ? "Settings" : undefined}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${isActive("/dashboard/settings") ? "text-white shadow-lg" : inactiveItemClass} ${collapsed ? "justify-center" : ""}`}
               style={

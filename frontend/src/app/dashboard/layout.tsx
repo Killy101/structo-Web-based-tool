@@ -322,7 +322,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
       {/* Sidebar — hidden on mobile unless mobileOpen */}
       <div className={`
-        fixed md:relative z-40 md:z-auto h-full
+        flex-shrink-0 fixed md:relative z-40 md:z-10 h-full
         transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
         ${mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
       `}>
