@@ -259,10 +259,10 @@
 
 .heroTitle {
   font-family: "Syne", sans-serif;
-  font-size: clamp(18px, 2vw, 34px);
+  font-size: clamp(20px, 2.4vw, 38px);
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.7);
-  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.75);
+  line-height: 1.22;
   letter-spacing: -0.5px;
 }
 
@@ -860,6 +860,96 @@
   transform: rotate(15deg);
 }
 
+/* ── HAMBURGER (mobile only) ── */
+.hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: rgba(26, 143, 209, 0.08);
+  border: 1px solid rgba(26, 143, 209, 0.2);
+  border-radius: 8px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+
+.hamburger:hover {
+  background: rgba(26, 143, 209, 0.15);
+  color: #42b4f5;
+  border-color: rgba(26, 143, 209, 0.35);
+}
+
+/* ── MOBILE MENU ── */
+.mobileMenu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 99;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px 16px;
+  background: rgba(6, 13, 26, 0.98);
+  border-bottom: 1px solid rgba(26, 143, 209, 0.15);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  animation: mobileMenuIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes mobileMenuIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.mobileNavLink {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #94a3b8;
+  transition: all 0.15s;
+}
+
+.mobileNavLink:hover {
+  background: rgba(26, 143, 209, 0.08);
+  color: #ffffff;
+}
+
+.mobileLoginBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 14px;
+  margin-top: 6px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #d4862e, #b06e1f);
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid rgba(232, 150, 58, 0.3);
+  cursor: pointer;
+  transition: all 0.15s;
+  width: 100%;
+}
+
+.mobileLoginBtn:hover {
+  background: linear-gradient(135deg, #e8963a, #d4862e);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 768px) {
+  .hamburger { display: flex; }
+}
+
 /* ── LIGHT MODE OVERRIDES ── */
 .lightMode {
   background: #f0f4f8;
@@ -1006,6 +1096,15 @@
 }
 
 .lightMode .workflowDesc { color: #475569; }
+
+/* light mode — mobile menu overrides */
+.lightMode .mobileMenu {
+  background: rgba(240, 244, 248, 0.98);
+  border-color: rgba(26, 143, 209, 0.2);
+}
+.lightMode .mobileNavLink { color: #475569; }
+.lightMode .mobileNavLink:hover { background: rgba(26, 143, 209, 0.06); color: #0f172a; }
+.lightMode .hamburger { color: #475569; }
 
 .workflowArrow {
   flex-shrink: 0;

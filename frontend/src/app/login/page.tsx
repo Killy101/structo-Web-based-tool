@@ -22,9 +22,11 @@ export default function LoginPage() {
   const [showSignedOutToast, setShowSignedOutToast] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  // Lock scroll while on login page, restore on unmount
+  // Lock body scroll on desktop (two-panel layout fills viewport); allow scroll on mobile
   useEffect(() => {
-    document.body.style.overflow = "hidden";
+    if (window.innerWidth > 860) {
+      document.body.style.overflow = "hidden";
+    }
     return () => {
       document.body.style.overflow = "";
     };
@@ -437,6 +439,12 @@ export default function LoginPage() {
                     {errors.password}
                   </p>
                 )}
+              </div>
+
+              <div className={styles.forgotRow}>
+                <Link href="/forgot-password" className={styles.forgotLink}>
+                  Forgot password?
+                </Link>
               </div>
 
               <button

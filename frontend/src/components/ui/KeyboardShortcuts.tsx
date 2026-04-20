@@ -109,6 +109,12 @@ export default function KeyboardShortcuts() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [handleKey]);
 
+  useEffect(() => {
+    const open = () => setOpen(true);
+    window.addEventListener("structo:open-shortcuts", open);
+    return () => window.removeEventListener("structo:open-shortcuts", open);
+  }, []);
+
   if (!open) return null;
 
   return (
