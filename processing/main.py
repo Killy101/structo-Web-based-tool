@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 
@@ -31,9 +32,17 @@ class _GzipSkipStreaming:
 
 app.add_middleware(_GzipSkipStreaming)
 
+# CORS origins: comma-separated list in CORS_ORIGINS env var, or hardcoded defaults.
+# In production set CORS_ORIGINS=https://your-domain.com in the environment.
+_cors_env = os.environ.get("CORS_ORIGINS", "")
+_cors_origins: list[str] = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if _cors_env
+    else ["http://localhost:3000", "http://localhost:4000", "http://localhost:3001"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:4000"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
