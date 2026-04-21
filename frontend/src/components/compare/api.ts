@@ -4,6 +4,9 @@
 
 import type { ApplyResult, Chunk, DiffResult, LocateResult, XmlSection } from "./types";
 
+if (!process.env.NEXT_PUBLIC_PROCESSING_URL) {
+  console.warn("[api] NEXT_PUBLIC_PROCESSING_URL is not set — falling back to http://localhost:8000");
+}
 const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
   ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
   : "http://localhost:8000/compare";
@@ -21,9 +24,10 @@ export interface DiffProgress {
 
 // ── Streaming diff ────────────────────────────────────────────────────────────
 
-const _DIFF_MAX_RETRIES = 4;        // up to 4 retries (5 total attempts)
-const _DIFF_BASE_DELAY_MS = 8_000;  // first retry after ~8 s
-const _DIFF_MAX_DELAY_MS  = 60_000; // cap at 60 s
+const _DIFF_MAX_RETRIES   = 4;         // up to 4 retries (5 total attempts)
+const _DIFF_BASE_DELAY_MS = 8_000;     // first retry after ~8 s
+const _DIFF_MAX_DELAY_MS  = 60_000;    // cap at 60 s
+const _DIFF_STREAM_TIMEOUT_MS = 360_000; // 6 min client-side hard limit
 
 /**
  * Run a diff between two PDFs, optionally with an XML baseline.
@@ -48,7 +52,19 @@ export async function apiDiff(
   if (xmlFile) form.append("xml_file_a", xmlFile);
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
-    const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form });
+    const controller = new AbortController();
+    const timeoutId  = setTimeout(() => controller.abort(), _DIFF_STREAM_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form, signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if ((err as Error).name === "AbortError") {
+        throw new Error(`Compare timed out after ${_DIFF_STREAM_TIMEOUT_MS / 60_000} minutes. Try splitting the document into smaller sections.`);
+      }
+      throw err;
+    }
+    clearTimeout(timeoutId);
 
     if (res.status === 429) {
       if (attempt >= _DIFF_MAX_RETRIES) {

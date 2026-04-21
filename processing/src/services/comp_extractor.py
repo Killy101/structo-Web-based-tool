@@ -103,6 +103,7 @@ zero changes across a 1000+ page document.
 import sys
 import re
 import difflib
+import logging
 import threading
 import argparse
 import functools
@@ -112,6 +113,8 @@ import html
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
   
 try:
     import fitz
@@ -261,6 +264,14 @@ _RE_STRIP_WORD_PUNCT = re.compile(r'^[^\w]+|[^\w]+$')
 
 # _is_whitespace_only_diff
 _RE_WS_STRIP = re.compile(r'\s+')
+
+# extract_xml_sections / _innod_block_bounds
+_RE_INNOD_LEVEL_OPEN  = re.compile(r'<innodLevel\b([^>]*?)>', re.I)
+_RE_INNOD_LEVEL_CLOSE = re.compile(r'</innodLevel>', re.I)
+_RE_INNOD_HEADING_PAT = re.compile(
+    r'<innodHeading[^>]*>\s*<title[^>]*>(.*?)</title>', re.I | re.DOTALL
+)
+
 FLAG_BOLD        = 16
 FLAG_STRIKEOUT   = 32
 
@@ -2443,17 +2454,13 @@ def _innod_block_bounds(xml_text: str, search_from: int = 0) -> Optional[Tuple[i
     Walks backward from search_from to find the opening <innodLevel> tag,
     then forward to find its matching closing </innodLevel>.
     """
-    # Walk backward to the most recent <innodLevel
-    open_pat  = re.compile(r'<innodLevel\b', re.I)
     close_tag = '</innodLevel>'
 
-    # Find all innodLevel opens before search_from
-    opens = [(m.start(), m.end()) for m in open_pat.finditer(xml_text, 0, search_from + 1)]
-    if not opens:
+    # rfind is O(n) but uses a fast C-level scan — much faster than collecting
+    # all finditer matches from position 0 on every call for large XML docs.
+    block_start = xml_text.rfind('<innodLevel', 0, search_from + 1)
+    if block_start == -1:
         return None
-
-    # Walk from the closest open forward, tracking nesting depth
-    block_start = opens[-1][0]
     depth = 0
     pos = block_start
     while pos < len(xml_text):
@@ -2574,33 +2581,50 @@ def extract_xml_sections(xml_text: str) -> List[dict]:
     Returns a list of dicts:
       {id, label, level, start, end, parent_id}
     Only sections with non-empty titles are returned.
+
+    Uses a single O(n) forward pass (stack-based bracket matching) instead of
+    calling _innod_block_bounds per section, which was O(n²) on large documents
+    and caused the 600-second timeout when XML files had many innodLevel blocks.
     """
     if not xml_text:
         return []
 
+    # Build sorted event list: (pos, kind, attrs)
+    # kind 0 = open tag, 1 = close tag  (open sorts before close at same pos)
+    events: List[Tuple[int, int, str]] = []
+    for m in _RE_INNOD_LEVEL_OPEN.finditer(xml_text):
+        events.append((m.start(), 0, m.group(1)))
+    close_len = len('</innodLevel>')
+    for m in _RE_INNOD_LEVEL_CLOSE.finditer(xml_text):
+        events.append((m.start(), 1, ''))
+    events.sort()
+
+    # Stack-based bracket matching: pair each open with its matching close
+    stack: List[Tuple[int, str]] = []      # (open_start, attrs)
+    all_bounds: List[Tuple[int, int, str]] = []  # (start, end, attrs)
+    for pos, kind, attrs in events:
+        if kind == 0:
+            stack.append((pos, attrs))
+        elif stack:
+            open_start, open_attrs = stack.pop()
+            all_bounds.append((open_start, pos + close_len, open_attrs))
+
+    if not all_bounds:
+        return []
+
+    # Sort by start position so outer sections appear before their nested children
+    all_bounds.sort(key=lambda x: x[0])
+
     sections: List[dict] = []
-    open_pat = re.compile(r'<innodLevel\b[^>]*>', re.I)
-    heading_pat = re.compile(
-        r'<innodHeading>\s*<title>(.*?)</title>', re.I | re.DOTALL
-    )
-
-    for m in open_pat.finditer(xml_text):
-        # Extract level attribute
-        level_m = re.search(r'level="(\d+)"', m.group())
+    for start, end, attrs in all_bounds:
+        level_m = re.search(r'\blevel="(\d+)"', attrs)
         level = int(level_m.group(1)) if level_m else 99
-
-        # Only include structural levels (Part=3, Chapter=4, Section=6-7)
         if level > 8:
             continue
 
-        # Find bounds of this innodLevel block
-        bounds = _innod_block_bounds(xml_text, m.start())
-        if not bounds:
-            continue
-
-        # Look for a heading/title near the top of this section (first 800 chars)
-        section_top = xml_text[m.start():min(m.start() + 800, bounds[1])]
-        heading_m = heading_pat.search(section_top)
+        # Look for heading/title near the top of this section (first 800 chars)
+        section_top = xml_text[start: min(start + 800, end)]
+        heading_m = _RE_INNOD_HEADING_PAT.search(section_top)
         if not heading_m:
             continue
 
@@ -2608,10 +2632,10 @@ def extract_xml_sections(xml_text: str) -> List[dict]:
         if not label or len(label) < 2:
             continue
 
-        # Determine parent: the most recent section whose range contains this one
+        # Determine parent: most recent section whose range contains this one
         parent_id = -1
         for prev in reversed(sections):
-            if prev["start"] <= bounds[0] and prev["end"] >= bounds[1]:
+            if prev["start"] <= start and prev["end"] >= end:
                 parent_id = prev["id"]
                 break
 
@@ -2619,8 +2643,8 @@ def extract_xml_sections(xml_text: str) -> List[dict]:
             "id": len(sections),
             "label": label,
             "level": level,
-            "start": bounds[0],
-            "end": bounds[1],
+            "start": start,
+            "end": end,
             "parent_id": parent_id,
         })
 
@@ -4038,7 +4062,7 @@ def compute_diff(
     blocks_a = segment_blocks(lines_a)
     blocks_b = segment_blocks(lines_b)
     _cd_t1 = _time.perf_counter()
-    print(f"  [compute_diff] segment: {_cd_t1-_cd_t0:.2f}s  blocks_a={len(blocks_a)} blocks_b={len(blocks_b)}", flush=True)
+    logger.debug("compute_diff segment: %.2fs  blocks_a=%d blocks_b=%d", _cd_t1-_cd_t0, len(blocks_a), len(blocks_b))
     _progress("segmenting", 5)
 
     # Post-segmentation: fuse reflow-fragment blocks (same sentence, different wrap)
@@ -4116,7 +4140,7 @@ def compute_diff(
     ta_c, map_a = _safe_merge(ta, ref_set_b, wbag_b, map_a)
     tb_c, map_b = _safe_merge(tb, ref_set_a, wbag_a, map_b)
     _cd_t2 = _time.perf_counter()
-    print(f"  [compute_diff] prep+merge: {_cd_t2-_cd_t1:.2f}s  ta_c={len(ta_c)} tb_c={len(tb_c)}", flush=True)
+    logger.debug("compute_diff prep+merge: %.2fs  ta_c=%d tb_c=%d", _cd_t2-_cd_t1, len(ta_c), len(tb_c))
     _progress("aligning", 15)
 
     # autojunk=False is critical: provision anchors like (a),(b),(1),(2) repeat
@@ -4140,7 +4164,7 @@ def compute_diff(
 
     opcodes = _windowed_opcodes(ta_h, tb_h, ta_c, tb_c)
     _cd_t3 = _time.perf_counter()
-    print(f"  [compute_diff] opcodes: {_cd_t3-_cd_t2:.2f}s  n_ops={len(opcodes)}", flush=True)
+    logger.debug("compute_diff opcodes: %.2fs  n_ops=%d", _cd_t3-_cd_t2, len(opcodes))
     _progress("matching", 40)
 
     flat_map_a = map_a

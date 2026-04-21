@@ -2,6 +2,7 @@
 import React, {
   forwardRef,
   useCallback,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -218,8 +219,8 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
 
           lineNodes.push(
             seg.chunkId !== null
-              ? <span key={si} style={style} data-chunk-id={String(seg.chunkId)}>{seg.text}</span>
-              : <span key={si} style={style}>{seg.text}</span>
+              ? <span key={`${li}-${si}`} style={style} data-chunk-id={String(seg.chunkId)}>{seg.text}</span>
+              : <span key={`${li}-${si}`} style={style}>{seg.text}</span>
           );
         }
         nodes.push(
@@ -238,15 +239,22 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       return nodes;
     }, [lines, pane.tag_cfgs, dark, kindMap]);
 
-    /* Active-chunk highlight as an injected CSS rule.
-     * Only this tiny string regenerates on every chunk click — not the full
-     * node tree. The selector targets all data-chunk-id spans of that chunk. */
-    const activeChunkCSS = useMemo(() => {
-      if (activeChunkId === null) return "";
+    /* Active-chunk highlight via a persistent <style> element updated imperatively.
+     * Bypasses React reconciliation so CSSOM is updated at most once per selection
+     * change — not on every render of the full node tree. */
+    const activeStyleRef = useRef<HTMLStyleElement | null>(null);
+
+    useEffect(() => {
+      const el = activeStyleRef.current;
+      if (!el) return;
+      if (activeChunkId === null) {
+        el.textContent = "";
+        return;
+      }
       const kind = kindMap.get(activeChunkId);
-      if (!kind) return "";
+      if (!kind) { el.textContent = ""; return; }
       const ahl = ACTIVE_HL[kind];
-      return (
+      el.textContent = (
         `[data-chunk-id="${activeChunkId}"] {` +
         ` background-color: ${ahl.bg} !important;` +
         ` border-radius: 2px;` +
@@ -328,7 +336,8 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           onScroll={handleScroll}
           onClick={handleChunkClick}
         >
-          {activeChunkCSS && <style>{activeChunkCSS}</style>}
+          {/* eslint-disable-next-line react/no-unknown-property */}
+          <style ref={activeStyleRef} />
           <div
             className="font-mono text-[11.5px] text-slate-700 dark:text-[#c8d8e8] px-3 py-1"
             style={{ lineHeight: "1.6", overflowWrap: "break-word", wordBreak: "break-word" }}

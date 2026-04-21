@@ -24,7 +24,6 @@ import os
 import sys
 import tempfile
 import time
-import traceback
 from pathlib import Path
 from typing import Optional
 import asyncio
@@ -45,17 +44,18 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ── Concurrency guard ─────────────────────────────────────────────────────────
-# Each Uvicorn worker process has its own copy of this counter, so the actual
-# system-wide ceiling is MAX_CONCURRENT_DIFFS × number-of-workers.
-# Default: 5 concurrent diffs per worker (= up to 20 on 4-worker production),
-# which matches the known Updating-team workload of ~20 simultaneous users.
+# Each Uvicorn worker process has its own Semaphore, so the actual system-wide
+# ceiling is MAX_CONCURRENT_DIFFS × number-of-workers.
+# Default: 5 concurrent diffs per worker (= up to 20 on 4-worker production).
 # Set MAX_CONCURRENT_DIFFS in .env to tune per deployment.
 _MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "5"))
-_active_diffs: int = 0
+_diff_semaphore: asyncio.Semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DIFFS)
 
 # Estimated seconds until a busy slot is likely free — sent as Retry-After.
-# Clients should use this value (+ random jitter) before retrying.
 _RETRY_AFTER_SECONDS: int = 30
+
+# Maximum upload size per PDF file (default 100 MB).
+_MAX_PDF_BYTES: int = int(os.environ.get("MAX_PDF_MB", "100")) * 1024 * 1024
 
 # Per-job wall-clock timeout. Large PDFs can take 60–120 s; 300 s is generous.
 # Set COMPARE_TIMEOUT_SECONDS in .env to override.
@@ -344,10 +344,8 @@ async def diff_pdfs(
         return ORJSONResponse(payload)
 
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": str(exc), "traceback": traceback.format_exc()},
-        )
+        logger.exception("diff/inspect failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)})
     finally:
         for p in (tmp_a, tmp_b):
             if p and os.path.exists(p):
@@ -378,20 +376,23 @@ async def diff_pdfs_stream(
       {"t":"e","msg":"..."}                    — error
     """
     # ── Concurrency gate ──────────────────────────────────────────────────────
-    global _active_diffs
-    if _active_diffs >= _MAX_CONCURRENT_DIFFS:
+    if _diff_semaphore.locked() and _diff_semaphore._value == 0:  # type: ignore[attr-defined]
         raise HTTPException(
             status_code=429,
             detail=(
-                f"Server is busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons are "
+                f"Server is busy — {_MAX_CONCURRENT_DIFFS} comparisons are "
                 "already running. Please wait a moment and try again."
             ),
             headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
         )
-    _active_diffs += 1
 
+    # ── File-size guard ───────────────────────────────────────────────────────
     data_a = await old_file.read()
+    if len(data_a) > _MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail=f"Old PDF exceeds {_MAX_PDF_BYTES // (1024*1024)} MB limit")
     data_b = await new_file.read()
+    if len(data_b) > _MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail=f"New PDF exceeds {_MAX_PDF_BYTES // (1024*1024)} MB limit")
     xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
     xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
     fname_a = old_file.filename
@@ -441,7 +442,7 @@ async def diff_pdfs_stream(
             q.put(_json.dumps({"t": "p", "s": "new", "p": _n_b, "n": _n_b}) + "\n")
 
             t1 = time.perf_counter()
-            print(f"[TIMING] load_pdf parallel: {len(lines_a)}+{len(lines_b)} lines, {t1-t0:.2f}s", flush=True)
+            logger.debug("load_pdf parallel: %d+%d lines, %.2fs", len(lines_a), len(lines_b), t1-t0)
 
             # Stage 2 — diff (with optional XML cross-validation)
             q.put(_json.dumps({"t": "p", "s": "diff"}) + "\n")
@@ -457,7 +458,7 @@ async def diff_pdfs_stream(
             )
 
             t2 = time.perf_counter()
-            print(f"[TIMING] compute_diff: {len(chunks)} chunks, {t2-t1:.2f}s", flush=True)
+            logger.debug("compute_diff: %d chunks, %.2fs", len(chunks), t2-t1)
 
             # Stage 3 — render (precompute IS thread-safe — separate data)
             q.put(_json.dumps({"t": "p", "s": "render", "chunks": len(chunks)}) + "\n")
@@ -468,7 +469,7 @@ async def diff_pdfs_stream(
                 pane_b = fut_pb.result()
 
             t3 = time.perf_counter()
-            print(f"[TIMING] precompute: {t3-t2:.2f}s, total={t3-t0:.2f}s", flush=True)
+            logger.debug("precompute: %.2fs, total=%.2fs", t3-t2, t3-t0)
 
             # Stage 4 — extract XML sections and assign chunks (when XML available)
             xml_sections = []
@@ -497,7 +498,7 @@ async def diff_pdfs_stream(
             }
 
             t6 = time.perf_counter()
-            print(f"[TIMING] payload build: {t6-t5:.2f}s", flush=True)
+            logger.debug("payload build: %.2fs", t6-t5)
 
             # Serialize the big result with orjson when available
             if _has_orjson:
@@ -506,7 +507,7 @@ async def diff_pdfs_stream(
                 result_bytes = (_json.dumps({"t": "r", "d": payload}) + "\n").encode()
 
             t7 = time.perf_counter()
-            print(f"[TIMING] serialize: {t7-t6:.2f}s ({len(result_bytes)/1024/1024:.1f}MB), TOTAL={t7-t0:.2f}s", flush=True)
+            logger.debug("serialize: %.2fs (%.1fMB), TOTAL=%.2fs", t7-t6, len(result_bytes)/1024/1024, t7-t0)
 
             q.put(result_bytes)
             q.put(None)  # sentinel
@@ -525,7 +526,7 @@ async def diff_pdfs_stream(
                         pass
 
     async def _generate():
-        global _active_diffs
+        await _diff_semaphore.acquire()
         loop = asyncio.get_event_loop()
         fut = loop.run_in_executor(None, _run)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
@@ -566,7 +567,7 @@ async def diff_pdfs_stream(
                         break
                     await asyncio.sleep(0.05)
         finally:
-            _active_diffs -= 1
+            _diff_semaphore.release()
 
     return StreamingResponse(
         _generate(),

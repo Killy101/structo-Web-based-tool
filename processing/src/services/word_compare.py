@@ -23,6 +23,18 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Optional diff-match-patch for more accurate word-level diffs ───────────────
+try:
+    from diff_match_patch import diff_match_patch as _DiffMatchPatch
+    _dmp = _DiffMatchPatch()
+    _USE_DMP = True
+except ImportError:
+    _USE_DMP = False
+
+# Named thresholds (previously magic literals scattered through the code)
+_WORD_MOD_THRESHOLD    = 0.70   # min char-similarity to call a replacement a "modification"
+_COSMETIC_MOD_THRESHOLD = 0.95  # above this the modification is cosmetic (punct/spacing only)
+
 # ── Normalisation ──────────────────────────────────────────────────────────────
 
 _LIGATURE = str.maketrans({
@@ -148,8 +160,7 @@ def compare_words(
             for k in range(paired):
                 ow, nw = old_block[k], new_block[k]
                 ratio = difflib.SequenceMatcher(None, ow, nw).ratio()
-                if ratio >= 0.70:
-                    # Similar enough → modification (raised from 0.6)
+                if ratio >= _WORD_MOD_THRESHOLD:
                     modifications.append({"old": ow, "new": nw, "ratio": round(ratio, 3)})
                 else:
                     # Too different → treat as separate add + remove
@@ -244,7 +255,7 @@ def chunk_has_real_changes(
         changed_word_count > 0
         and result["summary"]["addition"] == 0
         and result["summary"]["removal"] == 0
-        and all(m["ratio"] >= 0.95 for m in result["modifications"])
+        and all(m["ratio"] >= _COSMETIC_MOD_THRESHOLD for m in result["modifications"])
     )
     if only_cosmetic_mods:
         return False, result
@@ -297,36 +308,68 @@ def build_inline_diff(old_text: str, new_text: str) -> list[dict]:
     old_words = [(orig, _normalise_token(orig)) for orig, ws in old_parts if not ws]
     new_words = [(orig, _normalise_token(orig)) for orig, ws in new_parts if not ws]
 
-    # LCS on normalised tokens
+    # LCS on normalised tokens — use DMP for more accurate word alignment when available
     old_norms = [n for _, n in old_words]
     new_norms = [n for _, n in new_words]
 
-    matcher = difflib.SequenceMatcher(None, old_norms, new_norms, autojunk=False)
-
-    # Build aligned ops list: (op, old_orig|None, new_orig|None)
     word_ops: list[tuple[str, str | None, str | None]] = []
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == "equal":
-            for k in range(i2 - i1):
-                word_ops.append(("eq", old_words[i1 + k][0], new_words[j1 + k][0]))
-        elif op == "insert":
-            for k in range(j1, j2):
-                word_ops.append(("ins", None, new_words[k][0]))
-        elif op == "delete":
-            for k in range(i1, i2):
-                word_ops.append(("del", old_words[k][0], None))
-        elif op == "replace":
-            # Pair up and emit del+ins for each pair, then overflow
-            old_block = old_words[i1:i2]
-            new_block = new_words[j1:j2]
-            paired = min(len(old_block), len(new_block))
-            for k in range(paired):
-                word_ops.append(("del", old_block[k][0], None))
-                word_ops.append(("ins", None, new_block[k][0]))
-            for k in range(paired, len(old_block)):
-                word_ops.append(("del", old_block[k][0], None))
-            for k in range(paired, len(new_block)):
-                word_ops.append(("ins", None, new_block[k][0]))
+
+    if _USE_DMP and old_norms and new_norms:
+        # Encode each unique normalised word as a private-use unicode char so DMP
+        # can perform a word-level (not character-level) Myers diff.
+        word_to_char: dict[str, str] = {}
+        next_cp = [0xE000]
+
+        def _encode(norm: str) -> str:
+            if norm not in word_to_char:
+                word_to_char[norm] = chr(next_cp[0])
+                next_cp[0] += 1
+            return word_to_char[norm]
+
+        old_enc = "".join(_encode(n) for n in old_norms)
+        new_enc = "".join(_encode(n) for n in new_norms)
+
+        diffs = _dmp.diff_main(old_enc, new_enc, False)
+        _dmp.diff_cleanupSemantic(diffs)
+
+        old_idx = new_idx = 0
+        for dop, chars in diffs:
+            n = len(chars)
+            if dop == 0:   # equal
+                for k in range(n):
+                    word_ops.append(("eq", old_words[old_idx + k][0], new_words[new_idx + k][0]))
+                old_idx += n; new_idx += n
+            elif dop == -1:  # delete
+                for k in range(n):
+                    word_ops.append(("del", old_words[old_idx + k][0], None))
+                old_idx += n
+            elif dop == 1:   # insert
+                for k in range(n):
+                    word_ops.append(("ins", None, new_words[new_idx + k][0]))
+                new_idx += n
+    else:
+        matcher = difflib.SequenceMatcher(None, old_norms, new_norms, autojunk=False)
+        for op, i1, i2, j1, j2 in matcher.get_opcodes():
+            if op == "equal":
+                for k in range(i2 - i1):
+                    word_ops.append(("eq", old_words[i1 + k][0], new_words[j1 + k][0]))
+            elif op == "insert":
+                for k in range(j1, j2):
+                    word_ops.append(("ins", None, new_words[k][0]))
+            elif op == "delete":
+                for k in range(i1, i2):
+                    word_ops.append(("del", old_words[k][0], None))
+            elif op == "replace":
+                old_block = old_words[i1:i2]
+                new_block = new_words[j1:j2]
+                paired = min(len(old_block), len(new_block))
+                for k in range(paired):
+                    word_ops.append(("del", old_block[k][0], None))
+                    word_ops.append(("ins", None, new_block[k][0]))
+                for k in range(paired, len(old_block)):
+                    word_ops.append(("del", old_block[k][0], None))
+                for k in range(paired, len(new_block)):
+                    word_ops.append(("ins", None, new_block[k][0]))
 
     # ── Rebuild with whitespace ──────────────────────────────────────────
     # Strategy: walk new_parts in order for ins/eq, old_parts for del,
@@ -356,7 +399,6 @@ def _normalise_token(tok: str) -> str:
       - strip surrounding punctuation (but keep internal hyphens/apostrophes)
     Does NOT strip spelling — "organisation" and "organization" remain distinct.
     """
-    import unicodedata
     t = unicodedata.normalize("NFKC", tok).translate(_LIGATURE).lower()
     # Strip surrounding punctuation chars (not internal)
     t = t.strip(".,;:!?\"'()[]{}|\\/<>\u2018\u2019\u201c\u201d")
