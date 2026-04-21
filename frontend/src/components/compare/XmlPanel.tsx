@@ -133,7 +133,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
     const canApply = isWf3 && !!xmlText && !!activeChunk &&
                      activeChunk.kind !== "emp" && !appliedIds.has(activeChunk.id);
 
-    const applyTitle = !isWf3                              ? "Read-only in Workflow 2"
+    const applyTitle = !isWf3                              ? "Read-only in Workflow 1"
       : activeChunk?.kind === "emp"                         ? "Emphasis — not applicable"
       : appliedIds.has(activeChunk?.id ?? -1)               ? "Already applied"
       :                                                       "Apply selected change to XML";
@@ -158,7 +158,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
             </svg>
 
             <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-              XML {isWf3 ? "Editor" : "Viewer"}
+              {isWf3 ? "XML Editor" : "Baseline XML Viewer"}
             </span>
 
             {/* Mode badge */}
@@ -167,7 +167,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
                 : "bg-slate-500/10 text-slate-400 border-slate-500/20"
             }`}>
-              {isWf3 ? "WF3 · editable" : "WF2 · read-only"}
+              {isWf3 ? "Workflow 2 · editable" : "Workflow 1 · read-only"}
             </span>
 
             {/* Load XML (always available, shows only when no XML loaded) */}
@@ -252,7 +252,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               <p className="text-xs text-slate-400 dark:text-slate-600 max-w-xs leading-relaxed">
                 {isWf3
                   ? "Load an XML file to apply diff changes directly."
-                  : "Load an XML file to navigate its structure alongside the diff."}
+                  : "Load the XML baseline to improve compare accuracy and navigate the structure alongside the diff."}
               </p>
             </div>
             <button

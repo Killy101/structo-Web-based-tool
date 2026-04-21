@@ -232,7 +232,7 @@ def _is_legislation_pdf(pdf_bytes: bytes) -> bool:
             blocks = page.get_text("blocks")
             doc.close()
             for b in blocks[:20]:
-                x0, y0 = b[0], b[1]
+                x0, y0 = float(b[0]), float(b[1])
                 text = b[4].strip() if len(b) > 4 else ""
                 if 95 <= x0 <= 122 and y0 < 200 and _LEGISLATION_SKIP.match(text):
                     result = True
@@ -276,7 +276,7 @@ def _extract_legislation_text(
         last_substantive_skip_y1: float = -999.0
 
         for b in blocks:
-            x0, y0, x1, y1 = b[0], b[1], b[2], b[3]
+            x0, y0, x1, y1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
             text = (b[4] if len(b) > 4 else "").strip()
             if not text:
                 continue
@@ -408,14 +408,14 @@ def _single_pass_extract(
     page_texts: list[str] = []
     raw_candidates: list[tuple[int, str]] = []  # (page_num, heading_text)
 
-    for page_num, page in enumerate(doc):
+    for page_num, page in enumerate(doc):  # type: ignore[arg-type]
         if use_clean:
             # Use clean per-page extraction (strip footnotes)
             blocks = sorted(page.get_text("blocks"), key=lambda b: b[1])
             clean_lines: list[str] = []
             last_substantive_skip_y1: float = -999.0
             for b in blocks:
-                x0, y0, x1, y1 = b[0], b[1], b[2], b[3]
+                x0, y0, x1, y1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
                 text = (b[4] if len(b) > 4 else "").strip()
                 if not text:
                     continue
@@ -477,8 +477,9 @@ def _single_pass_extract(
         ordinal = _heading_ordinal(htxt)
         key     = _heading_key(htxt)
         if ordinal is not None:
-            if ordinal not in first_by_ordinal:
-                first_by_ordinal[ordinal] = (page_num, htxt)
+            ordinal_int = int(ordinal)
+            if ordinal_int not in first_by_ordinal:
+                first_by_ordinal[ordinal_int] = (page_num, htxt)
         else:
             if key not in first_by_key:
                 first_by_key[key] = (page_num, htxt)
@@ -492,15 +493,15 @@ def _single_pass_extract(
     ordinal_entries = [(pn, _heading_ordinal(h), h) for pn, h in all_kept if _heading_ordinal(h) is not None]
     no_ord_entries  = [(pn, h) for pn, h in all_kept if _heading_ordinal(h) is None]
     if ordinal_entries:
-        min_ord = min(o for _, o, _ in ordinal_entries)
+        min_ord = min(o for _, o, _ in ordinal_entries if o is not None)
         best: list[tuple[int, str]] = []
         for si, (pn, so, sh) in enumerate(ordinal_entries):
-            if so != min_ord:
+            if so is None or so != min_ord:
                 continue
             seq: list[tuple[int, str]] = [(pn, sh)]
             last_o = so
             for pn2, o2, h2 in ordinal_entries[si + 1:]:
-                if o2 > last_o:
+                if o2 is not None and o2 > last_o:
                     seq.append((pn2, h2))
                     last_o = o2
             if len(seq) > len(best):
@@ -694,8 +695,9 @@ def _structural_chunks(
         ordinal = _heading_ordinal(m.group(0))
         key     = _heading_key(m.group(0))
         if ordinal is not None:
-            if ordinal not in first_by_ordinal:
-                first_by_ordinal[ordinal] = m
+            ordinal_int = int(ordinal)
+            if ordinal_int not in first_by_ordinal:
+                first_by_ordinal[ordinal_int] = m
         else:
             if key not in first_by_key_r:
                 first_by_key_r[key] = m
@@ -706,17 +708,17 @@ def _structural_chunks(
     )
 
     if om:
-        min_ord = min(o for _, o, _ in om)
+        min_ord = min(o for _, o, _ in om if o is not None)
         best_seq_m: list[re.Match] = []
         for si, (sp, so, sm) in enumerate(om):
-            if so != min_ord:
+            if so is None or so != min_ord:
                 continue
             seq_m = [sm]
             last_o = so
             for _, o, m2 in om[si + 1:]:
-                if o > last_o:  # type: ignore
+                if o is not None and o > last_o:
                     seq_m.append(m2)
-                    last_o = o  # type: ignore
+                    last_o = o
             if len(seq_m) > len(best_seq_m):
                 best_seq_m = seq_m
 
@@ -1645,7 +1647,7 @@ def _extract_pdf_spans(
                 if page_num == p0:
                     _extract_pdf_spans._legis_cache = _legis  # type: ignore[attr-defined]
 
-                for block in raw.get("blocks", []):
+                for block in raw.get("blocks", []):  # type: ignore[union-attr]
                     if block.get("type") != 0:        # 0 = text block
                         continue
 
@@ -1729,7 +1731,7 @@ def _extract_pdf_spans(
                 # Fallback: plain text extraction when rawdict fails for this page
                 try:
                     plain = page.get_text("text") or ""
-                    for line in plain.splitlines():
+                    for line in plain.splitlines():  # type: ignore[union-attr]
                         stripped = line.strip()
                         if not stripped:
                             continue

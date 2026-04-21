@@ -536,44 +536,15 @@ export default function DashboardPage() {
   const brdStatuses = brdsByStatus;
 
   if (isLoading || brdLoad || logLoad) {
-    const Bone = ({ w, h, r = 6 }: { w: number | string; h: number; r?: number }) => (
-      <div style={{ width: w, height: h, borderRadius: r, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-    );
     return (
-      <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 28px" }}>
-        <style>{CSS}</style>
-        {/* KPI row skeleton */}
-        <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
-          {[0,1,2,3].map(i => (
-            <div key={i} className="card" style={{ padding: "16px 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <Bone w={80} h={11} />
-                <Bone w={24} h={24} r={8} />
-              </div>
-              <Bone w={56} h={26} />
-              <Bone w={100} h={10} />
-            </div>
-          ))}
-        </div>
-        {/* Main grid skeleton */}
-        <div className="db-grid gap-5">
-          <div className="flex flex-col gap-4 min-w-0">
-            <div className="card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, height: 230 }}>
-              <Bone w={120} h={13} />
-              <Bone w={60} h={24} />
-              <div style={{ flex: 1, borderRadius: 8, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-            </div>
-            <div className="card" style={{ height: 290, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-          </div>
-          <div className="flex flex-col gap-4 min-w-0">
-            <div className="card" style={{ height: 260, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-            <div className="card" style={{ height: 260, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-          </div>
-          <div className="db-col3 flex flex-col gap-4">
-            <div className="card" style={{ height: 220, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-            <div className="card" style={{ height: 290, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-          </div>
-        </div>
+      <div style={{ 
+        display: "flex", 
+        alignItems: "center", 
+        justifyContent: "center", 
+        minHeight: "100vh",
+        background: "var(--c-bg)"
+      }}>
+        <TetrisLoading size="lg" speed="fast" showLoadingText loadingText="Loading Dashboard..." />
       </div>
     );
   }

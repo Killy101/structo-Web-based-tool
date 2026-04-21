@@ -103,14 +103,17 @@ export default function HomePage() {
   const router = useRouter();
   const [covered, setCovered] = useState(false);
   const [showEye, setShowEye] = useState(false);
-  const [lightMode, setLightMode] = useState(false);
+  const [lightMode, setLightMode] = useState(() => {
+    try {
+      return localStorage.getItem("landing-theme") === "light";
+    } catch {
+      return false;
+    }
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-scroll-behavior", "smooth");
-    try {
-      if (localStorage.getItem("landing-theme") === "light") setLightMode(true);
-    } catch {}
   }, []);
 
   const toggleTheme = useCallback(() => {

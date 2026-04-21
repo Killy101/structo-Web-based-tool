@@ -1,5 +1,5 @@
 # ── Stage 1: Development (hot reload via volume mount) ────────────────────────
-ARG PYTHON_IMAGE=python:3.11.12-slim-bookworm
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm
 FROM ${PYTHON_IMAGE} AS development
 
 WORKDIR /app

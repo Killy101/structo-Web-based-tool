@@ -117,6 +117,29 @@ function tokensToHtml(tokens: WordToken[]): string {
   }).join("");
 }
 
+/** Word-diff tokens → React elements (replaces dangerouslySetInnerHTML) */
+function TokensToReact({ tokens }: { tokens: WordToken[] }) {
+  return (
+    <>
+      {tokens.map((t, i) => {
+        if (t.op === "del")
+          return (
+            <span key={i} style={{ background: "rgba(220,38,38,0.10)", color: "#b91c1c", textDecoration: "line-through", textDecorationColor: "#dc2626", borderRadius: "2px", padding: "0 2px" }}>
+              {t.text}
+            </span>
+          );
+        if (t.op === "ins")
+          return (
+            <span key={i} style={{ background: "rgba(22,163,74,0.10)", color: "#166534", borderRadius: "2px", padding: "0 2px" }}>
+              {t.text}
+            </span>
+          );
+        return <span key={i} style={{ color: "#1e293b" }}>{t.text}</span>;
+      })}
+    </>
+  );
+}
+
 function normalise(s: string) { return s.replace(/\s+/g, " ").trim().toLowerCase(); }
 
 /**
@@ -293,7 +316,7 @@ function DiffPane({ side, label, lines, selectedId, onLineClick, scrollRef, onSc
                 lineKind === "subheading" ? "font-medium" : "",
               ].join(" ")}>
                 {line.kind === "modification" && line.tokens && line.tokens.length > 0 ? (
-                  <span dangerouslySetInnerHTML={{ __html: tokensToHtml(line.tokens) }} />
+                  <TokensToReact tokens={line.tokens} />
                 ) : meta ? (
                   <span className={meta.lineText}>{line.text || "\u00a0"}</span>
                 ) : (
@@ -533,7 +556,7 @@ export default function TextDiffViewer({
                     </div>
                     <div className="flex-1 min-w-0 pl-1 pr-4 py-0.5 whitespace-pre-wrap break-words">
                       {info.kind === "modification" && info.tokens && info.tokens.length > 0 ? (
-                        <span dangerouslySetInnerHTML={{ __html: tokensToHtml(info.tokens) }} />
+                        <TokensToReact tokens={info.tokens} />
                       ) : meta ? (
                         <span className={meta.lineText}>{info.text || "\u00a0"}</span>
                       ) : (
