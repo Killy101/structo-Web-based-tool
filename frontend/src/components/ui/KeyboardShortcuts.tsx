@@ -27,7 +27,6 @@ const SHORTCUTS: Shortcut[] = [
   // UI
   { keys: ["?"], description: "Toggle this shortcuts panel", category: "Interface" },
   { keys: ["Esc"], description: "Close any open panel or modal", category: "Interface" },
-  { keys: ["Alt", "A"], description: "Toggle Live Activity feed", category: "Interface" },
   // BRD Workflow
   { keys: ["Ctrl", "→"], description: "Next step in BRD workflow", category: "BRD Workflow" },
   { keys: ["Ctrl", "←"], description: "Previous step in BRD workflow", category: "BRD Workflow" },
@@ -95,11 +94,6 @@ export default function KeyboardShortcuts() {
         case "3": e.preventDefault(); router.push("/dashboard/compare"); break;
         case "h": case "H": e.preventDefault(); router.push("/dashboard/history"); break;
         case "u": case "U": e.preventDefault(); router.push("/dashboard/users"); break;
-        case "a": case "A":
-          e.preventDefault();
-          // Dispatch custom event to toggle activity feed
-          window.dispatchEvent(new CustomEvent("structo:toggle-activity-feed"));
-          break;
       }
     }
   }, [router]);

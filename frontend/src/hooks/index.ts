@@ -37,27 +37,51 @@ function getErrorMessage(e: unknown): string {
   return "An error occurred";
 }
 
+// ─── API response cache ────────────────────────────────────
+// Module-level TTL cache shared across all hook instances.
+// Mutations call invalidateCache() so stale data is never served after a write.
+const CACHE_TTL_MS = 30_000;
+type CacheEntry = { data: unknown; ts: number };
+const apiCache = new Map<string, CacheEntry>();
+
+function getCached<T>(key: string): T | null {
+  const entry = apiCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL_MS) { apiCache.delete(key); return null; }
+  return entry.data as T;
+}
+
+function setCached<T>(key: string, data: T): void {
+  apiCache.set(key, { data, ts: Date.now() });
+}
+
+function invalidateCache(key: string): void {
+  apiCache.delete(key);
+}
+
 // ─── useUsers ──────────────────────────────────────────────
 export function useUsers() {
-  const [users, setUsers] = useState<User[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [users, setUsers] = useState<User[]>(() => getCached<User[]>("users") ?? []);
+  const [isLoading, setIsLoading] = useState(() => getCached("users") === null);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async (options?: { silent?: boolean }) => {
+  const refetch = useCallback(async (options?: { silent?: boolean; force?: boolean }) => {
     const silent = options?.silent ?? false;
-    if (!silent) {
-      setIsLoading(true);
+    const force = options?.force ?? false;
+    if (!force) {
+      const cached = getCached<User[]>("users");
+      if (cached) { setUsers(cached); if (!silent) setIsLoading(false); return; }
     }
+    if (!silent) setIsLoading(true);
     setError(null);
     try {
       const { users } = await usersApi.getAll();
+      setCached("users", users);
       setUsers(users);
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
-      if (!silent) {
-        setIsLoading(false);
-      }
+      if (!silent) setIsLoading(false);
     }
   }, []);
 
@@ -77,7 +101,8 @@ export function useUsers() {
 
   const createUser = async (data: CreateUserPayload) => {
     const result = await usersApi.create(data);
-    await refetch();
+    invalidateCache("users");
+    await refetch({ force: true });
     return result;
   };
 
@@ -86,18 +111,21 @@ export function useUsers() {
     data: { userId: string; email: string; firstName: string; lastName: string },
   ) => {
     const result = await usersApi.updateProfile(id, data);
-    await refetch();
+    invalidateCache("users");
+    await refetch({ force: true });
     return result;
   };
 
   const assignTeam = async (id: number, teamId: number | null) => {
     await usersApi.assignTeam(id, teamId);
-    await refetch();
+    invalidateCache("users");
+    await refetch({ force: true });
   };
 
   const changeRole = async (id: number, role: string) => {
     await usersApi.changeRole(id, role);
-    await refetch();
+    invalidateCache("users");
+    await refetch({ force: true });
   };
 
   const deactivateUser = async (id: number) => {
@@ -126,7 +154,8 @@ export function useUsers() {
 
   const assignUserRole = async (id: number, userRoleId: number | null) => {
     await usersApi.assignUserRole(id, userRoleId);
-    await refetch();
+    invalidateCache("users");
+    await refetch({ force: true });
   };
 
   return {
@@ -148,15 +177,20 @@ export function useUsers() {
 
 // ─── useTeams ──────────────────────────────────────────────
 export function useTeams() {
-  const [teams, setTeams] = useState<Team[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [teams, setTeams] = useState<Team[]>(() => getCached<Team[]>("teams") ?? []);
+  const [isLoading, setIsLoading] = useState(() => getCached("teams") === null);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (options?: { force?: boolean }) => {
+    if (!options?.force) {
+      const cached = getCached<Team[]>("teams");
+      if (cached) { setTeams(cached); setIsLoading(false); return; }
+    }
     setIsLoading(true);
     setError(null);
     try {
       const { teams } = await teamsApi.getAll();
+      setCached("teams", teams);
       setTeams(teams);
     } catch (e) {
       setError(getErrorMessage(e));
@@ -171,19 +205,22 @@ export function useTeams() {
 
   const createTeam = async (name: string) => {
     const result = await teamsApi.create(name);
-    await refetch();
+    invalidateCache("teams");
+    await refetch({ force: true });
     return result;
   };
 
   const updateTeam = async (id: number, name: string) => {
     const result = await teamsApi.update(id, name);
-    await refetch();
+    invalidateCache("teams");
+    await refetch({ force: true });
     return result;
   };
 
   const deleteTeam = async (id: number) => {
     const result = await teamsApi.delete(id);
-    await refetch();
+    invalidateCache("teams");
+    await refetch({ force: true });
     return result;
   };
 
@@ -199,18 +236,25 @@ export function useTeams() {
 }
 
 // ─── useRoles ──────────────────────────────────────────────
+type RolesCache = { roles: UserRole[]; policies: BaseRoleFeaturePolicy[] };
 export function useRoles() {
-  const [roles, setRoles] = useState<UserRole[]>([]);
-  const [basePolicies, setBasePolicies] = useState<BaseRoleFeaturePolicy[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const cached = getCached<RolesCache>("roles");
+  const [roles, setRoles] = useState<UserRole[]>(() => cached?.roles ?? []);
+  const [basePolicies, setBasePolicies] = useState<BaseRoleFeaturePolicy[]>(() => cached?.policies ?? []);
+  const [isLoading, setIsLoading] = useState(() => cached === null);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (options?: { force?: boolean }) => {
+    if (!options?.force) {
+      const c = getCached<RolesCache>("roles");
+      if (c) { setRoles(c.roles); setBasePolicies(c.policies); setIsLoading(false); return; }
+    }
     setIsLoading(true);
     setError(null);
     try {
       const { roles } = await rolesApi.getAll();
       const { policies } = await rolesApi.getBasePolicies();
+      setCached("roles", { roles, policies });
       setRoles(roles);
       setBasePolicies(policies);
     } catch (e) {
@@ -226,7 +270,8 @@ export function useRoles() {
 
   const createRole = async (name: string, features: string[]) => {
     const result = await rolesApi.create(name, features);
-    await refetch();
+    invalidateCache("roles");
+    await refetch({ force: true });
     return result;
   };
 
@@ -235,13 +280,15 @@ export function useRoles() {
     data: { name?: string; features?: string[] },
   ) => {
     const result = await rolesApi.update(id, data);
-    await refetch();
+    invalidateCache("roles");
+    await refetch({ force: true });
     return result;
   };
 
   const deleteRole = async (id: number) => {
     const result = await rolesApi.delete(id);
-    await refetch();
+    invalidateCache("roles");
+    await refetch({ force: true });
     return result;
   };
 
@@ -250,7 +297,8 @@ export function useRoles() {
     features: string[],
   ) => {
     const result = await rolesApi.updateBasePolicy(role, features);
-    await refetch();
+    invalidateCache("roles");
+    await refetch({ force: true });
     return result;
   };
 
@@ -417,15 +465,20 @@ export function useBrds() {
 
 // ─── useDashboard ──────────────────────────────────────────
 export function useDashboard() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [stats, setStats] = useState<DashboardStats | null>(() => getCached<DashboardStats>("dashboard"));
+  const [isLoading, setIsLoading] = useState(() => getCached("dashboard") === null);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (options?: { force?: boolean }) => {
+    if (!options?.force) {
+      const cached = getCached<DashboardStats>("dashboard");
+      if (cached) { setStats(cached); setIsLoading(false); return; }
+    }
     setIsLoading(true);
     setError(null);
     try {
       const data = await dashboardApi.getStats();
+      setCached("dashboard", data);
       setStats(data);
     } catch (e) {
       setError(getErrorMessage(e));

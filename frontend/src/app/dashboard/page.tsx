@@ -1,18 +1,19 @@
 "use client";
 import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useAuth } from "../../context/AuthContext";
+import { useTheme } from "../../context/ThemContext";
 import { useDashboard, useUserLogs } from "../../hooks";
 import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
 import TetrisLoading from "../../components/ui/tetris-loader";
 import dynamic from "next/dynamic";
 import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Cell } from "recharts";
+import "./dashboard.css";
 const CompareUsageChart = dynamic(
   () => import("../../components/ui/compare-usage-chart"),
   { ssr: false }
 );
 
-/* ─── Injected styles ──────────────────────────────────────────────────────── */
 // ── Brd type (mirrors BRD page) ─────────────────────────────────────────────
 type BrdStatus = "DRAFT" | "PAUSED" | "COMPLETED" | "APPROVED" | "ON_HOLD";
 interface Brd {
@@ -24,141 +25,6 @@ function brdDisplayTitle(b: Brd) {
   return b.sourceName?.trim() || b.contentName?.trim() || b.title;
 }
 
-const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800&family=JetBrains+Mono:wght@400;500&display=swap');
-
-.db { font-family:'Plus Jakarta Sans',sans-serif; }
-.db .jb { font-family:'JetBrains Mono',monospace; }
-
-/* tokens — light */
-.db {
-  --c-bg:    #f6f8fc;
-  --c-card:  #ffffff;
-  --c-b:     #e6ebf3;
-  --c-txt:   #0f172a;
-  --c-sub:   #5b667a;
-  --c-dim:   #9aa4b8;
-  --c-a:     #2563eb;
-  --c-ahi:   #3b82f6;
-  --c-alo:   rgba(37,99,235,.08);
-  --c-sh:    0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.05);
-  --c-shl:   0 14px 36px rgba(15,23,42,.10);
-}
-/* tokens — dark */
-.dark .db {
-  --c-bg:    #0a1222;
-  --c-card:  #0f1a2f;
-  --c-b:     #1e2b45;
-  --c-txt:   #e2e8f0;
-  --c-sub:   #8c98ae;
-  --c-dim:   #51607a;
-  --c-a:     #60a5fa;
-  --c-ahi:   #93c5fd;
-  --c-alo:   rgba(96,165,250,.11);
-  --c-sh:    0 2px 8px rgba(0,0,0,.24),0 10px 30px rgba(0,0,0,.24);
-  --c-shl:   0 18px 40px rgba(0,0,0,.48);
-}
-
-.db .card {
-  background:var(--c-card);
-  border:1px solid var(--c-b);
-  border-radius:14px;
-  box-shadow:var(--c-sh);
-}
-
-/* entrance */
-@keyframes db-up { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
-@keyframes db-in { from{opacity:0} to{opacity:1} }
-@keyframes db-cx { from{transform:scaleX(0)} to{transform:scaleX(1)} }
-@keyframes db-cy { from{transform:scaleY(0)} to{transform:scaleY(1)} }
-@keyframes db-num{ from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
-@keyframes db-ln { from{stroke-dashoffset:600;opacity:0} to{stroke-dashoffset:0;opacity:1} }
-@keyframes db-pl { 0%,100%{opacity:1}50%{opacity:.35} }
-
-.db .u  { animation:db-up .42s cubic-bezier(.16,1,.3,1) both }
-.db .d1 { animation-delay:.04s } .db .d2 { animation-delay:.08s }
-.db .d3 { animation-delay:.12s } .db .d4 { animation-delay:.16s }
-.db .d5 { animation-delay:.20s } .db .d6 { animation-delay:.24s }
-.db .d7 { animation-delay:.28s } .db .d8 { animation-delay:.32s }
-
-/* progress bars */
-.db .pb { height:5px; border-radius:5px; background:var(--c-b); overflow:hidden; }
-.db .pf {
-  height:100%; border-radius:5px; transform-origin:left;
-  animation:db-cx .75s cubic-bezier(.16,1,.3,1) both;
-}
-
-/* row hover */
-.db .tr { border-radius:9px; transition:background .12s; cursor:default; }
-.db .tr:hover { background:var(--c-alo); }
-
-/* live dot */
-.db .ld { width:7px;height:7px;border-radius:50%;background:#22c55e;animation:db-pl 1.8s infinite; }
-
-/* badge */
-.db .bdg {
-  display:inline-flex;align-items:center;
-  padding:1px 7px;border-radius:20px;
-  font-size:9.5px;font-weight:700;letter-spacing:.04em;
-  white-space:nowrap;font-family:'JetBrains Mono',monospace;
-}
-
-/* scrollbar */
-.db ::-webkit-scrollbar { width:3px; height:3px; }
-.db ::-webkit-scrollbar-track { background:transparent; }
-.db ::-webkit-scrollbar-thumb { background:var(--c-b); border-radius:3px; }
-
-/* ── Pipeline bubble bounce animations ── */
-@keyframes db-bob0 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-8px)} }
-@keyframes db-bob1 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-11px)} }
-@keyframes db-bob2 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-6px)} }
-@keyframes db-bob3 { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-9px)} }
-.db .bubble-0 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .1s both, db-bob0 3.2s ease-in-out 0.7s infinite; }
-.db .bubble-1 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .2s both, db-bob1 2.8s ease-in-out 1.0s infinite; }
-.db .bubble-2 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .3s both, db-bob2 3.6s ease-in-out 0.4s infinite; }
-.db .bubble-3 { animation: db-up .5s cubic-bezier(.16,1,.3,1) .4s both, db-bob3 3.0s ease-in-out 1.3s infinite; }
-
-/* ── Responsive layout ── */
-.db .db-grid {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(0,1fr) minmax(0,1fr) 270px;
-}
-@media (max-width: 1100px) {
-  .db .db-grid {
-    grid-template-columns: minmax(0,1fr) minmax(0,1fr);
-  }
-  .db .db-col3 {
-    grid-column: 1 / -1;
-    display: grid !important;
-    grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
-    gap: 16px;
-  }
-}
-@media (max-width: 700px) {
-  .db .db-grid {
-    grid-template-columns: 1fr;
-  }
-  .db .db-col3 {
-    grid-column: 1 !important;
-    display: flex !important;
-    flex-direction: column;
-  }
-  .db .db-header {
-    flex-direction: column;
-    align-items: flex-start !important;
-    gap: 8px;
-  }
-  .db .db-kpi {
-    grid-template-columns: 1fr 1fr !important;
-  }
-}
-@media (max-width: 420px) {
-  .db .db-kpi {
-    grid-template-columns: 1fr !important;
-  }
-}
-`;
 
 /* ─── Status colours ──────────────────────────────────────────────────────── */
 type SC = { bg: string; fg: string };
@@ -189,20 +55,8 @@ const DARK: Record<string, SC> = {
 
 /* ─── Accent palette for bars / rings ─────────────────────────────────────── */
 /* ─── Helpers ─────────────────────────────────────────────────────────────── */
-function useDark() {
-  const [dark, setDark] = useState(false);
-  useEffect(() => {
-    const check = () => setDark(document.documentElement.classList.contains("dark"));
-    check();
-    const mo = new MutationObserver(check);
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => mo.disconnect();
-  }, []);
-  return dark;
-}
-
 function Badge({ label }: { label: string }) {
-  const dark = useDark();
+  const { dark } = useTheme();
   const map  = dark ? DARK : LIGHT;
   const c    = map[label] ?? map.SYSTEM;
   return <span className="bdg" style={{ background: c.bg, color: c.fg }}>{label}</span>;
@@ -412,22 +266,24 @@ const TXN_SIZE = 6;
 
 export default function DashboardPage() {
   const { user }    = useAuth();
-  const { stats, isLoading, refetch } = useDashboard();
-  const { logs, isLoading: logLoad, refetch: refetchLogs } = useUserLogs(
+  const { stats, isLoading, error: statsError, refetch } = useDashboard();
+  const { logs, isLoading: logLoad, error: logError, refetch: refetchLogs } = useUserLogs(
     user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" ? "all" : "mine"
   );
   const [brds,    setBrds]    = useState<Brd[]>([]);
   const [brdLoad, setBrdLoad] = useState(true);
+  const [brdError, setBrdError] = useState<string | null>(null);
   const [txp, setTxp] = useState(1);
   const [balancePage, setBalancePage] = useState(1);
   const BALANCE_PAGE_SIZE = 5;
-  const dark = useDark();
+  const { dark } = useTheme();
 
   // Fetch full BRD list directly — same call as BRD page, gives real status/geography/title
   const refetchBrds = useCallback(async () => {
     setBrdLoad(true);
+    setBrdError(null);
     try { const r = await api.get<Brd[]>("/brd"); setBrds(r.data); }
-    catch { /* silent — dashboard degrades gracefully */ }
+    catch { setBrdError("Failed to load BRD sources"); }
     finally { setBrdLoad(false); }
   }, []);
   useEffect(() => { refetchBrds(); }, [refetchBrds]);
@@ -448,6 +304,9 @@ export default function DashboardPage() {
 
   const totalTxp = Math.max(1, Math.ceil(acts.length / TXN_SIZE));
   useEffect(() => { if (txp > totalTxp) setTxp(totalTxp); }, [txp, totalTxp]);
+
+  const balanceTotalPages = Math.max(1, Math.ceil(brds.length / BALANCE_PAGE_SIZE));
+  useEffect(() => { if (balancePage > balanceTotalPages) setBalancePage(balanceTotalPages); }, [balancePage, balanceTotalPages]);
   const paged = acts.slice((txp - 1) * TXN_SIZE, txp * TXN_SIZE);
 
 
@@ -537,14 +396,39 @@ export default function DashboardPage() {
 
   if (isLoading || brdLoad || logLoad) {
     return (
-      <div style={{ 
-        display: "flex", 
-        alignItems: "center", 
-        justifyContent: "center", 
-        minHeight: "100vh",
-        background: "var(--c-bg)"
-      }}>
-        <TetrisLoading size="lg" speed="fast" showLoadingText loadingText="Loading Dashboard..." />
+      <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 28px" }}>
+        {/* KPI row skeleton */}
+        <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
+          {[0,1,2,3].map(i => (
+            <div key={i} className="card" style={{ padding: "16px 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <Bone w={80} h={11} />
+                <Bone w={24} h={24} r={8} />
+              </div>
+              <Bone w={56} h={26} />
+              <Bone w={100} h={10} />
+            </div>
+          ))}
+        </div>
+        {/* Main grid skeleton */}
+        <div className="db-grid gap-5">
+          <div className="flex flex-col gap-4 min-w-0">
+            <div className="card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, height: 230 }}>
+              <Bone w={120} h={13} />
+              <Bone w={60} h={24} />
+              <div style={{ flex: 1, borderRadius: 8, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+            </div>
+            <div className="card" style={{ height: 290, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+          </div>
+          <div className="flex flex-col gap-4 min-w-0">
+            <div className="card" style={{ height: 260, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+            <div className="card" style={{ height: 260, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+          </div>
+          <div className="db-col3 flex flex-col gap-4">
+            <div className="card" style={{ height: 220, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+            <div className="card" style={{ height: 290, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+          </div>
+        </div>
       </div>
     );
   }
@@ -554,8 +438,6 @@ export default function DashboardPage() {
 
   return (
     <div className="db" style={{ background: "radial-gradient(circle at 0% 0%, var(--c-alo), transparent 28%), var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 28px", maxWidth: 1700, margin: "0 auto" }}>
-      <style>{CSS}</style>
-
       {/* ── Page heading ── */}
       <div className="db-header u mb-4" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
         <div>
@@ -568,6 +450,19 @@ export default function DashboardPage() {
       </div>
 
       {/* ══ FULL-WIDTH KPI ROW ══ */}
+      {statsError && (
+        <div className="mb-4 flex items-center justify-between px-4 py-3 rounded-xl border"
+          style={{ background: dark ? "rgba(239,68,68,0.08)" : "#fef2f2", borderColor: dark ? "rgba(239,68,68,0.2)" : "#fecaca" }}>
+          <p className="text-[11px] font-medium" style={{ color: dark ? "#f87171" : "#b91c1c" }}>
+            Failed to load dashboard stats
+          </p>
+          <button onClick={() => refetch()}
+            className="text-[11px] font-semibold px-3 py-1 rounded-lg transition-colors"
+            style={{ background: dark ? "rgba(239,68,68,0.15)" : "#fee2e2", color: dark ? "#f87171" : "#b91c1c" }}>
+            Retry
+          </button>
+        </div>
+      )}
       <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
         {([
           { label: "BRD Sources",  val: totalBrds,       sub: "total registered",    color: "#2563eb", trend: null },
@@ -666,7 +561,16 @@ export default function DashboardPage() {
             </div>
 
             <div className="px-2 pb-3 pt-1">
-              {paged.length === 0
+              {logError
+                ? <div className="flex flex-col items-center gap-2 py-8">
+                    <p className="text-[12px]" style={{color:"var(--c-dim)"}}>Failed to load activity</p>
+                    <button onClick={() => refetchLogs()}
+                      className="text-[11px] font-semibold px-3 py-1 rounded-lg transition-colors"
+                      style={{ background: dark ? "rgba(239,68,68,0.12)" : "#fee2e2", color: dark ? "#f87171" : "#b91c1c" }}>
+                      Retry
+                    </button>
+                  </div>
+                : paged.length === 0
                 ? <p className="text-center py-8 text-[12px]" style={{color:"var(--c-dim)"}}>No activity yet</p>
                 : paged.map((a, i) => {
                     const sc = dark ? (DARK[a.tag]??DARK.SYSTEM) : (LIGHT[a.tag]??LIGHT.SYSTEM);
@@ -868,7 +772,6 @@ export default function DashboardPage() {
 
           {/* Balance */}
           {(() => {
-            const balanceTotalPages = Math.max(1, Math.ceil(brds.length / BALANCE_PAGE_SIZE));
             const safeBalancePage = Math.min(balancePage, balanceTotalPages);
             const pagedBrds = brds.slice((safeBalancePage - 1) * BALANCE_PAGE_SIZE, safeBalancePage * BALANCE_PAGE_SIZE);
             const STATUS_COLOR: Record<string,string> = {
@@ -877,6 +780,17 @@ export default function DashboardPage() {
             };
             return (
               <div className={`${C} u d2 p-4`}>
+                {brdError && (
+                  <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-lg"
+                    style={{ background: dark ? "rgba(239,68,68,0.08)" : "#fef2f2", border: `1px solid ${dark ? "rgba(239,68,68,0.2)" : "#fecaca"}` }}>
+                    <p className="text-[11px]" style={{ color: dark ? "#f87171" : "#b91c1c" }}>Failed to load</p>
+                    <button onClick={() => refetchBrds()}
+                      className="text-[10px] font-bold px-2 py-0.5 rounded-md"
+                      style={{ background: dark ? "rgba(239,68,68,0.15)" : "#fee2e2", color: dark ? "#f87171" : "#b91c1c" }}>
+                      Retry
+                    </button>
+                  </div>
+                )}
                 <div className="flex justify-between items-center mb-3">
                   <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Balance</p>
                   <span style={{color:"var(--c-dim)"}}>···</span>
