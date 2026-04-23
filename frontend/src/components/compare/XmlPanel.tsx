@@ -1,11 +1,11 @@
 "use client";
 // ─────────────────────────────────────────────────────────────────────────────
 // XmlPanel.tsx — Panel D
-// Shown below the PDF panes in both Workflow 2 and Workflow 3.
+// Shown below the PDF panes in both Workflow 1 and Workflow 2.
 //
-// Workflow 2 (mode="wf2"):  Read-only.  Scrolls & highlights on chunk click.
+// Workflow 1 (mode="wf2"):  Read-only.  Scrolls & highlights on chunk click.
 //                           No Apply / Download buttons.
-// Workflow 3 (mode="wf3"):  Editable.   Same nav behaviour PLUS Apply button
+// Workflow 2 (mode="wf3"):  Editable.   Same nav behaviour PLUS Apply button
 //                           patches the selected XML node in-place, and
 //                           Download saves the updated file.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,7 +158,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
             </svg>
 
             <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-              {isWf3 ? "XML Editor" : "Baseline XML Viewer"}
+              XML {isWf3 ? "Editor" : "Viewer"}
             </span>
 
             {/* Mode badge */}
@@ -167,7 +167,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
                 : "bg-slate-500/10 text-slate-400 border-slate-500/20"
             }`}>
-              {isWf3 ? "Workflow 2 · editable" : "Workflow 1 · read-only"}
+              {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
 
             {/* Load XML (always available, shows only when no XML loaded) */}
@@ -252,7 +252,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               <p className="text-xs text-slate-400 dark:text-slate-600 max-w-xs leading-relaxed">
                 {isWf3
                   ? "Load an XML file to apply diff changes directly."
-                  : "Load the XML baseline to improve compare accuracy and navigate the structure alongside the diff."}
+                  : "Load an XML file to navigate its structure alongside the diff."}
               </p>
             </div>
             <button

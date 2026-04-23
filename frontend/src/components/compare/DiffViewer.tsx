@@ -130,7 +130,7 @@ export default function DiffViewer({
   const [xmlFilename,   setXmlFilename]   = useState<string | null>(null);
   const [xmlStatus,     setXmlStatus]     = useState("");
   const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
-  const [xmlOpen,       setXmlOpen]       = useState(mode === "wf2" || !!initialXmlFile);
+  const [xmlOpen,       setXmlOpen]       = useState(mode === "wf3" || !!initialXmlFile);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
   const [wrapLines,     setWrapLines]     = useState(false);
   const [sidebarOpen,   setSidebarOpen]   = useState(true);
@@ -142,6 +142,7 @@ export default function DiffViewer({
   const xmlRef        = useRef<HTMLDivElement>(null);
   const locateSeqRef  = useRef(0);
   const xmlSyncingRef = useRef(false);
+  const navSyncLockRef = useRef(false);
 
   /* ── Splitters ───────────────────────────────────────────────────────── */
   const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20,  80);
@@ -260,6 +261,7 @@ export default function DiffViewer({
 
   const schedulePanelSync = useCallback(
     (source: "old" | "new" | "xml", fraction: number) => {
+      if (navSyncLockRef.current) return;
       const f = Math.max(0, Math.min(1, fraction));
       if (source !== "old") paneARef.current?.scrollToFraction(f);
       if (source !== "new") paneBRef.current?.scrollToFraction(f);
@@ -272,23 +274,33 @@ export default function DiffViewer({
   const selectChunk = useCallback(async (id: number) => {
     const seq = ++locateSeqRef.current;
     setActiveId(id);
+    navSyncLockRef.current = true;
 
-    const chunk = result.chunks.find((c) => c.id === id);
-    const isAdd = chunk?.kind === "add";
-    const isDel = chunk?.kind === "del";
+    try {
+      const chunk = result.chunks.find((c) => c.id === id);
+      const isAdd = chunk?.kind === "add";
+      const isDel = chunk?.kind === "del";
 
-    paneARef.current?.scrollToChunk(id, chunkIds, isAdd ? getScrollFraction(result.pane_b, id) : undefined);
-    paneBRef.current?.scrollToChunk(id, chunkIds, isDel ? getScrollFraction(result.pane_a, id) : undefined);
+      paneARef.current?.scrollToChunk(id, chunkIds, isAdd ? getScrollFraction(result.pane_b, id) : undefined);
+      paneBRef.current?.scrollToChunk(id, chunkIds, isDel ? getScrollFraction(result.pane_a, id) : undefined);
 
-    if (xmlText && chunk) {
-      const loc = await apiLocate(xmlText, chunk);
-      if (seq !== locateSeqRef.current) return;
-      if (loc?.span_start != null) {
-        setNavSpan({ start: loc.span_start, end: loc.span_end! });
-        requestAnimationFrame(scrollXmlToMark);
-      } else {
-        setNavSpan(null);
+      if (xmlText && chunk) {
+        const loc = await apiLocate(xmlText, chunk);
+        if (seq !== locateSeqRef.current) return;
+        if (loc?.span_start != null) {
+          setNavSpan({ start: loc.span_start, end: loc.span_end! });
+          requestAnimationFrame(scrollXmlToMark);
+        } else {
+          setNavSpan(null);
+        }
       }
+    } finally {
+      // Release sync lock after programmatic scrolling settles.
+      setTimeout(() => {
+        if (seq === locateSeqRef.current) {
+          navSyncLockRef.current = false;
+        }
+      }, 220);
     }
   }, [result, xmlText, chunkIds]); // eslint-disable-line react-hooks/exhaustive-deps
 

@@ -20,7 +20,7 @@ import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
 import type { DiffResult, WorkflowMode, XmlSection } from "../../../components/compare/types";
-import { apiDiff, type DiffProgress } from "../../../components/compare/api";
+import { apiDiffAuto, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
 
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
@@ -332,10 +332,28 @@ function useDiffState() {
     setLoading(true); setError(null); setResult(null);
     setLoadMsg("Uploading files…"); setLoadPct(0);
     try {
-      const data = await apiDiff(fileA, fileB, (p: DiffProgress) => {
-        setLoadMsg(p.message);
-        setLoadPct(p.pct);
-      }, xmlFile);
+      const raw = await apiDiffAuto(
+        fileA, fileB,
+        {
+          onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); },
+        },
+        xmlFile,
+      );
+
+      // apiDiffAuto returns DiffResult (small) or LargeDiffResult (large).
+      // For large docs the batch viewer handles rendering; we only need stats/sections here.
+      const data: DiffResult = "chunks" in raw
+        ? (raw as DiffResult)
+        : {
+            success:      true,
+            chunks:       [],
+            pane_a:       { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} },
+            pane_b:       { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} },
+            stats:        (raw as LargeDiffResult).stats,
+            xml_sections: (raw as LargeDiffResult).xmlSections,
+            file_a:       (raw as LargeDiffResult).file_a,
+            file_b:       (raw as LargeDiffResult).file_b,
+          };
 
       setResult(data);
       userLogsApi.logCompare(fileA.name, fileB.name).catch(() => { /* fire-and-forget */ });

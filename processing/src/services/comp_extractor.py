@@ -3906,6 +3906,41 @@ class _XmlIndex:
         return (self.probe(text_a, threshold), self.probe(text_b, threshold))
 
 
+def _chunk_text_in_xml(text: str, xml_index: "_XmlIndex", threshold: float = 0.85) -> bool:
+    """Check if the main content of *text* (which may be multi-paragraph) is
+    found in the XML index.
+
+    For short single-paragraph texts the existing probe() path is used directly.
+    For long multi-paragraph blocks (where probe() would only see the first 500
+    chars and compare against individual <p> elements) we split the text into
+    lines and check what fraction of *significant* lines can be matched.
+    If more than 55 % of significant lines are found, the block is considered
+    present in the XML → the DEL/ADD chunk is a false positive and should be
+    suppressed.
+    """
+    # Fast path: direct probe covers single-paragraph or exact matches
+    if xml_index.contains_text(text, threshold=threshold):
+        return True
+
+    normed = _norm_cmp(text).strip()
+    if len(normed) < 80:
+        return False  # already tried direct probe; nothing more to do
+
+    # Split into lines and filter to significant ones (≥ 12 chars normalised)
+    raw_lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if len(raw_lines) < 2:
+        return False
+
+    sig_lines = [l for l in raw_lines if len(_norm_cmp(l).strip()) >= 12]
+    if not sig_lines:
+        return False
+
+    # Count how many significant lines are individually present in the XML
+    found = sum(1 for l in sig_lines if xml_index.contains_text(l, threshold=0.80))
+    coverage = found / len(sig_lines)
+    return coverage >= 0.55  # >55 % coverage → content still present in XML
+
+
 def _xml_cross_validate_chunks(
     chunks: List[Chunk],
     xml_index_a: Optional[_XmlIndex],
@@ -3942,12 +3977,15 @@ def _xml_cross_validate_chunks(
 
         if ch.kind == KIND_DEL and xml_index_b:
             # "Deleted" text found in new XML → not really deleted
-            if xml_index_b.contains_text(ch.text_a, threshold=0.85):
+            # Use multi-paragraph-aware helper: large blocks are split into
+            # lines so a section that still exists in the new XML (even at a
+            # different location) is correctly suppressed.
+            if _chunk_text_in_xml(ch.text_a, xml_index_b, threshold=0.85):
                 keep = False
 
         elif ch.kind == KIND_ADD and xml_index_a:
             # "Added" text found in old XML → not really new
-            if xml_index_a.contains_text(ch.text_b, threshold=0.85):
+            if _chunk_text_in_xml(ch.text_b, xml_index_a, threshold=0.85):
                 keep = False
 
         elif ch.kind == KIND_ADD and xml_index_b and not xml_index_a:
@@ -4191,6 +4229,14 @@ def compute_diff(
                     # don't produce false EMP chunks.
                     if _supp_eq:
                         continue
+                    # Numbers genuinely differ in same-keyed blocks (e.g. year
+                    # changed from 2025 → 2026 but surrounding text is >=92%
+                    # similar). These fall through the sim<0.92 guard above
+                    # but are real content changes, so emit MOD.
+                    if not _nums_eq:
+                        chunks.append(Chunk(KIND_MOD, ri, rj,
+                                            bla.text, blb.text))
+                        continue
                 # Also catch casing-only changes hidden by _norm_cmp lowercasing.
                 elif bla.text != blb.text:
                     _raw_a = re.sub(r'\s+', '', bla.text)
@@ -4230,6 +4276,12 @@ def compute_diff(
                         chunks.append(Chunk(KIND_DEL, ri, -1, bla.text, ""))
 
         elif op == "replace":
+            import bisect as _bisect
+
+            def _prov(anchor: str) -> str:
+                m = re.match(r'^\((?:[a-z]{1,3}|\d+[a-z]?)\)', anchor or '', re.I)
+                return m.group(0) if m else ''
+
             used_b: set = set()
 
             # Pass 1: pair blocks that share the same anchor key
@@ -4254,91 +4306,83 @@ def compute_diff(
             leftovers_b = [(rj, blb) for rj, blb in br
                            if rj not in seen_b and rj not in used_b]
 
-            def _prov(a): return a if a.startswith('(') else ''
+            if leftovers_a and leftovers_b:
+                na = max(len(blocks_a), 1)
+                nb = max(len(blocks_b), 1)
 
-            # Build position-sorted index with pre-computed fractional positions
-            # for binary-search window filtering (replaces linear scan).
-            import bisect as _bisect
-            nb = max(len(blocks_b), 1)
-            na = max(len(blocks_a), 1)
-            _lb_frac = [(leftovers_b[i][0] / nb, i) for i in range(len(leftovers_b))]
-            _lb_frac.sort()
-            _lb_frac_keys = [f for f, _ in _lb_frac]
+                # Pre-sort B leftovers by normalized position for binary-search windowing.
+                _lb_frac = sorted(
+                    ((rj / nb, idx) for idx, (rj, _blb) in enumerate(leftovers_b)),
+                    key=lambda t: t[0],
+                )
+                _lb_frac_keys = [t[0] for t in _lb_frac]
 
-            # Build first-token inverted index for fast candidate lookup
-            from collections import defaultdict as _defaultdict
-            _lb_by_token: dict = _defaultdict(list)
-            for _idx_lb, (rj, blb) in enumerate(leftovers_b):
-                _words = blb.cmp.split()
-                if _words:
-                    _lb_by_token[_words[0]].append(_idx_lb)
-                    if len(_words) >= 2:
-                        _lb_by_token[(_words[0], _words[1])].append(_idx_lb)
-
-            for ri, bla in leftovers_a:
-                best_score = 0.65
-                best_j     = None
-                best_meta  = ("", 0.0)
-                prov_bla   = _prov(bla.anchor)
-                fam_a = _anchor_family(bla.anchor)
-
-                # Use position window with binary search: only blocks within 30%
-                pos_a = ri / na
-                lo_pos = pos_a - 0.30
-                hi_pos = pos_a + 0.30
-                lo_i = _bisect.bisect_left(_lb_frac_keys, lo_pos)
-                hi_i = _bisect.bisect_right(_lb_frac_keys, hi_pos)
-
-                for _sort_idx in range(lo_i, hi_i):
-                    _lb_idx = _lb_frac[_sort_idx][1]
-                    rj, blb = leftovers_b[_lb_idx]
-                    if rj in used_b:
+                for ri, bla in leftovers_a:
+                    if ri in seen_a:
                         continue
-                    # Never pair two famend lines whose text body is unrelated.
-                    if (bla.anchor.startswith("famend:") and
-                            blb.anchor.startswith("famend:") and
-                            bla.anchor != blb.anchor):
-                        quick_sim = _similarity(bla.cmp, blb.cmp)
-                        if quick_sim < 0.72:
+                    best_score = 0.70
+                    best_j = None
+                    best_meta = ("", 0.0)
+                    prov_bla = _prov(bla.anchor)
+                    fam_a = _anchor_family(bla.anchor)
+
+                    # Use position window with binary search: only blocks within 30%
+                    pos_a = ri / na
+                    lo_pos = pos_a - 0.30
+                    hi_pos = pos_a + 0.30
+                    lo_i = _bisect.bisect_left(_lb_frac_keys, lo_pos)
+                    hi_i = _bisect.bisect_right(_lb_frac_keys, hi_pos)
+
+                    for _sort_idx in range(lo_i, hi_i):
+                        _lb_idx = _lb_frac[_sort_idx][1]
+                        rj, blb = leftovers_b[_lb_idx]
+                        if rj in used_b:
                             continue
-                    # Never pair blocks whose provision anchors differ
-                    prov_blb = _prov(blb.anchor)
-                    if prov_bla and prov_blb and prov_bla != prov_blb:
-                        continue
-                    # Multi-pass pairing score
-                    f_anchor = _anchor_fuzzy_score(bla.anchor, blb.anchor)
-                    sim = _combined_similarity(bla.cmp, blb.cmp)
-                    pos = _position_score(ri, na, rj, nb)
+                        # Never pair two famend lines whose text body is unrelated.
+                        if (bla.anchor.startswith("famend:") and
+                                blb.anchor.startswith("famend:") and
+                                bla.anchor != blb.anchor):
+                            quick_sim = _similarity(bla.cmp, blb.cmp)
+                            if quick_sim < 0.72:
+                                continue
+                        # Never pair blocks whose provision anchors differ
+                        prov_blb = _prov(blb.anchor)
+                        if prov_bla and prov_blb and prov_bla != prov_blb:
+                            continue
+                        # Multi-pass pairing score
+                        f_anchor = _anchor_fuzzy_score(bla.anchor, blb.anchor)
+                        sim = _combined_similarity(bla.cmp, blb.cmp)
+                        pos = _position_score(ri, na, rj, nb)
 
-                    # Strong structural mismatch guard.
-                    fam_b = _anchor_family(blb.anchor)
-                    if (fam_a in {"part", "chapter", "schedule", "sec"}
-                            and fam_b in {"part", "chapter", "schedule", "sec"}
-                            and fam_a != fam_b):
-                        continue
+                        # Strong structural mismatch guard.
+                        fam_b = _anchor_family(blb.anchor)
+                        if (fam_a in {"part", "chapter", "schedule", "sec"}
+                                and fam_b in {"part", "chapter", "schedule", "sec"}
+                                and fam_a != fam_b):
+                            continue
 
-                    score = (sim * 0.78) + (f_anchor * 0.12) + (pos * 0.10)
-                    stage = "similarity"
-                    if f_anchor >= 0.70:
-                        stage = "fuzzy-anchor+similarity+position"
-                    elif pos >= 0.70:
-                        stage = "similarity+position"
+                        score = (sim * 0.78) + (f_anchor * 0.12) + (pos * 0.10)
+                        stage = "similarity"
+                        if f_anchor >= 0.70:
+                            stage = "fuzzy-anchor+similarity+position"
+                        elif pos >= 0.70:
+                            stage = "similarity+position"
 
-                    # Extra confidence when fuzzy anchor and similarity both agree.
-                    if f_anchor >= 0.70 and sim >= 0.80:
-                        score = min(1.0, score + 0.05)
+                        # Extra confidence when fuzzy anchor and similarity both agree.
+                        if f_anchor >= 0.70 and sim >= 0.80:
+                            score = min(1.0, score + 0.05)
 
-                    if score > best_score:
-                        best_score = score
-                        best_j     = (rj, blb)
-                        best_meta  = (stage, min(0.98, max(0.65, score)))
-                        if best_score >= 0.95:
-                            break  # confident match, stop searching
-                if best_j:
-                    used_b.add(best_j[0])
-                    paired.append((ri, bla, best_j[0], best_j[1], best_meta[0], best_meta[1]))
-                else:
-                    paired.append((ri, bla, None, None, "unmatched", 0.90))  # pure delete
+                        if score > best_score:
+                            best_score = score
+                            best_j     = (rj, blb)
+                            best_meta  = (stage, min(0.98, max(0.65, score)))
+                            if best_score >= 0.95:
+                                break  # confident match, stop searching
+                    if best_j:
+                        used_b.add(best_j[0])
+                        paired.append((ri, bla, best_j[0], best_j[1], best_meta[0], best_meta[1]))
+                    else:
+                        paired.append((ri, bla, None, None, "unmatched", 0.90))  # pure delete
 
             # Emit chunks for all paired decisions
             for item in paired:
@@ -4547,16 +4591,17 @@ def compute_diff(
     # but failed exact substring containment due to minor extraction differences
     # (different F-numbers, spacing, provision label formatting).
     # Uses inverted indexes + pre-built clean corpus for efficient lookup.
-    from collections import defaultdict as _dd_fblock
-
-    _RE_CLEAN_ALL = re.compile(r'[\[\]\(\)\s]')
-    def _clean_all(s: str) -> str:
-        return _RE_CLEAN_ALL.sub('', s)
-    def _strip_brackets(tok: str) -> str:
-        return re.sub(r'[\[\]\(\)]', '', tok)
-
     _block_norms_a = [_norm_cmp(b.text) for b in blocks_a]
     _block_norms_b = [_norm_cmp(b.text) for b in blocks_b]
+
+    def _clean_all(s: str) -> str:
+        return re.sub(r'[\[\]\(\)\s]+', '', s or '')
+
+    def _strip_brackets(tok: str) -> str:
+        return re.sub(r'^[\[\(]+|[\]\)]+$', '', tok or '')
+
+    from collections import defaultdict as _dd_fblock
+
     _block_co_a = [_norm_cmp(_content_only(b.text)) for b in blocks_a]
     _block_co_b = [_norm_cmp(_content_only(b.text)) for b in blocks_b]
 
@@ -4645,7 +4690,7 @@ def compute_diff(
             sim = _similarity(nt, cand_n)
             if sim >= 0.82 and _numbers_match(nt, cand_n):
                 return True
-            if sim >= 0.88 and _word_overlap_ratio(nt, cand_n) >= 0.82:
+            if sim >= 0.88 and _word_overlap_ratio(nt, cand_n) >= 0.82 and _numbers_match(nt, cand_n):
                 return True
             if ct and cand_c:
                 csim = _similarity(ct, cand_c)
@@ -5680,6 +5725,10 @@ def _is_reflow_only(a: str, b: str) -> bool:
         common = sum(1 for w in wa if w in set(wb))
         threshold = 0.97 if total > 15 else 0.94   # looser for short provisions
         if common / max(total, 1) >= threshold and _numbers_match(na, nb):
+            # Preserve real marker-letter edits like "(2)(c)" -> "(2)(d)".
+            delta = set(wa).symmetric_difference(set(wb))
+            if any(re.search(r'\(\d+[a-z]?\)|\([a-z]{1,3}\)', t, re.I) for t in delta):
+                return False
             return True
     return False
 
@@ -5778,6 +5827,32 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     if (_raw_a.lower() == _raw_b.lower()
             and len(text_a.split()) != len(text_b.split())):
         return True
+
+    # Early lexical-change guard: preserve real aligned substitutions before
+    # broader suppression rules run (e.g. "payroll giving" -> "payroll receiving",
+    # or marker edits like "(2)(c)" -> "(2)(d)").
+    wa0, wb0 = na.split(), nb.split()
+    if len(wa0) == len(wb0) and len(wa0) >= 4:
+        diffs0 = [(xa, xb) for xa, xb in zip(wa0, wb0) if xa != xb]
+        if 0 < len(diffs0) <= 2:
+            def _core_tok(tok: str) -> str:
+                return re.sub(r'^[^a-z0-9\(\)]+|[^a-z0-9\(\)]+$', '', tok.lower())
+
+            def _is_marker_tok(tok: str) -> bool:
+                t = _core_tok(tok)
+                return bool(re.fullmatch(r'\(\d+[a-z]?\)\([a-z]{1,3}\)', t, re.I) or
+                            re.fullmatch(r'\([a-z]{1,3}\)', t, re.I) or
+                            re.fullmatch(r'\(\d+[a-z]?\)', t, re.I))
+
+            def _is_word_tok(tok: str) -> bool:
+                t = re.sub(r'[^a-z0-9]', '', _core_tok(tok))
+                return len(t) >= 4 and bool(re.search(r'[a-z]', t))
+
+            if any((_is_word_tok(xa) and _is_word_tok(xb)) or
+                   (_is_marker_tok(xa) and _is_marker_tok(xb))
+                   for xa, xb in diffs0):
+                return False
+
     # Near-match after space collapse: catches spacing artefacts combined with
     # minor extraction corruption (stray character, missing accent, etc.).
     if len(_raw_a) >= 8 and len(_raw_b) >= 8:
@@ -5821,9 +5896,11 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     if ca and cb and ca == cb:
         return True
     # Also suppress when content-only texts are near-identical (high similarity
-    # + same numbers), catching cases where bracket stripping leaves minor
-    # whitespace/punctuation differences.
-    if ca and cb and _similarity(ca, cb) >= 0.92 and _numbers_match(ca, cb):
+    # + high content overlap + same numbers), catching cases where bracket
+    # stripping leaves minor whitespace/punctuation differences.
+    if (ca and cb and _similarity(ca, cb) >= 0.92 and
+            _word_overlap_ratio(ca, cb) >= 0.95 and
+            _numbers_match(ca, cb)):
         return True
 
     # 1d. Marker-stripped equivalence: if only outline marker extraction differs
@@ -5834,7 +5911,11 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
             return True
         if _is_punctuation_only_diff(pa, pb):
             return True
-        if _similarity(pa, pb) >= 0.97 and _numbers_match(pa, pb):
+        # Require very high content overlap as well; similarity alone can hide
+        # genuine one-word substitutions with the same numbers.
+        if (_similarity(pa, pb) >= 0.97 and
+                _word_overlap_ratio(pa, pb) >= 0.95 and
+                _numbers_match(pa, pb)):
             return True
 
     # 1e. Citation-extraction spacing: PDF hyperlinks are often extracted with
@@ -5917,7 +5998,11 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     sim = _combined_similarity(na, nb)
 
     # High character-level equivalence (common in Korean/CJK reflow extraction).
-    if _char_similarity(na, nb) >= 0.985 and _numbers_match(na, nb):
+    # Require strong content-word overlap too so single-word substitutions are
+    # not suppressed as layout noise.
+    if (_char_similarity(na, nb) >= 0.985 and
+            _word_overlap_ratio(na, nb) >= 0.97 and
+            _numbers_match(na, nb)):
         return True
 
     # Pre-compute number sets once — used in several rules below.
@@ -5925,6 +6010,34 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     nums_a = set(re.findall(r'\b\d+(?:-\d+)?[a-z]?\b', na))
     nums_b = set(re.findall(r'\b\d+(?:-\d+)?[a-z]?\b', nb))
     same_nums = (nums_a == nums_b)   # symmetric equality
+
+    # 4d. Preserve real lexical substitutions: when both sides have the same
+    # token count and only a small number of aligned substantive words differ,
+    # this is likely an editorial change (e.g. "giving" -> "receiving")
+    # rather than extraction/reflow noise.
+    ta = na.split()
+    tb = nb.split()
+    if len(ta) == len(tb) and len(ta) >= 6:
+        diffs = [(xa, xb) for xa, xb in zip(ta, tb) if xa != xb]
+        if 0 < len(diffs) <= 2:
+            _STOP_LEX = frozenset({
+                'a', 'an', 'the', 'of', 'to', 'in', 'and', 'or',
+                'is', 'by', 'be', 'it', 'at', 'as', 'on', 'for',
+                'with', 'not', 'are', 'was', 'has', 'its', 'that'
+            })
+
+            def _substantive(tok: str) -> bool:
+                t = re.sub(r'^[^a-z0-9]+|[^a-z0-9]+$', '', tok.lower())
+                if len(t) < 4 or t in _STOP_LEX:
+                    return False
+                if re.fullmatch(r'\d+[a-z]?', t):
+                    return False
+                if re.fullmatch(r'[a-z]{1,3}', t):
+                    return False
+                return True
+
+            if any(_substantive(xa) and _substantive(xb) for xa, xb in diffs):
+                return False
 
     # 4b. Prefix/suffix truncation reflow: one side is a strict prefix/suffix
     # of the other with the same opening anchor and same numbers.
@@ -6014,10 +6127,13 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     #     annotation index change, not an editorial change.
     _fn_strip = lambda s: re.sub(r'^\[?[a-z]\d+[a-z]?\]?\s*', '', s.strip(), flags=re.I)
     fa, fb = _fn_strip(na), _fn_strip(nb)
-    if fa and fb and len(fa) > 10 and len(fb) > 10:
-        fa_sim = _similarity(fa, fb)
-        if fa_sim >= 0.90 and _numbers_match(fa, fb):
-            return True
+    # Apply only to true amendment-entry lines with leading F/C-style markers.
+    if (re.match(r'^\[?[a-z]\d+[a-z]?\]?\b', na, re.I) or
+            re.match(r'^\[?[a-z]\d+[a-z]?\]?\b', nb, re.I)):
+        if fa and fb and len(fa) > 10 and len(fb) > 10:
+            fa_sim = _similarity(fa, fb)
+            if fa_sim >= 0.90 and _numbers_match(fa, fb):
+                return True
 
     # 7. Breadcrumb navigation labels
     if _is_breadcrumb(text_a) or _is_breadcrumb(text_b):
@@ -6205,7 +6321,7 @@ def _span_font(span: Span) -> tuple:
 
 # Pattern for trivial outline-marker words that don't warrant MOD highlighting
 _TRIVIAL_WORD_PAT = re.compile(
-    r'^[\W]*(?:[a-z]{1,3}|\d{1,4}|[ivxlcdm]{1,6})[\W]*$', re.I)
+    r'^[\W]*(?:[a-z]{1,3}|\d{1,2}|[ivxlcdm]{1,6})[\W]*$', re.I)
 
 
 def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: Optional[List[Block]] = None) -> dict:
@@ -6294,7 +6410,7 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                 (not changed_words_a and not changed_words_b) or
                 (all(_TRIVIAL_WORD_PAT.match(w) for w in changed_words_a) and
                  all(_TRIVIAL_WORD_PAT.match(w) for w in changed_words_b) and
-                 all(len(re.sub(r'[^\w]', '', w)) <= 3
+                 all(len(re.sub(r'[^\w]', '', w)) <= 2
                      for w in changed_words_a + changed_words_b))
             )
             mod_word_ops = None if all_trivial else raw_ops

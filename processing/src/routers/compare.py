@@ -38,6 +38,7 @@ import os
 import queue as _queue_mod
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import uuid
@@ -95,7 +96,6 @@ class _LRUCache:
         self._maxsize = maxsize
         self._ttl     = ttl
         self._store:  OrderedDict[str, dict] = OrderedDict()
-        import threading
         self._lock = threading.Lock()
 
     def set(self, key: str, value: dict) -> None:
@@ -407,15 +407,18 @@ async def diff_pdfs_stream(
             headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
         )
     _active_diffs += 1
-
-    _check_file_size(old_file)
-    _check_file_size(new_file)
-    data_a     = await old_file.read()
-    data_b     = await new_file.read()
-    xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
-    xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
-    fname_a    = old_file.filename
-    fname_b    = old_file.filename
+    try:
+        _check_file_size(old_file)
+        _check_file_size(new_file)
+        data_a     = await old_file.read()
+        data_b     = await new_file.read()
+        xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
+        xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
+        fname_a    = old_file.filename
+        fname_b    = new_file.filename
+    except Exception:
+        _active_diffs -= 1
+        raise
 
     q: _queue_mod.Queue = _queue_mod.Queue()
 
@@ -526,7 +529,7 @@ async def diff_pdfs_stream(
 
     async def _generate():
         global _active_diffs
-        loop     = asyncio.get_event_loop()
+        loop     = asyncio.get_running_loop()
         fut      = loop.run_in_executor(None, _run)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
 
@@ -617,16 +620,19 @@ async def diff_pdfs_stream_large(
             headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
         )
     _active_diffs += 1
-
-    _check_file_size(old_file)
-    _check_file_size(new_file)
-    data_a     = await old_file.read()
-    data_b     = await new_file.read()
-    xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
-    xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
-    fname_a    = old_file.filename
-    fname_b    = new_file.filename
-    job_id     = str(uuid.uuid4())
+    try:
+        _check_file_size(old_file)
+        _check_file_size(new_file)
+        data_a     = await old_file.read()
+        data_b     = await new_file.read()
+        xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
+        xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
+        fname_a    = old_file.filename
+        fname_b    = new_file.filename
+        job_id     = str(uuid.uuid4())
+    except Exception:
+        _active_diffs -= 1
+        raise
 
     q: _queue_mod.Queue = _queue_mod.Queue()
 
@@ -689,9 +695,15 @@ async def diff_pdfs_stream_large(
                 }) + "\n")
 
                 # a. Extract this batch from both PDFs in parallel
+                # Guard: if this PDF is shorter, skip its batch (return empty)
+                def _safe_load(path, start, end):
+                    if start > end:
+                        return []
+                    return _ext_load_pdf(path, None, start, end)
+
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    fut_a = pool.submit(_ext_load_pdf, tmp_a, None, old_start, old_end)
-                    fut_b = pool.submit(_ext_load_pdf, tmp_b, None, new_start, new_end)
+                    fut_a = pool.submit(_safe_load, tmp_a, old_start, old_end)
+                    fut_b = pool.submit(_safe_load, tmp_b, new_start, new_end)
                     lines_a = fut_a.result()
                     lines_b = fut_b.result()
 
@@ -769,7 +781,7 @@ async def diff_pdfs_stream_large(
                     "pane_b":     pane_b_json,
                     "stats":      batch_stats,
                 }
-                q.put(_dumps_fast(batch_payload))
+                q.put(_dumps_fast(batch_payload).rstrip(b"\n") + b"\n")
 
                 # e. Free this batch's RAM before the next iteration
                 del lines_a, lines_b, blocks_a, blocks_b, chunks, pane_a, pane_b
@@ -816,6 +828,7 @@ async def diff_pdfs_stream_large(
                 "xml_sections": xml_sections,
                 "file_a":       fname_a,
                 "file_b":       fname_b,
+                "total_pages":  n_pages,
             })
 
             # ── Final "done" message ───────────────────────────────────────
@@ -831,7 +844,7 @@ async def diff_pdfs_stream_large(
                 "total_pages":  n_pages,
                 "elapsed_s":    round(time.perf_counter() - t0, 2),
             }
-            q.put(_dumps_fast(done_payload))
+            q.put(_dumps_fast(done_payload).rstrip(b"\n") + b"\n")
 
             logger.info("diff/stream/large: job=%s done  chunks=%d  elapsed=%.1fs",
                         job_id, len(all_chunks), time.perf_counter() - t0)
@@ -849,7 +862,7 @@ async def diff_pdfs_stream_large(
 
     async def _generate_large():
         global _active_diffs
-        loop     = asyncio.get_event_loop()
+        loop     = asyncio.get_running_loop()
         fut      = loop.run_in_executor(None, _run_large)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
 

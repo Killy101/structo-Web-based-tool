@@ -123,7 +123,7 @@ export async function apiDiff(
   const form = new FormData();
   form.append("old_file", oldFile);
   form.append("new_file", newFile);
-  if (xmlFile) form.append("xml_file_a", xmlFile);
+  if (xmlFile) form.append("xml_file_b", xmlFile);
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
     const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form });
@@ -185,7 +185,7 @@ export async function apiDiffLarge(
   const form = new FormData();
   form.append("old_file", oldFile);
   form.append("new_file", newFile);
-  if (xmlFile) form.append("xml_file_a", xmlFile);
+  if (xmlFile) form.append("xml_file_b", xmlFile);
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
     const res = await fetch(`${BASE}/diff/stream/large`, { method: "POST", body: form });

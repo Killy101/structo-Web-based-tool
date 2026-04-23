@@ -147,7 +147,12 @@ function buildLines(pane: PaneData): Line[] {
   return lines;
 }
 
-function tagToStyle(cfg: TagConfig, dark: boolean, allowUnderline = false): React.CSSProperties {
+function tagToStyle(
+  cfg: TagConfig,
+  dark: boolean,
+  kind?: ChunkKind,
+  allowUnderline = false,
+): React.CSSProperties {
   const s: React.CSSProperties = {};
   if (cfg.background) {
     s.backgroundColor = dark
@@ -163,9 +168,19 @@ function tagToStyle(cfg: TagConfig, dark: boolean, allowUnderline = false): Reac
     if (cfg.font.style.includes("bold"))   s.fontWeight = "bold";
     if (cfg.font.style.includes("italic")) s.fontStyle  = "italic";
   }
+
+  // Enforce Git-style visual semantics by chunk kind when available.
+  if (kind === "add") {
+    s.backgroundColor = dark ? "rgba(16,185,129,0.22)" : "#ccffd8";
+    s.color = dark ? "#6ee7b7" : "#1a4d2e";
+  } else if (kind === "del") {
+    s.backgroundColor = dark ? "rgba(244,63,94,0.22)" : "#ffd7d5";
+    s.color = dark ? "#fda4af" : "#6e1c1a";
+  }
+
   const decorations: string[] = [];
   if (allowUnderline && cfg.underline) decorations.push("underline");
-  if (cfg.overstrike) decorations.push("line-through");
+  if (cfg.overstrike || kind === "del") decorations.push("line-through");
   if (decorations.length > 0) s.textDecoration = decorations.join(" ");
   return s;
 }
@@ -239,11 +254,17 @@ function DiffPaneInner({
             const seg     = segs[si];
             const cfg     = pane.tag_cfgs[seg.tagName] ?? {};
             const changed = seg.chunkId !== null && kindMap.has(seg.chunkId);
-            const style   = tagToStyle(cfg, dark, changed);
+            const kind    = seg.chunkId !== null ? kindMap.get(seg.chunkId) : undefined;
+            const style   = tagToStyle(cfg, dark, kind, changed);
 
             lineNodes.push(
               seg.chunkId !== null
-                ? <span key={si} style={style} data-chunk-id={String(seg.chunkId)}>{seg.text}</span>
+                ? <span
+                    key={si}
+                    style={style}
+                    data-chunk-id={String(seg.chunkId)}
+                    data-changed={cfg.background ? "true" : undefined}
+                  >{seg.text}</span>
                 : <span key={si} style={style}>{seg.text}</span>
             );
           }
@@ -319,8 +340,21 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       const kind = kindMap.get(activeChunkId);
       if (!kind) return "";
       const ahl = ACTIVE_HL[kind];
+      const sel = `[data-chunk-id="${activeChunkId}"]`;
+      if (kind === "mod") {
+        // For MOD chunks precompute() already coloured changed words via tag_cfgs.
+        // Keep only outline for active selection so Git-style red/green token
+        // backgrounds remain visible and are not overpainted.
+        return (
+          `${sel} {` +
+          ` border-radius: 2px;` +
+          ` outline: 1px solid ${ahl.border};` +
+          ` outline-offset: 0px; }`
+        );
+      }
+      // ADD / DEL / EMP: highlight entire span range
       return (
-        `[data-chunk-id="${activeChunkId}"] {` +
+        `${sel} {` +
         ` background-color: ${ahl.bg} !important;` +
         ` border-radius: 2px;` +
         ` outline: 2px solid ${ahl.border};` +

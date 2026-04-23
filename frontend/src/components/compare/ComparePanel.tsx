@@ -3,6 +3,7 @@ import React, {
   useState, useRef, useCallback, useEffect, useMemo,
 } from "react";
 import type { PdfChunk } from "./ChunkPanel";
+import WordDiffViewer, { type SentenceBlock } from "./worddiffviewer";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -31,11 +32,29 @@ export interface DetectedChange {
   baseline?: string;
 }
 
-export interface WordDiffToken  { text: string; type: "equal" | "insert" | "delete" }
+export interface WordDiffToken  { value: string; type: "equal" | "insert" | "delete" }
 export interface WordDiffResult {
   tokens: WordDiffToken[]; has_changes: boolean; change_ratio: number;
   summary: { addition: number; removal: number; modification: number };
   old_word_count: number; new_word_count: number;
+}
+
+interface WordDiffViewerSummary {
+  addition: number;
+  removal: number;
+  modification: number;
+}
+
+interface WordDiffViewerPayload {
+  has_changes: boolean;
+  old_word_count: number;
+  new_word_count: number;
+  common_words: number;
+  additions: string[];
+  removals: string[];
+  modifications: Array<{ old: string; new: string; ratio: number; type: string }>;
+  summary: WordDiffViewerSummary;
+  change_ratio: number;
 }
 export interface DetectSummary {
   addition: number; removal: number; modification: number; emphasis: number; mismatch?: number;
@@ -454,11 +473,21 @@ function WDiff({result,side}:{result:WordDiffResult;side:"old"|"new"}) {
   return (
     <span style={{fontFamily:"Consolas,monospace",fontSize:12,lineHeight:1.7,wordBreak:"break-word"}}>
       {result.tokens.map((tok,i)=>{
-        if(tok.type==="equal") return <span key={i} style={{color:"var(--fg2)"}}>{tok.text} </span>;
-        if(side==="old"&&tok.type==="delete")
-          return <span key={i} style={{background:"var(--del-hi)",color:"var(--del-fg)",borderRadius:3,padding:"0 3px",textDecoration:"line-through"}}>{tok.text} </span>;
-        if(side==="new"&&tok.type==="insert")
-          return <span key={i} style={{background:"var(--add-hi)",color:"var(--add-fg)",borderRadius:3,padding:"0 3px"}}>{tok.text} </span>;
+        if(tok.type==="equal") {
+          return <span key={i} style={{color:"var(--fg2)"}}>{tok.value}{" "}</span>;
+        }
+        if(tok.type==="delete") {
+          if(side==="old")
+            return <span key={i} style={{background:"var(--del-hi)",color:"var(--del-fg)",borderRadius:3,padding:"0 3px",textDecoration:"line-through",marginRight:2}}>{tok.value}</span>;
+          // inserted words didn't exist on old side — emit nothing but keep spacing
+          return <span key={i}/>;
+        }
+        if(tok.type==="insert") {
+          if(side==="new")
+            return <span key={i} style={{background:"var(--add-hi)",color:"var(--add-fg)",borderRadius:3,padding:"0 3px",marginRight:2}}>{tok.value}</span>;
+          // deleted words are gone on new side — emit nothing
+          return <span key={i}/>;
+        }
         return null;
       })}
     </span>
@@ -551,7 +580,7 @@ export default function ComparePanel({
   const [error,   setError]    = useState<string|null>(null);
   const [filter,  setFilter]   = useState("all");
   const [sideOpen,setSideOpen] = useState(true);
-  const [botTab,  setBotTab]   = useState<"detail"|"xml">("detail");
+  const [botTab,  setBotTab]   = useState<"detail"|"git"|"xml">("detail");
 
   // Resizable split between text panes and bottom panel
   const [pdfH, setPdfH] = useState(440);
@@ -628,6 +657,64 @@ export default function ComparePanel({
   const selChange=selIdx!==null?filtered[selIdx]:null;
   const navText=selChange?(selChange.new_text||selChange.old_text||selChange.text||""):"";
   const xmlHl=navText;
+
+  const gitBlocks = useMemo<SentenceBlock[]>(() => {
+    const toViewerWordDiff = (wd: WordDiffResult | null | undefined): WordDiffViewerPayload => {
+      if (!wd) {
+        return {
+          has_changes: false,
+          old_word_count: 0,
+          new_word_count: 0,
+          common_words: 0,
+          additions: [],
+          removals: [],
+          modifications: [],
+          summary: { addition: 0, removal: 0, modification: 0 },
+          change_ratio: 0,
+        };
+      }
+
+      return {
+        has_changes: wd.has_changes,
+        old_word_count: wd.old_word_count,
+        new_word_count: wd.new_word_count,
+        common_words: 0,
+        additions: [],
+        removals: [],
+        modifications: [],
+        summary: wd.summary,
+        change_ratio: wd.change_ratio,
+      };
+    };
+
+    return changes.map((ch) => {
+      const oldText = ch.old_text ?? "";
+      const newText = ch.new_text ?? "";
+      const tokens = ch.word_diff?.tokens ?? [];
+
+      let inlineDiff = tokens;
+      if (!inlineDiff.length) {
+        if (ch.type === "addition") {
+          inlineDiff = (newText || ch.text || "").split(/\s+/).filter(Boolean).map((value) => ({ type: "insert" as const, value }));
+        } else if (ch.type === "removal") {
+          inlineDiff = (oldText || ch.text || "").split(/\s+/).filter(Boolean).map((value) => ({ type: "delete" as const, value }));
+        } else {
+          inlineDiff = (newText || oldText || ch.text || "").split(/\s+/).filter(Boolean).map((value) => ({ type: "equal" as const, value }));
+        }
+      }
+
+      const ratio = ch.word_diff?.change_ratio ?? (ch.type === "emphasis" ? 0 : 1);
+      const similarity = Math.max(0, Math.min(1, 1 - ratio));
+
+      return {
+        old: oldText,
+        new: newText,
+        similarity,
+        word_diff: toViewerWordDiff(ch.word_diff),
+        inline_diff: inlineDiff,
+      };
+    });
+  }, [changes]);
 
   // ── Keyboard nav (↑/↓ changes) ──────────────────────────────────────────
   useEffect(() => {
@@ -745,7 +832,18 @@ export default function ComparePanel({
               </div>
               <div style={{padding:"7px 9px",borderTop:"1px solid var(--bd)",flexShrink:0,display:"flex",flexDirection:"column",gap:5}}>
                 <button className="cp-btn cp-btn-pri" onClick={()=>setBotTab("xml")}>Apply → XML</button>
-                <button className="cp-btn cp-btn-sec">Save Target XML…</button>
+                <button className="cp-btn cp-btn-sec" onClick={()=>{
+                    if(!xmlContent)return;
+                    const blob=new Blob([xmlContent],{type:"text/xml"});
+                    const url=URL.createObjectURL(blob);
+                    const a=document.createElement("a");
+                    a.href=url;
+                    a.download=selChunk
+                      ? `${selChunk.filename.replace(/\.xml$/,"")}_updated.xml`
+                      : "updated.xml";
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}>Save Target XML…</button>
               </div>
             </div>
           ):(
@@ -815,6 +913,9 @@ export default function ComparePanel({
                 <button className={`cp-tab ${botTab==="detail"?"cp-tab-on":"cp-tab-off"}`} onClick={()=>setBotTab("detail")}>
                   Changes {total>0?`(${total})`:""}
                 </button>
+                <button className={`cp-tab ${botTab==="git"?"cp-tab-on":"cp-tab-off"}`} onClick={()=>setBotTab("git")}>
+                  Git View
+                </button>
                 <button className={`cp-tab ${botTab==="xml"?"cp-tab-on":"cp-tab-off"}`} onClick={()=>setBotTab("xml")}>
                   XML
                 </button>
@@ -822,6 +923,15 @@ export default function ComparePanel({
               <div style={{flex:1,display:"flex",flexDirection:"column",minHeight:0,overflow:"hidden"}}>
                 {botTab==="xml"?(
                   <XmlViewer content={xmlContent} hlText={xmlHl}/>
+                ):botTab==="git"?(
+                  <div style={{flex:1,padding:10,minHeight:0,overflow:"hidden"}}>
+                    <WordDiffViewer
+                      blocks={gitBlocks}
+                      fileOld={oldFilename ?? undefined}
+                      fileNew={newFilename ?? undefined}
+                      hideEqual
+                    />
+                  </div>
                 ):(
                   <div style={{flex:1,overflowY:"auto"}}>
                     {selChange?(
