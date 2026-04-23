@@ -10,6 +10,7 @@ import { Button } from "../../components/ui";
 import TetrisLoading from "../../components/ui/tetris-loader";
 import WelcomeSplash from "../../components/layout/Welcomesplash";
 import { getToken, settingsApi } from "../../services/api";
+import { ROUTE_FEATURE_GATES } from "../../utils";
 import { useAutoLogout } from "../../hooks/useAutoLogout";
 import { useTheme } from "../../context/ThemContext";
 import type { Role } from "../../types";
@@ -287,20 +288,9 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const roleUnauthorized =
     allowedRoles !== undefined && !allowedRoles.includes(user?.role as Role);
 
-  const featureUnauthorized =
-    (pathname === "/dashboard" && !hasFeature("dashboard")) ||
-    (pathname.startsWith("/dashboard/users") &&
-      !hasFeature("user-management")) ||
-    (pathname.startsWith("/dashboard/history") &&
-      !hasFeature("user-logs")) ||
-    (pathname.startsWith("/dashboard/brd") &&
-      !hasFeature(["brd-process", "brd-view-generate"])) ||
-    (pathname.startsWith("/dashboard/compare") &&
-      !hasFeature([
-        "compare-basic",
-        "compare-merge",
-        "compare-pdf-xml-only",
-      ]));
+  const featureUnauthorized = ROUTE_FEATURE_GATES.some(({ path, exact, features }) =>
+    (exact ? pathname === path : pathname.startsWith(path)) && !hasFeature(features)
+  );
 
   const isUnauthorized = roleUnauthorized || featureUnauthorized;
 
