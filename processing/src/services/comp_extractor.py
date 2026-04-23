@@ -1585,22 +1585,23 @@ def _is_breadcrumb(t: str) -> bool:
     if raw_alpha and raw_alpha == raw_alpha.upper() and 2 <= len(words) <= 5:
         # All-caps and short — structural subheading label
         return True
-    # Title-case structural chapter subheadings: short phrases like
-    # "Tax on employment income" that appear as standalone subheadings in one
-    # PDF version and as all-caps/spaced-letter text in another. These are
-    # always paired with a chapter heading in the surrounding context and carry
-    # no independent legal content — treat as breadcrumbs.
-    # Criteria: short (≤6 words), head: anchor, no legal punctuation/numbers,
-    # and the block is a pure word phrase (no annotation markers, no section refs).
-    if (2 <= len(words) <= 6 and
+    # Title-case structural chapter subheadings that are pure navigation labels.
+    # VERY conservative: only suppress when the first word is an explicit
+    # structural keyword (Part/Chapter/Schedule/etc. already caught above, so
+    # these are secondary navigation words like "Overview", "Introduction").
+    # A generic phrase like "Tax on employment income" must NOT be suppressed —
+    # it is a real provision heading whose removal or modification is a change.
+    _STRUCTURAL_FIRST = frozenset({
+        'overview', 'introduction', 'contents', 'definitions',
+        'interpretation', 'general', 'preliminary', 'miscellaneous',
+        'supplementary', 'transitional', 'commencement', 'citation',
+        'revocation', 'repeal', 'extent', 'application', 'scope',
+    })
+    if (2 <= len(words) <= 4 and
             re.match(r'^[A-Z][a-z]', t.strip()) and
             not re.search(r'[,;:\[\]\(\)\d]', nt) and
-            not re.search(r'\b(?:s\.|sch\.|para\.|reg\.|art\.)\s*\d', nt)):
-        # Extra guard: must not be a genuine provision title (which would appear
-        # with a section number like "6Nature of charge to tax").
-        # Only suppress standalone subheading phrases with no numeric content.
-        if not re.search(r'\d', nt):
-            return True
+            words[0] in _STRUCTURAL_FIRST):
+        return True
     # Only treat as breadcrumb if the first word is a known structural label.
     _BREADCRUMB_HEADS = frozenset({
         'overview', 'introduction', 'contents', 'definitions', 'interpretation',
@@ -5671,16 +5672,10 @@ def _is_reflow_only(a: str, b: str) -> bool:
     # CJK/OCR fallback: near-identical char stream with matching numbers.
     if _char_similarity(na, nb) >= 0.97 and _numbers_match(na, nb):
         return True
-    # For longer blocks: allow 1-word difference only if numbers are identical
-    # (a real legal change always changes a number: year, section, schedule ref).
-    # Threshold lowered from >8 to >5 so short provisions (e.g. a single
-    # bracketed sub-item with 6-8 words) are also caught.
-    total = max(len(wa), len(wb))
-    if total > 5 and abs(len(wa) - len(wb)) <= 1:
-        common = sum(1 for w in wa if w in set(wb))
-        threshold = 0.97 if total > 15 else 0.94   # looser for short provisions
-        if common / max(total, 1) >= threshold and _numbers_match(na, nb):
-            return True
+    # 1-word tolerance removed: "employee" → "employer" is exactly 1 word
+    # different in a 5+ word block and would be silently suppressed here.
+    # The only safe suppression path is exact sorted-bag equality (above) or
+    # the >=0.97 char-similarity path (also above).
     return False
 
 
@@ -5984,21 +5979,17 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
         if prov_a and prov_b and prov_a.group() == prov_b.group():
             return True
 
-    # 6c. Same sorted letter-word bag (numbers stripped) with symmetric number equality.
-    #     Catches C2/C3/F-annotation and heading blocks whose page-width reflow
-    #     changed how many words land in each extracted block.
-    #     IMPORTANT: only suppress when word sets are EXACTLY equal.
-    #     1-word tolerance requires >=12 words AND >=0.96 sim to avoid
-    #     suppressing real single-word substitutions.
+    # 6c. Same sorted word bag (preserving provision letters like "(a)", "(b)")
+    #     with symmetric number equality.  Catches C2/C3/F-annotation and heading
+    #     blocks whose page-width reflow changed how many words land in each block.
+    #     CRITICAL: do NOT strip provision-letter tokens before sorting — "(a)"→"(b)"
+    #     is a real cross-reference change and must never be treated as reflow.
+    #     Only EXACT bag equality triggers suppression; the 1-word tolerance is
+    #     removed because a single-word substitution IS a real legal change.
     if same_nums:
-        wa_s = sorted(re.sub(r'[^a-z ]', ' ', na).split())
-        wb_s = sorted(re.sub(r'[^a-z ]', ' ', nb).split())
+        wa_s = sorted(na.split())
+        wb_s = sorted(nb.split())
         if wa_s == wb_s:
-            return True
-        n_max = max(len(wa_s), len(wb_s))
-        if (n_max >= 12 and abs(len(wa_s) - len(wb_s)) <= 1 and
-                sim >= 0.96 and
-                sum(1 for w in wa_s if w in set(wb_s)) / n_max >= 0.97):
             return True
 
     # 6d. C/F annotation blocks: high similarity + same numbers = reflow.
