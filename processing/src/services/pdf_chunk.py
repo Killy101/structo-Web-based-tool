@@ -1057,10 +1057,18 @@ def chunk_pdfs_and_xml(
         old_text, old_font_headings, old_heading_pages = _fut_old.result()
         new_text, new_font_headings, new_heading_pages = _fut_new.result()
     _tick("parallel_extract OLD+NEW")
-    # Derive total page counts from text (count \n\n separators = page count)
-    # This avoids two extra fitz.open() calls just to get page count.
-    old_total_pages = old_text.count("\n\n") + 1 if old_text else 1
-    new_total_pages = new_text.count("\n\n") + 1 if new_text else 1
+    # Derive true page counts by reopening the PDF — counting "\n\n" gives
+    # paragraph count, not page count, and can be 5-10x too high on dense docs.
+    try:
+        with fitz.open(stream=old_pdf_bytes, filetype="pdf") as _d:
+            old_total_pages = len(_d)
+    except Exception:
+        old_total_pages = 1
+    try:
+        with fitz.open(stream=new_pdf_bytes, filetype="pdf") as _d:
+            new_total_pages = len(_d)
+    except Exception:
+        new_total_pages = 1
 
     # 3 — Structural split using font-detected headings (falls back to regex)
     old_structural = _structural_chunks(old_text, tag_name, chunk_size, chunk_overlap, old_font_headings)
@@ -2010,7 +2018,14 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
     # Strategy: if a line does NOT end with terminal punctuation (. ? ! : ;)
     # and the next line is on the SAME page, merge them into one unit.
     # This mirrors how a human reads — one sentence = one comparison unit.
+    #
+    # CRITICAL: never merge across provision anchors like "(a)", "(1)", "(ii)".
+    # Legal lists end each item with a comma or nothing — not terminal punctuation
+    # — so without this guard the entire provision list on a page would collapse
+    # into one comparison unit, destroying granularity and producing mega-diffs.
     _TERMINAL = re.compile(r'[.?!;:]\s*$')
+    # Matches the START of the NEXT line: "(a)", "(1)", "(ii)", "(ab)" etc.
+    _PROVISION_ANCHOR = re.compile(r'^\s*\((?:[a-z]{1,3}|\d{1,3})\)')
 
     merged_lines: list[dict] = []
     i = 0
@@ -2021,6 +2036,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
             i + 1 < len(lines)
             and lines[i + 1]["page"] == line["page"]
             and not _TERMINAL.search(line["text"].rstrip())
+            and not _PROVISION_ANCHOR.match(lines[i + 1]["text"])
             and len(line["text"]) > 8   # don't merge headings / very short lines
         ):
             next_line = lines[i + 1]
