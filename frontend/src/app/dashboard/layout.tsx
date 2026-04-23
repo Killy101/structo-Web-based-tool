@@ -15,7 +15,6 @@ import { useTheme } from "../../context/ThemContext";
 import type { Role } from "../../types";
 import dynamic from "next/dynamic";
 
-const ActivityFeed = dynamic(() => import("../../components/ui/ActivityFeed"), { ssr: false });
 const OnboardingWizard = dynamic(() => import("../../components/ui/OnboardingWizard"), { ssr: false });
 const KeyboardShortcuts = dynamic(() => import("../../components/ui/KeyboardShortcuts"), { ssr: false });
 
@@ -118,18 +117,10 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     DEFAULT_MAINTENANCE_BANNER,
   );
   const [strictRateLimitMode, setStrictRateLimitMode] = useState(false);
-  const [showActivityFeed, setShowActivityFeed] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const splashCheckedRef = useRef(false);
   const redirectedRef = useRef(false);
   const onboardingCheckedRef = useRef(false);
-
-  // Listen for keyboard shortcut toggle event from KeyboardShortcuts component
-  useEffect(() => {
-    const handler = () => setShowActivityFeed(v => !v);
-    window.addEventListener("structo:toggle-activity-feed", handler);
-    return () => window.removeEventListener("structo:toggle-activity-feed", handler);
-  }, []);
 
   // ── Auth redirects (no setState, only router calls) ──
   useEffect(() => {
@@ -346,15 +337,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             </svg>
           </button>
           <span className="text-sm font-bold text-slate-900 dark:text-white">Structo</span>
-          <button
-            onClick={() => setShowActivityFeed(v => !v)}
-            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors relative"
-            aria-label="Activity feed"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M13 10V3L4 14h7v7l9-11h-7z"/>
-            </svg>
-          </button>
+          <div className="w-9" />
         </div>
 
         {maintenanceMode && (
@@ -377,20 +360,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 {PAGE_META[pathname]?.title ?? "Dashboard"}
               </h1>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowActivityFeed(v => !v)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all"
-                style={{
-                  background: showActivityFeed ? "rgba(26,143,209,0.1)" : "transparent",
-                  borderColor: showActivityFeed ? "rgba(26,143,209,0.3)" : "rgba(100,116,139,0.2)",
-                  color: showActivityFeed ? "#42b4f5" : "#64748b",
-                }}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                Live Activity
-              </button>
-            </div>
           </header>
         )}
         <main
@@ -403,13 +372,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           {isUnauthorized ? <Unauthorized /> : children}
         </main>
       </div>
-
-      {/* Activity Feed panel */}
-      <ActivityFeed
-        open={showActivityFeed}
-        onClose={() => setShowActivityFeed(false)}
-        dark={dark}
-      />
 
       {/* Onboarding Wizard */}
       {showOnboarding && user && (
