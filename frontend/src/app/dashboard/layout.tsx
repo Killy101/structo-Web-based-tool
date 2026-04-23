@@ -18,6 +18,8 @@ import dynamic from "next/dynamic";
 const OnboardingWizard = dynamic(() => import("../../components/ui/OnboardingWizard"), { ssr: false });
 const KeyboardShortcuts = dynamic(() => import("../../components/ui/KeyboardShortcuts"), { ssr: false });
 
+const ONBOARDING_DELAY_MS = 800;
+
 const DEFAULT_MAINTENANCE_BANNER =
   "Our system is currently undergoing maintenance to improve performance and reliability. We'll be back shortly. Thank you for your patience and understanding.";
 
@@ -107,7 +109,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, user, refreshUser } = useAuth();
   const { dark } = useTheme();
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(15);
-  useAutoLogout(sessionTimeoutMinutes);
+  const [showLogoutWarning, setShowLogoutWarning] = useState(false);
+  useAutoLogout(
+    sessionTimeoutMinutes,
+    () => setShowLogoutWarning(true),
+    () => setShowLogoutWarning(false),
+  );
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
@@ -116,6 +123,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const [maintenanceBannerMessage, setMaintenanceBannerMessage] = useState(
     DEFAULT_MAINTENANCE_BANNER,
   );
+  const [maintenanceLearnMoreUrl, setMaintenanceLearnMoreUrl] = useState("");
   const [strictRateLimitMode, setStrictRateLimitMode] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const splashCheckedRef = useRef(false);
@@ -164,7 +172,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     if (!userIdentity) return;
     const onboardingKey = `onboardingDone:${userIdentity}`;
     if (localStorage.getItem(onboardingKey) !== "1") {
-      setTimeout(() => setShowOnboarding(true), 800);
+      setTimeout(() => setShowOnboarding(true), ONBOARDING_DELAY_MS);
     }
   }, [user, isLoading, showSplash]);
 
@@ -189,6 +197,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         if (!active) return;
         setMaintenanceMode(Boolean(operationsPolicy.maintenanceMode));
         setMaintenanceBannerMessage(formatMaintenanceBanner(operationsPolicy));
+        setMaintenanceLearnMoreUrl(String(operationsPolicy.maintenanceLearnMoreUrl ?? "").trim());
         setStrictRateLimitMode(Boolean(operationsPolicy.strictRateLimitMode));
         if (typeof timeout === "number" && timeout >= 5) {
           setSessionTimeoutMinutes(timeout);
@@ -341,8 +350,18 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </div>
 
         {maintenanceMode && (
-          <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
-            {maintenanceBannerMessage}
+          <div className="flex-shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300 flex items-center gap-2 flex-wrap">
+            <span>{maintenanceBannerMessage}</span>
+            {maintenanceLearnMoreUrl && (
+              <a
+                href={maintenanceLearnMoreUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:opacity-75 transition-opacity flex-shrink-0"
+              >
+                Learn more ↗
+              </a>
+            )}
           </div>
         )}
         {!maintenanceMode && strictRateLimitMode && (
@@ -382,6 +401,50 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             setShowOnboarding(false);
           }}
         />
+      )}
+
+      {/* Session expiry warning */}
+      {showLogoutWarning && (
+        <div className="fixed inset-0 z-[9000] flex items-end justify-center sm:items-center p-4 pointer-events-none">
+          <div
+            className="pointer-events-auto w-full max-w-sm rounded-2xl border shadow-2xl p-5 flex flex-col gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300"
+            style={{
+              background: dark ? "#0f1a2f" : "#ffffff",
+              borderColor: dark ? "rgba(251,191,36,0.3)" : "rgba(180,83,9,0.25)",
+              boxShadow: dark
+                ? "0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(251,191,36,0.15)"
+                : "0 20px 60px rgba(0,0,0,0.15)",
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-amber-500/15 border border-amber-500/25 text-amber-500">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold" style={{ color: dark ? "#e2e8f0" : "#0f172a" }}>
+                  Session expiring soon
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: dark ? "#8c98ae" : "#5b667a" }}>
+                  You&apos;ll be logged out in 2 minutes due to inactivity. Move your mouse or press any key to stay logged in.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowLogoutWarning(false)}
+              className="w-full py-2 rounded-xl text-xs font-semibold transition-all"
+              style={{
+                background: "rgba(251,191,36,0.12)",
+                border: "1px solid rgba(251,191,36,0.25)",
+                color: dark ? "#fbbf24" : "#b45309",
+              }}
+            >
+              I&apos;m still here — keep me logged in
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Keyboard Shortcuts */}

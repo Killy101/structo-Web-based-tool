@@ -403,7 +403,11 @@ export default function Sidebar({ collapsed, onToggle, onMobileClose, hoverMode 
                   </span>
                 )}
                 {!collapsed && !active && !allowed && (
-                  <span className="ml-auto inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/25">
+                  <span className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/25">
+                    <svg width="8" height="10" viewBox="0 0 8 10" fill="none" aria-hidden="true">
+                      <rect x="0.5" y="4.5" width="7" height="5" rx="1" fill="currentColor"/>
+                      <path d="M2 4.5V3a2 2 0 0 1 4 0v1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none"/>
+                    </svg>
                     Locked
                   </span>
                 )}

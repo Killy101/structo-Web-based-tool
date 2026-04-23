@@ -266,12 +266,13 @@ const TXN_SIZE = 6;
 
 export default function DashboardPage() {
   const { user }    = useAuth();
-  const { stats, isLoading, refetch } = useDashboard();
-  const { logs, isLoading: logLoad, refetch: refetchLogs } = useUserLogs(
+  const { stats, isLoading, error: statsError, refetch } = useDashboard();
+  const { logs, isLoading: logLoad, error: logError, refetch: refetchLogs } = useUserLogs(
     user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" ? "all" : "mine"
   );
   const [brds,    setBrds]    = useState<Brd[]>([]);
   const [brdLoad, setBrdLoad] = useState(true);
+  const [brdError, setBrdError] = useState<string | null>(null);
   const [txp, setTxp] = useState(1);
   const [balancePage, setBalancePage] = useState(1);
   const BALANCE_PAGE_SIZE = 5;
@@ -280,8 +281,9 @@ export default function DashboardPage() {
   // Fetch full BRD list directly — same call as BRD page, gives real status/geography/title
   const refetchBrds = useCallback(async () => {
     setBrdLoad(true);
+    setBrdError(null);
     try { const r = await api.get<Brd[]>("/brd"); setBrds(r.data); }
-    catch { /* silent — dashboard degrades gracefully */ }
+    catch { setBrdError("Failed to load BRD sources"); }
     finally { setBrdLoad(false); }
   }, []);
   useEffect(() => { refetchBrds(); }, [refetchBrds]);
@@ -451,6 +453,19 @@ export default function DashboardPage() {
       </div>
 
       {/* ══ FULL-WIDTH KPI ROW ══ */}
+      {statsError && (
+        <div className="mb-4 flex items-center justify-between px-4 py-3 rounded-xl border"
+          style={{ background: dark ? "rgba(239,68,68,0.08)" : "#fef2f2", borderColor: dark ? "rgba(239,68,68,0.2)" : "#fecaca" }}>
+          <p className="text-[11px] font-medium" style={{ color: dark ? "#f87171" : "#b91c1c" }}>
+            Failed to load dashboard stats
+          </p>
+          <button onClick={() => refetch()}
+            className="text-[11px] font-semibold px-3 py-1 rounded-lg transition-colors"
+            style={{ background: dark ? "rgba(239,68,68,0.15)" : "#fee2e2", color: dark ? "#f87171" : "#b91c1c" }}>
+            Retry
+          </button>
+        </div>
+      )}
       <div className="db-kpi grid grid-cols-4 gap-3 mb-5">
         {([
           { label: "BRD Sources",  val: totalBrds,       sub: "total registered",    color: "#2563eb", trend: null },
@@ -549,7 +564,16 @@ export default function DashboardPage() {
             </div>
 
             <div className="px-2 pb-3 pt-1">
-              {paged.length === 0
+              {logError
+                ? <div className="flex flex-col items-center gap-2 py-8">
+                    <p className="text-[12px]" style={{color:"var(--c-dim)"}}>Failed to load activity</p>
+                    <button onClick={() => refetchLogs()}
+                      className="text-[11px] font-semibold px-3 py-1 rounded-lg transition-colors"
+                      style={{ background: dark ? "rgba(239,68,68,0.12)" : "#fee2e2", color: dark ? "#f87171" : "#b91c1c" }}>
+                      Retry
+                    </button>
+                  </div>
+                : paged.length === 0
                 ? <p className="text-center py-8 text-[12px]" style={{color:"var(--c-dim)"}}>No activity yet</p>
                 : paged.map((a, i) => {
                     const sc = dark ? (DARK[a.tag]??DARK.SYSTEM) : (LIGHT[a.tag]??LIGHT.SYSTEM);
@@ -759,6 +783,17 @@ export default function DashboardPage() {
             };
             return (
               <div className={`${C} u d2 p-4`}>
+                {brdError && (
+                  <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-lg"
+                    style={{ background: dark ? "rgba(239,68,68,0.08)" : "#fef2f2", border: `1px solid ${dark ? "rgba(239,68,68,0.2)" : "#fecaca"}` }}>
+                    <p className="text-[11px]" style={{ color: dark ? "#f87171" : "#b91c1c" }}>Failed to load</p>
+                    <button onClick={() => refetchBrds()}
+                      className="text-[10px] font-bold px-2 py-0.5 rounded-md"
+                      style={{ background: dark ? "rgba(239,68,68,0.15)" : "#fee2e2", color: dark ? "#f87171" : "#b91c1c" }}>
+                      Retry
+                    </button>
+                  </div>
+                )}
                 <div className="flex justify-between items-center mb-3">
                   <p className="text-[13px] font-bold" style={{color:"var(--c-txt)"}}>Balance</p>
                   <span style={{color:"var(--c-dim)"}}>···</span>
