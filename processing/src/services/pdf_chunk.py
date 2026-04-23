@@ -1344,15 +1344,21 @@ def chunk_pdfs_and_xml(
                 else:
                     nj -= 1
 
-        # Last resort: sequential assignment for any still-unmatched PDF chunks
-        seq_xi = 0
-        for nj in range(n_new):
-            if nj not in xml_by_new_idx:
-                while seq_xi in xi_used and seq_xi < n_xml:
-                    seq_xi += 1
-                if seq_xi < n_xml:
-                    xml_by_new_idx[nj] = xml_chunks[seq_xi]
-                    seq_xi += 1
+        # Last resort: sequential assignment, but ONLY when the remaining
+        # unmatched counts are equal (1:1). When counts differ, positional
+        # assignment silently pairs the wrong XML section with a PDF chunk —
+        # worse than no XML at all. Leave mismatched chunks without XML.
+        unmatched_nj = [nj for nj in range(n_new) if nj not in xml_by_new_idx]
+        unmatched_xi = [xi for xi in range(n_xml) if xi not in xi_used]
+        if len(unmatched_nj) == len(unmatched_xi):
+            for nj, xi in zip(unmatched_nj, unmatched_xi):
+                xml_by_new_idx[nj] = xml_chunks[xi]
+        elif unmatched_nj and unmatched_xi:
+            logger.warning(
+                "chunk_pdfs_and_xml: %d unmatched PDF chunks vs %d unmatched XML "
+                "chunks — skipping positional fallback to avoid wrong-section pairing",
+                len(unmatched_nj), len(unmatched_xi),
+            )
 
         logger.info(
             "chunk_pdfs_and_xml: xml-aligned %d/%d xml chunks to pdf chunks",
@@ -1997,7 +2003,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
             "size":          dominant.get("size", 12.0),
         })
 
-    Y_TOLERANCE = 3.0   # pts — spans within this vertical distance = same line
+    Y_TOLERANCE = 6.0   # pts — aligned with pdf_extractor_core.py (was 3.0, too tight)
 
     for span in spans:
         pg = span["page"]
@@ -2176,8 +2182,11 @@ def detect_pdf_changes(
         if not anchor or not spans:
             return spans
         needle = " ".join(anchor.lower().split())
+        # Require a START-of-span match so "see part 1 above" doesn't fire for
+        # anchor "part 1". Use 60-char prefix to keep long headings discriminating.
         for i, s in enumerate(spans):
-            if needle[:30] in s["text_norm"] or s["text_norm"][:30] in needle:
+            t = s["text_norm"]
+            if t.startswith(needle[:60]) or needle.startswith(t[:60]):
                 return spans[i:]
         words = [w for w in needle.split() if len(w) > 4]
         if words:

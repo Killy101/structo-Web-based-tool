@@ -1199,8 +1199,10 @@ def normalize_text(text: str) -> str:
         return ""
     # Normalize line-break and tab artifacts from PDF extraction.
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    # Fix hard hyphen wraps such as "employ-\nment" -> "employment".
-    text = re.sub(r'-\s+', '', text)
+    # Rejoin only word-internal line-break hyphens: both sides must be alphabetic.
+    # "employ- ment" → "employment" ✓   "as follows- the" → unchanged ✓
+    # The old r'-\s+' was too broad and joined "as follows- Item" → "as followsItem".
+    text = re.sub(r'([A-Za-z])-\s+([A-Za-z])', r'\1\2', text)
     # Normalize common smart quotes from PDF layers.
     text = text.replace('“', '"').replace('”', '"').replace('’', "'")
     # Collapse repeated whitespace.
