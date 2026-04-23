@@ -5,7 +5,6 @@ import { useTheme } from "../../context/ThemContext";
 import { useDashboard, useUserLogs } from "../../hooks";
 import api from "../lib/api";
 import { formatTimeAgo } from "../../utils";
-import TetrisLoading from "../../components/ui/tetris-loader";
 import dynamic from "next/dynamic";
 import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Cell } from "recharts";
 import "./dashboard.css";
@@ -394,10 +393,11 @@ export default function DashboardPage() {
   /* BRD status bars — real data from /brd */
   const brdStatuses = brdsByStatus;
 
+  const Bone = ({ w, h, r = 6 }: { w: number | string; h: number; r?: number }) => (
+    <div style={{ width: w, height: h, borderRadius: r, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
+  );
+
   if (isLoading || brdLoad || logLoad) {
-    const Bone = ({ w, h, r = 6 }: { w: number | string; h: number; r?: number }) => (
-      <div style={{ width: w, height: h, borderRadius: r, background: "var(--c-b)", animation: "db-pl 1.6s ease-in-out infinite" }} />
-    );
     return (
       <div className="db" style={{ background: "var(--c-bg)", minHeight: "100%", padding: "clamp(12px,3vw,20px) clamp(12px,4vw,32px) 28px" }}>
         {/* KPI row skeleton */}
