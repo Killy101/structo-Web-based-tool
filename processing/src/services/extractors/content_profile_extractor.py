@@ -524,21 +524,39 @@ def extract_content_profile(doc) -> dict:
         sme_comments = str(sec.get("smeComments", "")).strip()
 
         # Path: prefer the pre-extracted "path" key (populated by toc_extractor
-        # for Level 0/1 from their "Hardcoded – /xxx" definition), then fall
-        # back to building it from the name for numbered levels.
+        # for Level 0/1 from their "Hardcoded – /xxx" definition), then derive
+        # from the first token of the first example for numbered levels.
+        # Never fall back to /{name} — that produces wrong values like /Part.
         extracted_path = str(sec.get("path") or "").strip()
+        lv_num_match = _re_path.search(r"\d+", level_raw)
+        lv_n = lv_num_match.group(0) if lv_num_match else ""
         if extracted_path:
             row_path = extracted_path
-        elif name:
-            row_path = f"/{name}"
+        elif lv_n not in ("0", "1") and example:
+            examples_list = _split_examples(example)
+            first_ex = examples_list[0] if examples_list else example
+            first_token = first_ex.split()[0] if first_ex.split() else first_ex
+            row_path = f"/{first_token}" if first_token else ""
         else:
             row_path = ""
 
+        # Normalise required from "Yes"/"No" (toc_extractor output) to
+        # "True"/"False" to match the BRD source format.
+        req_lower = required.lower()
+        if req_lower in ("yes", "true", "y"):
+            required_display = "True"
+        elif req_lower in ("no", "false", "n"):
+            required_display = "False"
+        else:
+            required_display = required
+
+        # Description combines Name, Required, Definition, Example using the
+        # bullet-prefixed format shown in the BRD source spreadsheet.
         description_parts: list[str] = []
-        if required:   description_parts.append(f"Required: {required}")
-        if name:       description_parts.append(f"Name: {name}")
-        if definition: description_parts.append(f"Definition: {definition}")
-        if example:    description_parts.append(f"Example: {example}")
+        if name:             description_parts.append(f"• Name: {name}")
+        if required_display: description_parts.append(f"Required: {required_display}")
+        if definition:       description_parts.append(f"•Definition: {definition}")
+        if example:          description_parts.append(f"•Example: {example}")
 
         levels.append({
             "levelNumber":  f"Level {level_raw}",
