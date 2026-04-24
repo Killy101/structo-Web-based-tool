@@ -31,6 +31,12 @@ import { Role, User, UserRole, CreateUserPayload } from "../../../types";
    HELPERS
    ────────────────────────────────────────────────────────── */
 
+async function runInBatches<T>(items: T[], fn: (item: T) => Promise<void>, batchSize = 5) {
+  for (let i = 0; i < items.length; i += batchSize) {
+    await Promise.all(items.slice(i, i + batchSize).map(fn));
+  }
+}
+
 function getErrorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "object" && e !== null && "response" in e) {
@@ -2975,7 +2981,7 @@ export default function UsersPage() {
       return;
     }
 
-    await Promise.all(eligible.map((u) => activateUser(u.id)));
+    await runInBatches(eligible, (u) => activateUser(u.id));
     show(
       `Activated ${eligible.length} user${eligible.length === 1 ? "" : "s"}`,
       "success",
@@ -2996,7 +3002,7 @@ export default function UsersPage() {
       return;
     }
 
-    await Promise.all(eligible.map((u) => deactivateUser(u.id)));
+    await runInBatches(eligible, (u) => deactivateUser(u.id));
     show(
       `Deactivated ${eligible.length} user${eligible.length === 1 ? "" : "s"}`,
       "success",
@@ -3018,7 +3024,7 @@ export default function UsersPage() {
       return;
     }
 
-    await Promise.all(eligible.map((u) => assignTeam(u.id, teamId)));
+    await runInBatches(eligible, (u) => assignTeam(u.id, teamId));
     show(
       `Assigned team for ${eligible.length} user${eligible.length === 1 ? "" : "s"}`,
       "success",

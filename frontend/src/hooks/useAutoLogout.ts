@@ -4,6 +4,8 @@ import { useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { authApi, removeToken } from "../services/api";
 
+const THROTTLE_MS = 250;
+
 /**
  * Auto-logout after specified minutes of inactivity.
  * Tracks mouse movement, clicks, key presses, scrolling, and touch.
@@ -11,6 +13,7 @@ import { authApi, removeToken } from "../services/api";
 export function useAutoLogout(timeoutMinutes: number = 20) {
   const router = useRouter();
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastFiredRef = useRef<number>(0);
 
   const logout = useCallback(() => {
     void authApi.logout().catch(() => {
@@ -25,18 +28,24 @@ export function useAutoLogout(timeoutMinutes: number = 20) {
     timerRef.current = setTimeout(logout, timeoutMinutes * 60 * 1000);
   }, [logout, timeoutMinutes]);
 
+  const throttledReset = useCallback(() => {
+    const now = Date.now();
+    if (now - lastFiredRef.current > THROTTLE_MS) {
+      lastFiredRef.current = now;
+      resetTimer();
+    }
+  }, [resetTimer]);
+
   useEffect(() => {
     const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart"];
 
-    // Start the timer
     resetTimer();
 
-    // Reset on any user activity
-    events.forEach((event) => window.addEventListener(event, resetTimer));
+    events.forEach((event) => window.addEventListener(event, throttledReset, { passive: true }));
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      events.forEach((event) => window.removeEventListener(event, resetTimer));
+      events.forEach((event) => window.removeEventListener(event, throttledReset));
     };
-  }, [resetTimer]);
+  }, [resetTimer, throttledReset]);
 }
