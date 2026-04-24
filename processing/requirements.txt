@@ -4,6 +4,7 @@ anyio==4.12.1
 certifi==2026.2.25
 click==8.3.1
 colorama==0.4.6
+diff-match-patch==20241021
 distro==1.9.0
 dnspython==2.8.0
 docx2txt==0.8
@@ -35,6 +36,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.22
 PyYAML==6.0.3
 pdfminer.six==20250506
+rapidfuzz==3.9.0
 rich==14.3.3
 rich-toolkit==0.19.7
 rignore==0.7.6

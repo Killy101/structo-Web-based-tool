@@ -144,8 +144,8 @@ export default function InnodMetajson({
     if (!open) return;
     let cancelled = false;
 
-    const nextRaw = metajson ? formatJson(metajson) : "{}";
-    const nextLiveJson = metajson ?? null;
+    const nextLiveJson = metajson ? canonicalizeMetajsonForUi(metajson, filename) : null;
+    const nextRaw = nextLiveJson ? formatJson(nextLiveJson) : "{}";
 
     // Defer local state sync so the effect does not synchronously trigger cascading renders.
     queueMicrotask(() => {
@@ -160,7 +160,7 @@ export default function InnodMetajson({
     return () => {
       cancelled = true;
     };
-  }, [open, metajson]);
+  }, [open, metajson, filename]);
 
   // Focus textarea when switching to edit tab
   useEffect(() => {
@@ -212,7 +212,8 @@ export default function InnodMetajson({
       return;
     }
 
-    const validation = validateMetajsonSchema(result.value, { requireTransforms: true });
+    const normalized = canonicalizeMetajsonForUi(result.value, filename);
+    const validation = validateMetajsonSchema(normalized, { requireTransforms: true });
     if (!validation.valid) {
       setLiveJson(null);
       setParseError(validation.errors[0] || "Metajson structure is invalid");
@@ -220,7 +221,8 @@ export default function InnodMetajson({
       return;
     }
 
-    setLiveJson(result.value);
+    setLiveJson(normalized);
+    setRaw(formatJson(normalized));
     setParseError(null);
     setValidated(true);
   }
@@ -234,27 +236,31 @@ export default function InnodMetajson({
   function handleSave() {
     const json = liveJson ?? metajson;
     if (!json || parseError) return;
-    const validation = validateMetajsonSchema(json, { requireTransforms: true });
+    const normalized = canonicalizeMetajsonForUi(json, filename);
+    const validation = validateMetajsonSchema(normalized, { requireTransforms: true });
     if (!validation.valid) {
       setParseError(validation.errors[0] || "Metajson structure is invalid");
       setValidated(false);
       return;
     }
-    setSavedJson(json);
+    setSavedJson(normalized);
+    setLiveJson(normalized);
+    setRaw(formatJson(normalized));
     setSaveFlash(true);
     setTimeout(() => setSaveFlash(false), 2000);
     setValidated(true);
-    if (onSave) onSave(json);
+    if (onSave) onSave(normalized);
   }
 
   function handleDownload() {
     const json = liveJson ?? metajson;
     if (!json) return;
+    const normalized = canonicalizeMetajsonForUi(json, filename);
     if (onDownload) {
-      onDownload(json, filename);
+      onDownload(normalized, filename);
       return;
     }
-    const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(normalized, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -530,8 +536,9 @@ export default function InnodMetajson({
                   onClick={() => {
                     const base = savedJson ?? metajson;
                     if (base) {
-                      setRaw(formatJson(base));
-                      setLiveJson(base);
+                      const normalized = canonicalizeMetajsonForUi(base, filename);
+                      setRaw(formatJson(normalized));
+                      setLiveJson(normalized);
                       setParseError(null);
                       setValidated(null);
                     }
@@ -555,4 +562,100 @@ export default function InnodMetajson({
       </div>
     </>
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&nbsp;/gi, " ");
+}
+
+function stripHtml(value: string): string {
+  return decodeEntities(value).replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+}
+
+function normalizePathTransform(value: unknown): Record<string, unknown> {
+  const src = asRecord(value);
+  const out: Record<string, unknown> = {};
+
+  Object.entries(src).forEach(([level, rawNode]) => {
+    const node = asRecord(rawNode);
+    const rawPatterns = Array.isArray(node.patterns) ? node.patterns : [];
+    const patterns = rawPatterns.map((row) => {
+      if (!Array.isArray(row) || row.length < 4) return row;
+      const find = stripHtml(asString(row[0]));
+      const replace = stripHtml(asString(row[1]));
+      const flag = typeof row[2] === "number" ? row[2] : 0;
+      const note = asString(row[3]);
+      return [find, replace, flag, note];
+    });
+    out[level] = { case: asString(node.case), patterns };
+  });
+
+  return out;
+}
+
+function canonicalizeMetajsonForUi(json: Record<string, unknown>, fallbackFilename: string): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...json };
+  const name = asString(out.name) || "Unknown Source";
+
+  const meta = asRecord(out.meta);
+  if (!asString(meta["Content Category Name"]) && !asString(meta["Source Name"])) {
+    meta["Content Category Name"] = name;
+  }
+  if (!("Delivery Type" in meta)) meta["Delivery Type"] = "{string}";
+  if (!("Unique File Id" in meta)) meta["Unique File Id"] = "{string}";
+  if (!("Tag Set" in meta) || typeof meta["Tag Set"] !== "object") {
+    meta["Tag Set"] = { requiredLevels: [], allowedLevels: [] };
+  }
+  out.meta = meta;
+
+  const files = asRecord(out.files);
+  const file0001 = asRecord(files.file0001);
+  const file00001 = asRecord(files.file00001);
+  const pickedName = asString(file0001.name) || asString(file00001.name) || fallbackFilename.replace(/\.json$/i, "");
+  out.files = { file0001: { name: pickedName } };
+
+  const headingRequired = (Array.isArray(out.headingRequired) ? out.headingRequired : [])
+    .map((v) => asNumber(v))
+    .filter((v): v is number => v !== null)
+    .map((v) => Math.trunc(v))
+    .filter((v) => v >= 2);
+  if (!headingRequired.includes(2)) headingRequired.unshift(2);
+  out.headingRequired = Array.from(new Set(headingRequired)).sort((a, b) => a - b);
+
+  const requiredLevels = (Array.isArray(out.requiredLevels) ? out.requiredLevels : [])
+    .map((v) => asNumber(v))
+    .filter((v): v is number => v !== null)
+    .map((v) => Math.trunc(v))
+    .filter((v) => v >= 2);
+  if (!requiredLevels.length || !requiredLevels.includes(2)) requiredLevels.unshift(2);
+  out.requiredLevels = Array.from(new Set(requiredLevels)).sort((a, b) => a - b);
+
+  out.pathTransform = normalizePathTransform(out.pathTransform);
+
+  return out;
 }

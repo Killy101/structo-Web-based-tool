@@ -68,6 +68,7 @@ export default function TetrisLoading({
   )
   const [fallingPiece, setFallingPiece] = useState<FallingPiece | null>(null)
   const [isClearing, setIsClearing] = useState(false)
+  const [clearingRows, setClearingRows] = useState<Set<number>>(new Set())
   const frameRef = useRef<number>()
   const lastUpdateRef = useRef<number>(0)
 
@@ -158,14 +159,8 @@ export default function TetrisLoading({
       })
       if (linesToClear.length > 0) {
         setIsClearing(true)
+        setClearingRows(new Set(linesToClear))
 
-        // Mark lines for clearing animation
-        const newGrid = prevGrid.map((row, rowIndex) => {
-          if (linesToClear.includes(rowIndex)) {
-            return row.map(cell => ({ ...cell, color: 'bg-black dark:bg-white animate-pulse opacity-50' }))
-          }
-          return row
-        })
         // Actually clear lines after animation
         setTimeout(() => {
           setGrid(currentGrid => {
@@ -174,10 +169,11 @@ export default function TetrisLoading({
               Array(config.gridWidth).fill(null).map(() => ({ filled: false, color: '' }))
             )
             setIsClearing(false)
+            setClearingRows(new Set())
             return [...emptyRows, ...filteredGrid]
           })
         }, 200)
-        return newGrid
+        return prevGrid
       }
       return prevGrid
     })
@@ -252,16 +248,19 @@ export default function TetrisLoading({
     }
     return displayGrid.map((row, rowIndex) => (
       <div key={rowIndex} className="flex">
-        {row.map((cell, colIndex) => (
-          <div
-            key={`${rowIndex}-${colIndex}`}
-            className={`${config.cellSize} border border-gray-300 dark:border-gray-600 transition-all duration-100 ${
-              cell.filled
-                ? `${cell.color} scale-100`
-                : 'bg-white dark:bg-black scale-95'
-            } ${isClearing && rowIndex < 4 ? 'animate-pulse' : ''}`}
-          />
-        ))}
+        {row.map((cell, colIndex) => {
+          const isClearing = clearingRows.has(rowIndex)
+          return (
+            <div
+              key={`${rowIndex}-${colIndex}`}
+              className={`${config.cellSize} border border-gray-300 dark:border-gray-600 transition-all duration-100 ${
+                cell.filled
+                  ? `${cell.color} scale-100 ${isClearing ? 'animate-pulse opacity-50' : ''}`
+                  : 'bg-white dark:bg-black scale-95'
+              }`}
+            />
+          )
+        })}
       </div>
     ))
   }

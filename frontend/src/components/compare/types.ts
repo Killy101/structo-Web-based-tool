@@ -5,8 +5,8 @@
 // ── Workflow mode ─────────────────────────────────────────────────────────────
 
 /**
- * wf2 = Chunk & Compare  (4-panel, XML read-only, no Apply/Save)
- * wf3 = Compare & Apply  (4-panel, XML editable, Apply/Save enabled)
+ * wf2 = Workflow 1 · Chunk & Compare  (4-panel, XML read-only, no Apply/Save)
+ * wf3 = Workflow 2 · Compare & Apply  (4-panel, XML editable, Apply/Save enabled)
  */
 export type WorkflowMode = "wf2" | "wf3";
 

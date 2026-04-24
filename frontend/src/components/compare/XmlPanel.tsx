@@ -1,11 +1,11 @@
 "use client";
 // ─────────────────────────────────────────────────────────────────────────────
 // XmlPanel.tsx — Panel D
-// Shown below the PDF panes in both Workflow 2 and Workflow 3.
+// Shown below the PDF panes in both Workflow 1 and Workflow 2.
 //
-// Workflow 2 (mode="wf2"):  Read-only.  Scrolls & highlights on chunk click.
+// Workflow 1 (mode="wf2"):  Read-only.  Scrolls & highlights on chunk click.
 //                           No Apply / Download buttons.
-// Workflow 3 (mode="wf3"):  Editable.   Same nav behaviour PLUS Apply button
+// Workflow 2 (mode="wf3"):  Editable.   Same nav behaviour PLUS Apply button
 //                           patches the selected XML node in-place, and
 //                           Download saves the updated file.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
     const canApply = isWf3 && !!xmlText && !!activeChunk &&
                      activeChunk.kind !== "emp" && !appliedIds.has(activeChunk.id);
 
-    const applyTitle = !isWf3                              ? "Read-only in Workflow 2"
+    const applyTitle = !isWf3                              ? "Read-only in Workflow 1"
       : activeChunk?.kind === "emp"                         ? "Emphasis — not applicable"
       : appliedIds.has(activeChunk?.id ?? -1)               ? "Already applied"
       :                                                       "Apply selected change to XML";
@@ -167,7 +167,7 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
                 : "bg-slate-500/10 text-slate-400 border-slate-500/20"
             }`}>
-              {isWf3 ? "WF3 · editable" : "WF2 · read-only"}
+              {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
 
             {/* Load XML (always available, shows only when no XML loaded) */}

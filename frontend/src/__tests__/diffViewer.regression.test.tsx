@@ -87,6 +87,43 @@ describe("Diff viewer regressions", () => {
     expect(screen.getAllByText("2").length).toBeGreaterThan(0);
   });
 
+  it("shows navigation and alignment controls for easier diff review", () => {
+    const result: DiffResult = {
+      success: true,
+      chunks: [
+        {
+          id: 1,
+          kind: "mod",
+          block_a: 1,
+          block_b: 1,
+          text_a: "old",
+          text_b: "new",
+          confidence: 1,
+          reason: "modified",
+          section: "Section 1",
+        },
+      ],
+      pane_a: makePane({ offsets: { "1": 0 }, offset_ends: { "1": 4 } }),
+      pane_b: makePane({ offsets: { "1": 0 }, offset_ends: { "1": 4 } }),
+      stats: { total: 1, additions: 0, deletions: 0, modifications: 1, emphasis: 0 },
+      file_a: "old.pdf",
+      file_b: "new.pdf",
+      xml_sections: [],
+    };
+
+    render(
+      <DiffViewer
+        mode="wf2"
+        result={result}
+        onReset={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /previous change/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next change/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /aligned lines/i })).toBeInTheDocument();
+  });
+
   it("synchronizes scroll positions across old, new, and XML panes immediately", async () => {
     const result: DiffResult = {
       success: true,

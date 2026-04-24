@@ -47,13 +47,17 @@ function ParticleCanvas() {
     };
     window.addEventListener("resize", onResize);
 
-    const count = Math.min(Math.floor((W * H) / 14000), 80);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const count = reducedMotion
+      ? 0
+      : Math.min(Math.floor((W * H) / 14000), 80);
+    const speed = reducedMotion ? 0 : 0.18;
     const particles = Array.from({ length: count }, () => ({
       x: Math.random() * W,
       y: Math.random() * H,
       r: Math.random() * 1.4 + 0.3,
-      vx: (Math.random() - 0.5) * 0.18,
-      vy: (Math.random() - 0.5) * 0.18,
+      vx: (Math.random() - 0.5) * speed,
+      vy: (Math.random() - 0.5) * speed,
       opacity: Math.random() * 0.45 + 0.1,
     }));
 
@@ -72,16 +76,19 @@ function ParticleCanvas() {
         ctx.fillStyle = `rgba(66,180,245,${p.opacity})`;
         ctx.fill();
       });
+      const LINK_DIST = 110;
+      const LINK_DIST_SQ = LINK_DIST * LINK_DIST;
       for (let i = 0; i < particles.length; i++) {
         for (let j = i + 1; j < particles.length; j++) {
           const dx = particles[i].x - particles[j].x;
           const dy = particles[i].y - particles[j].y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 110) {
+          const distSq = dx * dx + dy * dy;
+          if (distSq < LINK_DIST_SQ) {
+            const dist = Math.sqrt(distSq);
             ctx.beginPath();
             ctx.moveTo(particles[i].x, particles[i].y);
             ctx.lineTo(particles[j].x, particles[j].y);
-            ctx.strokeStyle = `rgba(26,143,209,${0.07 * (1 - dist / 110)})`;
+            ctx.strokeStyle = `rgba(26,143,209,${0.07 * (1 - dist / LINK_DIST)})`;
             ctx.lineWidth = 0.5;
             ctx.stroke();
           }
@@ -103,14 +110,17 @@ export default function HomePage() {
   const router = useRouter();
   const [covered, setCovered] = useState(false);
   const [showEye, setShowEye] = useState(false);
-  const [lightMode, setLightMode] = useState(false);
+  const [lightMode, setLightMode] = useState(() => {
+    try {
+      return localStorage.getItem("landing-theme") === "light";
+    } catch {
+      return false;
+    }
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-scroll-behavior", "smooth");
-    try {
-      if (localStorage.getItem("landing-theme") === "light") setLightMode(true);
-    } catch {}
   }, []);
 
   const toggleTheme = useCallback(() => {

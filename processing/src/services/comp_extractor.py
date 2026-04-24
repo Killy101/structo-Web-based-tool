@@ -100,6 +100,7 @@ reformatted legal documents.  A self-diff (same PDF on both sides) produces
 zero changes across a 1000+ page document.
 """
 
+import os
 import sys
 import re
 import difflib
@@ -1001,9 +1002,21 @@ def _promote_isolated_provision_markers(lines: List[PdfLine]) -> None:
                 extra.text = ""
 
 
-def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
-    """Returns list[PdfLine] for the whole document (all pages concatenated).
+def load_pdf(
+    path: str,
+    progress_cb=None,
+    page_start: int | None = None,
+    page_end: int | None = None,
+) -> List[PdfLine]:
+    """Returns list[PdfLine] for the specified page range.
     Strips repeating page headers and footers to reduce false positives.
+
+    Parameters
+    ----------
+    path        : filesystem path to the PDF.
+    progress_cb : called as ``progress_cb(page_idx, total_pages)`` after each page.
+    page_start  : 0-based index of first page (inclusive).  Default: 0.
+    page_end    : 0-based index of last  page (inclusive).  Default: last page.
 
     Pages are processed in parallel (ThreadPoolExecutor, separate fitz.Document
     per worker) for a 2-4x speedup on documents with 20+ pages.
@@ -1017,6 +1030,16 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     # Open once to count pages and detect headers/footers, then close.
     doc = fitz.open(path)
     total = len(doc)
+    
+    # Normalize page range
+    _page_start = page_start if page_start is not None else 0
+    _page_end = page_end if page_end is not None else total - 1
+    _page_start = max(0, min(_page_start, total - 1))
+    _page_end = max(_page_start, min(_page_end, total - 1))
+    
+    # Pages to process
+    pages_to_process = list(range(_page_start, _page_end + 1))
+    n_pages = len(pages_to_process)
 
     # Skip header/footer sampling for very small PDFs (no repeated patterns).
     if total >= 6:
@@ -1026,7 +1049,7 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     doc.close()
 
     _t_hf = _time.perf_counter()
-    print(f"  [load_pdf] header/footer detect: {_t_hf - _t_start:.2f}s  ({total} pages)", flush=True)
+    print(f"  [load_pdf] header/footer detect: {_t_hf - _t_start:.2f}s  ({total} pages, processing {n_pages})", flush=True)
 
     # Read bytes once — each worker opens its own fitz.Document from this
     # immutable buffer so no document handle is shared between threads.
@@ -1119,19 +1142,19 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     # ── Determine worker count and split pages into chunks ────────────────────
     # Use 1 worker per ~25 pages, capped at 4 to bound memory pressure.
     # Sequential fallback for tiny documents (overhead not worth it).
-    if total <= 15:
+    if n_pages <= 15:
         n_workers = 1
-    elif total <= 60:
+    elif n_pages <= 60:
         n_workers = 2
-    elif total <= 150:
+    elif n_pages <= 150:
         n_workers = 3
     else:
         n_workers = 4
 
-    chunk_size = (total + n_workers - 1) // n_workers
+    chunk_size = (n_pages + n_workers - 1) // n_workers
     page_chunks = [
-        list(range(i, min(i + chunk_size, total)))
-        for i in range(0, total, chunk_size)
+        pages_to_process[i:i + chunk_size]
+        for i in range(0, n_pages, chunk_size)
     ]
 
     _t_pre = _time.perf_counter()
@@ -1144,7 +1167,7 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
 
     _t_loop = _time.perf_counter()
     print(
-        f"  [load_pdf] parallel extract ({n_workers} workers, {total} pages): "
+        f"  [load_pdf] parallel extract ({n_workers} workers, {n_pages} pages): "
         f"{_t_loop - _t_pre:.2f}s",
         flush=True,
     )
@@ -1167,7 +1190,7 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     _t_end = _time.perf_counter()
     print(
         f"  [load_pdf] post-process: {_t_end - _t_loop:.2f}s  "
-        f"TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines)",
+        f"TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines) [pages {_page_start}-{_page_end}]",
         flush=True,
     )
 
@@ -1199,8 +1222,10 @@ def normalize_text(text: str) -> str:
         return ""
     # Normalize line-break and tab artifacts from PDF extraction.
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    # Fix hard hyphen wraps such as "employ-\nment" -> "employment".
-    text = re.sub(r'-\s+', '', text)
+    # Rejoin only word-internal line-break hyphens: both sides must be alphabetic.
+    # "employ- ment" → "employment" ✓   "as follows- the" → unchanged ✓
+    # The old r'-\s+' was too broad and joined "as follows- Item" → "as followsItem".
+    text = re.sub(r'([A-Za-z])-\s+([A-Za-z])', r'\1\2', text)
     # Normalize common smart quotes from PDF layers.
     text = text.replace('“', '"').replace('”', '"').replace('’', "'")
     # Collapse repeated whitespace.
@@ -1585,22 +1610,23 @@ def _is_breadcrumb(t: str) -> bool:
     if raw_alpha and raw_alpha == raw_alpha.upper() and 2 <= len(words) <= 5:
         # All-caps and short — structural subheading label
         return True
-    # Title-case structural chapter subheadings: short phrases like
-    # "Tax on employment income" that appear as standalone subheadings in one
-    # PDF version and as all-caps/spaced-letter text in another. These are
-    # always paired with a chapter heading in the surrounding context and carry
-    # no independent legal content — treat as breadcrumbs.
-    # Criteria: short (≤6 words), head: anchor, no legal punctuation/numbers,
-    # and the block is a pure word phrase (no annotation markers, no section refs).
-    if (2 <= len(words) <= 6 and
+    # Title-case structural chapter subheadings that are pure navigation labels.
+    # VERY conservative: only suppress when the first word is an explicit
+    # structural keyword (Part/Chapter/Schedule/etc. already caught above, so
+    # these are secondary navigation words like "Overview", "Introduction").
+    # A generic phrase like "Tax on employment income" must NOT be suppressed —
+    # it is a real provision heading whose removal or modification is a change.
+    _STRUCTURAL_FIRST = frozenset({
+        'overview', 'introduction', 'contents', 'definitions',
+        'interpretation', 'general', 'preliminary', 'miscellaneous',
+        'supplementary', 'transitional', 'commencement', 'citation',
+        'revocation', 'repeal', 'extent', 'application', 'scope',
+    })
+    if (2 <= len(words) <= 4 and
             re.match(r'^[A-Z][a-z]', t.strip()) and
             not re.search(r'[,;:\[\]\(\)\d]', nt) and
-            not re.search(r'\b(?:s\.|sch\.|para\.|reg\.|art\.)\s*\d', nt)):
-        # Extra guard: must not be a genuine provision title (which would appear
-        # with a section number like "6Nature of charge to tax").
-        # Only suppress standalone subheading phrases with no numeric content.
-        if not re.search(r'\d', nt):
-            return True
+            words[0] in _STRUCTURAL_FIRST):
+        return True
     # Only treat as breadcrumb if the first word is a known structural label.
     _BREADCRUMB_HEADS = frozenset({
         'overview', 'introduction', 'contents', 'definitions', 'interpretation',
@@ -3501,38 +3527,179 @@ def _seq_key(block: Block) -> str:
     return block.cmp
 
 
+# Maximum blocks per SequenceMatcher window.  Above this we inject ANCH:: or
+# positional splits so no single SM call becomes O(n²) slow.
+_MAX_SM_WINDOW: int = int(os.environ.get("COMPARE_SM_WINDOW", "500"))
+
+
+def _find_anch_checkpoints(
+    seq_a: List[str],
+    seq_b: List[str],
+    existing: List[Tuple[int, int]],
+) -> List[Tuple[int, int]]:
+    """Augment `existing` with ANCH:: / GUIDE:: matches to shrink large windows.
+
+    Uses a greedy forward scan: for each structural token in A that also
+    appears in B, pick the B occurrence closest to the expected proportional
+    position.  Returns a new monotonically-increasing checkpoint list.
+    """
+    n_a = len(seq_a)
+    n_b = len(seq_b)
+    if n_a == 0 or n_b == 0:
+        return existing
+
+    # Build B lookup: key -> sorted list of positions
+    b_idx: dict = {}
+    for j, s in enumerate(seq_b):
+        if s.startswith("ANCH::") or s.startswith("GUIDE::"):
+            b_idx.setdefault(s, []).append(j)
+
+    # Forward scan through A
+    pairs: List[Tuple[int, int]] = list(existing)
+    used_b: set = {bj for _, bj in existing}
+    last_b = -1
+
+    for i, s in enumerate(seq_a):
+        if not (s.startswith("ANCH::") or s.startswith("GUIDE::")):
+            continue
+        if s not in b_idx:
+            continue
+        exp_b = int(i / n_a * n_b)
+        candidates = [j for j in b_idx[s] if j > last_b and j not in used_b]
+        if not candidates:
+            continue
+        best_j = min(candidates, key=lambda j: abs(j - exp_b))
+        # Accept if within ±40 % of the proportional position
+        if abs(best_j - exp_b) <= max(60, int(0.40 * n_b)):
+            pairs.append((i, best_j))
+            used_b.add(best_j)
+            last_b = best_j
+
+    # Sort and filter to a strictly-increasing sequence
+    pairs.sort()
+    result: List[Tuple[int, int]] = []
+    la, lb = -1, -1
+    for ai, bj in pairs:
+        if ai > la and bj > lb:
+            result.append((ai, bj))
+            la, lb = ai, bj
+    return result
+
+
+def _add_positional_splits(
+    checkpoints: List[Tuple[int, int]],
+    n_a: int,
+    n_b: int,
+) -> List[Tuple[int, int]]:
+    """Insert proportional midpoint checkpoints so every window ≤ _MAX_SM_WINDOW.
+
+    Positional splits are approximate (no content anchor) but keep the
+    per-window SM bounded so we never time out on unstructured documents.
+    """
+    boundaries = [(0, 0)] + checkpoints + [(n_a, n_b)]
+    extra: List[Tuple[int, int]] = []
+
+    for k in range(len(boundaries) - 1):
+        a0, b0 = boundaries[k]
+        a1, b1 = boundaries[k + 1]
+        wa = a1 - a0
+        wb = b1 - b0
+        if wa <= _MAX_SM_WINDOW and wb <= _MAX_SM_WINDOW:
+            continue
+        n_splits = max(wa, wb) // _MAX_SM_WINDOW
+        for m in range(1, n_splits + 1):
+            frac = m / (n_splits + 1)
+            ai = a0 + int(wa * frac)
+            bj = b0 + int(wb * frac)
+            if a0 < ai < a1 and b0 < bj < b1:
+                extra.append((ai, bj))
+
+    if not extra:
+        return checkpoints
+
+    all_cps = sorted(set(checkpoints + extra))
+    result: List[Tuple[int, int]] = []
+    la, lb = -1, -1
+    for ai, bj in all_cps:
+        if ai > la and bj > lb:
+            result.append((ai, bj))
+            la, lb = ai, bj
+    return result
+
+
+def _run_sm_window(
+    a_slice: List[int],
+    b_slice: List[int],
+    off_a: int,
+    off_b: int,
+) -> List[Tuple[str, int, int, int, int]]:
+    """Run SequenceMatcher on one window and offset the returned opcodes."""
+    sm = difflib.SequenceMatcher(None, a_slice, b_slice, autojunk=False)
+    return [
+        (op, off_a + i1, off_a + i2, off_b + j1, off_b + j2)
+        for op, i1, i2, j1, j2 in sm.get_opcodes()
+    ]
+
+
 def _windowed_opcodes(seq_a_h: List[int], seq_b_h: List[int], seq_a: List[str], seq_b: List[str]):
     """Build SequenceMatcher opcodes in guide-anchored windows.
 
     For long documents, one noisy region can shift global alignment and make
     later pages inaccurate. We anchor windows at matched GUIDE tokens and run
     SequenceMatcher per window so drift does not propagate.
+
+    PERFORMANCE: when any window exceeds _MAX_SM_WINDOW blocks, ANCH:: token
+    matches are used as additional checkpoints.  If the document has no useful
+    anchor tokens at all, positional midpoint splits cap the window size so
+    that no single SM call is O(n²).
     """
+    n_a = len(seq_a_h)
+    n_b = len(seq_b_h)
+
     def _is_guide_token(s: str) -> bool:
         return s.startswith("GUIDE::")
 
     guides_a = [(i, s) for i, s in enumerate(seq_a) if _is_guide_token(s)]
     guides_b = [(j, s) for j, s in enumerate(seq_b) if _is_guide_token(s)]
-    if not guides_a or not guides_b:
-        sm = difflib.SequenceMatcher(None, seq_a_h, seq_b_h, autojunk=False)
-        return sm.get_opcodes()
-
-    ga_tokens = [s for _, s in guides_a]
-    gb_tokens = [s for _, s in guides_b]
-    smg = difflib.SequenceMatcher(None, ga_tokens, gb_tokens, autojunk=False)
 
     checkpoints: List[Tuple[int, int]] = []
-    for op, i1, i2, j1, j2 in smg.get_opcodes():
-        if op != "equal":
-            continue
-        for k in range(i2 - i1):
-            ai = guides_a[i1 + k][0]
-            bj = guides_b[j1 + k][0]
-            checkpoints.append((ai, bj))
+
+    if guides_a and guides_b:
+        ga_tokens = [s for _, s in guides_a]
+        gb_tokens = [s for _, s in guides_b]
+        smg = difflib.SequenceMatcher(None, ga_tokens, gb_tokens, autojunk=False)
+        for op, i1, i2, j1, j2 in smg.get_opcodes():
+            if op != "equal":
+                continue
+            for k in range(i2 - i1):
+                ai = guides_a[i1 + k][0]
+                bj = guides_b[j1 + k][0]
+                checkpoints.append((ai, bj))
+
+    # Augment with ANCH:: matches whenever any window is still large, or when
+    # there were no guide checkpoints at all on a large document.
+    if n_a > _MAX_SM_WINDOW or n_b > _MAX_SM_WINDOW:
+        max_window_a = max(
+            (b[0] - a[0] for a, b in zip(
+                [(0, 0)] + checkpoints,
+                checkpoints + [(n_a, n_b)],
+            )),
+            default=n_a,
+        )
+        max_window_b = max(
+            (b[1] - a[1] for a, b in zip(
+                [(0, 0)] + checkpoints,
+                checkpoints + [(n_a, n_b)],
+            )),
+            default=n_b,
+        )
+        if max_window_a > _MAX_SM_WINDOW or max_window_b > _MAX_SM_WINDOW:
+            checkpoints = _find_anch_checkpoints(seq_a, seq_b, checkpoints)
+            checkpoints = _add_positional_splits(checkpoints, n_a, n_b)
 
     if not checkpoints:
-        sm = difflib.SequenceMatcher(None, seq_a_h, seq_b_h, autojunk=False)
-        return sm.get_opcodes()
+        # Small document or no anchors — single SM pass is fine
+        return _run_sm_window(seq_a_h, seq_b_h, 0, 0)
 
     opcodes: List[Tuple[str, int, int, int, int]] = []
     start_a = 0
@@ -3541,21 +3708,22 @@ def _windowed_opcodes(seq_a_h: List[int], seq_b_h: List[int], seq_a: List[str], 
     for end_a, end_b in checkpoints:
         if end_a < start_a or end_b < start_b:
             continue
-        sm = difflib.SequenceMatcher(
-            None,
+        opcodes.extend(_run_sm_window(
             seq_a_h[start_a:end_a + 1],
             seq_b_h[start_b:end_b + 1],
-            autojunk=False,
-        )
-        for op, i1, i2, j1, j2 in sm.get_opcodes():
-            opcodes.append((op, start_a + i1, start_a + i2, start_b + j1, start_b + j2))
+            start_a,
+            start_b,
+        ))
         start_a = end_a + 1
         start_b = end_b + 1
 
-    if start_a < len(seq_a_h) or start_b < len(seq_b_h):
-        sm = difflib.SequenceMatcher(None, seq_a_h[start_a:], seq_b_h[start_b:], autojunk=False)
-        for op, i1, i2, j1, j2 in sm.get_opcodes():
-            opcodes.append((op, start_a + i1, start_a + i2, start_b + j1, start_b + j2))
+    if start_a < n_a or start_b < n_b:
+        opcodes.extend(_run_sm_window(
+            seq_a_h[start_a:],
+            seq_b_h[start_b:],
+            start_a,
+            start_b,
+        ))
 
     return opcodes
 
@@ -3906,6 +4074,41 @@ class _XmlIndex:
         return (self.probe(text_a, threshold), self.probe(text_b, threshold))
 
 
+def _chunk_text_in_xml(text: str, xml_index: "_XmlIndex", threshold: float = 0.85) -> bool:
+    """Check if the main content of *text* (which may be multi-paragraph) is
+    found in the XML index.
+
+    For short single-paragraph texts the existing probe() path is used directly.
+    For long multi-paragraph blocks (where probe() would only see the first 500
+    chars and compare against individual <p> elements) we split the text into
+    lines and check what fraction of *significant* lines can be matched.
+    If more than 55 % of significant lines are found, the block is considered
+    present in the XML → the DEL/ADD chunk is a false positive and should be
+    suppressed.
+    """
+    # Fast path: direct probe covers single-paragraph or exact matches
+    if xml_index.contains_text(text, threshold=threshold):
+        return True
+
+    normed = _norm_cmp(text).strip()
+    if len(normed) < 80:
+        return False  # already tried direct probe; nothing more to do
+
+    # Split into lines and filter to significant ones (≥ 12 chars normalised)
+    raw_lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if len(raw_lines) < 2:
+        return False
+
+    sig_lines = [l for l in raw_lines if len(_norm_cmp(l).strip()) >= 12]
+    if not sig_lines:
+        return False
+
+    # Count how many significant lines are individually present in the XML
+    found = sum(1 for l in sig_lines if xml_index.contains_text(l, threshold=0.80))
+    coverage = found / len(sig_lines)
+    return coverage >= 0.55  # >55 % coverage → content still present in XML
+
+
 def _xml_cross_validate_chunks(
     chunks: List[Chunk],
     xml_index_a: Optional[_XmlIndex],
@@ -3942,12 +4145,15 @@ def _xml_cross_validate_chunks(
 
         if ch.kind == KIND_DEL and xml_index_b:
             # "Deleted" text found in new XML → not really deleted
-            if xml_index_b.contains_text(ch.text_a, threshold=0.85):
+            # Use multi-paragraph-aware helper: large blocks are split into
+            # lines so a section that still exists in the new XML (even at a
+            # different location) is correctly suppressed.
+            if _chunk_text_in_xml(ch.text_a, xml_index_b, threshold=0.85):
                 keep = False
 
         elif ch.kind == KIND_ADD and xml_index_a:
             # "Added" text found in old XML → not really new
-            if xml_index_a.contains_text(ch.text_b, threshold=0.85):
+            if _chunk_text_in_xml(ch.text_b, xml_index_a, threshold=0.85):
                 keep = False
 
         elif ch.kind == KIND_ADD and xml_index_b and not xml_index_a:
@@ -4191,6 +4397,14 @@ def compute_diff(
                     # don't produce false EMP chunks.
                     if _supp_eq:
                         continue
+                    # Numbers genuinely differ in same-keyed blocks (e.g. year
+                    # changed from 2025 → 2026 but surrounding text is >=92%
+                    # similar). These fall through the sim<0.92 guard above
+                    # but are real content changes, so emit MOD.
+                    if not _nums_eq:
+                        chunks.append(Chunk(KIND_MOD, ri, rj,
+                                            bla.text, blb.text))
+                        continue
                 # Also catch casing-only changes hidden by _norm_cmp lowercasing.
                 elif bla.text != blb.text:
                     _raw_a = re.sub(r'\s+', '', bla.text)
@@ -4230,6 +4444,12 @@ def compute_diff(
                         chunks.append(Chunk(KIND_DEL, ri, -1, bla.text, ""))
 
         elif op == "replace":
+            import bisect as _bisect
+
+            def _prov(anchor: str) -> str:
+                m = re.match(r'^\((?:[a-z]{1,3}|\d+[a-z]?)\)', anchor or '', re.I)
+                return m.group(0) if m else ''
+
             used_b: set = set()
 
             # Pass 1: pair blocks that share the same anchor key
@@ -4254,91 +4474,83 @@ def compute_diff(
             leftovers_b = [(rj, blb) for rj, blb in br
                            if rj not in seen_b and rj not in used_b]
 
-            def _prov(a): return a if a.startswith('(') else ''
+            if leftovers_a and leftovers_b:
+                na = max(len(blocks_a), 1)
+                nb = max(len(blocks_b), 1)
 
-            # Build position-sorted index with pre-computed fractional positions
-            # for binary-search window filtering (replaces linear scan).
-            import bisect as _bisect
-            nb = max(len(blocks_b), 1)
-            na = max(len(blocks_a), 1)
-            _lb_frac = [(leftovers_b[i][0] / nb, i) for i in range(len(leftovers_b))]
-            _lb_frac.sort()
-            _lb_frac_keys = [f for f, _ in _lb_frac]
+                # Pre-sort B leftovers by normalized position for binary-search windowing.
+                _lb_frac = sorted(
+                    ((rj / nb, idx) for idx, (rj, _blb) in enumerate(leftovers_b)),
+                    key=lambda t: t[0],
+                )
+                _lb_frac_keys = [t[0] for t in _lb_frac]
 
-            # Build first-token inverted index for fast candidate lookup
-            from collections import defaultdict as _defaultdict
-            _lb_by_token: dict = _defaultdict(list)
-            for _idx_lb, (rj, blb) in enumerate(leftovers_b):
-                _words = blb.cmp.split()
-                if _words:
-                    _lb_by_token[_words[0]].append(_idx_lb)
-                    if len(_words) >= 2:
-                        _lb_by_token[(_words[0], _words[1])].append(_idx_lb)
-
-            for ri, bla in leftovers_a:
-                best_score = 0.65
-                best_j     = None
-                best_meta  = ("", 0.0)
-                prov_bla   = _prov(bla.anchor)
-                fam_a = _anchor_family(bla.anchor)
-
-                # Use position window with binary search: only blocks within 30%
-                pos_a = ri / na
-                lo_pos = pos_a - 0.30
-                hi_pos = pos_a + 0.30
-                lo_i = _bisect.bisect_left(_lb_frac_keys, lo_pos)
-                hi_i = _bisect.bisect_right(_lb_frac_keys, hi_pos)
-
-                for _sort_idx in range(lo_i, hi_i):
-                    _lb_idx = _lb_frac[_sort_idx][1]
-                    rj, blb = leftovers_b[_lb_idx]
-                    if rj in used_b:
+                for ri, bla in leftovers_a:
+                    if ri in seen_a:
                         continue
-                    # Never pair two famend lines whose text body is unrelated.
-                    if (bla.anchor.startswith("famend:") and
-                            blb.anchor.startswith("famend:") and
-                            bla.anchor != blb.anchor):
-                        quick_sim = _similarity(bla.cmp, blb.cmp)
-                        if quick_sim < 0.72:
+                    best_score = 0.70
+                    best_j = None
+                    best_meta = ("", 0.0)
+                    prov_bla = _prov(bla.anchor)
+                    fam_a = _anchor_family(bla.anchor)
+
+                    # Use position window with binary search: only blocks within 30%
+                    pos_a = ri / na
+                    lo_pos = pos_a - 0.30
+                    hi_pos = pos_a + 0.30
+                    lo_i = _bisect.bisect_left(_lb_frac_keys, lo_pos)
+                    hi_i = _bisect.bisect_right(_lb_frac_keys, hi_pos)
+
+                    for _sort_idx in range(lo_i, hi_i):
+                        _lb_idx = _lb_frac[_sort_idx][1]
+                        rj, blb = leftovers_b[_lb_idx]
+                        if rj in used_b:
                             continue
-                    # Never pair blocks whose provision anchors differ
-                    prov_blb = _prov(blb.anchor)
-                    if prov_bla and prov_blb and prov_bla != prov_blb:
-                        continue
-                    # Multi-pass pairing score
-                    f_anchor = _anchor_fuzzy_score(bla.anchor, blb.anchor)
-                    sim = _combined_similarity(bla.cmp, blb.cmp)
-                    pos = _position_score(ri, na, rj, nb)
+                        # Never pair two famend lines whose text body is unrelated.
+                        if (bla.anchor.startswith("famend:") and
+                                blb.anchor.startswith("famend:") and
+                                bla.anchor != blb.anchor):
+                            quick_sim = _similarity(bla.cmp, blb.cmp)
+                            if quick_sim < 0.72:
+                                continue
+                        # Never pair blocks whose provision anchors differ
+                        prov_blb = _prov(blb.anchor)
+                        if prov_bla and prov_blb and prov_bla != prov_blb:
+                            continue
+                        # Multi-pass pairing score
+                        f_anchor = _anchor_fuzzy_score(bla.anchor, blb.anchor)
+                        sim = _combined_similarity(bla.cmp, blb.cmp)
+                        pos = _position_score(ri, na, rj, nb)
 
-                    # Strong structural mismatch guard.
-                    fam_b = _anchor_family(blb.anchor)
-                    if (fam_a in {"part", "chapter", "schedule", "sec"}
-                            and fam_b in {"part", "chapter", "schedule", "sec"}
-                            and fam_a != fam_b):
-                        continue
+                        # Strong structural mismatch guard.
+                        fam_b = _anchor_family(blb.anchor)
+                        if (fam_a in {"part", "chapter", "schedule", "sec"}
+                                and fam_b in {"part", "chapter", "schedule", "sec"}
+                                and fam_a != fam_b):
+                            continue
 
-                    score = (sim * 0.78) + (f_anchor * 0.12) + (pos * 0.10)
-                    stage = "similarity"
-                    if f_anchor >= 0.70:
-                        stage = "fuzzy-anchor+similarity+position"
-                    elif pos >= 0.70:
-                        stage = "similarity+position"
+                        score = (sim * 0.78) + (f_anchor * 0.12) + (pos * 0.10)
+                        stage = "similarity"
+                        if f_anchor >= 0.70:
+                            stage = "fuzzy-anchor+similarity+position"
+                        elif pos >= 0.70:
+                            stage = "similarity+position"
 
-                    # Extra confidence when fuzzy anchor and similarity both agree.
-                    if f_anchor >= 0.70 and sim >= 0.80:
-                        score = min(1.0, score + 0.05)
+                        # Extra confidence when fuzzy anchor and similarity both agree.
+                        if f_anchor >= 0.70 and sim >= 0.80:
+                            score = min(1.0, score + 0.05)
 
-                    if score > best_score:
-                        best_score = score
-                        best_j     = (rj, blb)
-                        best_meta  = (stage, min(0.98, max(0.65, score)))
-                        if best_score >= 0.95:
-                            break  # confident match, stop searching
-                if best_j:
-                    used_b.add(best_j[0])
-                    paired.append((ri, bla, best_j[0], best_j[1], best_meta[0], best_meta[1]))
-                else:
-                    paired.append((ri, bla, None, None, "unmatched", 0.90))  # pure delete
+                        if score > best_score:
+                            best_score = score
+                            best_j     = (rj, blb)
+                            best_meta  = (stage, min(0.98, max(0.65, score)))
+                            if best_score >= 0.95:
+                                break  # confident match, stop searching
+                    if best_j:
+                        used_b.add(best_j[0])
+                        paired.append((ri, bla, best_j[0], best_j[1], best_meta[0], best_meta[1]))
+                    else:
+                        paired.append((ri, bla, None, None, "unmatched", 0.90))  # pure delete
 
             # Emit chunks for all paired decisions
             for item in paired:
@@ -4547,16 +4759,17 @@ def compute_diff(
     # but failed exact substring containment due to minor extraction differences
     # (different F-numbers, spacing, provision label formatting).
     # Uses inverted indexes + pre-built clean corpus for efficient lookup.
-    from collections import defaultdict as _dd_fblock
-
-    _RE_CLEAN_ALL = re.compile(r'[\[\]\(\)\s]')
-    def _clean_all(s: str) -> str:
-        return _RE_CLEAN_ALL.sub('', s)
-    def _strip_brackets(tok: str) -> str:
-        return re.sub(r'[\[\]\(\)]', '', tok)
-
     _block_norms_a = [_norm_cmp(b.text) for b in blocks_a]
     _block_norms_b = [_norm_cmp(b.text) for b in blocks_b]
+
+    def _clean_all(s: str) -> str:
+        return re.sub(r'[\[\]\(\)\s]+', '', s or '')
+
+    def _strip_brackets(tok: str) -> str:
+        return re.sub(r'^[\[\(]+|[\]\)]+$', '', tok or '')
+
+    from collections import defaultdict as _dd_fblock
+
     _block_co_a = [_norm_cmp(_content_only(b.text)) for b in blocks_a]
     _block_co_b = [_norm_cmp(_content_only(b.text)) for b in blocks_b]
 
@@ -4645,7 +4858,7 @@ def compute_diff(
             sim = _similarity(nt, cand_n)
             if sim >= 0.82 and _numbers_match(nt, cand_n):
                 return True
-            if sim >= 0.88 and _word_overlap_ratio(nt, cand_n) >= 0.82:
+            if sim >= 0.88 and _word_overlap_ratio(nt, cand_n) >= 0.82 and _numbers_match(nt, cand_n):
                 return True
             if ct and cand_c:
                 csim = _similarity(ct, cand_c)
@@ -5641,7 +5854,7 @@ def _is_high_confidence_numeric_mod(na: str, nb: str, sim: float, overlap: float
     if len(wa) >= 2 and len(wb) >= 2:
         same_prefix = wa[0] == wb[0] and wa[1] == wb[1]
         if same_prefix and sim >= 0.90:
-            return True
+                return True
 
     # Compare the textual scaffold with numbers removed.
     # This catches cases like "Sabotage176" -> "Sabotage175" where overlap
@@ -5671,16 +5884,10 @@ def _is_reflow_only(a: str, b: str) -> bool:
     # CJK/OCR fallback: near-identical char stream with matching numbers.
     if _char_similarity(na, nb) >= 0.97 and _numbers_match(na, nb):
         return True
-    # For longer blocks: allow 1-word difference only if numbers are identical
-    # (a real legal change always changes a number: year, section, schedule ref).
-    # Threshold lowered from >8 to >5 so short provisions (e.g. a single
-    # bracketed sub-item with 6-8 words) are also caught.
-    total = max(len(wa), len(wb))
-    if total > 5 and abs(len(wa) - len(wb)) <= 1:
-        common = sum(1 for w in wa if w in set(wb))
-        threshold = 0.97 if total > 15 else 0.94   # looser for short provisions
-        if common / max(total, 1) >= threshold and _numbers_match(na, nb):
-            return True
+    # 1-word tolerance removed: "employee" → "employer" is exactly 1 word
+    # different in a 5+ word block and would be silently suppressed here.
+    # The only safe suppression path is exact sorted-bag equality (above) or
+    # the >=0.97 char-similarity path (also above).
     return False
 
 
@@ -5778,6 +5985,32 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     if (_raw_a.lower() == _raw_b.lower()
             and len(text_a.split()) != len(text_b.split())):
         return True
+
+    # Early lexical-change guard: preserve real aligned substitutions before
+    # broader suppression rules run (e.g. "payroll giving" -> "payroll receiving",
+    # or marker edits like "(2)(c)" -> "(2)(d)").
+    wa0, wb0 = na.split(), nb.split()
+    if len(wa0) == len(wb0) and len(wa0) >= 4:
+        diffs0 = [(xa, xb) for xa, xb in zip(wa0, wb0) if xa != xb]
+        if 0 < len(diffs0) <= 2:
+            def _core_tok(tok: str) -> str:
+                return re.sub(r'^[^a-z0-9\(\)]+|[^a-z0-9\(\)]+$', '', tok.lower())
+
+            def _is_marker_tok(tok: str) -> bool:
+                t = _core_tok(tok)
+                return bool(re.fullmatch(r'\(\d+[a-z]?\)\([a-z]{1,3}\)', t, re.I) or
+                            re.fullmatch(r'\([a-z]{1,3}\)', t, re.I) or
+                            re.fullmatch(r'\(\d+[a-z]?\)', t, re.I))
+
+            def _is_word_tok(tok: str) -> bool:
+                t = re.sub(r'[^a-z0-9]', '', _core_tok(tok))
+                return len(t) >= 4 and bool(re.search(r'[a-z]', t))
+
+            if any((_is_word_tok(xa) and _is_word_tok(xb)) or
+                   (_is_marker_tok(xa) and _is_marker_tok(xb))
+                   for xa, xb in diffs0):
+                return False
+
     # Near-match after space collapse: catches spacing artefacts combined with
     # minor extraction corruption (stray character, missing accent, etc.).
     if len(_raw_a) >= 8 and len(_raw_b) >= 8:
@@ -5821,9 +6054,11 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     if ca and cb and ca == cb:
         return True
     # Also suppress when content-only texts are near-identical (high similarity
-    # + same numbers), catching cases where bracket stripping leaves minor
-    # whitespace/punctuation differences.
-    if ca and cb and _similarity(ca, cb) >= 0.92 and _numbers_match(ca, cb):
+    # + high content overlap + same numbers), catching cases where bracket
+    # stripping leaves minor whitespace/punctuation differences.
+    if (ca and cb and _similarity(ca, cb) >= 0.92 and
+            _word_overlap_ratio(ca, cb) >= 0.95 and
+            _numbers_match(ca, cb)):
         return True
 
     # 1d. Marker-stripped equivalence: if only outline marker extraction differs
@@ -5834,7 +6069,11 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
             return True
         if _is_punctuation_only_diff(pa, pb):
             return True
-        if _similarity(pa, pb) >= 0.97 and _numbers_match(pa, pb):
+        # Require very high content overlap as well; similarity alone can hide
+        # genuine one-word substitutions with the same numbers.
+        if (_similarity(pa, pb) >= 0.97 and
+                _word_overlap_ratio(pa, pb) >= 0.95 and
+                _numbers_match(pa, pb)):
             return True
 
     # 1e. Citation-extraction spacing: PDF hyperlinks are often extracted with
@@ -5917,7 +6156,11 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     sim = _combined_similarity(na, nb)
 
     # High character-level equivalence (common in Korean/CJK reflow extraction).
-    if _char_similarity(na, nb) >= 0.985 and _numbers_match(na, nb):
+    # Require strong content-word overlap too so single-word substitutions are
+    # not suppressed as layout noise.
+    if (_char_similarity(na, nb) >= 0.985 and
+            _word_overlap_ratio(na, nb) >= 0.97 and
+            _numbers_match(na, nb)):
         return True
 
     # Pre-compute number sets once — used in several rules below.
@@ -5925,6 +6168,34 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     nums_a = set(re.findall(r'\b\d+(?:-\d+)?[a-z]?\b', na))
     nums_b = set(re.findall(r'\b\d+(?:-\d+)?[a-z]?\b', nb))
     same_nums = (nums_a == nums_b)   # symmetric equality
+
+    # 4d. Preserve real lexical substitutions: when both sides have the same
+    # token count and only a small number of aligned substantive words differ,
+    # this is likely an editorial change (e.g. "giving" -> "receiving")
+    # rather than extraction/reflow noise.
+    ta = na.split()
+    tb = nb.split()
+    if len(ta) == len(tb) and len(ta) >= 6:
+        diffs = [(xa, xb) for xa, xb in zip(ta, tb) if xa != xb]
+        if 0 < len(diffs) <= 2:
+            _STOP_LEX = frozenset({
+                'a', 'an', 'the', 'of', 'to', 'in', 'and', 'or',
+                'is', 'by', 'be', 'it', 'at', 'as', 'on', 'for',
+                'with', 'not', 'are', 'was', 'has', 'its', 'that'
+            })
+
+            def _substantive(tok: str) -> bool:
+                t = re.sub(r'^[^a-z0-9]+|[^a-z0-9]+$', '', tok.lower())
+                if len(t) < 4 or t in _STOP_LEX:
+                    return False
+                if re.fullmatch(r'\d+[a-z]?', t):
+                    return False
+                if re.fullmatch(r'[a-z]{1,3}', t):
+                    return False
+                return True
+
+            if any(_substantive(xa) and _substantive(xb) for xa, xb in diffs):
+                return False
 
     # 4b. Prefix/suffix truncation reflow: one side is a strict prefix/suffix
     # of the other with the same opening anchor and same numbers.
@@ -5984,21 +6255,17 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
         if prov_a and prov_b and prov_a.group() == prov_b.group():
             return True
 
-    # 6c. Same sorted letter-word bag (numbers stripped) with symmetric number equality.
-    #     Catches C2/C3/F-annotation and heading blocks whose page-width reflow
-    #     changed how many words land in each extracted block.
-    #     IMPORTANT: only suppress when word sets are EXACTLY equal.
-    #     1-word tolerance requires >=12 words AND >=0.96 sim to avoid
-    #     suppressing real single-word substitutions.
+    # 6c. Same sorted word bag (preserving provision letters like "(a)", "(b)")
+    #     with symmetric number equality.  Catches C2/C3/F-annotation and heading
+    #     blocks whose page-width reflow changed how many words land in each block.
+    #     CRITICAL: do NOT strip provision-letter tokens before sorting — "(a)"→"(b)"
+    #     is a real cross-reference change and must never be treated as reflow.
+    #     Only EXACT bag equality triggers suppression; the 1-word tolerance is
+    #     removed because a single-word substitution IS a real legal change.
     if same_nums:
-        wa_s = sorted(re.sub(r'[^a-z ]', ' ', na).split())
-        wb_s = sorted(re.sub(r'[^a-z ]', ' ', nb).split())
+        wa_s = sorted(na.split())
+        wb_s = sorted(nb.split())
         if wa_s == wb_s:
-            return True
-        n_max = max(len(wa_s), len(wb_s))
-        if (n_max >= 12 and abs(len(wa_s) - len(wb_s)) <= 1 and
-                sim >= 0.96 and
-                sum(1 for w in wa_s if w in set(wb_s)) / n_max >= 0.97):
             return True
 
     # 6d. C/F annotation blocks: high similarity + same numbers = reflow.
@@ -6014,10 +6281,13 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
     #     annotation index change, not an editorial change.
     _fn_strip = lambda s: re.sub(r'^\[?[a-z]\d+[a-z]?\]?\s*', '', s.strip(), flags=re.I)
     fa, fb = _fn_strip(na), _fn_strip(nb)
-    if fa and fb and len(fa) > 10 and len(fb) > 10:
-        fa_sim = _similarity(fa, fb)
-        if fa_sim >= 0.90 and _numbers_match(fa, fb):
-            return True
+    # Apply only to true amendment-entry lines with leading F/C-style markers.
+    if (re.match(r'^\[?[a-z]\d+[a-z]?\]?\b', na, re.I) or
+            re.match(r'^\[?[a-z]\d+[a-z]?\]?\b', nb, re.I)):
+        if fa and fb and len(fa) > 10 and len(fb) > 10:
+            fa_sim = _similarity(fa, fb)
+            if fa_sim >= 0.90 and _numbers_match(fa, fb):
+                return True
 
     # 7. Breadcrumb navigation labels
     if _is_breadcrumb(text_a) or _is_breadcrumb(text_b):
@@ -6205,7 +6475,12 @@ def _span_font(span: Span) -> tuple:
 
 # Pattern for trivial outline-marker words that don't warrant MOD highlighting
 _TRIVIAL_WORD_PAT = re.compile(
-    r'^[\W]*(?:[a-z]{1,3}|\d{1,4}|[ivxlcdm]{1,6})[\W]*$', re.I)
+    r'^[\W]*(?:[a-z]{1,3}|\d{1,2}|[ivxlcdm]{1,6})[\W]*$', re.I)
+
+# Maximum words per side before word-level diff is skipped in precompute.
+# SequenceMatcher is O(n²) on word lists; blocks longer than this use a
+# whole-block replace instead to keep precompute fast.
+_WORD_DIFF_MAX: int = int(os.environ.get("COMPARE_WORD_DIFF_MAX", "200"))
 
 
 def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: Optional[List[Block]] = None) -> dict:
@@ -6278,9 +6553,17 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             offsets[ci] = char_pos[0]
 
         # Pre-compute word-level diff for MOD blocks (across entire block text)
+        # Guard: skip word diff for very long texts — SequenceMatcher is O(n²)
+        # on word lists, and provisions > _WORD_DIFF_MAX words take disproportionate time.
         mod_word_ops = None
         if ch is not None and ch.kind == KIND_MOD:
-            raw_ops = _word_ops(ch.text_a, ch.text_b)
+            _wa_len = len(ch.text_a.split())
+            _wb_len = len(ch.text_b.split())
+            if _wa_len > _WORD_DIFF_MAX or _wb_len > _WORD_DIFF_MAX:
+                # Block is too long for word-level diff — treat as whole-block MOD
+                raw_ops = [("replace", ch.text_a.split(), ch.text_b.split())]
+            else:
+                raw_ops = _word_ops(ch.text_a, ch.text_b)
             # Suppress MOD highlight entirely if all changed words are trivial
             # (outline numbering tokens or single-char punctuation).
             changed_words_a = []
@@ -6294,7 +6577,7 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                 (not changed_words_a and not changed_words_b) or
                 (all(_TRIVIAL_WORD_PAT.match(w) for w in changed_words_a) and
                  all(_TRIVIAL_WORD_PAT.match(w) for w in changed_words_b) and
-                 all(len(re.sub(r'[^\w]', '', w)) <= 3
+                 all(len(re.sub(r'[^\w]', '', w)) <= 2
                      for w in changed_words_a + changed_words_b))
             )
             mod_word_ops = None if all_trivial else raw_ops

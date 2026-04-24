@@ -71,6 +71,23 @@ export const FEATURE_LABELS: Record<string, string> = {
   "user-management": "User Management",
 };
 
+// ─── ROUTE FEATURE GATES ───────────────────────────────────
+// Maps dashboard routes to the feature(s) required to access them.
+// `exact: true` means pathname must match exactly (not startsWith).
+// Add a new entry here whenever a new feature-gated route is created —
+// no changes needed in layout.tsx.
+export const ROUTE_FEATURE_GATES: Array<{
+  path: string;
+  exact?: boolean;
+  features: string | string[];
+}> = [
+  { path: "/dashboard",         exact: true, features: "dashboard" },
+  { path: "/dashboard/users",                features: "user-management" },
+  { path: "/dashboard/history",              features: "user-logs" },
+  { path: "/dashboard/brd",                  features: ["brd-process", "brd-view-generate"] },
+  { path: "/dashboard/compare",              features: ["compare-basic", "compare-merge", "compare-pdf-xml-only"] },
+];
+
 // ─── DYNAMIC ROLE DISPLAY ─────────────────────────────────
 // Returns the display label for a user, preferring custom role name
 export const getUserRoleLabel = (user: Partial<User>): string => {

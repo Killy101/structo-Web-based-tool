@@ -1,363 +1,303 @@
-"""
-word_compare.py — Word-level document comparison service.
-
-Pipeline
-────────
-1. Extract words from OLD text and NEW text (tokenise + normalise)
-2. If word counts are identical and normalised word sets match → NO CHANGES
-3. If word counts differ or sets differ → run word-level SequenceMatcher
-4. Classify each differing word as addition / removal / modification
-5. Return structured result with per-word changes and summary counts
-
-This is used as the ground-truth comparison layer during /start-chunking.
-It is fast (pure Python, no PDF I/O) and operates on pre-extracted text.
-"""
-
 from __future__ import annotations
 
 import re
-import difflib
 import unicodedata
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Normalisation ──────────────────────────────────────────────────────────────
+# ── Myers diff ────────────────────────────────────────────────────────────────
+try:
+    from diff_match_patch import diff_match_patch as _DMP
+    _dmp = _DMP()
+    _dmp.Diff_Timeout = 0
+    _dmp.Diff_EditCost = 6
+    _HAS_DMP = True
+except ImportError:
+    _HAS_DMP = False
 
+# ── Rapidfuzz ─────────────────────────────────────────────────────────────────
+try:
+    from rapidfuzz.distance import Levenshtein as _Lev
+    def _char_ratio(a: str, b: str) -> float:
+        m = max(len(a), len(b))
+        return 1.0 if m == 0 else 1.0 - (_Lev.distance(a, b) / m)
+except ImportError:
+    import difflib
+    def _char_ratio(a: str, b: str) -> float:
+        return difflib.SequenceMatcher(None, a, b).ratio()
+
+# ── Regex ─────────────────────────────────────────────────────────────────────
 _LIGATURE = str.maketrans({
     "\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl",
     "\ufb03": "ffi", "\ufb04": "ffl",
-    "\u00ad": "",    # soft hyphen
-    "\u00a0": " ",   # NBSP
+    "\u00ad": "", "\u00a0": " ",
     "\u2019": "'", "\u2018": "'",
-    "\u201c": '"',  "\u201d": '"',
-    "\u2013": "-",  "\u2014": "-",  "\u2012": "-",
-    "\u2015": "-",  "\u2212": "-",
+    "\u201c": '"', "\u201d": '"',
+    "\u2013": "-", "\u2014": "-",
     "\u2026": "...",
-    "\u2022": "",   # bullet → remove
-    "\u00b7": "",
 })
 
+_RE_HYPHEN_BREAK = re.compile(r"-\s*\n\s*")
+_RE_WHITESPACE = re.compile(r"\s+")
+_RE_SPLIT_WORDS = re.compile(r"\s+")
+_RE_STRIP_PUNCT = re.compile(r"^[^\w]+|[^\w]+$")
+_SENT_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+# ── Normalisation ─────────────────────────────────────────────────────────────
+def _pre_normalise_layout(text: str) -> str:
+    text = re.sub(r'(?<!\.)\n(?!\n)', ' ', text)
+    text = re.sub(r'\n+', '\n', text)
+    return text
+
 def _normalise(text: str) -> str:
-    """NFKC + ligature fix + collapse whitespace + lowercase."""
+    text = _pre_normalise_layout(text)
     text = unicodedata.normalize("NFKC", text).translate(_LIGATURE)
-    # Remove soft-hyphen line-break artifacts
-    text = re.sub(r"-\s*\n\s*", "", text)
-    return " ".join(text.split()).lower()
+    text = _RE_HYPHEN_BREAK.sub("", text)
+    text = _RE_WHITESPACE.sub(" ", text).strip()
+    return text
 
-
-def _tokenise(text: str) -> list[str]:
-    """
-    Split normalised text into a list of word tokens.
-
-    Rules:
-    - Keep hyphenated words whole ("re-enact" → one token)
-    - Drop pure punctuation-only tokens
-    - Drop numeric-only tokens that look like page/footnote numbers (≤4 digits)
-    - Keep section numbers like "2.1" or "12A"
-    """
+def _tokenise(text: str):
     norm = _normalise(text)
-    raw = re.split(r"\s+", norm)
-    tokens: list[str] = []
+    raw = _RE_SPLIT_WORDS.split(norm)
+
+    tokens = []
     for tok in raw:
-        # Strip surrounding punctuation (but keep internal hyphens)
-        cleaned = tok.strip(".,;:!?\"'()[]{}|\\/<>")
+        cleaned = _RE_STRIP_PUNCT.sub("", tok)
         if not cleaned:
             continue
-        # Drop bare page/footnote numbers (1–4 digit standalone numbers)
-        if re.fullmatch(r"\d{1,4}", cleaned):
+        if not any(c.isalnum() for c in cleaned):
             continue
-        # Drop tokens that are purely non-alphanumeric
-        if not re.search(r"[a-z0-9]", cleaned):
-            continue
-        tokens.append(cleaned)
+
+        tokens.append((cleaned, cleaned.lower()))
+
     return tokens
 
+# ── Myers diff ────────────────────────────────────────────────────────────────
+def _myers_word_diff(old_tokens, new_tokens):
+    if not _HAS_DMP:
+        import difflib
+        matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens)
+        result = []
+        for op, i1, i2, j1, j2 in matcher.get_opcodes():
+            if op == "equal":
+                result.append((0, old_tokens[i1:i2]))
+            elif op == "delete":
+                result.append((-1, old_tokens[i1:i2]))
+            elif op == "insert":
+                result.append((1, new_tokens[j1:j2]))
+            else:
+                result.append((-1, old_tokens[i1:i2]))
+                result.append((1, new_tokens[j1:j2]))
+        return result
 
-# ── Main comparison ────────────────────────────────────────────────────────────
+    token_map = {}
+    reverse = [""]
 
-def compare_words(
-    old_text: str,
-    new_text: str,
-    min_word_len: int = 2,
-) -> dict:
-    """
-    Compare two text strings at the word level.
+    def encode(tokens):
+        out = []
+        for t in tokens:
+            key = t[1]
+            if key not in token_map:
+                c = chr(0xE000 + len(reverse))
+                token_map[key] = c
+                reverse.append(key)
+            out.append(token_map[key])
+        return "".join(out)
 
-    Returns
-    -------
-    {
-        "has_changes":   bool,
-        "old_word_count": int,
-        "new_word_count": int,
-        "common_words":   int,    # words present in both (by value)
-        "additions":      list[str],   # words only in new
-        "removals":       list[str],   # words only in old
-        "modifications":  list[dict],  # {"old": str, "new": str, "ratio": float}
-        "summary": {
-            "addition":     int,
-            "removal":      int,
-            "modification": int,
-        },
-        "change_ratio":  float,   # 0.0 = identical, 1.0 = completely different
-    }
-    """
+    old_enc = encode(old_tokens)
+    new_enc = encode(new_tokens)
+
+    diffs = _dmp.diff_main(old_enc, new_enc, False)
+    _dmp.diff_cleanupSemantic(diffs)
+
+    result = []
+    for op, chars in diffs:
+        toks = [reverse[ord(c) - 0xE000] for c in chars if ord(c) >= 0xE000]
+        result.append((op, toks))
+    return result
+
+# ── Smart pairing ─────────────────────────────────────────────────────────────
+def _pair_tokens(del_list, ins_list, additions, removals, modifications):
+    used = set()
+
+    for ow in del_list:
+        best_idx = -1
+        best_ratio = 0
+
+        for i, nw in enumerate(ins_list):
+            if i in used:
+                continue
+            r = _char_ratio(ow, nw)
+            if r > best_ratio:
+                best_ratio = r
+                best_idx = i
+
+        if best_ratio >= 0.75:
+            nw = ins_list[best_idx]
+
+            typ = "emphasis" if ow.lower() == nw.lower() and ow != nw else "modification"
+
+            modifications.append({
+                "old": ow,
+                "new": nw,
+                "ratio": round(best_ratio, 3),
+                "type": typ
+            })
+            used.add(best_idx)
+        else:
+            removals.append(ow)
+
+    for i, nw in enumerate(ins_list):
+        if i not in used:
+            additions.append(nw)
+
+# ── Word compare ──────────────────────────────────────────────────────────────
+def compare_words(old_text: str, new_text: str):
     old_tokens = _tokenise(old_text)
     new_tokens = _tokenise(new_text)
 
-    old_count = len(old_tokens)
-    new_count = len(new_tokens)
+    diffs = _myers_word_diff(old_tokens, new_tokens)
 
-    # ── Trivial case: both empty ───────────────────────────────────────────────
-    if old_count == 0 and new_count == 0:
-        return _no_changes(0, 0)
+    additions, removals, modifications = [], [], []
+    equal = 0
 
-    # ── Sequence diff ─────────────────────────────────────────────────────────
-    # NOTE: We deliberately do NOT use a bag-of-words fast path here.
-    # "Same words, same counts" does NOT mean "no changes" — words can be
-    # reordered, sentences restructured, or cross-references renumbered.
-    # The sequence diff catches all of these correctly.
-    matcher = difflib.SequenceMatcher(
-        lambda w: len(w) < min_word_len,
-        old_tokens,
-        new_tokens,
-        autojunk=False,
-    )
+    pending_del, pending_ins = [], []
 
-    additions:     list[str]  = []
-    removals:      list[str]  = []
-    modifications: list[dict] = []
-    equal_count = 0
+    def flush():
+        if pending_del or pending_ins:
+            _pair_tokens(pending_del, pending_ins, additions, removals, modifications)
+            pending_del.clear()
+            pending_ins.clear()
 
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == "equal":
-            equal_count += (i2 - i1)
+    for op, toks in diffs:
+        if op == 0:
+            flush()
+            equal += len(toks)
+        elif op == -1:
+            pending_del.extend(toks)
+        else:
+            pending_ins.extend(toks)
 
-        elif op == "insert":
-            additions.extend(new_tokens[j1:j2])
+    flush()
 
-        elif op == "delete":
-            removals.extend(old_tokens[i1:i2])
-
-        elif op == "replace":
-            old_block = old_tokens[i1:i2]
-            new_block = new_tokens[j1:j2]
-            paired = min(len(old_block), len(new_block))
-
-            for k in range(paired):
-                ow, nw = old_block[k], new_block[k]
-                ratio = difflib.SequenceMatcher(None, ow, nw).ratio()
-                if ratio >= 0.70:
-                    # Similar enough → modification (raised from 0.6)
-                    modifications.append({"old": ow, "new": nw, "ratio": round(ratio, 3)})
-                else:
-                    # Too different → treat as separate add + remove
-                    removals.append(ow)
-                    additions.append(nw)
-
-            # Leftover unpaired words
-            removals.extend(old_block[paired:])
-            additions.extend(new_block[paired:])
-
-    total_words = max(old_count, new_count) or 1
-    changed_words = len(additions) + len(removals) + len(modifications)
-    change_ratio = round(changed_words / total_words, 4)
-
-    has_changes = (len(additions) + len(removals) + len(modifications)) > 0
+    total = max(len(old_tokens), len(new_tokens), 1)
+    changed = len(additions) + len(removals) + len(modifications)
 
     return {
-        "has_changes":    has_changes,
-        "old_word_count": old_count,
-        "new_word_count": new_count,
-        "common_words":   equal_count,
-        "additions":      additions,
-        "removals":       removals,
-        "modifications":  modifications,
+        "has_changes": changed > 0,
+        "old_word_count": len(old_tokens),
+        "new_word_count": len(new_tokens),
+        "common_words": equal,
+        "additions": additions,
+        "removals": removals,
+        "modifications": modifications,
         "summary": {
-            "addition":     len(additions),
-            "removal":      len(removals),
+            "addition": len(additions),
+            "removal": len(removals),
             "modification": len(modifications),
         },
-        "change_ratio": change_ratio,
+        "change_ratio": round(changed / total, 4),
     }
 
-
-def _bag(tokens: list[str]) -> dict[str, int]:
-    """Count occurrences of each token."""
-    bag: dict[str, int] = {}
-    for t in tokens:
-        bag[t] = bag.get(t, 0) + 1
-    return bag
-
-
-def _no_changes(old_count: int, new_count: int) -> dict:
-    return {
-        "has_changes":    False,
-        "old_word_count": old_count,
-        "new_word_count": new_count,
-        "common_words":   old_count,
-        "additions":      [],
-        "removals":       [],
-        "modifications":  [],
-        "summary":        {"addition": 0, "removal": 0, "modification": 0},
-        "change_ratio":   0.0,
-    }
-
-
-# ── Chunk-level helper ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# ✅ ADD THIS FUNCTION HERE (IMPORTANT FIX)
+# ─────────────────────────────────────────────────────────────
 
 def chunk_has_real_changes(
     old_text: str,
     new_text: str,
-    change_ratio_threshold: float = 0.006,
+    change_ratio_threshold: float = 0.01,
     min_changed_words: int = 1,
-) -> tuple[bool, dict]:
+):
     """
-    Word-level noise filter — used AFTER span detection, not before.
-
-    Returns (has_meaningful_word_changes, word_diff_result).
-
-    Conservative noise suppression:
-      • Suppress ONLY when change_ratio < 0.6% AND fewer than 1 word changed.
-      • Suppress purely cosmetic modifications (ratio ≥ 0.95, e.g. hyphen vs
-        en-dash, non-breaking space) with zero additions/removals.
-
-    Lowered thresholds vs previous version so single real word substitutions
-    (e.g. "offices" → "employers") are never silently dropped.  The authority
-    for noise suppression at the line level belongs to the /detect-chunk diff
-    which uses char-ratio guards.
+    Returns:
+        (bool, dict)
     """
     result = compare_words(old_text, new_text)
 
-    changed_word_count = (
+    changed_words = (
         result["summary"]["addition"]
         + result["summary"]["removal"]
         + result["summary"]["modification"]
     )
 
-    # Extra guard: ONLY cosmetic modifications (very high char-similarity) →
-    # treat as noise (e.g. hyphen vs en-dash, NBSP vs space, smart quotes).
-    # Raise ratio threshold from 0.92 → 0.95 so near-identical words like
-    # "organisation" vs "organization" are still flagged as real changes.
-    only_cosmetic_mods = (
-        changed_word_count > 0
-        and result["summary"]["addition"] == 0
-        and result["summary"]["removal"] == 0
-        and all(m["ratio"] >= 0.95 for m in result["modifications"])
-    )
-    if only_cosmetic_mods:
-        return False, result
-
     meaningful = (
-        result["has_changes"]
-        and (changed_word_count >= min_changed_words
-             or result["change_ratio"] >= change_ratio_threshold)
+        result.get("change_ratio", 0) > change_ratio_threshold
+        or changed_words >= min_changed_words
     )
 
     return meaningful, result
 
-# ── Inline diff builder ────────────────────────────────────────────────────────
+# ── Sentence alignment ────────────────────────────────────────────────────────
+def _split_sentences(text: str):
+    text = _normalise(text)
+    return [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
 
-def build_inline_diff(old_text: str, new_text: str) -> list[dict]:
-    """
-    Build a token-level inline diff between old_text and new_text.
+def align_sentences(old_text: str, new_text: str):
+    old_s = _split_sentences(old_text)
+    new_s = _split_sentences(new_text)
 
-    Returns a list of { "op": "eq"|"del"|"ins", "text": str } dicts
-    in display order, using the ORIGINAL (un-normalised) token text so
-    the frontend can render them verbatim.
+    aligned = []
+    used = set()
 
-    Matching uses normalised tokens (ligature-fixed, lowercased, punct-
-    stripped) so:
-      - "offices,"  == "offices"  → rendered as equal (comma is noise)
-      - "organisation" != "Organization" → del+ins  (genuinely different)
-      - smart-quote vs straight-quote → equal (ligature normalisation)
-
-    Whitespace gaps between tokens are emitted as op="eq" so spacing is
-    preserved faithfully in the rendered output.
-    """
-    # ── tokenise preserving original surface form ────────────────────────
-    def _split_with_gaps(text: str):
-        """
-        Split text into alternating (non-ws, ws) segments.
-        Returns list of (original_str, is_whitespace).
-        """
-        parts = re.split(r'(\s+)', text)
-        result = []
-        for p in parts:
-            if not p:
+    for o in old_s:
+        best_i, best_r = -1, 0
+        for i, n in enumerate(new_s):
+            if i in used:
                 continue
-            result.append((p, bool(re.fullmatch(r'\s+', p))))
-        return result
+            r = _char_ratio(o, n)
+            if r > best_r:
+                best_i, best_r = i, r
 
-    old_parts = _split_with_gaps(old_text)
-    new_parts = _split_with_gaps(new_text)
+        if best_r >= 0.6:
+            aligned.append((o, new_s[best_i], best_r))
+            used.add(best_i)
+        else:
+            aligned.append((o, "", 0))
 
-    # Extract only the word tokens (not whitespace) for diffing
-    old_words = [(orig, _normalise_token(orig)) for orig, ws in old_parts if not ws]
-    new_words = [(orig, _normalise_token(orig)) for orig, ws in new_parts if not ws]
+    for i, n in enumerate(new_s):
+        if i not in used:
+            aligned.append(("", n, 0))
 
-    # LCS on normalised tokens
-    old_norms = [n for _, n in old_words]
-    new_norms = [n for _, n in new_words]
+    return aligned
 
-    matcher = difflib.SequenceMatcher(None, old_norms, new_norms, autojunk=False)
+# ── Git-style inline diff ─────────────────────────────────────────────────────
+def build_git_inline_diff(old_text: str, new_text: str):
+    old_tokens = [t[0] for t in _tokenise(old_text)]
+    new_tokens = [t[0] for t in _tokenise(new_text)]
 
-    # Build aligned ops list: (op, old_orig|None, new_orig|None)
-    word_ops: list[tuple[str, str | None, str | None]] = []
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == "equal":
-            for k in range(i2 - i1):
-                word_ops.append(("eq", old_words[i1 + k][0], new_words[j1 + k][0]))
-        elif op == "insert":
-            for k in range(j1, j2):
-                word_ops.append(("ins", None, new_words[k][0]))
-        elif op == "delete":
-            for k in range(i1, i2):
-                word_ops.append(("del", old_words[k][0], None))
-        elif op == "replace":
-            # Pair up and emit del+ins for each pair, then overflow
-            old_block = old_words[i1:i2]
-            new_block = new_words[j1:j2]
-            paired = min(len(old_block), len(new_block))
-            for k in range(paired):
-                word_ops.append(("del", old_block[k][0], None))
-                word_ops.append(("ins", None, new_block[k][0]))
-            for k in range(paired, len(old_block)):
-                word_ops.append(("del", old_block[k][0], None))
-            for k in range(paired, len(new_block)):
-                word_ops.append(("ins", None, new_block[k][0]))
+    diffs = _myers_word_diff(
+        [(w, w.lower()) for w in old_tokens],
+        [(w, w.lower()) for w in new_tokens]
+    )
 
-    # ── Rebuild with whitespace ──────────────────────────────────────────
-    # Strategy: walk new_parts in order for ins/eq, old_parts for del,
-    # inserting whitespace tokens between words as they appear in source.
-    # Simpler approach: just emit tokens in order with a space between each,
-    # which matches how PDF text is typically displayed.
-    result: list[dict] = []
-    for i, (op, old_orig, new_orig) in enumerate(word_ops):
-        # Add space before this token (except at start)
-        if i > 0:
-            result.append({"op": "eq", "text": " "})
-        if op == "eq":
-            result.append({"op": "eq",  "text": new_orig})   # use new surface form
-        elif op == "del":
-            result.append({"op": "del", "text": old_orig})
-        else:  # ins
-            result.append({"op": "ins", "text": new_orig})
-
+    result = []
+    for op, toks in diffs:
+        for t in toks:
+            if op == 0:
+                result.append({"type": "equal", "value": t})
+            elif op == -1:
+                result.append({"type": "delete", "value": t})
+            else:
+                result.append({"type": "insert", "value": t})
     return result
 
+# ── Full document compare ─────────────────────────────────────────────────────
+def compare_document(old_text: str, new_text: str):
+    aligned = align_sentences(old_text, new_text)
 
-def _normalise_token(tok: str) -> str:
-    """
-    Normalise a single surface token for matching:
-      - NFKC + ligature table
-      - lowercase
-      - strip surrounding punctuation (but keep internal hyphens/apostrophes)
-    Does NOT strip spelling — "organisation" and "organization" remain distinct.
-    """
-    import unicodedata
-    t = unicodedata.normalize("NFKC", tok).translate(_LIGATURE).lower()
-    # Strip surrounding punctuation chars (not internal)
-    t = t.strip(".,;:!?\"'()[]{}|\\/<>\u2018\u2019\u201c\u201d")
-    return t
+    output = []
+    for old_s, new_s, score in aligned:
+        word_diff = compare_words(old_s, new_s)
+        inline = build_git_inline_diff(old_s, new_s)
+
+        output.append({
+            "old": old_s,
+            "new": new_s,
+            "similarity": round(score, 3),
+            "word_diff": word_diff,
+            "inline_diff": inline
+        })
+
+    return output

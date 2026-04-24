@@ -11,6 +11,7 @@ interface LevelRow {
   description: string;
   redjayXmlTag: string;
   path: string;
+  tocCustom: string;
   remarksNotes: string;
 }
 
@@ -35,6 +36,7 @@ interface CellImageMeta {
 
 interface Props {
   initialData?: Record<string, unknown>;
+  tocData?: Record<string, unknown>;
   brdId?: string;
   onDataChange?: (data: Record<string, unknown>) => void;
 }
@@ -55,7 +57,7 @@ const DEFAULT_WHITESPACE_ROWS: WhitespaceRow[] = [
 /* ─────────────── Shared image helpers ─────────────── */
 const API_BASE_CP = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 const CP_SECTION_ALIASES = new Set(["contentprofile", "content profile", "content_profile"]);
-const LEVEL_COL_INDEX: Record<string, number> = { levelNumber: 0, description: 1, redjayXmlTag: 2, path: 3, remarksNotes: 4 };
+const LEVEL_COL_INDEX: Record<string, number> = { levelNumber: 0, description: 1, redjayXmlTag: 2, path: 3, tocCustom: 4, remarksNotes: 5 };
 const WS_COL_INDEX: Record<string, number> = { tags: 0, innodReplace: 1 };
 function normCP(s: string) { return s.toLowerCase().replace(/\s+/g, " ").trim(); }
 function isContentProfileSection(section?: string) {
@@ -73,7 +75,7 @@ function isStoredContentProfileField(fieldLabel: string): boolean {
   );
 }
 function matchCPImgs(pool: CellImageMeta[], row: LevelRow, rowIdx: number): CellImageMeta[] {
-  const candidates = [row.levelNumber, row.description, row.redjayXmlTag, row.path, row.remarksNotes].map(normCP).filter(Boolean);
+  const candidates = [row.levelNumber, row.description, row.redjayXmlTag, row.path, row.tocCustom, row.remarksNotes].map(normCP).filter(Boolean);
   if (!candidates.length) return [];
   return pool.filter((img) => {
     if (!isContentProfileSection(img.section) && !isStoredContentProfileField(img.fieldLabel || "")) return false;
@@ -83,6 +85,19 @@ function matchCPImgs(pool: CellImageMeta[], row: LevelRow, rowIdx: number): Cell
     if (!field) return true;
     return candidates.some((candidate) => field === candidate || text === candidate);
   });
+}
+
+function decodeHtmlEntities(text: string): string {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+function stripHtmlTags(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim();
 }
 
 function splitExamples(example: string): string[] {
@@ -110,14 +125,121 @@ function buildRedjayTag(levelNumber: string, example: string): string {
     .join("\n");
 }
 
+function buildPathFromExample(example: string): string {
+  const cleaned = decodeHtmlEntities(stripHtmlTags(example));
+  let tokens = splitExamples(cleaned);
+  if (tokens.length <= 1) {
+    const structural = cleaned.match(/제\S*?(?:편|장|절|관|조)(?:의\d+)?/g) ?? [];
+    if (structural.length > 1) tokens = structural;
+  }
+  return tokens
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => (token.startsWith("/") ? token : `/${token}`))
+    .join("\n");
+}
+
+function extractRequired(description: string): boolean {
+  // Match "Required: True/False/Yes/No" with optional bullets/symbols.
+  const match = description.match(/(?:^|\r?\n)\s*[^\w\r\n]{0,3}\s*required\s*:\s*(true|false|yes|no|y|n)/i);
+  if (!match) return false;
+  const value = match[1].toLowerCase();
+  return value === "true" || value === "yes" || value === "y";
+}
+
 function extractExample(description: string): string {
-  const match = description.match(/^Example:\s*(.+)$/m);
-  return match ? match[1].trim() : "";
+  // Match "Example:" with optional bullets/symbols and stop at next known field.
+  const match = description.match(
+    /(?:^|\r?\n)\s*[^\w\r\n]{0,3}\s*example\s*:\s*([\s\S]*?)(?=(?:\r?\n\s*[^\w\r\n]{0,3}\s*(?:name|required|definition|example)\s*:)|$)/i,
+  );
+  const raw = match ? match[1].replace(/<br\s*\/?>/gi, " ").replace(/\s{2,}/g, " ").trim() : "";
+  return decodeHtmlEntities(stripHtmlTags(raw));
 }
 
 function extractDefinition(description: string): string {
-  const match = description.match(/^Definition:\s*(.+)$/m);
-  return match ? match[1].trim() : "";
+  // Match "Definition:" with optional bullets/symbols and stop at next known field.
+  const match = description.match(
+    /(?:^|\r?\n)\s*[^\w\r\n]{0,3}\s*definition\s*:\s*([\s\S]*?)(?=(?:\r?\n\s*[^\w\r\n]{0,3}\s*(?:name|required|definition|example)\s*:)|$)/i,
+  );
+  const raw = match ? match[1].replace(/<br\s*\/?>/gi, " ").replace(/\s{2,}/g, " ").trim() : "";
+  return decodeHtmlEntities(stripHtmlTags(raw));
+}
+
+function normalizeBreakTags(value: string, replacement = " "): string {
+  return value
+    .replace(/<br\s*\/?>/gi, replacement)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function hasRequiredField(description: string): boolean {
+  return /(?:^|\r?\n)\s*[^\w\r\n]{0,3}\s*required\s*:/i.test(description);
+}
+
+function parsePathXML(pathXml: string): string[] {
+  if (!pathXml.trim()) return [];
+  const parts = pathXml.split(/<br\s*\/?>/i).map((s) => s.trim());
+  const result: string[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    const titleMatch = part.match(/<title>([^<]+)<\/title>/);
+    if (titleMatch) {
+      const titleText = titleMatch[1].trim();
+      if (titleText) result.push(`/${titleText}`);
+    } else {
+      const cleanPart = part
+        // Keep angle-bracket wrapped plain tokens, e.g. <제2020-5호,...>
+        .replace(/<([^\s/][^>]*)>/g, "$1")
+        // Remove actual HTML tags if present.
+        .replace(/<\/?[a-z][^>]*>/gi, "")
+        .trim();
+      if (!cleanPart) continue;
+      result.push(cleanPart.startsWith("/") ? cleanPart : `/${cleanPart}`);
+    }
+  }
+  return result;
+}
+
+function parseRedjayXML(xmlTag: string): string[] {
+  if (!xmlTag.trim() || xmlTag === "Hardcoded") return [xmlTag];
+  
+  // Match all <section> tags and allow nested tags inside <title>.
+  const sectionRegex = /<section\b[^>]*>\s*<title>([\s\S]*?)<\/title>\s*<\/section>/gi;
+  const result: string[] = [];
+  let match;
+  
+  while ((match = sectionRegex.exec(xmlTag)) !== null) {
+    const titleContent = match[1] ?? "";
+    const levelMatch = match[0].match(/level=["']([^"']*)["']/i);
+    const level = levelMatch ? levelMatch[1] : "0";
+    
+    // Split title by <br/> or <br>
+    const titleParts = titleContent.split(/<br\s*\/?>/i).map((s) => s.trim()).filter(Boolean);
+    
+    if (titleParts.length > 1) {
+      // Multiple parts: create separate sections
+      titleParts.forEach((part) => {
+        const cleanedPart = stripHtmlTags(decodeHtmlEntities(part));
+        result.push(`<section level="${level}"><title>${cleanedPart}</title></section>`);
+      });
+    } else if (titleParts.length === 1) {
+      // Single part: keep as is
+      const cleanedPart = stripHtmlTags(decodeHtmlEntities(titleParts[0]));
+      result.push(`<section level="${level}"><title>${cleanedPart}</title></section>`);
+    }
+  }
+  
+  return result.length > 0 ? result : [stripHtmlTags(decodeHtmlEntities(normalizeBreakTags(xmlTag, "\n")))];
+}
+
+function formatDescriptionDisplay(description: string) {
+  // Use the dedicated extraction functions
+  const required = extractRequired(description);
+  const definition = extractDefinition(description);
+  const example = extractExample(description);
+  const requiredFound = hasRequiredField(description);
+  
+  return { required, requiredFound, definition, example };
 }
 
 function isPlaceholderLevelToken(value: string): boolean {
@@ -152,15 +274,92 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
     : [];
 }
 
-function asExtractedLevels(initialData?: Record<string, unknown>): LevelRow[] {
-  return asObjectArray(initialData?.levels).map((row, i) => ({
-    id:           `lvl-${i}`,
-    levelNumber:  String(row.levelNumber  ?? ""),
-    description:  String(row.description  ?? ""),
-    redjayXmlTag: String(row.redjayXmlTag ?? ""),
-    path:         String(row.path         ?? ""),
-    remarksNotes: "",
+function asTocSections(tocData?: Record<string, unknown>): Array<{
+  level: string;
+  name: string;
+  required: string;
+  definition: string;
+  example: string;
+  tocRequirements: string;
+}> {
+  return asObjectArray(tocData?.sections).map((row) => ({
+    level: String(row.level ?? row.id ?? ""),
+    name: String(row.name ?? ""),
+    required: String(row.required ?? ""),
+    definition: String(row.definition ?? ""),
+    example: String(row.example ?? ""),
+    tocRequirements: String(row.tocRequirements ?? ""),
   }));
+}
+
+function normalizeRequiredText(raw: string): string {
+  const value = raw.trim().toLowerCase();
+  if (value === "true" || value === "yes" || value === "y") return "True";
+  if (value === "false" || value === "no" || value === "n") return "False";
+  return raw.trim();
+}
+
+function buildDescriptionFromTocSection(section?: {
+  name: string;
+  required: string;
+  definition: string;
+  example: string;
+}): string {
+  if (!section) return "";
+  const required = normalizeRequiredText(section.required);
+  return [
+    section.name ? `• Name: ${section.name}` : "",
+    required ? `Required: ${required}` : "",
+    section.definition ? `•Definition: ${section.definition}` : "",
+    section.example ? `•Example: ${section.example}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function asExtractedLevels(initialData?: Record<string, unknown>, tocData?: Record<string, unknown>): LevelRow[] {
+  const tocSections = asTocSections(tocData);
+  const tocByLevel = new Map<string, ReturnType<typeof asTocSections>[number]>();
+  tocSections.forEach((row) => {
+    const key = row.level.replace(/[^0-9]/g, "").trim();
+    if (key && !tocByLevel.has(key)) tocByLevel.set(key, row);
+  });
+
+  return asObjectArray(initialData?.levels).map((row, i) => {
+    const levelNumber = String(row.levelNumber ?? "");
+    const levelKey = levelNumber.replace(/[^0-9]/g, "").trim();
+    const fromToc = tocByLevel.get(levelKey);
+    const description = String(
+      row.description
+      ?? row.Description
+      ?? row.desc
+      ?? buildDescriptionFromTocSection(fromToc)
+      ?? [
+        row.name ? `• Name: ${String(row.name)}` : "",
+        row.required !== undefined && row.required !== null ? `Required: ${String(row.required)}` : "",
+        row.definition ? `•Definition: ${String(row.definition)}` : "",
+        row.example ? `•Example: ${String(row.example)}` : "",
+      ].filter(Boolean).join("\n")
+    );
+    const exampleSource = String(fromToc?.example ?? "") || extractExample(description) || String(row.example ?? "");
+    const derivedPath = buildPathFromExample(exampleSource);
+
+    return {
+      // Some persisted payloads store separate fields instead of combined description.
+      // Rebuild description so the Description column can always render.
+      levelNumber,
+      id: `lvl-${i}`,
+      description,
+      redjayXmlTag: String(row.redjayXmlTag ?? ""),
+      // Keep path aligned with Document Structure Example values when available.
+      path: derivedPath || String(row.path ?? ""),
+      tocCustom: String(
+        row.tocCustom
+        ?? row.toc_custom
+        ?? fromToc?.tocRequirements
+        ?? ""
+      ),
+      remarksNotes: "",
+    };
+  });
 }
 
 function asExtractedWhitespace(initialData?: Record<string, unknown>): WhitespaceRow[] {
@@ -199,6 +398,7 @@ function normalizeLevelRow(row: LevelRow) {
     description: row.description,
     redjayXmlTag: row.redjayXmlTag,
     path: row.path,
+    tocCustom: row.tocCustom,
     remarksNotes: row.remarksNotes,
   };
 }
@@ -293,6 +493,7 @@ const LEVEL_COLUMNS = [
   { key: "description",  label: "Description",     width: "w-72"   },
   { key: "redjayXmlTag", label: "REDJAy XML Tag",  width: "flex-1" },
   { key: "path",         label: "Path",            width: "w-52"   },
+  { key: "tocCustom",    label: "TOC Custom",      width: "w-72"   },
   { key: "remarksNotes", label: "Remarks / Notes", width: "w-52"   },
 ];
 
@@ -333,7 +534,7 @@ function LevelCellEditor({ value, rows, onChange, onClose }: {
   );
 }
 
-export default function ContentProfile({ initialData, brdId, onDataChange }: Props) {
+export default function ContentProfile({ initialData, tocData, brdId, onDataChange }: Props) {
   const [rcFilename,        setRcFilename]        = useState("");
   const [headingAnnotation, setHeadingAnnotation] = useState("Level 2");
   const [levels,       setLevels]       = useState<LevelRow[]>([]);
@@ -374,7 +575,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
   function getPersistedLevelImages(row: LevelRow, col: string, rowIdx: number): UploadedCellImage[] {
     const expectedCol = LEVEL_COL_INDEX[col];
     if (expectedCol === undefined) return [];
-    const candidates = [row.levelNumber, row.description, row.redjayXmlTag, row.path, row.remarksNotes].map(normCP).filter(Boolean);
+    const candidates = [row.levelNumber, row.description, row.redjayXmlTag, row.path, row.tocCustom, row.remarksNotes].map(normCP).filter(Boolean);
     const exactFieldKeys = [cellKey(row.id, col)].map(normCP).filter(Boolean);
     return contentImages.filter(img => matchesContentProfileImage(img, expectedCol, candidates, rowIdx + 1, exactFieldKeys)).map(img => toUploadedCellImage(img) as UploadedCellImage);
   }
@@ -409,7 +610,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
   useEffect(() => {
     const nextRcFilename = String(initialData?.rc_filename ?? "");
     const nextHeadingAnnotation = String(initialData?.heading_annotation ?? "Level 2");
-    const nextLevels = asExtractedLevels(initialData);
+    const nextLevels = asExtractedLevels(initialData, tocData);
     const nextWhitespace = asExtractedWhitespace(initialData);
 
     const topUnchanged =
@@ -432,7 +633,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     setLevelEditing(null);
     setWsEditing(null);
     setSaved(false);
-  }, [initialData]);
+  }, [initialData, tocData]);
 
   useEffect(() => {
     levelsRef.current = levels;
@@ -453,7 +654,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
       rc_filename:        rcFilename,
       heading_annotation: headingAnnotation,
       hardcoded_path:     hardcodedPath,
-      levels:    levels.map(r => ({ levelNumber: r.levelNumber, description: r.description, redjayXmlTag: r.redjayXmlTag, path: r.path, remarksNotes: r.remarksNotes })),
+      levels:    levels.map(r => ({ levelNumber: r.levelNumber, description: r.description, redjayXmlTag: r.redjayXmlTag, path: r.path, tocCustom: r.tocCustom, remarksNotes: r.remarksNotes })),
       whitespace: whitespace.map(r => ({ tags: r.tags, innodReplace: r.innodReplace })),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -500,6 +701,8 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
             col === "description" ? value : updated.description
           );
           updated.redjayXmlTag = buildRedjayTag(updated.levelNumber, example);
+          const derivedPath = buildPathFromExample(example);
+          if (derivedPath) updated.path = derivedPath;
         }
         return updated;
       })
@@ -511,7 +714,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
     const newRow: LevelRow = {
       id: stamp("lvl"), levelNumber: `Level ${n}`,
       description: "", redjayXmlTag: buildRedjayTag(String(n), ""),
-      path: "", remarksNotes: "",
+      path: "", tocCustom: "", remarksNotes: "",
     };
     setLevels((prev) => [...prev, newRow]);
     setLevelEditing({ rowId: newRow.id, col: "description" });
@@ -541,16 +744,108 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
   function renderLevelCell(row: LevelRow, col: string) {
     const isEditing = levelEditing?.rowId === row.id && levelEditing?.col === col;
     const value     = row[col as keyof LevelRow] as string;
+    
     if (col === "redjayXmlTag") {
       const isHardcoded = value === "Hardcoded";
-      return (<div className={`min-h-[24px] text-[11px] leading-snug whitespace-pre-line select-all font-mono ${isHardcoded ? "text-amber-700 dark:text-amber-400 font-semibold" : "text-sky-700 dark:text-sky-400"}`} title="Auto-generated from Example in Description">{value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}</div>);
+      const sections = parseRedjayXML(value);
+      const isEmpty = sections.length === 0 || (sections.length === 1 && !sections[0].trim());
+      
+      return (
+        <div
+          onClick={() => setLevelEditing({ rowId: row.id, col })}
+          className={`cursor-pointer min-h-[24px] text-[11px] leading-snug whitespace-pre-wrap hover:text-slate-900 dark:hover:text-slate-100 transition-colors font-mono ${
+            isHardcoded ? "text-amber-700 dark:text-amber-400 font-semibold" : "text-sky-700 dark:text-sky-400"
+          }`}
+          title={value}
+        >
+          {isEmpty ? (
+            <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>
+          ) : (
+            <div className="space-y-1">
+              {sections.map((section, idx) => (
+                <div key={idx} className="text-[11px] break-words">{section}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
     }
+    
     if (isEditing) {
       return (<LevelCellEditor value={value} rows={col === "description" ? 4 : 2} onChange={v => updateLevel(row.id, col, v)} onClose={() => setLevelEditing(null)}/>);
     }
-    const isMono = col === "path";
-    const isRequired = col === "description" && value.startsWith("Required: True");
-    return (<div onClick={() => setLevelEditing({ rowId: row.id, col })} className={`cursor-pointer min-h-[24px] text-[11px] leading-snug whitespace-pre-line hover:text-slate-900 dark:hover:text-slate-100 transition-colors ${isMono ? "font-mono" : ""} ${isRequired ? "text-emerald-700 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"}`} title={value}>{value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}</div>);
+    
+    // Format and display Description column
+    if (col === "description") {
+      const { required, requiredFound, definition, example } = formatDescriptionDisplay(value);
+      const isEmpty = !requiredFound && !definition && !example;
+      const requiredLabel = required ? "True" : "False";
+      const displayLines = [
+        requiredFound ? `Required: ${requiredLabel}` : null,
+        definition ? `Definition: ${definition}` : null,
+        example ? `Example: ${example}` : null,
+      ].filter(Boolean);
+      
+      return (
+        <div
+          onClick={() => setLevelEditing({ rowId: row.id, col })}
+          className={`cursor-pointer min-h-[24px] text-[11px] leading-relaxed whitespace-pre-wrap hover:text-slate-900 dark:hover:text-slate-100 transition-colors ${
+            required ? "text-emerald-700 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"
+          }`}
+          title={value}
+        >
+          {isEmpty ? (
+            <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>
+          ) : (
+            <div className="space-y-1">
+              {displayLines.map((line, idx) => (
+                <div key={idx} className="text-[11px]">{line}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    
+    // Format and display Path column (handle XML with <br> tags)
+    if (col === "path") {
+      const pathParts = parsePathXML(value);
+      const isEmpty = pathParts.length === 0;
+      
+      return (
+        <div
+          onClick={() => setLevelEditing({ rowId: row.id, col })}
+          className="cursor-pointer min-h-[24px] text-[11px] leading-relaxed whitespace-pre-wrap hover:text-slate-900 dark:hover:text-slate-100 transition-colors font-mono text-slate-700 dark:text-slate-300"
+          title={value}
+        >
+          {isEmpty ? (
+            <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>
+          ) : (
+            <div className="space-y-0.5">
+              {pathParts.map((part, idx) => (
+                <div key={idx} className="text-[11px]">{part}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (col === "tocCustom") {
+      const cleaned = stripHtmlTags(decodeHtmlEntities(normalizeBreakTags(value, "\n")));
+      return (
+        <div
+          onClick={() => setLevelEditing({ rowId: row.id, col })}
+          className="cursor-pointer min-h-[24px] text-[11px] leading-relaxed whitespace-pre-wrap hover:text-slate-900 dark:hover:text-slate-100 transition-colors text-slate-700 dark:text-slate-300"
+          title={value}
+        >
+          {cleaned || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}
+        </div>
+      );
+    }
+    
+    // Default cell rendering for other columns
+    return (<div onClick={() => setLevelEditing({ rowId: row.id, col })} className="cursor-pointer min-h-[24px] text-[11px] leading-snug whitespace-pre-line hover:text-slate-900 dark:hover:text-slate-100 transition-colors text-slate-700 dark:text-slate-300" title={value}>{value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}</div>);
   }
 
   function renderWsCell(row: WhitespaceRow, col: string) {

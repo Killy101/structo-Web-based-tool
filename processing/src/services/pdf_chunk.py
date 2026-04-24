@@ -45,10 +45,17 @@ import fitz  # PyMuPDF
 from src.services.xml_compare import chunk_xml, chunk_xml_smart
 from src.services.word_compare import compare_words, chunk_has_real_changes
 try:
-    from src.services.word_compare import build_inline_diff
+    from src.services.word_compare import build_git_inline_diff,  align_sentences
 except ImportError:
-    def build_inline_diff(old_text: str, new_text: str) -> list:  # type: ignore[misc]
+    def build_git_inline_diff(old_text: str, new_text: str) -> list:  # type: ignore[misc]
         return []
+
+    def align_sentences(old_text: str, new_text: str) -> list[tuple[str, str, float]]:  # type: ignore[misc]
+        old_text = (old_text or "").strip()
+        new_text = (new_text or "").strip()
+        if not old_text and not new_text:
+            return []
+        return [(old_text, new_text, 0.0)]
 
 # ── Smart extractor import ─────────────────────────────────────────────────────
 # Import pdf_extractor_core (server-safe wrapper around extractor.py).
@@ -232,7 +239,7 @@ def _is_legislation_pdf(pdf_bytes: bytes) -> bool:
             blocks = page.get_text("blocks")
             doc.close()
             for b in blocks[:20]:
-                x0, y0 = b[0], b[1]
+                x0, y0 = float(b[0]), float(b[1])
                 text = b[4].strip() if len(b) > 4 else ""
                 if 95 <= x0 <= 122 and y0 < 200 and _LEGISLATION_SKIP.match(text):
                     result = True
@@ -276,7 +283,7 @@ def _extract_legislation_text(
         last_substantive_skip_y1: float = -999.0
 
         for b in blocks:
-            x0, y0, x1, y1 = b[0], b[1], b[2], b[3]
+            x0, y0, x1, y1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
             text = (b[4] if len(b) > 4 else "").strip()
             if not text:
                 continue
@@ -408,14 +415,14 @@ def _single_pass_extract(
     page_texts: list[str] = []
     raw_candidates: list[tuple[int, str]] = []  # (page_num, heading_text)
 
-    for page_num, page in enumerate(doc):
+    for page_num, page in enumerate(doc):  # type: ignore[arg-type]
         if use_clean:
             # Use clean per-page extraction (strip footnotes)
             blocks = sorted(page.get_text("blocks"), key=lambda b: b[1])
             clean_lines: list[str] = []
             last_substantive_skip_y1: float = -999.0
             for b in blocks:
-                x0, y0, x1, y1 = b[0], b[1], b[2], b[3]
+                x0, y0, x1, y1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
                 text = (b[4] if len(b) > 4 else "").strip()
                 if not text:
                     continue
@@ -477,8 +484,9 @@ def _single_pass_extract(
         ordinal = _heading_ordinal(htxt)
         key     = _heading_key(htxt)
         if ordinal is not None:
-            if ordinal not in first_by_ordinal:
-                first_by_ordinal[ordinal] = (page_num, htxt)
+            ordinal_int = int(ordinal)
+            if ordinal_int not in first_by_ordinal:
+                first_by_ordinal[ordinal_int] = (page_num, htxt)
         else:
             if key not in first_by_key:
                 first_by_key[key] = (page_num, htxt)
@@ -492,15 +500,15 @@ def _single_pass_extract(
     ordinal_entries = [(pn, _heading_ordinal(h), h) for pn, h in all_kept if _heading_ordinal(h) is not None]
     no_ord_entries  = [(pn, h) for pn, h in all_kept if _heading_ordinal(h) is None]
     if ordinal_entries:
-        min_ord = min(o for _, o, _ in ordinal_entries)
+        min_ord = min(o for _, o, _ in ordinal_entries if o is not None)
         best: list[tuple[int, str]] = []
         for si, (pn, so, sh) in enumerate(ordinal_entries):
-            if so != min_ord:
+            if so is None or so != min_ord:
                 continue
             seq: list[tuple[int, str]] = [(pn, sh)]
             last_o = so
             for pn2, o2, h2 in ordinal_entries[si + 1:]:
-                if o2 > last_o:
+                if o2 is not None and o2 > last_o:
                     seq.append((pn2, h2))
                     last_o = o2
             if len(seq) > len(best):
@@ -694,8 +702,9 @@ def _structural_chunks(
         ordinal = _heading_ordinal(m.group(0))
         key     = _heading_key(m.group(0))
         if ordinal is not None:
-            if ordinal not in first_by_ordinal:
-                first_by_ordinal[ordinal] = m
+            ordinal_int = int(ordinal)
+            if ordinal_int not in first_by_ordinal:
+                first_by_ordinal[ordinal_int] = m
         else:
             if key not in first_by_key_r:
                 first_by_key_r[key] = m
@@ -706,17 +715,17 @@ def _structural_chunks(
     )
 
     if om:
-        min_ord = min(o for _, o, _ in om)
+        min_ord = min(o for _, o, _ in om if o is not None)
         best_seq_m: list[re.Match] = []
         for si, (sp, so, sm) in enumerate(om):
-            if so != min_ord:
+            if so is None or so != min_ord:
                 continue
             seq_m = [sm]
             last_o = so
             for _, o, m2 in om[si + 1:]:
-                if o > last_o:  # type: ignore
+                if o is not None and o > last_o:
                     seq_m.append(m2)
-                    last_o = o  # type: ignore
+                    last_o = o
             if len(seq_m) > len(best_seq_m):
                 best_seq_m = seq_m
 
@@ -882,71 +891,58 @@ def _classify_chunk_changes(
     new_heading: str = "",
 ) -> dict:
     """
-    Classify change types between two text chunks using word_compare as the
-    authoritative diff engine.
+    Classify change types between two text chunks.
+    """
 
-    Each chunk text is first trimmed to start at its own heading so that
-    trailing content from the previous part is never compared.
-
-    Returns
-    -------
-    {
-        "change_types":   list[str],   # ordered: addition / modification / removal
+    _EMPTY: dict = {
+        "change_types": [],
         "change_summary": {
-            "addition":     int,
-            "removal":      int,
-            "modification": int,
-            "emphasis":     int,   # always 0 here — plain text has no formatting
-                                   # metadata; emphasis is detected by /detect-chunk
-                                   # via compare_pdfs_layout / detect_pdf_changes.
+            "addition": 0,
+            "removal": 0,
+            "modification": 0,
+            "emphasis": 0,
         },
     }
 
-    NOTE on emphasis
-    ----------------
-    Plain-text chunking has no access to PDF span-level formatting (bold/italic).
-    Emphasis is therefore always 0 at this stage.  The key is included so the
-    summary shape is consistent with DetectSummary in ChunkPanel/ComparePanel, and
-    so /detect-chunk can increment it without changing the shape contract.
-    """
-    _EMPTY: dict = {
-        "change_types":   [],
-        "change_summary": {"addition": 0, "removal": 0, "modification": 0, "emphasis": 0},
-    }
-
-    # Trim each chunk to start at its own heading — prevents the tail of the
-    # previous part from being diffed as additions/removals.
+    # Trim chunk to start at heading
     if old_heading:
         old_text = _trim_chunk_to_heading(old_text, old_heading)
+
     if new_heading:
         new_text = _trim_chunk_to_heading(new_text, new_heading)
 
-    # Gate: is there anything meaningful at all?
-    meaningful, word_result = chunk_has_real_changes(old_text, new_text)
+    # ✅ Correct call
+    meaningful, word_result = chunk_has_real_changes(
+        old_text,
+        new_text,
+        change_ratio_threshold=0.008,
+        min_changed_words=2
+    )
+
     if not meaningful:
         return _EMPTY
 
     summary = {
-        "addition":     word_result["summary"]["addition"],
-        "removal":      word_result["summary"]["removal"],
+        "addition": word_result["summary"]["addition"],
+        "removal": word_result["summary"]["removal"],
         "modification": word_result["summary"]["modification"],
-        "emphasis":     0,   # populated on-demand by /detect-chunk
+        "emphasis": 0,
     }
 
-    # Secondary gate: require at least 2 changed words OR a change_ratio ≥ 0.8%
-    # Lowered from (3 words / 1.5%) so single real-word substitutions are
-    # captured here and surfaced as "Changed" in the chunk list without waiting
-    # for the user to open /detect-chunk.  The /detect-chunk span pass then
-    # provides the precise per-line breakdown.
     changed_words = (
-        summary["addition"] + summary["removal"] + summary["modification"]
+        summary["addition"]
+        + summary["removal"]
+        + summary["modification"]
     )
+
+    # Filter small noise
     if changed_words < 2 and word_result.get("change_ratio", 0) < 0.008:
         return _EMPTY
 
     ORDER = ["addition", "modification", "removal"]
+
     return {
-        "change_types":   [t for t in ORDER if summary[t] > 0],
+        "change_types": [t for t in ORDER if summary[t] > 0],
         "change_summary": summary,
     }
 
@@ -1061,10 +1057,18 @@ def chunk_pdfs_and_xml(
         old_text, old_font_headings, old_heading_pages = _fut_old.result()
         new_text, new_font_headings, new_heading_pages = _fut_new.result()
     _tick("parallel_extract OLD+NEW")
-    # Derive total page counts from text (count \n\n separators = page count)
-    # This avoids two extra fitz.open() calls just to get page count.
-    old_total_pages = old_text.count("\n\n") + 1 if old_text else 1
-    new_total_pages = new_text.count("\n\n") + 1 if new_text else 1
+    # Derive true page counts by reopening the PDF — counting "\n\n" gives
+    # paragraph count, not page count, and can be 5-10x too high on dense docs.
+    try:
+        with fitz.open(stream=old_pdf_bytes, filetype="pdf") as _d:
+            old_total_pages = len(_d)
+    except Exception:
+        old_total_pages = 1
+    try:
+        with fitz.open(stream=new_pdf_bytes, filetype="pdf") as _d:
+            new_total_pages = len(_d)
+    except Exception:
+        new_total_pages = 1
 
     # 3 — Structural split using font-detected headings (falls back to regex)
     old_structural = _structural_chunks(old_text, tag_name, chunk_size, chunk_overlap, old_font_headings)
@@ -1336,15 +1340,21 @@ def chunk_pdfs_and_xml(
                 else:
                     nj -= 1
 
-        # Last resort: sequential assignment for any still-unmatched PDF chunks
-        seq_xi = 0
-        for nj in range(n_new):
-            if nj not in xml_by_new_idx:
-                while seq_xi in xi_used and seq_xi < n_xml:
-                    seq_xi += 1
-                if seq_xi < n_xml:
-                    xml_by_new_idx[nj] = xml_chunks[seq_xi]
-                    seq_xi += 1
+        # Last resort: sequential assignment, but ONLY when the remaining
+        # unmatched counts are equal (1:1). When counts differ, positional
+        # assignment silently pairs the wrong XML section with a PDF chunk —
+        # worse than no XML at all. Leave mismatched chunks without XML.
+        unmatched_nj = [nj for nj in range(n_new) if nj not in xml_by_new_idx]
+        unmatched_xi = [xi for xi in range(n_xml) if xi not in xi_used]
+        if len(unmatched_nj) == len(unmatched_xi):
+            for nj, xi in zip(unmatched_nj, unmatched_xi):
+                xml_by_new_idx[nj] = xml_chunks[xi]
+        elif unmatched_nj and unmatched_xi:
+            logger.warning(
+                "chunk_pdfs_and_xml: %d unmatched PDF chunks vs %d unmatched XML "
+                "chunks — skipping positional fallback to avoid wrong-section pairing",
+                len(unmatched_nj), len(unmatched_xi),
+            )
 
         logger.info(
             "chunk_pdfs_and_xml: xml-aligned %d/%d xml chunks to pdf chunks",
@@ -1645,7 +1655,7 @@ def _extract_pdf_spans(
                 if page_num == p0:
                     _extract_pdf_spans._legis_cache = _legis  # type: ignore[attr-defined]
 
-                for block in raw.get("blocks", []):
+                for block in raw.get("blocks", []):  # type: ignore[union-attr]
                     if block.get("type") != 0:        # 0 = text block
                         continue
 
@@ -1729,7 +1739,7 @@ def _extract_pdf_spans(
                 # Fallback: plain text extraction when rawdict fails for this page
                 try:
                     plain = page.get_text("text") or ""
-                    for line in plain.splitlines():
+                    for line in plain.splitlines():  # type: ignore[union-attr]
                         stripped = line.strip()
                         if not stripped:
                             continue
@@ -1781,6 +1791,7 @@ def _find_xml_path_for_text(
     Uses SequenceMatcher to handle whitespace/line-break differences.
     Returns None when no acceptable match is found or the XML is invalid.
     """
+    
     import difflib
 
     if not search:
@@ -1989,7 +2000,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
             "size":          dominant.get("size", 12.0),
         })
 
-    Y_TOLERANCE = 3.0   # pts — spans within this vertical distance = same line
+    Y_TOLERANCE = 6.0   # pts — aligned with pdf_extractor_core.py (was 3.0, too tight)
 
     for span in spans:
         pg = span["page"]
@@ -2013,7 +2024,14 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
     # Strategy: if a line does NOT end with terminal punctuation (. ? ! : ;)
     # and the next line is on the SAME page, merge them into one unit.
     # This mirrors how a human reads — one sentence = one comparison unit.
+    #
+    # CRITICAL: never merge across provision anchors like "(a)", "(1)", "(ii)".
+    # Legal lists end each item with a comma or nothing — not terminal punctuation
+    # — so without this guard the entire provision list on a page would collapse
+    # into one comparison unit, destroying granularity and producing mega-diffs.
     _TERMINAL = re.compile(r'[.?!;:]\s*$')
+    # Matches the START of the NEXT line: "(a)", "(1)", "(ii)", "(ab)" etc.
+    _PROVISION_ANCHOR = re.compile(r'^\s*\((?:[a-z]{1,3}|\d{1,3})\)')
 
     merged_lines: list[dict] = []
     i = 0
@@ -2024,6 +2042,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
             i + 1 < len(lines)
             and lines[i + 1]["page"] == line["page"]
             and not _TERMINAL.search(line["text"].rstrip())
+            and not _PROVISION_ANCHOR.match(lines[i + 1]["text"])
             and len(line["text"]) > 8   # don't merge headings / very short lines
         ):
             next_line = lines[i + 1]
@@ -2160,8 +2179,11 @@ def detect_pdf_changes(
         if not anchor or not spans:
             return spans
         needle = " ".join(anchor.lower().split())
+        # Require a START-of-span match so "see part 1 above" doesn't fire for
+        # anchor "part 1". Use 60-char prefix to keep long headings discriminating.
         for i, s in enumerate(spans):
-            if needle[:30] in s["text_norm"] or s["text_norm"][:30] in needle:
+            t = s["text_norm"]
+            if t.startswith(needle[:60]) or needle.startswith(t[:60]):
                 return spans[i:]
         words = [w for w in needle.split() if len(w) > 4]
         if words:
@@ -2276,7 +2298,7 @@ def detect_pdf_changes(
                 # Computed in backend so the frontend just renders pre-built
                 # tokens — no LCS logic in the browser, no crash on long lines.
                 try:
-                    word_diff_tokens = build_inline_diff(old_text, new_text)
+                    word_diff_tokens = build_git_inline_diff(old_text, new_text)
                     wd = compare_words(old_text, new_text)
                     word_diff_result = {
                         "tokens":         word_diff_tokens,
@@ -2367,76 +2389,93 @@ def detect_pdf_changes(
                 summary["removal"] += 1
 
         elif op == "replace":
-            # Lines changed — pair them up and classify each pair
             old_block = old_lines[i1:i2]
             new_block = new_lines[j1:j2]
-            paired    = min(len(old_block), len(new_block))
 
-            for k in range(paired):
-                ol = old_block[k]
-                nl = new_block[k]
+            if not old_block and not new_block:
+                continue
 
-                # CRITICAL: if normalised text is identical (ignoring trailing
-                # punctuation which varies between PDF editions), the lines are
-                # the same — only flag as emphasis if formatting actually differs.
-                _PUNCT = str.maketrans("", "", ".,;: \t")
-                ol_core = ol["text_norm"].translate(_PUNCT)
-                nl_core = nl["text_norm"].translate(_PUNCT)
-                if ol_core == nl_core:
-                    fmt_changes = sum([
-                        ol["bold"]          != nl["bold"],
-                        ol["italic"]        != nl["italic"],
-                        ol["underline"]     != nl["underline"],
-                        ol["strikethrough"] != nl["strikethrough"],
-                    ])
-                    if fmt_changes >= 1:
-                        changes.append(_make("emphasis", nl["text"].strip(), ol, nl, nl["page"]))
+            old_page = old_block[0]["page"] if old_block else None
+            new_page = new_block[0]["page"] if new_block else None
+
+            old_text_block = " ".join([l["text"] for l in old_block])
+            new_text_block = " ".join([l["text"] for l in new_block])
+
+            aligned = align_sentences(old_text_block, new_text_block)
+
+            _PUNCT = str.maketrans("", "", ".,;: \t")
+
+            for old_sent, new_sent, score in aligned:
+                old_sent = (old_sent or "").strip()
+                new_sent = (new_sent or "").strip()
+
+                if not old_sent and new_sent and new_page is not None:
+                    changes.append(_make(
+                        "addition",
+                        new_sent,
+                        None,
+                        {"text": new_sent, "page": new_page},
+                        new_page,
+                    ))
+                    summary["addition"] += 1
+                    continue
+
+                if old_sent and not new_sent and old_page is not None:
+                    changes.append(_make(
+                        "removal",
+                        old_sent,
+                        {"text": old_sent, "page": old_page},
+                        None,
+                        old_page,
+                    ))
+                    summary["removal"] += 1
+                    continue
+
+                old_core = old_sent.translate(_PUNCT)
+                new_core = new_sent.translate(_PUNCT)
+
+                if old_core == new_core:
+                    if old_sent != new_sent and (old_page is not None or new_page is not None):
+                        page = new_page if new_page is not None else old_page
+                        if page is None:
+                            continue
+                        changes.append(_make(
+                            "emphasis",
+                            new_sent,
+                            {"text": old_sent, "page": old_page} if old_page is not None else None,
+                            {"text": new_sent, "page": new_page} if new_page is not None else None,
+                            int(page),
+                        ))
                         summary["emphasis"] += 1
-                    continue  # skip modification/mismatch classification
+                    continue
 
-                ratio = difflib.SequenceMatcher(
-                    None, ol["text_norm"], nl["text_norm"]
-                ).ratio()
-                # ≥ 0.82 similarity → modification (same sentence, words changed).
-                # Raised to 0.82 to further cut false "modification" flags on
-                # lines that share common legal boilerplate words but are
-                # structurally different sentences.
-                # < 0.82 similarity → mismatch (structurally different lines).
-                ctype = "modification" if ratio >= 0.82 else "mismatch"
-
-                # ── Word-level false-positive guard ───────────────────────
-                # Before emitting, verify at least one real word changed.
-                # Purely cosmetic diffs (smart quotes, NBSP, ligatures,
-                # en-dash vs hyphen) are suppressed to cut false positives.
-                meaningful, _wd = chunk_has_real_changes(
-                    ol["text"], nl["text"],
-                    change_ratio_threshold=0.004,
-                    min_changed_words=1,
+                meaningful, _ = chunk_has_real_changes(
+                    old_sent,
+                    new_sent,
+                    change_ratio_threshold=0.008,
+                    min_changed_words=2,
                 )
+
                 if not meaningful:
-                    fmt_changes = sum([
-                        ol["bold"]          != nl["bold"],
-                        ol["italic"]        != nl["italic"],
-                        ol["underline"]     != nl["underline"],
-                        ol["strikethrough"] != nl["strikethrough"],
-                    ])
-                    if fmt_changes >= 1:
-                        changes.append(_make("emphasis", nl["text"].strip(), ol, nl, nl["page"]))
-                        summary["emphasis"] += 1
-                    continue  # suppress cosmetic-only false positive
+                    continue
 
-                changes.append(_make(ctype, nl["text"].strip(), ol, nl, nl["page"]))
+                ratio = difflib.SequenceMatcher(None, old_sent, new_sent).ratio()
+                combined_score = (ratio + score) / 2
+
+                ctype = "modification" if combined_score >= 0.75 else "mismatch"
+                page = new_page if new_page is not None else old_page
+                if page is None:
+                    continue
+
+                changes.append(_make(
+                    ctype,
+                    new_sent,
+                    {"text": old_sent, "page": old_page} if old_page is not None else None,
+                    {"text": new_sent, "page": new_page} if new_page is not None else None,
+                    page,
+                ))
+
                 summary[ctype] += 1
-
-            # Unpaired old lines → removals
-            for ol in old_block[paired:]:
-                changes.append(_make("removal", ol["text"].strip(), ol, None, ol["page"]))
-                summary["removal"] += 1
-
-            # Unpaired new lines → additions
-            for nl in new_block[paired:]:
-                changes.append(_make("addition", nl["text"].strip(), None, nl, nl["page"]))
-                summary["addition"] += 1
 
     logger.debug("detect_pdf_changes: %d changes detected: %s", len(changes), summary)
 

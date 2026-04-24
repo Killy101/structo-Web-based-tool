@@ -1,6 +1,5 @@
 export type Role =
   | "SUPER_ADMIN"
-  | "SADMIN"
   | "ADMIN"
   | "USER";
 export type Status = "ACTIVE" | "INACTIVE";
