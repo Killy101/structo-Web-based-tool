@@ -645,7 +645,7 @@ export default function ChunkPanel({
       } catch {
         // Ignore transient polling failures
       }
-    }, 800);
+    }, 1500);
   }, [stopPolling, onAllChunksReady, onJobCreated, resolvedSourceName]);
 
   // ── Auto-detect XML structure client-side (no endpoint needed) ─────────────

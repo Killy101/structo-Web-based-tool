@@ -76,20 +76,21 @@ function ParticleCanvas() {
         ctx.fillStyle = `rgba(66,180,245,${p.opacity})`;
         ctx.fill();
       });
-      if (!reducedMotion) {
-        for (let i = 0; i < particles.length; i++) {
-          for (let j = i + 1; j < particles.length; j++) {
-            const dx = particles[i].x - particles[j].x;
-            const dy = particles[i].y - particles[j].y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < 110) {
-              ctx.beginPath();
-              ctx.moveTo(particles[i].x, particles[i].y);
-              ctx.lineTo(particles[j].x, particles[j].y);
-              ctx.strokeStyle = `rgba(26,143,209,${0.07 * (1 - dist / 110)})`;
-              ctx.lineWidth = 0.5;
-              ctx.stroke();
-            }
+      const LINK_DIST = 110;
+      const LINK_DIST_SQ = LINK_DIST * LINK_DIST;
+      for (let i = 0; i < particles.length; i++) {
+        for (let j = i + 1; j < particles.length; j++) {
+          const dx = particles[i].x - particles[j].x;
+          const dy = particles[i].y - particles[j].y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < LINK_DIST_SQ) {
+            const dist = Math.sqrt(distSq);
+            ctx.beginPath();
+            ctx.moveTo(particles[i].x, particles[i].y);
+            ctx.lineTo(particles[j].x, particles[j].y);
+            ctx.strokeStyle = `rgba(26,143,209,${0.07 * (1 - dist / LINK_DIST)})`;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
           }
         }
       }
