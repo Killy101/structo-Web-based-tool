@@ -549,7 +549,7 @@ export default function ContentProfile({ initialData, brdId, onDataChange }: Pro
       return (<LevelCellEditor value={value} rows={col === "description" ? 4 : 2} onChange={v => updateLevel(row.id, col, v)} onClose={() => setLevelEditing(null)}/>);
     }
     const isMono = col === "path";
-    const isRequired = col === "description" && value.startsWith("Required: True");
+    const isRequired = col === "description" && value.includes("Required: True");
     return (<div onClick={() => setLevelEditing({ rowId: row.id, col })} className={`cursor-pointer min-h-[24px] text-[11px] leading-snug whitespace-pre-line hover:text-slate-900 dark:hover:text-slate-100 transition-colors ${isMono ? "font-mono" : ""} ${isRequired ? "text-emerald-700 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"}`} title={value}>{value || <span className="text-slate-400 dark:text-slate-600 italic font-sans">—</span>}</div>);
   }
 
