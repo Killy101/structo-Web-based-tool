@@ -100,6 +100,7 @@ reformatted legal documents.  A self-diff (same PDF on both sides) produces
 zero changes across a 1000+ page document.
 """
 
+import os
 import sys
 import re
 import difflib
@@ -1001,9 +1002,21 @@ def _promote_isolated_provision_markers(lines: List[PdfLine]) -> None:
                 extra.text = ""
 
 
-def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
-    """Returns list[PdfLine] for the whole document (all pages concatenated).
+def load_pdf(
+    path: str,
+    progress_cb=None,
+    page_start: int | None = None,
+    page_end: int | None = None,
+) -> List[PdfLine]:
+    """Returns list[PdfLine] for the specified page range.
     Strips repeating page headers and footers to reduce false positives.
+
+    Parameters
+    ----------
+    path        : filesystem path to the PDF.
+    progress_cb : called as ``progress_cb(page_idx, total_pages)`` after each page.
+    page_start  : 0-based index of first page (inclusive).  Default: 0.
+    page_end    : 0-based index of last  page (inclusive).  Default: last page.
 
     Pages are processed in parallel (ThreadPoolExecutor, separate fitz.Document
     per worker) for a 2-4x speedup on documents with 20+ pages.
@@ -1017,6 +1030,16 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     # Open once to count pages and detect headers/footers, then close.
     doc = fitz.open(path)
     total = len(doc)
+    
+    # Normalize page range
+    _page_start = page_start if page_start is not None else 0
+    _page_end = page_end if page_end is not None else total - 1
+    _page_start = max(0, min(_page_start, total - 1))
+    _page_end = max(_page_start, min(_page_end, total - 1))
+    
+    # Pages to process
+    pages_to_process = list(range(_page_start, _page_end + 1))
+    n_pages = len(pages_to_process)
 
     # Skip header/footer sampling for very small PDFs (no repeated patterns).
     if total >= 6:
@@ -1026,7 +1049,7 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     doc.close()
 
     _t_hf = _time.perf_counter()
-    print(f"  [load_pdf] header/footer detect: {_t_hf - _t_start:.2f}s  ({total} pages)", flush=True)
+    print(f"  [load_pdf] header/footer detect: {_t_hf - _t_start:.2f}s  ({total} pages, processing {n_pages})", flush=True)
 
     # Read bytes once — each worker opens its own fitz.Document from this
     # immutable buffer so no document handle is shared between threads.
@@ -1119,19 +1142,19 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     # ── Determine worker count and split pages into chunks ────────────────────
     # Use 1 worker per ~25 pages, capped at 4 to bound memory pressure.
     # Sequential fallback for tiny documents (overhead not worth it).
-    if total <= 15:
+    if n_pages <= 15:
         n_workers = 1
-    elif total <= 60:
+    elif n_pages <= 60:
         n_workers = 2
-    elif total <= 150:
+    elif n_pages <= 150:
         n_workers = 3
     else:
         n_workers = 4
 
-    chunk_size = (total + n_workers - 1) // n_workers
+    chunk_size = (n_pages + n_workers - 1) // n_workers
     page_chunks = [
-        list(range(i, min(i + chunk_size, total)))
-        for i in range(0, total, chunk_size)
+        pages_to_process[i:i + chunk_size]
+        for i in range(0, n_pages, chunk_size)
     ]
 
     _t_pre = _time.perf_counter()
@@ -1144,7 +1167,7 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
 
     _t_loop = _time.perf_counter()
     print(
-        f"  [load_pdf] parallel extract ({n_workers} workers, {total} pages): "
+        f"  [load_pdf] parallel extract ({n_workers} workers, {n_pages} pages): "
         f"{_t_loop - _t_pre:.2f}s",
         flush=True,
     )
@@ -1167,7 +1190,7 @@ def load_pdf(path: str, progress_cb=None) -> List[PdfLine]:
     _t_end = _time.perf_counter()
     print(
         f"  [load_pdf] post-process: {_t_end - _t_loop:.2f}s  "
-        f"TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines)",
+        f"TOTAL={_t_end - _t_start:.2f}s  ({len(lines)} lines) [pages {_page_start}-{_page_end}]",
         flush=True,
     )
 
@@ -3504,38 +3527,179 @@ def _seq_key(block: Block) -> str:
     return block.cmp
 
 
+# Maximum blocks per SequenceMatcher window.  Above this we inject ANCH:: or
+# positional splits so no single SM call becomes O(n²) slow.
+_MAX_SM_WINDOW: int = int(os.environ.get("COMPARE_SM_WINDOW", "500"))
+
+
+def _find_anch_checkpoints(
+    seq_a: List[str],
+    seq_b: List[str],
+    existing: List[Tuple[int, int]],
+) -> List[Tuple[int, int]]:
+    """Augment `existing` with ANCH:: / GUIDE:: matches to shrink large windows.
+
+    Uses a greedy forward scan: for each structural token in A that also
+    appears in B, pick the B occurrence closest to the expected proportional
+    position.  Returns a new monotonically-increasing checkpoint list.
+    """
+    n_a = len(seq_a)
+    n_b = len(seq_b)
+    if n_a == 0 or n_b == 0:
+        return existing
+
+    # Build B lookup: key -> sorted list of positions
+    b_idx: dict = {}
+    for j, s in enumerate(seq_b):
+        if s.startswith("ANCH::") or s.startswith("GUIDE::"):
+            b_idx.setdefault(s, []).append(j)
+
+    # Forward scan through A
+    pairs: List[Tuple[int, int]] = list(existing)
+    used_b: set = {bj for _, bj in existing}
+    last_b = -1
+
+    for i, s in enumerate(seq_a):
+        if not (s.startswith("ANCH::") or s.startswith("GUIDE::")):
+            continue
+        if s not in b_idx:
+            continue
+        exp_b = int(i / n_a * n_b)
+        candidates = [j for j in b_idx[s] if j > last_b and j not in used_b]
+        if not candidates:
+            continue
+        best_j = min(candidates, key=lambda j: abs(j - exp_b))
+        # Accept if within ±40 % of the proportional position
+        if abs(best_j - exp_b) <= max(60, int(0.40 * n_b)):
+            pairs.append((i, best_j))
+            used_b.add(best_j)
+            last_b = best_j
+
+    # Sort and filter to a strictly-increasing sequence
+    pairs.sort()
+    result: List[Tuple[int, int]] = []
+    la, lb = -1, -1
+    for ai, bj in pairs:
+        if ai > la and bj > lb:
+            result.append((ai, bj))
+            la, lb = ai, bj
+    return result
+
+
+def _add_positional_splits(
+    checkpoints: List[Tuple[int, int]],
+    n_a: int,
+    n_b: int,
+) -> List[Tuple[int, int]]:
+    """Insert proportional midpoint checkpoints so every window ≤ _MAX_SM_WINDOW.
+
+    Positional splits are approximate (no content anchor) but keep the
+    per-window SM bounded so we never time out on unstructured documents.
+    """
+    boundaries = [(0, 0)] + checkpoints + [(n_a, n_b)]
+    extra: List[Tuple[int, int]] = []
+
+    for k in range(len(boundaries) - 1):
+        a0, b0 = boundaries[k]
+        a1, b1 = boundaries[k + 1]
+        wa = a1 - a0
+        wb = b1 - b0
+        if wa <= _MAX_SM_WINDOW and wb <= _MAX_SM_WINDOW:
+            continue
+        n_splits = max(wa, wb) // _MAX_SM_WINDOW
+        for m in range(1, n_splits + 1):
+            frac = m / (n_splits + 1)
+            ai = a0 + int(wa * frac)
+            bj = b0 + int(wb * frac)
+            if a0 < ai < a1 and b0 < bj < b1:
+                extra.append((ai, bj))
+
+    if not extra:
+        return checkpoints
+
+    all_cps = sorted(set(checkpoints + extra))
+    result: List[Tuple[int, int]] = []
+    la, lb = -1, -1
+    for ai, bj in all_cps:
+        if ai > la and bj > lb:
+            result.append((ai, bj))
+            la, lb = ai, bj
+    return result
+
+
+def _run_sm_window(
+    a_slice: List[int],
+    b_slice: List[int],
+    off_a: int,
+    off_b: int,
+) -> List[Tuple[str, int, int, int, int]]:
+    """Run SequenceMatcher on one window and offset the returned opcodes."""
+    sm = difflib.SequenceMatcher(None, a_slice, b_slice, autojunk=False)
+    return [
+        (op, off_a + i1, off_a + i2, off_b + j1, off_b + j2)
+        for op, i1, i2, j1, j2 in sm.get_opcodes()
+    ]
+
+
 def _windowed_opcodes(seq_a_h: List[int], seq_b_h: List[int], seq_a: List[str], seq_b: List[str]):
     """Build SequenceMatcher opcodes in guide-anchored windows.
 
     For long documents, one noisy region can shift global alignment and make
     later pages inaccurate. We anchor windows at matched GUIDE tokens and run
     SequenceMatcher per window so drift does not propagate.
+
+    PERFORMANCE: when any window exceeds _MAX_SM_WINDOW blocks, ANCH:: token
+    matches are used as additional checkpoints.  If the document has no useful
+    anchor tokens at all, positional midpoint splits cap the window size so
+    that no single SM call is O(n²).
     """
+    n_a = len(seq_a_h)
+    n_b = len(seq_b_h)
+
     def _is_guide_token(s: str) -> bool:
         return s.startswith("GUIDE::")
 
     guides_a = [(i, s) for i, s in enumerate(seq_a) if _is_guide_token(s)]
     guides_b = [(j, s) for j, s in enumerate(seq_b) if _is_guide_token(s)]
-    if not guides_a or not guides_b:
-        sm = difflib.SequenceMatcher(None, seq_a_h, seq_b_h, autojunk=False)
-        return sm.get_opcodes()
-
-    ga_tokens = [s for _, s in guides_a]
-    gb_tokens = [s for _, s in guides_b]
-    smg = difflib.SequenceMatcher(None, ga_tokens, gb_tokens, autojunk=False)
 
     checkpoints: List[Tuple[int, int]] = []
-    for op, i1, i2, j1, j2 in smg.get_opcodes():
-        if op != "equal":
-            continue
-        for k in range(i2 - i1):
-            ai = guides_a[i1 + k][0]
-            bj = guides_b[j1 + k][0]
-            checkpoints.append((ai, bj))
+
+    if guides_a and guides_b:
+        ga_tokens = [s for _, s in guides_a]
+        gb_tokens = [s for _, s in guides_b]
+        smg = difflib.SequenceMatcher(None, ga_tokens, gb_tokens, autojunk=False)
+        for op, i1, i2, j1, j2 in smg.get_opcodes():
+            if op != "equal":
+                continue
+            for k in range(i2 - i1):
+                ai = guides_a[i1 + k][0]
+                bj = guides_b[j1 + k][0]
+                checkpoints.append((ai, bj))
+
+    # Augment with ANCH:: matches whenever any window is still large, or when
+    # there were no guide checkpoints at all on a large document.
+    if n_a > _MAX_SM_WINDOW or n_b > _MAX_SM_WINDOW:
+        max_window_a = max(
+            (b[0] - a[0] for a, b in zip(
+                [(0, 0)] + checkpoints,
+                checkpoints + [(n_a, n_b)],
+            )),
+            default=n_a,
+        )
+        max_window_b = max(
+            (b[1] - a[1] for a, b in zip(
+                [(0, 0)] + checkpoints,
+                checkpoints + [(n_a, n_b)],
+            )),
+            default=n_b,
+        )
+        if max_window_a > _MAX_SM_WINDOW or max_window_b > _MAX_SM_WINDOW:
+            checkpoints = _find_anch_checkpoints(seq_a, seq_b, checkpoints)
+            checkpoints = _add_positional_splits(checkpoints, n_a, n_b)
 
     if not checkpoints:
-        sm = difflib.SequenceMatcher(None, seq_a_h, seq_b_h, autojunk=False)
-        return sm.get_opcodes()
+        # Small document or no anchors — single SM pass is fine
+        return _run_sm_window(seq_a_h, seq_b_h, 0, 0)
 
     opcodes: List[Tuple[str, int, int, int, int]] = []
     start_a = 0
@@ -3544,21 +3708,22 @@ def _windowed_opcodes(seq_a_h: List[int], seq_b_h: List[int], seq_a: List[str], 
     for end_a, end_b in checkpoints:
         if end_a < start_a or end_b < start_b:
             continue
-        sm = difflib.SequenceMatcher(
-            None,
+        opcodes.extend(_run_sm_window(
             seq_a_h[start_a:end_a + 1],
             seq_b_h[start_b:end_b + 1],
-            autojunk=False,
-        )
-        for op, i1, i2, j1, j2 in sm.get_opcodes():
-            opcodes.append((op, start_a + i1, start_a + i2, start_b + j1, start_b + j2))
+            start_a,
+            start_b,
+        ))
         start_a = end_a + 1
         start_b = end_b + 1
 
-    if start_a < len(seq_a_h) or start_b < len(seq_b_h):
-        sm = difflib.SequenceMatcher(None, seq_a_h[start_a:], seq_b_h[start_b:], autojunk=False)
-        for op, i1, i2, j1, j2 in sm.get_opcodes():
-            opcodes.append((op, start_a + i1, start_a + i2, start_b + j1, start_b + j2))
+    if start_a < n_a or start_b < n_b:
+        opcodes.extend(_run_sm_window(
+            seq_a_h[start_a:],
+            seq_b_h[start_b:],
+            start_a,
+            start_b,
+        ))
 
     return opcodes
 
@@ -6312,6 +6477,11 @@ def _span_font(span: Span) -> tuple:
 _TRIVIAL_WORD_PAT = re.compile(
     r'^[\W]*(?:[a-z]{1,3}|\d{1,2}|[ivxlcdm]{1,6})[\W]*$', re.I)
 
+# Maximum words per side before word-level diff is skipped in precompute.
+# SequenceMatcher is O(n²) on word lists; blocks longer than this use a
+# whole-block replace instead to keep precompute fast.
+_WORD_DIFF_MAX: int = int(os.environ.get("COMPARE_WORD_DIFF_MAX", "200"))
+
 
 def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other: Optional[List[Block]] = None) -> dict:
     """
@@ -6383,9 +6553,17 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             offsets[ci] = char_pos[0]
 
         # Pre-compute word-level diff for MOD blocks (across entire block text)
+        # Guard: skip word diff for very long texts — SequenceMatcher is O(n²)
+        # on word lists, and provisions > _WORD_DIFF_MAX words take disproportionate time.
         mod_word_ops = None
         if ch is not None and ch.kind == KIND_MOD:
-            raw_ops = _word_ops(ch.text_a, ch.text_b)
+            _wa_len = len(ch.text_a.split())
+            _wb_len = len(ch.text_b.split())
+            if _wa_len > _WORD_DIFF_MAX or _wb_len > _WORD_DIFF_MAX:
+                # Block is too long for word-level diff — treat as whole-block MOD
+                raw_ops = [("replace", ch.text_a.split(), ch.text_b.split())]
+            else:
+                raw_ops = _word_ops(ch.text_a, ch.text_b)
             # Suppress MOD highlight entirely if all changed words are trivial
             # (outline numbering tokens or single-char punctuation).
             changed_words_a = []

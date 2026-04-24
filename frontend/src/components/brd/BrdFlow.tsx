@@ -513,6 +513,7 @@ function renderStepContent() {
     case "contentProfile":
       return <ContentProfile
         initialData={uploadMeta?.contentProfile}
+        tocData={(tocDraft.current ?? uploadMeta?.toc) as Record<string, unknown> | undefined}
         brdId={uploadMeta?.brdId}
         onDataChange={(data) => { contentProfileDraft.current = data; }}
       />;

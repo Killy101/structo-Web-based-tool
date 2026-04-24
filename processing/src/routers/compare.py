@@ -47,7 +47,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import ORJSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -394,10 +394,14 @@ async def diff_pdfs(
 
 @router.post("/diff/stream")
 async def diff_pdfs_stream(
-    old_file:   UploadFile = File(...),
-    new_file:   UploadFile = File(...),
-    xml_file_a: Optional[UploadFile] = File(None),
-    xml_file_b: Optional[UploadFile] = File(None),
+    old_file:     UploadFile       = File(...),
+    new_file:     UploadFile       = File(...),
+    xml_file_a:   Optional[UploadFile] = File(None),
+    xml_file_b:   Optional[UploadFile] = File(None),
+    page_start_a: Optional[int]    = Form(None),
+    page_end_a:   Optional[int]    = Form(None),
+    page_start_b: Optional[int]    = Form(None),
+    page_end_b:   Optional[int]    = Form(None),
 ):
     global _active_diffs
     if _active_diffs >= _MAX_CONCURRENT_DIFFS:
@@ -452,8 +456,8 @@ async def diff_pdfs_stream(
 
             q.put(_json.dumps({"t": "p", "s": "old", "p": 0, "n": _n_a}) + "\n")
             with ThreadPoolExecutor(max_workers=2) as load_pool:
-                fut_a   = load_pool.submit(ce.load_pdf, tmp_a, _prog_old)
-                fut_b   = load_pool.submit(ce.load_pdf, tmp_b, _prog_new)
+                fut_a   = load_pool.submit(ce.load_pdf, tmp_a, _prog_old, page_start_a, page_end_a)
+                fut_b   = load_pool.submit(ce.load_pdf, tmp_b, _prog_new, page_start_b, page_end_b)
                 lines_a = fut_a.result()
                 lines_b = fut_b.result()
             q.put(_json.dumps({"t": "p", "s": "new", "p": _n_b, "n": _n_b}) + "\n")
@@ -1058,6 +1062,104 @@ async def health():
         "large_threshold": LARGE_DOC_THRESHOLD,
         "cache_ttl":       _RESULT_CACHE_TTL,
     }
+
+
+# ── POST /compare/pdf/sections  (section picker — fast heading scan) ────────────
+
+@router.post("/pdf/sections")
+async def pdf_sections(
+    old_file: UploadFile = File(...),
+    new_file: UploadFile = File(...),
+):
+    """
+    Lightweight section scan for both PDFs.
+    Returns structural headings aligned between old and new, with page ranges
+    for each side, so the frontend can offer a section picker before running
+    the full diff.
+    """
+    if _extractor is None or not hasattr(_extractor, "extract_section_headings"):
+        return ORJSONResponse({"sections": [], "total_a": 0, "total_b": 0})
+
+    data_a = await old_file.read()
+    data_b = await new_file.read()
+    tmp_a = tmp_b = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
+            fa.write(data_a)
+            tmp_a = fa.name
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
+            fb.write(data_b)
+            tmp_b = fb.name
+
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=2) as pool:
+            fut_a = pool.submit(_extractor.extract_section_headings, tmp_a)
+            fut_b = pool.submit(_extractor.extract_section_headings, tmp_b)
+            n_a   = pool.submit(_extractor.load_pdf_page_count, tmp_a)
+            n_b   = pool.submit(_extractor.load_pdf_page_count, tmp_b)
+            heads_a = fut_a.result()
+            heads_b = fut_b.result()
+            total_a = n_a.result()
+            total_b = n_b.result()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        for p in (tmp_a, tmp_b):
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+    def _make_ranges(heads: list, total_pages: int) -> list:
+        result = []
+        for i, h in enumerate(heads):
+            end = heads[i + 1]["page"] - 1 if i + 1 < len(heads) else total_pages - 1
+            result.append({**h, "page_end": end})
+        return result
+
+    import re as _re
+    def _norm(s: str) -> str:
+        return _re.sub(r"\W+", " ", s).strip().lower()
+
+    ranges_a = _make_ranges(heads_a, total_a)
+    ranges_b = _make_ranges(heads_b, total_b)
+    label_map_b = {_norm(r["label"]): r for r in ranges_b}
+
+    sections: list = []
+    seen_b: set = set()
+    sid = 0
+    for ra in ranges_a:
+        key = _norm(ra["label"])
+        rb  = label_map_b.get(key)
+        sections.append({
+            "id":          sid,
+            "label":       ra["label"],
+            "level":       ra["level"],
+            "page_start_a": ra["page"],
+            "page_end_a":   ra["page_end"],
+            "page_start_b": rb["page"]     if rb else None,
+            "page_end_b":   rb["page_end"] if rb else None,
+        })
+        if rb:
+            seen_b.add(key)
+        sid += 1
+
+    for rb in ranges_b:
+        key = _norm(rb["label"])
+        if key not in seen_b:
+            sections.append({
+                "id":          sid,
+                "label":       rb["label"],
+                "level":       rb["level"],
+                "page_start_a": None,
+                "page_end_a":   None,
+                "page_start_b": rb["page"],
+                "page_end_b":   rb["page_end"],
+            })
+            sid += 1
+
+    return ORJSONResponse({"sections": sections, "total_a": total_a, "total_b": total_b})
 
 
 # ── POST /compare/xml/sections ────────────────────────────────────────────────

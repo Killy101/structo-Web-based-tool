@@ -127,7 +127,7 @@ interface CitationStyleGuideData {
   rows: CitationStyleGuideRow[];
 }
 interface CustomMetadataRow { id: string; label: string; value: string; comment: string; }
-interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; remarksNotes: string; }
+interface LevelRow { id: string; levelNumber: string; description: string; redjayXmlTag: string; path: string; tocCustom: string; remarksNotes: string; }
 interface WhitespaceRow { id: string; tags: string; innodReplace: string; }
 
 const EditIcon = () => (
@@ -637,9 +637,120 @@ function parseCitationStyleGuide(tocData?: Record<string, unknown>): CitationSty
   return { description, rows };
 }
 
-function extractExample(desc: string): string { const m = desc.match(/^Example:\s*(.+)$/m); return m ? m[1].trim() : ""; }
-function extractDefinition(desc: string): string { const m = desc.match(/^Definition:\s*(.+)$/m); return m ? m[1].trim() : ""; }
+function normalizeBreakTags(value: string, replacement = " "): string {
+  return value
+    .replace(/<br\s*\/?>/gi, replacement)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function decodeHtmlEntities(text: string): string {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+function stripHtmlTags(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim();
+}
+
+function splitExamples(example: string): string[] {
+  let s = decodeHtmlEntities(stripHtmlTags(example))
+    .trim()
+    .replace(/^["\u201c\u201d']+|["\u201c\u201d']+$/g, "");
+  for (const suffix of ["; etc.", ", etc.", " etc."]) {
+    if (s.endsWith(suffix)) s = s.slice(0, -suffix.length).trim();
+  }
+  for (const sep of [";", "\n", " / "]) {
+    if (s.includes(sep)) {
+      return s.split(sep)
+        .map((t) => t.trim().replace(/^["\u201c\u201d']+|["\u201c\u201d']+$/g, ""))
+        .filter(Boolean);
+    }
+  }
+  return s ? [s] : [];
+}
+
+function buildPathFromExample(example: string): string {
+  const cleaned = decodeHtmlEntities(stripHtmlTags(example));
+  let tokens = splitExamples(cleaned);
+  if (tokens.length <= 1) {
+    const structural = cleaned.match(/제\S*?(?:편|장|절|관|조)(?:의\d+)?/g) ?? [];
+    if (structural.length > 1) tokens = structural;
+  }
+  return tokens
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => (token.startsWith("/") ? token : `/${token}`))
+    .join("\n");
+}
+
+function extractExample(desc: string): string {
+  const m = desc.match(/(?:^|\r?\n)\s*[^\r\n\w]{0,3}\s*example\s*:\s*([\s\S]*?)(?=(?:\r?\n\s*[^\r\n\w]{0,3}\s*(?:name|required|definition|example)\s*:)|$)/i);
+  return m ? decodeHtmlEntities(stripHtmlTags(m[1])).trim() : "";
+}
+function extractDefinition(desc: string): string {
+  const m = desc.match(/(?:^|\r?\n)\s*[^\r\n\w]{0,3}\s*definition\s*:\s*([\s\S]*?)(?=(?:\r?\n\s*[^\r\n\w]{0,3}\s*(?:name|required|definition|example)\s*:)|$)/i);
+  return m ? decodeHtmlEntities(stripHtmlTags(m[1])).trim() : "";
+}
 function isPlaceholderLevelToken(v: string): boolean { return /^level\s*\d+$/.test(v.trim().replace(/^\/+/, "").replace(/[_\-]+/g, " ").toLowerCase()); }
+
+function parseRedjayXML(xmlTag: string): string[] {
+  if (!xmlTag.trim() || xmlTag === "Hardcoded") return [xmlTag];
+
+  const sectionRegex = /<section\b[^>]*>\s*<title>([\s\S]*?)<\/title>\s*<\/section>/gi;
+  const result: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = sectionRegex.exec(xmlTag)) !== null) {
+    const titleContent = match[1] ?? "";
+    const levelMatch = match[0].match(/level=["']([^"']*)["']/i);
+    const level = levelMatch ? levelMatch[1] : "0";
+    const titleParts = titleContent.split(/<br\s*\/?>/i).map((s) => s.trim()).filter(Boolean);
+
+    if (titleParts.length > 1) {
+      titleParts.forEach((part) => {
+        const cleanedPart = stripHtmlTags(decodeHtmlEntities(part));
+        result.push(`<section level="${level}"><title>${cleanedPart}</title></section>`);
+      });
+    } else if (titleParts.length === 1) {
+      const cleanedPart = stripHtmlTags(decodeHtmlEntities(titleParts[0]));
+      result.push(`<section level="${level}"><title>${cleanedPart}</title></section>`);
+    }
+  }
+
+  return result.length > 0 ? result : [stripHtmlTags(decodeHtmlEntities(normalizeBreakTags(xmlTag, "\n")))];
+}
+
+function parsePathXML(pathXml: string): string[] {
+  if (!pathXml.trim()) return [];
+  const parts = pathXml.split(/<br\s*\/?>/i).map((s) => s.trim()).filter(Boolean);
+  const result: string[] = [];
+
+  for (const part of parts) {
+    const titleMatch = part.match(/<title>([^<]+)<\/title>/i);
+    if (titleMatch) {
+      const titleText = titleMatch[1].trim();
+      if (titleText) result.push(`/${titleText}`);
+      continue;
+    }
+
+    const cleanPart = part
+      // Keep angle-bracket wrapped plain tokens, e.g. <제2020-5호,...>
+      .replace(/<([^\s/][^>]*)>/g, "$1")
+      // Remove actual HTML tags if present.
+      .replace(/<\/?[a-z][^>]*>/gi, "")
+      .trim();
+    if (!cleanPart) continue;
+    result.push(cleanPart.startsWith("/") ? cleanPart : `/${cleanPart}`);
+  }
+
+  return result;
+}
+
 function pickHardcodedToken(raw: string): string {
   const text = raw.trim();
   if (!text) return "";
@@ -667,8 +778,55 @@ function deriveHardcodedPath(levels: LevelRow[]): string {
   if (!l0 && !l1) return "";
   return (l0.replace(/\/$/, "") + "/" + l1.replace(/^\//, "")).replace(/\/+/g, "/");
 }
-function asExtractedLevels(d?: Record<string, unknown>): LevelRow[] {
-  return asRecordArray(d?.levels).map((row, i) => ({ id: `lvl-${i}`, levelNumber: String(row.levelNumber ?? ""), description: String(row.description ?? ""), redjayXmlTag: String(row.redjayXmlTag ?? ""), path: String(row.path ?? ""), remarksNotes: "" }));
+
+function buildDescriptionFromTocRow(row: TocRow): string {
+  const requiredRaw = row.required?.trim?.() ?? "";
+  const requiredDisplay = requiredRaw === "true"
+    ? "True"
+    : requiredRaw === "false"
+      ? "False"
+      : requiredRaw;
+
+  const lines = [
+    row.name ? `• Name: ${row.name}` : "",
+    requiredDisplay ? `Required: ${requiredDisplay}` : "",
+    row.definition ? `•Definition: ${row.definition}` : "",
+    row.example ? `•Example: ${row.example}` : "",
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function asExtractedLevels(d?: Record<string, unknown>, tocRows: TocRow[] = []): LevelRow[] {
+  const tocByLevel = new Map<string, TocRow>();
+  tocRows.forEach((row) => {
+    const key = String(row.level ?? "").replace(/[^0-9]/g, "").trim();
+    if (key && !tocByLevel.has(key)) tocByLevel.set(key, row);
+  });
+
+  return asRecordArray(d?.levels).map((row, i) => {
+    const levelNumber = String(row.levelNumber ?? "");
+    const levelKey = levelNumber.replace(/[^0-9]/g, "").trim();
+    const fromToc = levelKey ? tocByLevel.get(levelKey) : undefined;
+
+    const description = String(
+      row.description
+      ?? row.Description
+      ?? (fromToc ? buildDescriptionFromTocRow(fromToc) : "")
+    );
+    const exampleSource = String(fromToc?.example ?? "") || extractExample(description) || String(row.example ?? "");
+    const derivedPath = buildPathFromExample(exampleSource);
+
+    return {
+      id: `lvl-${i}`,
+      levelNumber,
+      description,
+      redjayXmlTag: String(row.redjayXmlTag ?? ""),
+      path: derivedPath || String(row.path ?? ""),
+      tocCustom: String(row.tocCustom ?? row.toc_custom ?? fromToc?.tocRequirements ?? ""),
+      remarksNotes: "",
+    };
+  });
 }
 function asExtractedWhitespace(d?: Record<string, unknown>): WhitespaceRow[] {
   return asRecordArray(d?.whitespace).map((row, i) => ({ id: `ws-${i}`, tags: String(row.tags ?? ""), innodReplace: String(row.innodReplace ?? "") }));
@@ -1988,8 +2146,9 @@ function ContentProfileFileDelivery({ cpData }: { cpData?: Record<string, unknow
   );
 }
 
-function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
-  const levels = useMemo(() => asExtractedLevels(cpData), [cpData]);
+function ContentProfile({ cpData, tocData }: { cpData?: Record<string, unknown>; tocData?: Record<string, unknown> }) {
+  const tocRows = useMemo(() => buildTocRows(tocData), [tocData]);
+  const levels = useMemo(() => asExtractedLevels(cpData, tocRows), [cpData, tocRows]);
   const hardcodedPathFromData = String(cpData?.hardcoded_path ?? cpData?.hardcodedPath ?? "").trim();
   const derivedHardcodedPath = useMemo(() => deriveHardcodedPath(levels), [levels]);
   const hardcodedPath = hardcodedPathFromData || derivedHardcodedPath;
@@ -2011,23 +2170,24 @@ function ContentProfile({ cpData }: { cpData?: Record<string, unknown> }) {
       <div>
         <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-400 mb-2" style={MONO}>Level Numbers</p>
         <div className={TBL_WRAP}>
-          <table className="w-full border-collapse" style={{ minWidth: 860 }}>
+          <table className="w-full border-collapse" style={{ minWidth: 980 }}>
             <thead><tr>
               <th className={`w-20 ${TH}`}>Level #</th><th className={`w-64 ${TH}`}>Description</th>
               <th className={TH}>REDJAy XML Tag <span className="text-sky-500 ml-1 normal-case">⚡ auto</span></th>
-              <th className={`w-48 ${TH}`}>Path</th><th className={`w-44 ${TH}`}>Remarks / Notes</th>
+              <th className={`w-48 ${TH}`}>Path</th><th className={`w-72 ${TH}`}>TOC Custom</th><th className={`w-44 ${TH}`}>Remarks / Notes</th>
             </tr></thead>
             <tbody>
               {levels.length===0
-                ?<tr><td colSpan={5} className="py-6 text-center text-[12px] text-slate-400 italic">No levels defined</td></tr>
+                ?<tr><td colSpan={6} className="py-6 text-center text-[12px] text-slate-400 italic">No levels defined</td></tr>
                 :levels.map((row,i)=>(
                     <tr key={row.id} className={i%2===0?"bg-white dark:bg-[#161b2e]":"bg-slate-50/40 dark:bg-[#1a1f35]"}>
                       <td className={TD}><span className="font-mono text-[11px]">{row.levelNumber||"—"}</span></td>
-                      <td className={`${TD} whitespace-pre-line`}>{row.description||<Nil/>}</td>
+                      <td className={`${TD} whitespace-pre-line`}>{stripHtmlTags(decodeHtmlEntities(normalizeBreakTags(row.description)))||<Nil/>}</td>
                       <td className={TD}>
-                        <span className={`text-[11px] font-mono whitespace-pre-line select-all ${row.redjayXmlTag==="Hardcoded"?"text-amber-700 dark:text-amber-400 font-semibold":"text-sky-700 dark:text-sky-400"}`}>{row.redjayXmlTag||<Nil/>}</span>
+                        <span className={`text-[11px] font-mono whitespace-pre-line select-all ${row.redjayXmlTag==="Hardcoded"?"text-amber-700 dark:text-amber-400 font-semibold":"text-sky-700 dark:text-sky-400"}`}>{parseRedjayXML(row.redjayXmlTag).join("\n")||<Nil/>}</span>
                       </td>
-                      <td className={TD}><span className="font-mono text-[11px]">{row.path||<Nil/>}</span></td>
+                      <td className={TD}><span className="font-mono text-[11px] whitespace-pre-line">{(parsePathXML(row.path).join("\n") || normalizeBreakTags(row.path))||<Nil/>}</span></td>
+                      <td className={`${TD} whitespace-pre-line break-words`}>{stripHtmlTags(decodeHtmlEntities(normalizeBreakTags(row.tocCustom, "\n")))||<Nil/>}</td>
                       <td className={TD}>{row.remarksNotes||<Nil/>}</td>
                     </tr>
                   ))}
@@ -2741,7 +2901,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
         <div ref={contentProfileRef}>
           <DocBlock id="section-content-profile">
             <DocSectionHeader idx={6} onEdit={onEdit??noop} canEdit={canEdit}/>
-            <ContentProfile cpData={contentProfileData} />
+            <ContentProfile cpData={contentProfileData} tocData={tocData} />
           </DocBlock>
         </div>
 

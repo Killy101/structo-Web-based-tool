@@ -60,6 +60,7 @@ interface MetaJsonOutput {
   parentalGuidance: [number, number];
   requiredLevels: number[];
   pathTransform: Record<string, unknown>;
+  custom_toc?: Record<string, unknown>;
 }
 
 type PathTransformValue = {
@@ -78,6 +79,14 @@ function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : {};
+}
+function asNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
 }
 function toIsoDate(val: string): string {
   if (!val) return new Date().toISOString().split("T")[0];
@@ -105,6 +114,157 @@ function generateUniqueFileId(sourceName: string): string {
     .replace(/_+/g, "_")
     .slice(0, 20);
   return `${slug}_${Date.now().toString(36).toUpperCase()}`;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&nbsp;/gi, " ");
+}
+
+function stripHtmlMarkup(value: string): string {
+  return decodeHtmlEntities(value)
+    .replace(/<[^>]*>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeMeta(meta: Record<string, unknown>, fallbackName: string): Record<string, unknown> {
+  const normalized = { ...meta };
+  const isLegacy = typeof normalized["Source Name"] === "string";
+
+  if (isLegacy) {
+    if (!asString(normalized["Source Name"])) normalized["Source Name"] = fallbackName;
+    if (!("Source Type" in normalized)) normalized["Source Type"] = "Free";
+    if (!("Payload Subtype" in normalized)) normalized["Payload Subtype"] = "Law";
+    if (!("Status" in normalized)) normalized["Status"] = "Effective";
+  } else {
+    if (!asString(normalized["Content Category Name"])) normalized["Content Category Name"] = fallbackName;
+  }
+
+  if (!("Delivery Type" in normalized)) normalized["Delivery Type"] = "{string}";
+  if (!("Unique File Id" in normalized)) normalized["Unique File Id"] = "{string}";
+  if (!("Content URI" in normalized)) normalized["Content URI"] = "{string}";
+  if (!("Publication Date" in normalized)) normalized["Publication Date"] = "{iso-date}";
+  if (!("Last Updated Date" in normalized)) normalized["Last Updated Date"] = "{iso-date}";
+  if (!("Processing Date" in normalized)) normalized["Processing Date"] = "{iso-date}";
+
+  const tagSet = asRecord(normalized["Tag Set"]);
+  normalized["Tag Set"] = {
+    requiredLevels: Array.isArray(tagSet.requiredLevels) ? tagSet.requiredLevels : [],
+    allowedLevels: Array.isArray(tagSet.allowedLevels) ? tagSet.allowedLevels : [],
+  };
+
+  return normalized;
+}
+
+function normalizeFiles(filesRaw: unknown, fallbackName: string): Record<string, { name: string }> {
+  const files = asRecord(filesRaw);
+  const file0001 = asRecord(files.file0001);
+  if (typeof file0001.name === "string") {
+    return { file0001: { name: file0001.name } };
+  }
+
+  const firstEntry = Object.values(files).find((entry) => {
+    const rec = asRecord(entry);
+    return typeof rec.name === "string";
+  });
+  const firstName = asString(asRecord(firstEntry).name);
+  return { file0001: { name: firstName || fallbackName } };
+}
+
+function normalizeHeadingRequired(value: unknown): number[] {
+  const nums = asArray(value)
+    .map((v) => asNumber(v))
+    .filter((v): v is number => v !== null)
+    .map((v) => Math.trunc(v))
+    .filter((v) => v >= 2);
+
+  if (!nums.includes(2)) nums.unshift(2);
+  return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
+function normalizeRequiredLevels(value: unknown): number[] {
+  const nums = asArray(value)
+    .map((v) => asNumber(v))
+    .filter((v): v is number => v !== null)
+    .map((v) => Math.trunc(v))
+    .filter((v) => v >= 2);
+
+  if (!nums.length) return [2];
+  if (!nums.includes(2)) nums.unshift(2);
+  return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
+function normalizeTagSet(value: unknown): { headingFromLevels: number[]; appliedToLevels: number[] } {
+  const raw = asRecord(value);
+  const headingFromLevels = asArray(raw.headingFromLevels)
+    .map((v) => asNumber(v))
+    .filter((v): v is number => v !== null)
+    .map((v) => Math.trunc(v));
+  const appliedToLevels = asArray(raw.appliedToLevels)
+    .map((v) => asNumber(v))
+    .filter((v): v is number => v !== null)
+    .map((v) => Math.trunc(v));
+  return {
+    headingFromLevels: Array.from(new Set(headingFromLevels)).sort((a, b) => a - b),
+    appliedToLevels: Array.from(new Set(appliedToLevels)).sort((a, b) => a - b),
+  };
+}
+
+function normalizePathTransform(value: unknown): Record<string, unknown> {
+  const src = asRecord(value);
+  const out: Record<string, unknown> = {};
+
+  Object.entries(src).forEach(([level, rawValue]) => {
+    const node = asRecord(rawValue);
+    const caseValue = asString(node.case);
+    const rawPatterns = asArray(node.patterns);
+    const patterns = rawPatterns.map((row) => {
+      if (!Array.isArray(row) || row.length < 4) return row;
+      const find = stripHtmlMarkup(asString(row[0]));
+      const replace = stripHtmlMarkup(asString(row[1]));
+      const flag = typeof row[2] === "number" ? row[2] : 0;
+      const note = asString(row[3]);
+      return [find, replace, flag, note];
+    });
+    out[level] = { case: caseValue, patterns };
+  });
+
+  return out;
+}
+
+function pickCustomTocFromConfig(brdConfig: Record<string, unknown>): Record<string, unknown> | null {
+  const candidate = asRecord(brdConfig.custom_toc || brdConfig.customToc);
+  return Object.keys(candidate).length ? candidate : null;
+}
+
+function canonicalizeMetajsonOutput(
+  metajsonRaw: Record<string, unknown>,
+  opts: { fallbackFilename: string; customToc?: Record<string, unknown> | null },
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...metajsonRaw };
+  const name = asString(out.name) || "Unknown Source";
+
+  out.meta = normalizeMeta(asRecord(out.meta), name);
+  out.files = normalizeFiles(out.files, opts.fallbackFilename);
+  out.headingRequired = normalizeHeadingRequired(out.headingRequired);
+  out.requiredLevels = normalizeRequiredLevels(out.requiredLevels);
+  out.tagSet = normalizeTagSet(out.tagSet);
+  out.pathTransform = normalizePathTransform(out.pathTransform);
+
+  if (opts.customToc) {
+    const existing = asRecord(out.custom_toc || out.customToc);
+    if (!Object.keys(existing).length) {
+      out.custom_toc = opts.customToc;
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -979,6 +1139,8 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
       brdConfig?: Record<string, unknown>;
       brd_config?: Record<string, unknown>;
     };
+    const rawBrdConfig = asRecord(body.brdConfig || body.brd_config);
+    const customTocFromBrd = pickCustomTocFromConfig(rawBrdConfig);
 
     // Prefer Python processing output because it preserves BRD-driven fields
     // like custom_toc/whitespaceHandling from the uploaded BRD.
@@ -1006,7 +1168,15 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
       });
 
       if (upstream.ok) {
-        const data = await upstream.json();
+        const data = await upstream.json() as Record<string, unknown>;
+        const upstreamMetajson = asRecord(data.metajson);
+        if (Object.keys(upstreamMetajson).length) {
+          const fallbackFilename = asString(data.filename).replace(/\.json$/i, "") || "innodMeta";
+          data.metajson = canonicalizeMetajsonOutput(upstreamMetajson, {
+            fallbackFilename,
+            customToc: customTocFromBrd,
+          });
+        }
         return res.json(data);
       }
 
@@ -1021,7 +1191,7 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
     const toc            = asRecord(body.toc);
     const citations      = asRecord(body.citations);
     const contentProfile = asRecord(body.contentProfile);
-    const brdConfig      = asRecord(body.brdConfig || body.brd_config);
+    const brdConfig      = rawBrdConfig;
 
     const inScope: ScopeEntry[]     = asArray(scope.in_scope || scope.inScope) as ScopeEntry[];
     const tocSections: TocSection[] = asArray(toc.sections) as TocSection[];
@@ -1143,7 +1313,11 @@ router.post("/generate/metajson", processingLimiter, async (req: Request, res: R
       pathTransform: finalPathTransform,
     };
 
-    res.json({ success: true, metajson, filename: `${filename}.json` });
+    const canonicalMetajson = canonicalizeMetajsonOutput(metajson as unknown as Record<string, unknown>, {
+      fallbackFilename: filename,
+      customToc: customTocFromBrd,
+    });
+    res.json({ success: true, metajson: canonicalMetajson, filename: `${filename}.json` });
   } catch (err) {
     console.log("[generate/metajson] error:", err);
     res.status(500).json({ success: false, error: "Failed to generate metajson" });
