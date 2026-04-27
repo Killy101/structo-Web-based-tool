@@ -3,7 +3,6 @@ import cors from 'cors'
 import helmet from 'helmet'
 import dotenv from 'dotenv'
 import pool from './lib/db'
-import { seedDevUserIfNeeded } from './lib/seed-dev-user'
 import authRoutes from './routes/auth'
 import usersRoutes from './routes/users'
 import dashboardRoutes from './routes/dashboard'
@@ -156,10 +155,6 @@ async function runStartupMigrations() {
 }
 
 runStartupMigrations().then(async () => {
-  if (process.env.NODE_ENV !== 'production') {
-    await seedDevUserIfNeeded()
-  }
-
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
   })

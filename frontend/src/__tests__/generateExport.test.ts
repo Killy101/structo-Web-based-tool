@@ -273,6 +273,32 @@ describe("prepareBrdExportElement", () => {
     expect(prepared.textContent).toContain("RC Filename");
     expect(prepared.textContent).toContain("sample.rc");
   });
+
+  it("excludes content profile table blocks from DOCX export output", async () => {
+    document.body.innerHTML = `
+      <div id="page">
+        <section id="section-content-profile">
+          <h2>Content Profile</h2>
+          <div>RC Filename</div>
+          <div data-export-docx-skip="1">
+            <p>Level Numbers</p>
+            <table>
+              <tbody>
+                <tr><td>Level 1</td><td>Title</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    `;
+
+    const prepared = await prepareBrdExportElement(document.getElementById("page") as HTMLElement);
+    expect(prepared.querySelector("#section-content-profile")).not.toBeNull();
+    expect(prepared.textContent).toContain("Content Profile");
+    expect(prepared.textContent).toContain("RC Filename");
+    expect(prepared.textContent).not.toContain("Level Numbers");
+    expect(prepared.querySelector("#section-content-profile table")).toBeNull();
+  });
 });
 
 describe("getMetadataRowImagesForField", () => {

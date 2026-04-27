@@ -2167,7 +2167,7 @@ function ContentProfile({ cpData, tocData }: { cpData?: Record<string, unknown>;
           </div>
         ))}
       </div>
-      <div>
+      <div data-export-docx-skip="1">
         <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-400 mb-2" style={MONO}>Level Numbers</p>
         <div className={TBL_WRAP}>
           <table className="w-full border-collapse" style={{ minWidth: 980 }}>
@@ -2195,7 +2195,7 @@ function ContentProfile({ cpData, tocData }: { cpData?: Record<string, unknown>;
           </table>
         </div>
       </div>
-      <div>
+      <div data-export-docx-skip="1">
         <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-400 mb-2" style={MONO}>Whitespace Handling</p>
         <div className={TBL_WRAP}>
           <table className="w-full border-collapse" style={{ minWidth: 480 }}>
@@ -2372,6 +2372,8 @@ export function buildBrdExportFilename(title?: string, brdId?: string): string {
 
 export async function prepareBrdExportElement(sourceEl: HTMLElement): Promise<HTMLElement> {
   const clone = sourceEl.cloneNode(true) as HTMLElement;
+
+  clone.querySelectorAll("[data-export-docx-skip='1']").forEach((node) => node.remove());
 
   clone.querySelectorAll("[data-export-only='1']").forEach((node) => {
     const element = node as HTMLElement;
