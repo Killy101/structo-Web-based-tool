@@ -89,7 +89,8 @@ async function _retryDelay(
 // ── NDJSON stream reader ──────────────────────────────────────────────────────
 
 async function* _readNDJSON(res: Response): AsyncGenerator<unknown> {
-  const reader  = res.body!.getReader();
+  if (!res.body) throw new Error("Response body is not readable (streaming not supported)");
+  const reader  = res.body.getReader();
   const decoder = new TextDecoder();
   let   buffer  = "";
 

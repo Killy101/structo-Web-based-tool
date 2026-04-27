@@ -120,8 +120,9 @@ function buildLines(pane: PaneData): Line[] {
 
   const ranges: { id: number; start: number; end: number }[] = [];
   for (const [cid, start] of Object.entries(offsets)) {
-    const id = Number(cid);
-    ranges.push({ id, start, end: offset_ends[cid] ?? start + 999_999 });
+    const end = offset_ends[cid];
+    if (end == null) continue;
+    ranges.push({ id: Number(cid), start, end });
   }
   ranges.sort((a, b) => a.start - b.start);
 

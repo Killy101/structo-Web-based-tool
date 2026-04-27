@@ -752,17 +752,22 @@ async def diff_pdfs_stream_large(
                 pane_a_json = _pane_to_json(pane_a)
                 pane_b_json = _pane_to_json(pane_b)
 
-                # Accumulate pane data — remap chunk IDs in offsets
+                # Track accumulated char lengths BEFORE extending so offsets
+                # from this batch are shifted to their correct global positions.
+                acc_char_a = sum(len(t) for t, _ in all_pane_a_segs)
+                acc_char_b = sum(len(t) for t, _ in all_pane_b_segs)
+
+                # Accumulate pane data — remap chunk IDs and adjust char offsets
                 all_pane_a_segs.extend(pane_a_json["segments"])
                 all_pane_b_segs.extend(pane_b_json["segments"])
                 for cid, off in pane_a_json["offsets"].items():
-                    all_offsets_a[str(int(cid) + id_offset)] = off
+                    all_offsets_a[str(int(cid) + id_offset)] = off + acc_char_a
                 for cid, off in pane_a_json["offset_ends"].items():
-                    all_offset_ends_a[str(int(cid) + id_offset)] = off
+                    all_offset_ends_a[str(int(cid) + id_offset)] = off + acc_char_a
                 for cid, off in pane_b_json["offsets"].items():
-                    all_offsets_b[str(int(cid) + id_offset)] = off
+                    all_offsets_b[str(int(cid) + id_offset)] = off + acc_char_b
                 for cid, off in pane_b_json["offset_ends"].items():
-                    all_offset_ends_b[str(int(cid) + id_offset)] = off
+                    all_offset_ends_b[str(int(cid) + id_offset)] = off + acc_char_b
                 last_tag_cfgs_a = pane_a_json["tag_cfgs"]
                 last_tag_cfgs_b = pane_b_json["tag_cfgs"]
 
@@ -774,15 +779,26 @@ async def diff_pdfs_stream_large(
                     "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
                 }
 
-                # d. Stream this batch result
+                # d. Stream this batch result with globally-adjusted char offsets
+                # so the frontend can concatenate pane data across batches correctly.
+                def _shift_offsets(pj: dict, delta: int) -> dict:
+                    if delta == 0:
+                        return pj
+                    return {
+                        "segments":    pj["segments"],
+                        "tag_cfgs":    pj["tag_cfgs"],
+                        "offsets":     {k: v + delta for k, v in pj["offsets"].items()},
+                        "offset_ends": {k: v + delta for k, v in pj["offset_ends"].items()},
+                    }
+
                 batch_payload = {
                     "t":          "batch",
                     "batch":      batch_k + 1,
                     "of":         n_batches,
                     "page_range": [batch_start, batch_end],
                     "chunks":     chunks_dicts,
-                    "pane_a":     pane_a_json,
-                    "pane_b":     pane_b_json,
+                    "pane_a":     _shift_offsets(pane_a_json, acc_char_a),
+                    "pane_b":     _shift_offsets(pane_b_json, acc_char_b),
                     "stats":      batch_stats,
                 }
                 q.put(_dumps_fast(batch_payload).rstrip(b"\n") + b"\n")

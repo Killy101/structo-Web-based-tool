@@ -19,8 +19,8 @@ import React, { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
-import type { DiffResult, WorkflowMode, XmlSection } from "../../../components/compare/types";
-import { apiDiffAuto, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
+import type { Chunk, DiffResult, PaneData, WorkflowMode, XmlSection } from "../../../components/compare/types";
+import { apiDiffAuto, type BatchResult, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
 
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
@@ -332,23 +332,41 @@ function useDiffState() {
     setLoading(true); setError(null); setResult(null);
     setLoadMsg("Uploading files…"); setLoadPct(0);
     try {
+      // Accumulators for large-doc batch streaming.
+      const batchChunks: Chunk[] = [];
+      const batchPaneA: PaneData = { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} };
+      const batchPaneB: PaneData = { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} };
+
+      function onBatch(b: BatchResult) {
+        batchChunks.push(...b.chunks);
+        batchPaneA.segments.push(...b.pane_a.segments);
+        batchPaneB.segments.push(...b.pane_b.segments);
+        Object.assign(batchPaneA.tag_cfgs,    b.pane_a.tag_cfgs);
+        Object.assign(batchPaneB.tag_cfgs,    b.pane_b.tag_cfgs);
+        Object.assign(batchPaneA.offsets,     b.pane_a.offsets);
+        Object.assign(batchPaneB.offsets,     b.pane_b.offsets);
+        Object.assign(batchPaneA.offset_ends, b.pane_a.offset_ends);
+        Object.assign(batchPaneB.offset_ends, b.pane_b.offset_ends);
+      }
+
       const raw = await apiDiffAuto(
         fileA, fileB,
         {
           onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); },
+          onBatch,
         },
         xmlFile,
       );
 
       // apiDiffAuto returns DiffResult (small) or LargeDiffResult (large).
-      // For large docs the batch viewer handles rendering; we only need stats/sections here.
+      // For large docs, chunks and pane data were accumulated via onBatch above.
       const data: DiffResult = "chunks" in raw
         ? (raw as DiffResult)
         : {
             success:      true,
-            chunks:       [],
-            pane_a:       { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} },
-            pane_b:       { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} },
+            chunks:       batchChunks,
+            pane_a:       batchPaneA,
+            pane_b:       batchPaneB,
             stats:        (raw as LargeDiffResult).stats,
             xml_sections: (raw as LargeDiffResult).xmlSections,
             file_a:       (raw as LargeDiffResult).file_a,

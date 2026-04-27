@@ -366,7 +366,7 @@ export default function DiffViewer({
     const a    = document.createElement("a");
     a.href     = url;
     a.download = xmlFilename
-      ? xmlFilename.replace(/(\\.xml)?$/, "_updated.xml")
+      ? xmlFilename.replace(/(\.xml)?$/i, "_updated.xml")
       : "updated.xml";
     a.click();
     URL.revokeObjectURL(url);
