@@ -590,6 +590,63 @@ def load_pdf(
 #  PUBLIC: load_pdf_batched  (new — for large documents)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def open_pdf_for_batching(path: str) -> tuple:
+    """
+    Open a PDF and pre-compute the header/footer noise set ONCE.
+
+    Returns (doc, hf_noise, pdf_flags, page_gap).
+    Pass these to extract_pdf_batch() for every batch — this avoids the
+    repeated fitz.open() + 20-page _detect_header_footer_patterns() scan
+    that previously happened on EVERY _safe_load() call inside _run_large.
+
+    The caller must call doc.close() after all batches are processed.
+    The compare.py _run_large() finally block handles this.
+    """
+    doc = fitz.open(path)
+    hf_noise  = _detect_header_footer_patterns(doc)
+    pdf_flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
+    try:
+        pdf_flags |= fitz.TEXT_DEHYPHENATE
+    except AttributeError:
+        pass
+    return doc, hf_noise, pdf_flags, 80.0  # 80.0 = page_gap constant
+
+
+def extract_pdf_batch(
+    doc,
+    hf_noise:  set,
+    pdf_flags: int,
+    page_gap:  float,
+    page_start: int,
+    page_end:   int,
+) -> List[PdfLine]:
+    """
+    Extract one page range from an already-open fitz document.
+
+    Uses pre-computed hf_noise — no repeat header/footer scan.
+    Uses the already-open doc — no repeated fitz.open() overhead.
+    The caller is responsible for calling doc.close() when all batches finish.
+
+    page_start / page_end: 0-based inclusive indices, clipped to doc length.
+    """
+    total = len(doc)
+    p0    = max(0, min(page_start, total - 1))
+    p1    = max(0, min(page_end,   total - 1))
+    if p0 > p1:
+        return []
+
+    lines: List[PdfLine] = []
+    for abs_page in range(p0, p1 + 1):
+        fz            = doc[abs_page]
+        h             = fz.rect.height or 1
+        page_y_offset = abs_page * (h + page_gap)
+        lines.extend(_extract_page(fz, abs_page, page_y_offset, hf_noise, pdf_flags))
+
+    _attach_isolated_amendment_markers(lines)
+    return lines
+
+
 def load_pdf_batched(
     path:       str,
     batch_size: int = 50,

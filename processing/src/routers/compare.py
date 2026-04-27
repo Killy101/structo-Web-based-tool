@@ -68,12 +68,12 @@ logger = logging.getLogger(__name__)
 _MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "5"))
 _active_diffs: int = 0
 _RETRY_AFTER_SECONDS: int = 30
-_COMPARE_TIMEOUT_SECONDS: int = int(os.environ.get("COMPARE_TIMEOUT_SECONDS", "600"))
+_COMPARE_TIMEOUT_SECONDS: int = int(os.environ.get("COMPARE_TIMEOUT_SECONDS", "1800"))
 
 # ── Batch size for large-document streaming ───────────────────────────────────
 # 50 pages ≈ 5–10 MB RAM per batch for typical legal PDFs.
 # Reduce to 25 if you see OOM on image-heavy PDFs.
-PAGE_BATCH_SIZE: int = int(os.environ.get("COMPARE_BATCH_SIZE", "50"))
+PAGE_BATCH_SIZE: int = int(os.environ.get("COMPARE_BATCH_SIZE", "100"))
 
 # ── File size limit (200 MB) ──────────────────────────────────────────────────
 MAX_FILE_SIZE_BYTES: int = int(os.environ.get("MAX_FILE_SIZE_MB", "200")) * 1024 * 1024
@@ -642,6 +642,7 @@ async def diff_pdfs_stream_large(
 
     def _run_large():
         tmp_a = tmp_b = None
+        doc_a = doc_b = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
                 fa.write(data_a); tmp_a = fa.name
@@ -650,12 +651,55 @@ async def diff_pdfs_stream_large(
 
             t0 = time.perf_counter()
 
-            # 1. Page count — zero extraction cost
-            n_a = _ext_page_count(tmp_a)
-            n_b = _ext_page_count(tmp_b)
-            # Use whichever is larger to build the batch schedule
-            n_pages  = max(n_a, n_b)
-            batches  = list(range(0, n_pages, PAGE_BATCH_SIZE))
+            # Open both PDFs ONCE and pre-compute hf_noise ONCE each.
+            # Previously every _safe_load() call re-ran fitz.open() and
+            # _detect_header_footer_patterns() (20-page scan) on every batch —
+            # wasting several seconds per iteration on large documents.
+            # ── Open PDFs once, compute hf_noise once ──────────────────────────
+            # Determine whether the fast-batch API is available on the extractor.
+            # All variables are initialised unconditionally so Pylance never
+            # reports "possibly unbound" inside _submit_extract or the loop.
+            extractor      = _get_extractor()
+            has_fast_batch = (
+                extractor is not None
+                and hasattr(extractor, "open_pdf_for_batching")
+                and hasattr(extractor, "extract_pdf_batch")
+            )
+
+            # These are always assigned before use — initialise to sentinel
+            # values first so Pylance knows they are bound in every code path.
+            hf_a:    set   = set()
+            flags_a: int   = 0
+            gap_a:   float = 80.0
+            hf_b:    set   = set()
+            flags_b: int   = 0
+            gap_b:   float = 80.0
+            src_a: object  = tmp_a   # doc object (fast) or path string (slow)
+            src_b: object  = tmp_b
+
+            if has_fast_batch and extractor is not None:
+                doc_a, hf_a, flags_a, gap_a = extractor.open_pdf_for_batching(tmp_a)
+                doc_b, hf_b, flags_b, gap_b = extractor.open_pdf_for_batching(tmp_b)
+                n_a, n_b = len(doc_a), len(doc_b)
+                src_a = doc_a
+                src_b = doc_b
+            else:
+                has_fast_batch = False   # ensure consistent False in closures
+                n_a = _ext_page_count(tmp_a)
+                n_b = _ext_page_count(tmp_b)
+
+            # Single _do_load definition — no duplicate declaration.
+            # Captures has_fast_batch, hf_*, flags_*, gap_* from the enclosing scope.
+            def _do_load(src: object, hf: set, flags: int, gap: float,
+                         start_p: int, end_p: int) -> list:
+                if start_p > end_p:
+                    return []
+                if has_fast_batch and extractor is not None:
+                    return extractor.extract_pdf_batch(src, hf, flags, gap, start_p, end_p)
+                return _ext_load_pdf(str(src), None, start_p, end_p)
+
+            n_pages   = max(n_a, n_b)
+            batches   = list(range(0, n_pages, PAGE_BATCH_SIZE))
             n_batches = len(batches)
 
             q.put(_json.dumps({
@@ -664,29 +708,43 @@ async def diff_pdfs_stream_large(
                 "old_pages": n_a, "new_pages": n_b,
             }) + "\n")
 
-            logger.info("diff/stream/large: job=%s  old=%d pages  new=%d pages  "
-                        "%d batches × %d pages", job_id, n_a, n_b, n_batches, PAGE_BATCH_SIZE)
+            logger.info(
+                "diff/stream/large: job=%s  old=%d pages  new=%d pages  "
+                "%d batches x %d pages  fast_batch=%s",
+                job_id, n_a, n_b, n_batches, PAGE_BATCH_SIZE, has_fast_batch,
+            )
 
-            # Accumulate results across batches for the final cache entry
-            all_chunks:  list = []
-            all_pane_a_segs: list = []
-            all_pane_b_segs: list = []
-            # tag_cfgs / offsets are small and shared; keep last batch's version
-            last_tag_cfgs_a: dict = {}
-            last_tag_cfgs_b: dict = {}
-            all_offsets_a:   dict = {}
-            all_offsets_b:   dict = {}
+            all_chunks:        list = []
+            all_pane_a_segs:   list = []
+            all_pane_b_segs:   list = []
+            last_tag_cfgs_a:   dict = {}
+            last_tag_cfgs_b:   dict = {}
+            all_offsets_a:     dict = {}
+            all_offsets_b:     dict = {}
             all_offset_ends_a: dict = {}
             all_offset_ends_b: dict = {}
 
+            # Pipeline with 4 workers: pre-fetch next batch extraction while
+            # diff+render of the current batch runs.
+            pipeline_pool = ThreadPoolExecutor(max_workers=4)
+
+            def _submit_extract(bs: int):
+                be  = min(bs + PAGE_BATCH_SIZE - 1, n_pages - 1)
+                oe  = min(be, n_a - 1)
+                ne  = min(be, n_b - 1)
+                fa_ = pipeline_pool.submit(_do_load, src_a, hf_a, flags_a, gap_a, bs, oe)
+                fb_ = pipeline_pool.submit(_do_load, src_b, hf_b, flags_b, gap_b, bs, ne)
+                return fa_, fb_
+
+            # Pre-fetch batch 0 before the loop starts.
+            # Always a tuple — use an empty sentinel when there are no batches.
+            if batches:
+                next_futs: tuple = _submit_extract(batches[0])
+            else:
+                next_futs = (None, None)
+
             for batch_k, batch_start in enumerate(batches):
                 batch_end = min(batch_start + PAGE_BATCH_SIZE - 1, n_pages - 1)
-                # Clip to each PDF's actual page count
-                old_start = batch_start
-                old_end   = min(batch_end, n_a - 1)
-                new_start = batch_start
-                new_end   = min(batch_end, n_b - 1)
-
                 pct_start = int(batch_k / n_batches * 90)
                 pct_end   = int((batch_k + 1) / n_batches * 90)
 
@@ -695,31 +753,31 @@ async def diff_pdfs_stream_large(
                     "batch": batch_k + 1, "of": n_batches,
                     "pages": [batch_start, batch_end],
                     "pct":   pct_start,
-                    "msg":   f"Extracting pages {batch_start}–{batch_end}…",
+                    "msg":   f"Extracting pages {batch_start}-{batch_end}...",
                 }) + "\n")
 
-                # a. Extract this batch from both PDFs in parallel
-                # Guard: if this PDF is shorter, skip its batch (return empty)
-                def _safe_load(path, start, end):
-                    if start > end:
-                        return []
-                    return _ext_load_pdf(path, None, start, end)
+                # Collect current batch (already running in thread pool).
+                # next_futs is always a 2-tuple; futures are None only when
+                # batches is empty (guarded above), so .result() is always safe.
+                fut_a, fut_b = next_futs
+                lines_a = fut_a.result() if fut_a is not None else []
+                lines_b = fut_b.result() if fut_b is not None else []
 
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    fut_a = pool.submit(_safe_load, tmp_a, old_start, old_end)
-                    fut_b = pool.submit(_safe_load, tmp_b, new_start, new_end)
-                    lines_a = fut_a.result()
-                    lines_b = fut_b.result()
+                # Pre-fetch NEXT batch immediately so extraction overlaps diff+render
+                next_batch_idx = batch_k + 1
+                if next_batch_idx < len(batches):
+                    next_futs = _submit_extract(batches[next_batch_idx])
+                else:
+                    next_futs = (None, None)
 
                 q.put(_json.dumps({
                     "t": "p", "s": "batch",
                     "batch": batch_k + 1, "of": n_batches,
                     "pages": [batch_start, batch_end],
                     "pct":   pct_start + (pct_end - pct_start) // 3,
-                    "msg":   f"Diffing pages {batch_start}–{batch_end}…",
+                    "msg":   f"Diffing pages {batch_start}-{batch_end}...",
                 }) + "\n")
 
-                # b. Diff
                 try:
                     blocks_a, blocks_b, chunks = ce.compute_diff(
                         lines_a, lines_b,
@@ -734,25 +792,22 @@ async def diff_pdfs_stream_large(
                     "batch": batch_k + 1, "of": n_batches,
                     "pages": [batch_start, batch_end],
                     "pct":   pct_start + 2 * (pct_end - pct_start) // 3,
-                    "msg":   f"Rendering {len(chunks)} changes for pages {batch_start}–{batch_end}…",
+                    "msg":   f"Rendering {len(chunks)} changes for pages {batch_start}-{batch_end}...",
                 }) + "\n")
 
-                # c. Render pane segments for this batch
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
-                    fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+                with ThreadPoolExecutor(max_workers=2) as render_pool:
+                    fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+                    fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
                     pane_a = fut_pa.result()
                     pane_b = fut_pb.result()
 
-                # Assign sequential IDs that don't collide across batches
-                id_offset = len(all_chunks)
+                id_offset    = len(all_chunks)
                 chunks_dicts = [_chunk_to_dict(ch, id_offset + i) for i, ch in enumerate(chunks)]
                 all_chunks.extend(chunks_dicts)
 
                 pane_a_json = _pane_to_json(pane_a)
                 pane_b_json = _pane_to_json(pane_b)
 
-                # Accumulate pane data — remap chunk IDs in offsets
                 all_pane_a_segs.extend(pane_a_json["segments"])
                 all_pane_b_segs.extend(pane_b_json["segments"])
                 for cid, off in pane_a_json["offsets"].items():
@@ -774,7 +829,6 @@ async def diff_pdfs_stream_large(
                     "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
                 }
 
-                # d. Stream this batch result
                 batch_payload = {
                     "t":          "batch",
                     "batch":      batch_k + 1,
@@ -787,78 +841,26 @@ async def diff_pdfs_stream_large(
                 }
                 q.put(_dumps_fast(batch_payload).rstrip(b"\n") + b"\n")
 
-                # e. Free this batch's RAM before the next iteration
                 del lines_a, lines_b, blocks_a, blocks_b, chunks, pane_a, pane_b
-                logger.info("[batch %d/%d] pages=%d-%d  elapsed=%.1fs",
-                            batch_k + 1, n_batches, batch_start, batch_end,
-                            time.perf_counter() - t0)
+                logger.info(
+                    "[batch %d/%d] pages=%d-%d  elapsed=%.1fs",
+                    batch_k + 1, n_batches, batch_start, batch_end,
+                    time.perf_counter() - t0,
+                )
 
-            # ── XML sections (run once on the assembled result) ────────────
-            xml_sections: list = []
-            if xml_b_text and hasattr(ce, "extract_xml_sections"):
-                try:
-                    xml_sections = ce.extract_xml_sections(xml_b_text)
-                    if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
-                        ce.assign_chunks_to_sections(all_chunks, xml_sections, xml_b_text)
-                except Exception as xs_exc:
-                    logger.warning("xml_sections failed: %s", xs_exc)
-
-            total_stats = {
-                "total":         len(all_chunks),
-                "additions":     sum(1 for c in all_chunks if c.get("kind") == ce.KIND_ADD),
-                "deletions":     sum(1 for c in all_chunks if c.get("kind") == ce.KIND_DEL),
-                "modifications": sum(1 for c in all_chunks if c.get("kind") == ce.KIND_MOD),
-                "emphasis":      sum(1 for c in all_chunks if c.get("kind") == ce.KIND_EMP),
-            }
-
-            # ── Store full result in LRU cache for lazy segment fetch ──────
-            full_pane_a = {
-                "segments":    all_pane_a_segs,
-                "tag_cfgs":    last_tag_cfgs_a,
-                "offsets":     all_offsets_a,
-                "offset_ends": all_offset_ends_a,
-            }
-            full_pane_b = {
-                "segments":    all_pane_b_segs,
-                "tag_cfgs":    last_tag_cfgs_b,
-                "offsets":     all_offsets_b,
-                "offset_ends": all_offset_ends_b,
-            }
-            _result_cache.set(job_id, {
-                "chunks":       all_chunks,
-                "pane_a":       full_pane_a,
-                "pane_b":       full_pane_b,
-                "stats":        total_stats,
-                "xml_sections": xml_sections,
-                "file_a":       fname_a,
-                "file_b":       fname_b,
-                "total_pages":  n_pages,
-            })
-
-            # ── Final "done" message ───────────────────────────────────────
-            done_payload = {
-                "t":            "done",
-                "job_id":       job_id,
-                "stats":        total_stats,
-                "xml_sections": [{"id": s["id"], "label": s["label"],
-                                   "level": s["level"], "parent_id": s["parent_id"]}
-                                  for s in xml_sections],
-                "file_a":       fname_a,
-                "file_b":       fname_b,
-                "total_pages":  n_pages,
-                "elapsed_s":    round(time.perf_counter() - t0, 2),
-            }
-            q.put(_dumps_fast(done_payload).rstrip(b"\n") + b"\n")
-
-            logger.info("diff/stream/large: job=%s done  chunks=%d  elapsed=%.1fs",
-                        job_id, len(all_chunks), time.perf_counter() - t0)
-            q.put(None)
+            pipeline_pool.shutdown(wait=False)
 
         except Exception as exc:
             logging.exception("diff/stream/large _run_large failed")
             q.put((_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode())
             q.put(None)
         finally:
+            for doc in (doc_a, doc_b):
+                try:
+                    if doc is not None:
+                        doc.close()
+                except Exception:
+                    pass
             for p in (tmp_a, tmp_b):
                 if p and os.path.exists(p):
                     try: os.unlink(p)

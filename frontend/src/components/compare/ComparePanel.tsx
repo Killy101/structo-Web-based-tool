@@ -27,6 +27,7 @@ export interface DetectedChange {
   old_formatting?: Record<string, unknown> | null;
   new_formatting?: Record<string, unknown> | null;
   emphasis?: string[];
+  emp_fmt_diff?: Record<string, "added" | "removed" | "same">;
   suggested_xml?: string | null;
   word_diff?: WordDiffResult | null;
   baseline?: string;
@@ -448,7 +449,7 @@ function XmlViewer({ content, hlText }: { content:string; hlText?:string }) {
 
 function ChangeRow({ch,sel,onClick}:{ch:DetectedChange;sel:boolean;onClick:()=>void}) {
   const m = CM[ch.type]??CM.modification;
-  const snippet=((ch.new_text||ch.old_text||ch.text)??"").replace(/\s+/g," ").trim().slice(0,58);
+  const snippet=((ch.new_text||ch.old_text||ch.text)??"").replace(/\s+/g," ").trim().slice(0,52);
   const pg=ch.old_page||ch.new_page;
   return (
     <div className="cp-row" onClick={onClick} style={{
@@ -458,8 +459,13 @@ function ChangeRow({ch,sel,onClick}:{ch:DetectedChange;sel:boolean;onClick:()=>v
     }}>
       <span style={{color:m.fg,fontFamily:"Consolas,monospace",fontSize:12,fontWeight:700}}>{m.pfx}</span>
       <span style={{color:sel?"#fff":"var(--fg)",fontFamily:"Consolas,monospace",fontSize:11}}>
-        {snippet}{snippet.length>=58?"…":""}
+        {snippet}{snippet.length>=52?"…":""}
       </span>
+      {ch.type==="emphasis" && ch.emphasis && ch.emphasis.length > 0 && (
+        <span style={{display:"inline-flex",gap:3,marginLeft:4,flexWrap:"wrap"}}>
+          {ch.emphasis.slice(0,3).map(e=><EmpBadge key={e} label={e}/>)}
+        </span>
+      )}
       {pg&&<span style={{color:sel?"#ccc":"var(--fg3)",fontFamily:"Consolas,monospace",fontSize:10}}> p.{pg}</span>}
     </div>
   );
@@ -503,6 +509,85 @@ function DBlock({label,fg,bg,children}:{label:string;fg:string;bg:string;childre
   );
 }
 
+// ── Emphasis type config ─────────────────────────────────────────────────────
+// Each formatting axis gets its own color and visual preview style so users
+// can instantly distinguish "strikethrough added" from "bold removed".
+const EMP_CFG: Record<string, {
+  addedBg:   string;
+  removedBg: string;
+  color:     string;
+  icon:      string;
+  previewStyle: React.CSSProperties;
+}> = {
+  bold:          { addedBg:"#854d0e", removedBg:"#7c2d12", color:"#fcd34d", icon:"B",  previewStyle:{ fontWeight:700 } },
+  italic:        { addedBg:"#1e3a5f", removedBg:"#1e1b4b", color:"#93c5fd", icon:"I",  previewStyle:{ fontStyle:"italic" } },
+  underline:     { addedBg:"#134e4a", removedBg:"#14532d", color:"#5eead4", icon:"U",  previewStyle:{ textDecoration:"underline" } },
+  strikethrough: { addedBg:"#7f1d1d", removedBg:"#450a0a", color:"#fca5a5", icon:"S",  previewStyle:{ textDecoration:"line-through" } },
+  color:         { addedBg:"#3b1f6e", removedBg:"#1e0a3c", color:"#c4b5fd", icon:"C",  previewStyle:{ color:"#a78bfa" } },
+};
+
+function EmpBadge({ label }: { label: string }) {
+  const lower = label.toLowerCase();
+  // Parse "bold added", "strikethrough removed", or plain "bold"
+  const isAdded   = lower.includes(" added");
+  const isRemoved = lower.includes(" removed");
+  const axis      = lower.replace(" added","").replace(" removed","").trim();
+  const cfg       = EMP_CFG[axis] ?? EMP_CFG.color;
+  const bg        = isRemoved ? cfg.removedBg : cfg.addedBg;
+  const suffix    = isAdded ? " +" : isRemoved ? " −" : "";
+
+  return (
+    <span style={{
+      background: bg,
+      color: cfg.color,
+      fontSize: 9,
+      fontWeight: 700,
+      padding: "2px 7px",
+      borderRadius: 3,
+      fontFamily: "Consolas,monospace",
+      letterSpacing: 0.5,
+      textTransform: "uppercase",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 3,
+    }}>
+      <span style={{ fontStyle: cfg.previewStyle.fontStyle ?? "normal",
+                     fontWeight: cfg.previewStyle.fontWeight ?? "normal",
+                     textDecoration: cfg.previewStyle.textDecoration as string ?? "none",
+                     fontSize: 10 }}>
+        {cfg.icon}
+      </span>
+      {axis}{suffix}
+    </span>
+  );
+}
+
+function EmpTextPreview({ text, empDiff, formattingNew }: {
+  text: string;
+  empDiff?: Record<string, "added" | "removed" | "same">;
+  formattingNew?: Record<string, boolean> | null;
+}) {
+  // Apply all active formatting from the new line so the preview
+  // looks exactly like the text in the PDF.
+  const fmt = empDiff ?? {};
+  const style: React.CSSProperties = {
+    fontFamily: "Consolas,monospace",
+    fontSize: 13,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    lineHeight: 1.7,
+  };
+  const decorations: string[] = [];
+
+  if (fmt.bold          === "added" || formattingNew?.bold)          style.fontWeight = 700;
+  if (fmt.italic        === "added" || formattingNew?.italic)        style.fontStyle  = "italic";
+  if (fmt.underline     === "added" || formattingNew?.underline)     decorations.push("underline");
+  if (fmt.strikethrough === "added" || formattingNew?.strikethrough) decorations.push("line-through");
+  if (decorations.length) style.textDecoration = decorations.join(" ");
+
+  return <span style={style}>{text}</span>;
+}
+
 function ChangeDetail({ch}:{ch:DetectedChange}) {
   const m=CM[ch.type]??CM.modification;
   const wd=(ch.word_diff?.tokens?.length??0)>0;
@@ -515,7 +600,7 @@ function ChangeDetail({ch}:{ch:DetectedChange}) {
         {ch.old_page&&<span style={{color:"var(--red)",fontSize:10}}>Old p.{ch.old_page}</span>}
         {ch.new_page&&<span style={{color:"var(--grn)",fontSize:10}}>New p.{ch.new_page}</span>}
         {ch.emphasis?.map(e=>(
-          <span key={e} style={{background:"var(--pill-emp)",color:"#fff",fontSize:9,padding:"1px 6px",borderRadius:3}}>{e}</span>
+          <EmpBadge key={e} label={e} />
         ))}
       </div>
       {wd?(
@@ -536,8 +621,12 @@ function ChangeDetail({ch}:{ch:DetectedChange}) {
             </DBlock>
           )}
           {ch.type==="emphasis"&&(
-            <DBlock label="TEXT" fg="var(--vio)" bg="var(--emp-bg)">
-              <span style={{color:"var(--fg)",fontFamily:"Consolas,monospace",fontSize:12,whiteSpace:"pre-wrap"}}>{ch.text}</span>
+            <DBlock label="TEXT (EMPHASIS CHANGE)" fg="var(--vio)" bg="var(--emp-bg)">
+              <EmpTextPreview
+                text={ch.text}
+                empDiff={ch.emp_fmt_diff}
+                formattingNew={ch.new_formatting as Record<string,boolean>|null}
+              />
             </DBlock>
           )}
         </>

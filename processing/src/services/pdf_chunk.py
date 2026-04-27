@@ -2037,10 +2037,16 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
     i = 0
     while i < len(lines):
         line = lines[i]
+        # Never merge TOC lines (they have dot leaders) — each entry is its own unit
+        if _is_toc_line(line["text"]):
+            merged_lines.append(line)
+            i += 1
+            continue
         # Accumulate continuation lines on the same page
         while (
             i + 1 < len(lines)
             and lines[i + 1]["page"] == line["page"]
+            and not _TOC_DOTS.search(lines[i + 1]["text"])   # don't merge into a TOC line
             and not _TERMINAL.search(line["text"].rstrip())
             and not _PROVISION_ANCHOR.match(lines[i + 1]["text"])
             and len(line["text"]) > 8   # don't merge headings / very short lines
@@ -2086,9 +2092,36 @@ _LINE_NOISE = re.compile(
     r'\s*\d{1,4}\s*'                    # bare page numbers
     r'|page\s+\d+(?:\s+of\s+\d+)?'     # "page N of M"
     r'|[^\w]{0,3}'                       # pure punctuation / whitespace
+    r'|[.\u2026\s]{6,}'                  # pure dot-leader / ellipsis lines (TOC leaders)
     r')\s*$',
     re.IGNORECASE,
 )
+
+# ── TOC (table of contents) line detection ────────────────────────────────────
+# TOC lines look like:  "102.9 Extended jurisdiction .......... 256"
+# The only real difference between old/new versions is the page number.
+# Comparing them as full strings produces hundreds of false MOD changes.
+# Instead we strip the dot leader + page numbers and compare only the label.
+
+_TOC_DOTS = re.compile(r'[.\u2026]{4,}')   # 4+ consecutive dots = dot leader
+
+def _is_toc_line(text: str) -> bool:
+    """Return True if this line looks like a TOC entry (label + dot leader + page number)."""
+    return bool(_TOC_DOTS.search(text))
+
+def _toc_label_only(text: str) -> str:
+    """
+    Strip the dot leader and all trailing page numbers from a TOC line,
+    returning only the heading label for comparison.
+
+    'interim control order 259 ......... 259'  →  'interim control order'
+    '102.9 Extended jurisdiction ......... 256' →  '102.9 extended jurisdiction'
+    """
+    # Remove from the first dot-leader onwards
+    stripped = _TOC_DOTS.split(text, maxsplit=1)[0].strip()
+    # Remove any trailing standalone page number (1–4 digits)
+    stripped = re.sub(r'\s+\d{1,4}\s*$', '', stripped).strip()
+    return ' '.join(stripped.lower().split())
 
 _LIGATURE_TABLE = str.maketrans({
     "\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl",
@@ -2119,12 +2152,19 @@ def _norm_line(text: str) -> str:
     • Remove soft-hyphens (U+00AD) inserted by PDF line-break algorithms.
     • Normalise all dash variants (en/em/hyphen-minus) to a plain hyphen so
       "re-enact" and "re–enact" compare equal.
+    • Strip TOC dot leaders and trailing page numbers so TOC entries are
+      compared by their label only — prevents hundreds of false MOD changes
+      when only page numbers shift between editions.
     • Do NOT strip trailing punctuation — preserves sentence boundaries.
     """
     import unicodedata
     text = unicodedata.normalize("NFKC", text).translate(_LIGATURE_TABLE)
-    # Remove PDF soft-hyphen line-break artifacts: "hyphen-" + newline joins
-    text = re.sub(r"-\s*\n\s*", "", text)   # handles pre-joined strings too
+    text = re.sub(r"-\s*\n\s*", "", text)
+
+    # Strip TOC dot leaders: "Heading ......... 256" → "Heading"
+    if _TOC_DOTS.search(text):
+        text = _toc_label_only(text)
+
     return " ".join(text.split()).lower()
 
 
@@ -2525,8 +2565,28 @@ def detect_pdf_changes(
     old_full_text = _layout_full_text(old_pdf_bytes, eff_old_start, eff_old_end, old_lines)
     new_full_text = _layout_full_text(new_pdf_bytes, eff_new_start, eff_new_end, new_lines)
 
+    # ── Deduplicate TOC page-number-only changes ──────────────────────────────
+    # After label-only normalisation, the difflib SequenceMatcher may still
+    # emit the same TOC heading multiple times when it appears on several lines
+    # (e.g. the same entry repeated across continuation rows, or multi-column
+    # TOC layouts that produce duplicate spans).  Collapse them to one entry.
+    seen_toc_labels: set[str] = set()
+    deduped_changes: list[dict] = []
+    for ch in changes:
+        raw = ch.get("text") or ch.get("new_text") or ch.get("old_text") or ""
+        if _is_toc_line(raw):
+            label = _toc_label_only(raw)
+            if label and label in seen_toc_labels:
+                ctype = ch.get("type", "")
+                if ctype in summary:
+                    summary[ctype] = max(0, summary[ctype] - 1)
+                continue
+            if label:
+                seen_toc_labels.add(label)
+        deduped_changes.append(ch)
+
     return {
-        "changes":        changes,
+        "changes":        deduped_changes,
         "xml_content":    xml_content,
         "summary":        summary,
         "old_full_text":  old_full_text,

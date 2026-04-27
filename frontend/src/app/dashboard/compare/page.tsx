@@ -15,7 +15,7 @@
 // Both workflows share the same DiffViewer — only the `mode` prop differs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
@@ -325,7 +325,24 @@ function useDiffState() {
     setResult(null); setError(null);
     setXmlSections([]); setAllSections([]);
     setShowModal(false); setSelectedSec(null);
+    try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
   }
+
+  // ── Session restore — reload previous result from sessionStorage on mount ──
+  // sessionStorage survives page refresh but not tab close.  IndexedDB would
+  // survive tab close but requires an async setup — sessionStorage is enough
+  // for the "accidental refresh" UX win with zero extra dependencies.
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("diff_last_result");
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as DiffResult;
+      if (parsed?.success && parsed?.chunks !== undefined) {
+        setResult(parsed);
+        if (parsed.xml_sections?.length) setAllSections(parsed.xml_sections);
+      }
+    } catch { /* corrupted cache — ignore */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function run() {
     if (!fileA || !fileB) return;
@@ -356,6 +373,7 @@ function useDiffState() {
           };
 
       setResult(data);
+      try { sessionStorage.setItem("diff_last_result", JSON.stringify(data)); } catch { /* ok */ }
       userLogsApi.logCompare(fileA.name, fileB.name).catch(() => { /* fire-and-forget */ });
       if (data.xml_sections?.length && allSections.length === 0)
         setAllSections(data.xml_sections);

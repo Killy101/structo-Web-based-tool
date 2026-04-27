@@ -1,15 +1,4 @@
 "use client";
-// ─────────────────────────────────────────────────────────────────────────────
-// XmlPanel.tsx — Panel D
-// Shown below the PDF panes in both Workflow 1 and Workflow 2.
-//
-// Workflow 1 (mode="wf2"):  Read-only.  Scrolls & highlights on chunk click.
-//                           No Apply / Download buttons.
-// Workflow 2 (mode="wf3"):  Editable.   Same nav behaviour PLUS Apply button
-//                           patches the selected XML node in-place, and
-//                           Download saves the updated file.
-// ─────────────────────────────────────────────────────────────────────────────
-
 import React, { forwardRef, useRef } from "react";
 import type { Chunk, WorkflowMode } from "./types";
 
@@ -24,13 +13,12 @@ interface Props {
   onLoad:      (f: File) => void;
   onApply:     () => void;     // no-op in wf2
   onDownload:  () => void;     // no-op in wf2
+  onXmlChange?: (text: string) => void;  // wf3 only: user edits XML directly
   onScrollFraction?: (scrollFraction: number) => void;
 }
 
 /** Max chars to render at once — keeps DOM small for large XML files */
 const RENDER_WINDOW = 50_000;
-
-// ── XML body with windowed rendering + yellow highlight + line numbers ───────
 
 const Mark = ({ children }: { children: string }) => (
   <mark className="bg-yellow-200/40 dark:bg-yellow-400/20 outline outline-2 outline-yellow-400 rounded-sm text-inherit">
@@ -123,10 +111,9 @@ function XmlBody({
   );
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
 
 const XmlPanel = forwardRef<HTMLDivElement, Props>(
-  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onScrollFraction }, ref) => {
+  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const isWf3    = mode === "wf3";
@@ -149,10 +136,8 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
     return (
       <div className="flex flex-col h-full min-w-0 border-t border-slate-200 dark:border-white/8">
 
-        {/* ── Toolbar ──────────────────────────────────────────────────────── */}
         <div className="flex-shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
           <div className="flex items-center gap-2">
-            {/* Icon */}
             <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
             </svg>
@@ -161,7 +146,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               XML {isWf3 ? "Editor" : "Viewer"}
             </span>
 
-            {/* Mode badge */}
             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
               isWf3
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
@@ -170,7 +154,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
 
-            {/* Load XML (always available, shows only when no XML loaded) */}
             {!xmlText && (
               <>
                 <button
@@ -186,7 +169,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               </>
             )}
 
-            {/* Apply + Download — wf3 only */}
             {xmlText && isWf3 && (
               <>
                 <button
@@ -214,7 +196,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
             )}
           </div>
 
-          {/* Right: filename + status */}
           <div className="flex items-center gap-3 min-w-0">
             {xmlFilename && (
               <span className="text-[10px] text-slate-500 font-mono truncate max-w-[200px]">
@@ -229,20 +210,41 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
           </div>
         </div>
 
-        {/* ── XML body ─────────────────────────────────────────────────────── */}
         {xmlText ? (
-          <div
-            ref={ref}
-            data-testid="xml-panel-scroll"
-            className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
-            onScroll={handleScroll}
-          >
-            <pre className="text-[11px] leading-[1.75] font-mono text-blue-700 dark:text-[#7aadca]">
-              <XmlBody text={xmlText} navSpan={navSpan} />
-            </pre>
-          </div>
+          isWf3 ? (
+            <textarea
+              ref={ref as React.Ref<HTMLTextAreaElement>}
+              data-testid="xml-panel-scroll"
+              value={xmlText}
+              onChange={(e) => onXmlChange?.(e.target.value)}
+              onScroll={(e) => {
+                if (!onScrollFraction) return;
+                const el = e.currentTarget;
+                const max = el.scrollHeight - el.clientHeight;
+                if (max <= 0) return;
+                onScrollFraction(el.scrollTop / max);
+              }}
+              spellCheck={false}
+              className="flex-1 resize-none w-full p-3 font-mono text-[11px] leading-[1.75]
+                text-blue-700 dark:text-[#7aadca]
+                bg-white dark:bg-[#0a1118]
+                border-0 outline-none
+                scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
+              style={{ tabSize: 2 }}
+            />
+          ) : (
+            <div
+              ref={ref}
+              data-testid="xml-panel-scroll"
+              className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
+              onScroll={handleScroll}
+            >
+              <pre className="text-[11px] leading-[1.75] font-mono text-blue-700 dark:text-[#7aadca]">
+                <XmlBody text={xmlText} navSpan={navSpan} />
+              </pre>
+            </div>
+          )
         ) : (
-          /* Empty state */
           <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-6">
             <svg className="w-10 h-10 text-slate-300 dark:text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />

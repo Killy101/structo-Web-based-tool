@@ -2,11 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-import logging
 
-logger = logging.getLogger(__name__)
-
-# ── Myers diff ────────────────────────────────────────────────────────────────
 try:
     from diff_match_patch import diff_match_patch as _DMP
     _dmp = _DMP()
@@ -16,7 +12,6 @@ try:
 except ImportError:
     _HAS_DMP = False
 
-# ── Rapidfuzz ─────────────────────────────────────────────────────────────────
 try:
     from rapidfuzz.distance import Levenshtein as _Lev
     def _char_ratio(a: str, b: str) -> float:
@@ -27,7 +22,6 @@ except ImportError:
     def _char_ratio(a: str, b: str) -> float:
         return difflib.SequenceMatcher(None, a, b).ratio()
 
-# ── Regex ─────────────────────────────────────────────────────────────────────
 _LIGATURE = str.maketrans({
     "\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl",
     "\ufb03": "ffi", "\ufb04": "ffl",
@@ -44,7 +38,6 @@ _RE_SPLIT_WORDS = re.compile(r"\s+")
 _RE_STRIP_PUNCT = re.compile(r"^[^\w]+|[^\w]+$")
 _SENT_SPLIT = re.compile(r'(?<=[.!?])\s+')
 
-# ── Normalisation ─────────────────────────────────────────────────────────────
 def _pre_normalise_layout(text: str) -> str:
     text = re.sub(r'(?<!\.)\n(?!\n)', ' ', text)
     text = re.sub(r'\n+', '\n', text)
@@ -73,7 +66,6 @@ def _tokenise(text: str):
 
     return tokens
 
-# ── Myers diff ────────────────────────────────────────────────────────────────
 def _myers_word_diff(old_tokens, new_tokens):
     if not _HAS_DMP:
         import difflib
@@ -117,7 +109,6 @@ def _myers_word_diff(old_tokens, new_tokens):
         result.append((op, toks))
     return result
 
-# ── Smart pairing ─────────────────────────────────────────────────────────────
 def _pair_tokens(del_list, ins_list, additions, removals, modifications):
     used = set()
 
@@ -152,7 +143,6 @@ def _pair_tokens(del_list, ins_list, additions, removals, modifications):
         if i not in used:
             additions.append(nw)
 
-# ── Word compare ──────────────────────────────────────────────────────────────
 def compare_words(old_text: str, new_text: str):
     old_tokens = _tokenise(old_text)
     new_tokens = _tokenise(new_text)
@@ -200,15 +190,11 @@ def compare_words(old_text: str, new_text: str):
         "change_ratio": round(changed / total, 4),
     }
 
-# ─────────────────────────────────────────────────────────────
-# ✅ ADD THIS FUNCTION HERE (IMPORTANT FIX)
-# ─────────────────────────────────────────────────────────────
-
 def chunk_has_real_changes(
     old_text: str,
     new_text: str,
-    change_ratio_threshold: float = 0.01,
-    min_changed_words: int = 1,
+    change_ratio_threshold: float = 0.03,
+    min_changed_words: int = 2,
 ):
     """
     Returns:
@@ -229,7 +215,6 @@ def chunk_has_real_changes(
 
     return meaningful, result
 
-# ── Sentence alignment ────────────────────────────────────────────────────────
 def _split_sentences(text: str):
     text = _normalise(text)
     return [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
@@ -262,7 +247,6 @@ def align_sentences(old_text: str, new_text: str):
 
     return aligned
 
-# ── Git-style inline diff ─────────────────────────────────────────────────────
 def build_git_inline_diff(old_text: str, new_text: str):
     old_tokens = [t[0] for t in _tokenise(old_text)]
     new_tokens = [t[0] for t in _tokenise(new_text)]
@@ -283,7 +267,6 @@ def build_git_inline_diff(old_text: str, new_text: str):
                 result.append({"type": "insert", "value": t})
     return result
 
-# ── Full document compare ─────────────────────────────────────────────────────
 def compare_document(old_text: str, new_text: str):
     aligned = align_sentences(old_text, new_text)
 

@@ -1,18 +1,4 @@
 "use client";
-/**
- * DiffViewer.tsx — 4-panel comparison view (redesigned UI)
- *
- * UI IMPROVEMENTS:
- *  - Persistent top toolbar with file names, nav arrows, stats, and controls
- *  - Keyboard shortcuts: ← → arrows navigate changes, W toggles wrap, X toggles XML
- *  - Animated progress indicator when chunk is selected
- *  - Section filter chip bar (replaces dropdown for better visibility)
- *  - Sidebar collapse remembers state
- *  - Status bar shows current position (e.g. "12 / 47 changes")
- *  - Smooth transitions on panel resize
- *  - Beyond Compare–style header: filename | change counts | mode badge
- */
-
 import React, {
   useCallback,
   useEffect,
@@ -41,7 +27,6 @@ interface Props {
   sectionMapper?:  (chunkSection: string) => string | null;
 }
 
-/* ── Drag splitter hook ─────────────────────────────────────────────────── */
 function useDragSplitter(
   containerRef: React.RefObject<HTMLDivElement>,
   initial: number,
@@ -78,7 +63,6 @@ function useDragSplitter(
   return [value, startDrag];
 }
 
-/* ── Tiny stat pill ────────────────────────────────────────────────────── */
 function StatPill({ label, count, cls }: { label: string; count: number; cls: string }) {
   if (count === 0) return null;
   return (
@@ -88,7 +72,6 @@ function StatPill({ label, count, cls }: { label: string; count: number; cls: st
   );
 }
 
-/* ── Toolbar icon button ────────────────────────────────────────────────── */
 function IconBtn({
   title, active, disabled, onClick, children,
 }: {
@@ -112,8 +95,6 @@ function IconBtn({
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-
 export default function DiffViewer({
   mode,
   result,
@@ -123,7 +104,6 @@ export default function DiffViewer({
   initialSection,
   sectionMapper,
 }: Props) {
-  /* ── State ───────────────────────────────────────────────────────────── */
   const [activeId,      setActiveId]      = useState<number | null>(result.chunks[0]?.id ?? null);
   const [appliedIds,    setAppliedIds]    = useState<Set<number>>(new Set());
   const [xmlText,       setXmlText]       = useState("");
@@ -135,20 +115,16 @@ export default function DiffViewer({
   const [wrapLines,     setWrapLines]     = useState(false);
   const [sidebarOpen,   setSidebarOpen]   = useState(true);
 
-  /* ── Refs ────────────────────────────────────────────────────────────── */
   const containerRef  = useRef<HTMLDivElement>(null);
   const paneARef      = useRef<DiffPaneHandle>(null);
   const paneBRef      = useRef<DiffPaneHandle>(null);
-  const xmlRef        = useRef<HTMLDivElement>(null);
-  const locateSeqRef  = useRef(0);
-  const xmlSyncingRef = useRef(false);
+  const xmlRef        = useRef<HTMLDivElement | HTMLTextAreaElement>(null);
+  const locateSeqRef   = useRef(0);
   const navSyncLockRef = useRef(false);
 
-  /* ── Splitters ───────────────────────────────────────────────────────── */
   const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20,  80);
   const [xmlHeight, startDragH] = useDragSplitter(containerRef, 260, "y", 120, 560);
 
-  /* ── Auto-load XML ───────────────────────────────────────────────────── */
   useEffect(() => {
     if (!initialXmlFile || xmlText) return;
     const reader = new FileReader();
@@ -163,7 +139,6 @@ export default function DiffViewer({
     reader.readAsText(initialXmlFile);
   }, [initialXmlFile, xmlText, mode]);
 
-  /* ── Section helpers ─────────────────────────────────────────────────── */
   const mapSection = useCallback(
     (s: string) => sectionMapper ? sectionMapper(s) : s,
     [sectionMapper],
@@ -216,7 +191,6 @@ export default function DiffViewer({
     [filteredChunks, activeId],
   );
 
-  /* ── Pane header stats ───────────────────────────────────────────────── */
   const paneAHeaderStats = useMemo(() => [
     { label: "-", count: filteredStats.deletions,     colorClass: "text-rose-500",   title: `${filteredStats.deletions} deletions` },
     { label: "~", count: filteredStats.modifications, colorClass: "text-amber-500",  title: `${filteredStats.modifications} modifications` },
@@ -236,9 +210,10 @@ export default function DiffViewer({
     [filteredChunks],
   );
 
-  /* ── Scroll helpers ──────────────────────────────────────────────────── */
   function scrollXmlToMark() {
-    xmlRef.current?.querySelector("mark")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const el = xmlRef.current;
+    if (!el || el.tagName === "TEXTAREA") return;
+    (el as HTMLDivElement).querySelector("mark")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   function getScrollFraction(paneData: typeof result.pane_a, chunkId: number) {
@@ -250,13 +225,11 @@ export default function DiffViewer({
   }
 
   const syncXmlScroll = useCallback((fraction: number) => {
-    const xmlEl = xmlRef.current;
+    const xmlEl = xmlRef.current as HTMLElement | null;
     if (!xmlEl) return;
     const max = xmlEl.scrollHeight - xmlEl.clientHeight;
     if (max <= 0) return;
-    xmlSyncingRef.current = true;
     xmlEl.scrollTop = Math.max(0, Math.min(1, fraction)) * max;
-    requestAnimationFrame(() => { xmlSyncingRef.current = false; });
   }, []);
 
   const schedulePanelSync = useCallback(
@@ -270,7 +243,6 @@ export default function DiffViewer({
     [syncXmlScroll],
   );
 
-  /* ── Select chunk ────────────────────────────────────────────────────── */
   const selectChunk = useCallback(async (id: number) => {
     const seq = ++locateSeqRef.current;
     setActiveId(id);
@@ -285,6 +257,23 @@ export default function DiffViewer({
       paneBRef.current?.scrollToChunk(id, chunkIds, isDel ? getScrollFraction(result.pane_a, id) : undefined);
 
       if (xmlText && chunk) {
+        // Instant client-side highlight while the server request is in-flight
+        const probe = (chunk.kind === "add" || chunk.kind === "mod")
+          ? (chunk.text_b || chunk.text_a || "")
+          : (chunk.text_a || "");
+        if (probe.length >= 6) {
+          const idx = xmlText.indexOf(probe.slice(0, Math.min(60, probe.length)));
+          if (idx !== -1) {
+            setNavSpan({ start: idx, end: idx + probe.length });
+            requestAnimationFrame(scrollXmlToMark);
+          }
+        }
+
+        // Debounce: abandon if a newer chunk was selected within 150 ms
+        await new Promise<void>((resolve) => setTimeout(resolve, 150));
+        if (seq !== locateSeqRef.current) return;
+
+        // Precise server-side locate
         const loc = await apiLocate(xmlText, chunk);
         if (seq !== locateSeqRef.current) return;
         if (loc?.span_start != null) {
@@ -295,16 +284,12 @@ export default function DiffViewer({
         }
       }
     } finally {
-      // Release sync lock after programmatic scrolling settles.
       setTimeout(() => {
-        if (seq === locateSeqRef.current) {
-          navSyncLockRef.current = false;
-        }
+        if (seq === locateSeqRef.current) navSyncLockRef.current = false;
       }, 220);
     }
   }, [result, xmlText, chunkIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── Navigate adjacent change ────────────────────────────────────────── */
   const goTo = useCallback((dir: -1 | 1) => {
     if (filteredChunks.length === 0) return;
     const cur  = activeFilteredIndex >= 0 ? activeFilteredIndex : 0;
@@ -313,7 +298,6 @@ export default function DiffViewer({
     if (tgt) void selectChunk(tgt.id);
   }, [filteredChunks, activeFilteredIndex, selectChunk]);
 
-  /* ── Keyboard shortcuts ──────────────────────────────────────────────── */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -326,7 +310,6 @@ export default function DiffViewer({
     return () => window.removeEventListener("keydown", handler);
   }, [goTo]);
 
-  /* ── Apply chunk (wf3) ───────────────────────────────────────────────── */
   const applyChunk = useCallback(async () => {
     if (mode !== "wf3" || !xmlText || activeId === null) return;
     const chunk = result.chunks.find((c) => c.id === activeId);
@@ -347,7 +330,6 @@ export default function DiffViewer({
     }
   }, [mode, xmlText, activeId, result]);
 
-  /* ── Load / Download XML ─────────────────────────────────────────────── */
   const loadXml = useCallback((f: File) => {
     setXmlFilename(f.name);
     setNavSpan(null);
@@ -372,7 +354,6 @@ export default function DiffViewer({
     URL.revokeObjectURL(url);
   }, [mode, xmlText, xmlFilename]);
 
-  /* ── Derived ─────────────────────────────────────────────────────────── */
   const posLabel = activeFilteredIndex >= 0
     ? `${activeFilteredIndex + 1} / ${filteredChunks.length}`
     : `— / ${filteredChunks.length}`;
@@ -381,16 +362,13 @@ export default function DiffViewer({
     ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
     : "bg-slate-500/10 text-slate-400 border-slate-500/20";
 
-  /* ── Render ──────────────────────────────────────────────────────────── */
   return (
     <div className="flex flex-col h-full min-h-0 bg-white dark:bg-[#0a1020] overflow-hidden">
 
-      {/* ════ TOP TOOLBAR ════════════════════════════════════════════════ */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5
         border-b border-slate-200 dark:border-white/8
         bg-slate-50 dark:bg-[#0d1525]">
 
-        {/* Back */}
         <button
           onClick={onReset}
           title="New comparison"
@@ -404,7 +382,6 @@ export default function DiffViewer({
           New
         </button>
 
-        {/* File names */}
         <span className="text-[11px] font-mono text-rose-400 truncate max-w-[140px]" title={result.file_a}>
           {result.file_a}
         </span>
@@ -417,7 +394,6 @@ export default function DiffViewer({
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
 
-        {/* Change stats */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <StatPill label="+" count={result.stats.additions}     cls="text-emerald-500" />
           <StatPill label="-" count={result.stats.deletions}     cls="text-rose-500" />
@@ -427,7 +403,6 @@ export default function DiffViewer({
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
 
-        {/* Navigation */}
         <div className="flex items-center gap-0.5 flex-shrink-0">
           <button
             onClick={() => goTo(-1)}
@@ -456,7 +431,6 @@ export default function DiffViewer({
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
 
-        {/* Controls */}
         <div className="flex items-center gap-1 flex-shrink-0">
           <IconBtn
             title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
@@ -494,12 +468,10 @@ export default function DiffViewer({
 
         <div className="flex-1" />
 
-        {/* Mode badge */}
         <span className={`flex-shrink-0 text-[9px] font-bold px-2 py-0.5 rounded-full border ${modeColor}`}>
           {mode === "wf3" ? "WF2 · editable" : "WF1 · read-only"}
         </span>
 
-        {/* Keyboard hint */}
         <span className="hidden lg:flex items-center gap-1 text-[9px] text-slate-500 dark:text-slate-600 flex-shrink-0">
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">← →</kbd>
           navigate
@@ -510,7 +482,6 @@ export default function DiffViewer({
         </span>
       </div>
 
-      {/* ════ SECTION FILTER BAR (when XML sections available) ══════════ */}
       {sectionsWithChanges.length > 0 && (
         <div className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto
           border-b border-slate-200 dark:border-white/8
@@ -554,10 +525,8 @@ export default function DiffViewer({
         </div>
       )}
 
-      {/* ════ BODY ═══════════════════════════════════════════════════════ */}
       <div className="flex-1 overflow-hidden min-h-0 flex">
 
-        {/* ── Sidebar (collapsible) ─────────────────────────────────── */}
         {sidebarOpen && (
           <div className="flex-shrink-0 w-[240px] min-w-[240px] flex flex-col
             border-r border-slate-200 dark:border-white/8">
@@ -571,19 +540,17 @@ export default function DiffViewer({
           </div>
         )}
 
-        {/* ── Main diff area ────────────────────────────────────────── */}
         <div ref={containerRef} className="flex-1 min-w-0 flex flex-col overflow-hidden">
 
-          {/* Diff panes row */}
           <div className="flex-1 min-h-0 flex relative overflow-hidden">
 
-            {/* Pane A (old) */}
             <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
               <DiffPane
                 ref={paneARef}
                 pane={result.pane_a}
                 chunks={result.chunks}
                 activeChunkId={activeId}
+                activeChunk={activeChunk}
                 filename={result.file_a}
                 side="a"
                 wrapLines={wrapLines}
@@ -594,16 +561,13 @@ export default function DiffViewer({
               />
             </div>
 
-            {/* Vertical splitter */}
             <div
               className="flex-shrink-0 w-1 cursor-col-resize hover:bg-teal-400/40
                 active:bg-teal-500/50 transition-colors relative z-10
                 bg-slate-200/60 dark:bg-white/[0.06]"
               onMouseDown={startDragV}
             >
-              {/* Wider hit area */}
               <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
-              {/* Drag indicator dots */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
                 flex flex-col gap-0.5 opacity-40">
                 {[0,1,2].map((i) => (
@@ -612,13 +576,13 @@ export default function DiffViewer({
               </div>
             </div>
 
-            {/* Pane B (new) */}
             <div className="min-w-0 flex-1 overflow-hidden">
               <DiffPane
                 ref={paneBRef}
                 pane={result.pane_b}
                 chunks={result.chunks}
                 activeChunkId={activeId}
+                activeChunk={activeChunk}
                 filename={result.file_b}
                 side="b"
                 wrapLines={wrapLines}
@@ -630,10 +594,8 @@ export default function DiffViewer({
             </div>
           </div>
 
-          {/* XML panel */}
           {xmlOpen && (
             <>
-              {/* Horizontal splitter */}
               <div
                 className="flex-shrink-0 h-1 cursor-row-resize hover:bg-teal-400/40
                   active:bg-teal-500/50 transition-colors relative z-10
@@ -641,7 +603,6 @@ export default function DiffViewer({
                 onMouseDown={startDragH}
               >
                 <div className="absolute -top-1.5 -bottom-1.5 inset-x-0" />
-                {/* Drag indicator dots */}
                 <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2
                   flex gap-0.5 opacity-40">
                   {[0,1,2].map((i) => (
@@ -662,6 +623,7 @@ export default function DiffViewer({
                   onLoad={loadXml}
                   onApply={applyChunk}
                   onDownload={downloadXml}
+                  onXmlChange={setXmlText}
                   onScrollFraction={(f) => schedulePanelSync("xml", f)}
                 />
               </div>
@@ -670,12 +632,10 @@ export default function DiffViewer({
         </div>
       </div>
 
-      {/* ════ STATUS BAR ═════════════════════════════════════════════════ */}
       <div className="flex-shrink-0 flex items-center gap-3 px-3 h-6
         border-t border-slate-200 dark:border-white/8
         bg-slate-50 dark:bg-[#0d1525] text-[10px] font-mono">
 
-        {/* Active chunk kind */}
         {activeChunk && (
           <span className={`font-bold ${
             activeChunk.kind === "add" ? "text-emerald-500" :
@@ -694,7 +654,6 @@ export default function DiffViewer({
 
         <div className="flex-1" />
 
-        {/* Confidence */}
         {activeChunk && (
           <span className={`tabular-nums ${
             activeChunk.confidence >= 0.8 ? "text-emerald-500" :
@@ -704,17 +663,14 @@ export default function DiffViewer({
           </span>
         )}
 
-        {/* Applied count */}
         {appliedIds.size > 0 && (
           <span className="text-teal-500">✓ {appliedIds.size} applied</span>
         )}
 
-        {/* Position */}
         <span className="text-slate-400 dark:text-slate-600">
           {posLabel} changes
         </span>
 
-        {/* Wrap indicator */}
         {wrapLines && (
           <span className="text-teal-500/70">wrap</span>
         )}

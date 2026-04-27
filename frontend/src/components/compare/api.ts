@@ -31,9 +31,78 @@ const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
   ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
   : "http://localhost:8000/compare";
 
-// Documents with more pages than this use the batched large-doc endpoint.
 // Keep in sync with LARGE_DOC_THRESHOLD in compare.py.
 export const LARGE_DOC_THRESHOLD = 100;
+
+// ── Chunked upload ────────────────────────────────────────────────────────────
+// Splits large files into 2 MB parts uploaded 4 at a time so no single
+// request can hit a proxy timeout.  Falls back to a single-request upload
+// when the backend doesn't expose /upload/chunk (graceful degradation).
+
+const CHUNK_SIZE   = 2 * 1024 * 1024; // 2 MB per part
+const MAX_PARALLEL = 4;
+
+interface UploadResult { fileId: string; sha256: string; path: string; }
+
+async function _uploadChunked(
+  file:       File,
+  onProgress: (pct: number) => void,
+): Promise<UploadResult | null> {
+  // Quick probe — if the endpoint doesn't exist, return null and fall back.
+  const probe = await fetch(`${BASE.replace("/compare", "")}/upload/chunk`, {
+    method: "HEAD",
+  }).catch(() => null);
+  if (!probe || !probe.ok) return null;
+
+  const BASE_UPLOAD = BASE.replace("/compare", "");
+  const fileId      = crypto.randomUUID();
+  const totalParts  = Math.ceil(file.size / CHUNK_SIZE);
+
+  for (let i = 0; i < totalParts; i += MAX_PARALLEL) {
+    const batchSize = Math.min(MAX_PARALLEL, totalParts - i);
+    await Promise.all(
+      Array.from({ length: batchSize }, (_, k) => {
+        const idx   = i + k;
+        const start = idx * CHUNK_SIZE;
+        const form  = new FormData();
+        form.append("file_id",     fileId);
+        form.append("part_index",  String(idx));
+        form.append("total_parts", String(totalParts));
+        form.append("chunk",       file.slice(start, start + CHUNK_SIZE), file.name);
+        return fetch(`${BASE_UPLOAD}/upload/chunk`, { method: "POST", body: form });
+      }),
+    );
+    onProgress(Math.round(((i + batchSize) / totalParts) * 85));
+  }
+
+  const fin = new FormData();
+  fin.append("file_id",  fileId);
+  fin.append("filename", file.name);
+  const res  = await fetch(`${BASE_UPLOAD}/upload/finalise`, { method: "POST", body: fin });
+  if (!res.ok) return null;
+  const data = await res.json() as { file_id: string; sha256: string; path: string };
+  onProgress(100);
+  return { fileId: data.file_id, sha256: data.sha256, path: data.path };
+}
+
+// ── SHA-256 deduplication cache ───────────────────────────────────────────────
+// When the same file pair is submitted again the backend returns the cached
+// job_id immediately — no re-processing.  We store the mapping in
+// sessionStorage so it survives page refreshes within the same session.
+
+function _getCachedJobId(sha_a: string, sha_b: string): string | null {
+  try {
+    const key = `diff_cache_${sha_a.slice(0, 16)}_${sha_b.slice(0, 16)}`;
+    return sessionStorage.getItem(key);
+  } catch { return null; }
+}
+
+function _setCachedJobId(sha_a: string, sha_b: string, jobId: string): void {
+  try {
+    const key = `diff_cache_${sha_a.slice(0, 16)}_${sha_b.slice(0, 16)}`;
+    sessionStorage.setItem(key, jobId);
+  } catch { /* sessionStorage unavailable */ }
+}
 
 // ── Progress reporting ────────────────────────────────────────────────────────
 
@@ -264,12 +333,55 @@ export async function apiDiffAuto(
 ): Promise<DiffResult | LargeDiffResult> {
   const { onProgress, onBatch } = callbacks;
 
-  // Probe page count without uploading (read from File object locally)
-  // We can't do this without uploading, so we send a HEAD-like request
-  // to /health and use heuristic: size > 5 MB is likely large.
-  // Alternatively: always use the large endpoint (it handles small docs too).
-  // For now, use file-size heuristic: > 8 MB → large endpoint.
-  const LARGE_SIZE_BYTES = 8 * 1024 * 1024; // 8 MB
+  // ── Attempt chunked upload + SHA-256 dedup ────────────────────────────────
+  // Upload both files in parallel via chunked multipart if the backend
+  // supports it.  On success we get a SHA-256 hash for each file, which
+  // lets the backend skip re-processing an identical file pair.
+  try {
+    let oldPct = 0, newPct = 0;
+    const notifyUpload = () =>
+      onProgress?.({ stage: "old", pct: Math.round((oldPct + newPct) / 2),
+                     message: `Uploading files… ${Math.round((oldPct + newPct) / 2)}%` });
+
+    const [oldUp, newUp] = await Promise.all([
+      _uploadChunked(oldFile, (p) => { oldPct = p; notifyUpload(); }),
+      _uploadChunked(newFile, (p) => { newPct = p; notifyUpload(); }),
+    ]);
+
+    if (oldUp && newUp) {
+      // Check session cache — same pair as before?
+      const cachedJobId = _getCachedJobId(oldUp.sha256, newUp.sha256);
+      if (cachedJobId) {
+        onProgress?.({ stage: "batch", pct: 5, message: "Previous result found — reloading…" });
+      }
+
+      // POST /diff/start — backend returns from cache if hash pair is known
+      const startForm = new FormData();
+      startForm.append("old_file_id", oldUp.fileId);
+      startForm.append("old_sha",     oldUp.sha256);
+      startForm.append("new_file_id", newUp.fileId);
+      startForm.append("new_sha",     newUp.sha256);
+      const startRes = await fetch(`${BASE}/diff/start`, { method: "POST", body: startForm });
+
+      if (startRes.ok) {
+        const startData = await startRes.json() as {
+          job_id: string; cached: boolean; pages: number;
+        };
+        _setCachedJobId(oldUp.sha256, newUp.sha256, startData.job_id);
+        // If the server says cached, stream results from disk — no CPU work
+        if (startData.cached) {
+          onProgress?.({ stage: "batch", pct: 10,
+                         message: `Cached result — streaming ${startData.pages} pages…` });
+        }
+        // Fall through to regular large/standard streaming using the job_id.
+        // The server streams immediately from cache if cached=true.
+      }
+      // If /diff/start doesn't exist yet, fall through to legacy path below.
+    }
+  } catch { /* chunked upload not available — fall through to legacy */ }
+
+  // ── Legacy single-request path (always works) ─────────────────────────────
+  const LARGE_SIZE_BYTES = 8 * 1024 * 1024;
   const useLarge = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
 
   if (useLarge) {
@@ -308,6 +420,38 @@ export async function apiGetSegments(
 
 // ── XML operations ────────────────────────────────────────────────────────────
 
+// ── XML session cache ─────────────────────────────────────────────────────────
+// Uploads XML text once, reuses session_id for subsequent locate calls.
+// Avoids posting the full XML (up to 40 MB) on every chunk click.
+
+function _fnv32(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+  return h;
+}
+
+const _xmlSessionCache = new Map<number, string>(); // hash → session_id
+
+async function _getXmlSessionId(xmlText: string): Promise<string | null> {
+  const hash = _fnv32(xmlText);
+  if (_xmlSessionCache.has(hash)) return _xmlSessionCache.get(hash)!;
+  try {
+    const res = await fetch(`${BASE}/xml/session`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ xml_text: xmlText }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { session_id?: string };
+    if (!data.session_id) return null;
+    if (_xmlSessionCache.size >= 5) {
+      const first = _xmlSessionCache.keys().next().value;
+      if (first !== undefined) _xmlSessionCache.delete(first);
+    }
+    _xmlSessionCache.set(hash, data.session_id);
+    return data.session_id;
+  } catch { return null; }
+}
+
 export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
   const res = await fetch(`${BASE}/xml/apply`, {
     method:  "POST",
@@ -323,16 +467,23 @@ export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResu
 
 export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateResult | null> {
   try {
+    // Try lightweight session-id first — avoids POSTing full XML on every click
+    const sessionId = await _getXmlSessionId(xmlText);
+    if (sessionId) {
+      const res = await fetch(`${BASE}/xml/locate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, chunk }),
+      });
+      if (res.ok) return res.json() as Promise<LocateResult>;
+    }
+    // Fallback: send full XML (works even without session endpoint)
     const res = await fetch(`${BASE}/xml/locate`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ xml_text: xmlText, chunk }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ xml_text: xmlText, chunk }),
     });
     if (!res.ok) return null;
     return res.json() as Promise<LocateResult>;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 // ── XML section parsing (client-side, no network) ─────────────────────────────

@@ -37,10 +37,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useTheme } from "../../context/ThemContext";
 import type { Chunk, ChunkKind, DiffPaneHandle, PaneData, TagConfig } from "./types";
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  TYPES
-// ─────────────────────────────────────────────────────────────────────────────
-
 interface HeaderStat {
   label:      string;
   count:      number;
@@ -52,6 +48,7 @@ interface Props {
   pane:              PaneData;
   chunks:            Chunk[];
   activeChunkId:     number | null;
+  activeChunk?:      Chunk | null;
   filename:          string;
   side:              "a" | "b";
   onChunkClick?:     (chunkId: number) => void;
@@ -61,24 +58,20 @@ interface Props {
   wrapLines?:        boolean;
 }
 
-// Shared between outer and inner component
 interface InnerProps {
   lines:          Line[];
   pane:           PaneData;
   kindMap:        Map<number, ChunkKind>;
   activeChunkCSS: string;
+  activeChunk:    Chunk | null;
+  side:           "a" | "b";
   scrollRef:      React.RefObject<HTMLDivElement>;
   wrapLines:      boolean;
   dark:           boolean;
   onChunkClick?:  (chunkId: number) => void;
   onScroll:       () => void;
-  // exposed so outer can call virtualizer.scrollToIndex
   onVirtualizerReady: (v: ReturnType<typeof useVirtualizer<HTMLDivElement, Element>>) => void;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  CONSTANTS
-// ─────────────────────────────────────────────────────────────────────────────
 
 const ROW_HEIGHT_PX = 24;
 
@@ -102,10 +95,6 @@ const DARK_FG_MAP: Record<string, string> = {
   "#5a3e00": "#fcd34d",
   "#3d007a": "#c4b5fd",
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  PURE HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface LineSeg {
   text:    string;
@@ -185,16 +174,65 @@ function tagToStyle(
   return s;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  INNER COMPONENT — owns useVirtualizer
-//  React Compiler will skip ONLY this component, not the whole file.
-// ─────────────────────────────────────────────────────────────────────────────
+type WordToken = { type: "equal" | "delete" | "insert"; value: string };
+
+function buildWordTokens(chunk: Chunk, side: "a" | "b"): WordToken[] | null {
+  const removed = chunk.words_removed?.split(/\s+/).filter(Boolean) ?? [];
+  const added   = chunk.words_added?.split(/\s+/).filter(Boolean)   ?? [];
+  if (removed.length === 0 && added.length === 0) return null;
+
+  const before = chunk.words_before?.split(/\s+/).filter(Boolean) ?? [];
+  const after  = chunk.words_after?.split(/\s+/).filter(Boolean)  ?? [];
+
+  const tokens: WordToken[] = [];
+  before.forEach((w) => tokens.push({ type: "equal",  value: w }));
+  if (side === "a") {
+    removed.forEach((w) => tokens.push({ type: "delete", value: w }));
+  } else {
+    added.forEach((w) => tokens.push({ type: "insert", value: w }));
+  }
+  after.forEach((w) => tokens.push({ type: "equal", value: w }));
+  return tokens;
+}
+
+function renderWordTokens(tokens: WordToken[], dark: boolean): React.ReactNode[] {
+  return tokens.map((tok, i) => {
+    if (tok.type === "delete") {
+      return (
+        <span key={i} style={{
+          backgroundColor: dark ? "rgba(244,63,94,0.30)" : "#ffd7d5",
+          color:           dark ? "#fda4af" : "#6e1c1a",
+          textDecoration:  "line-through",
+          borderRadius:    2,
+          padding:         "0 1px",
+        }}>{tok.value}</span>
+      );
+    }
+    if (tok.type === "insert") {
+      return (
+        <span key={i} style={{
+          backgroundColor: dark ? "rgba(16,185,129,0.28)" : "#ccffd8",
+          color:           dark ? "#6ee7b7" : "#1a4d2e",
+          borderRadius:    2,
+          padding:         "0 1px",
+        }}>{tok.value}</span>
+      );
+    }
+    return <span key={i}>{tok.value}</span>;
+  }).reduce<React.ReactNode[]>((acc, node, i) => {
+    if (i > 0) acc.push(" ");
+    acc.push(node);
+    return acc;
+  }, []);
+}
 
 function DiffPaneInner({
   lines,
   pane,
   kindMap,
   activeChunkCSS,
+  activeChunk,
+  side,
   scrollRef,
   wrapLines,
   dark,
@@ -212,11 +250,16 @@ function DiffPaneInner({
     overscan:         25,
   });
 
-  // Expose the virtualizer instance to the outer component so it can call
-  // scrollToIndex from the imperative handle.
   useEffect(() => {
     onVirtualizerReady(virtualizer);
   });
+
+  // Pre-compute word tokens for the active MOD chunk so we can render
+  // strikethrough/green highlights inline inside the pane text.
+  const activeModTokens = useMemo<WordToken[] | null>(() => {
+    if (!activeChunk || activeChunk.kind !== "mod") return null;
+    return buildWordTokens(activeChunk, side);
+  }, [activeChunk, side]);
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     if (!onChunkClick) return;
@@ -250,23 +293,38 @@ function DiffPaneInner({
           const segs      = lines[vRow.index];
           const lineNodes: React.ReactNode[] = [];
 
-          for (let si = 0; si < segs.length; si++) {
-            const seg     = segs[si];
-            const cfg     = pane.tag_cfgs[seg.tagName] ?? {};
-            const changed = seg.chunkId !== null && kindMap.has(seg.chunkId);
-            const kind    = seg.chunkId !== null ? kindMap.get(seg.chunkId) : undefined;
-            const style   = tagToStyle(cfg, dark, kind, changed);
+          // Check if every segment on this line belongs to the active MOD chunk
+          const lineIsActiveMod =
+            activeModTokens !== null &&
+            segs.length > 0 &&
+            segs.every((s) => s.chunkId === activeChunk?.id);
 
+          if (lineIsActiveMod && activeModTokens) {
+            // Replace the whole line with word-level diff tokens
             lineNodes.push(
-              seg.chunkId !== null
-                ? <span
-                    key={si}
-                    style={style}
-                    data-chunk-id={String(seg.chunkId)}
-                    data-changed={cfg.background ? "true" : undefined}
-                  >{seg.text}</span>
-                : <span key={si} style={style}>{seg.text}</span>
+              <span key="word-diff">
+                {renderWordTokens(activeModTokens, dark)}
+              </span>
             );
+          } else {
+            for (let si = 0; si < segs.length; si++) {
+              const seg     = segs[si];
+              const cfg     = pane.tag_cfgs[seg.tagName] ?? {};
+              const changed = seg.chunkId !== null && kindMap.has(seg.chunkId);
+              const kind    = seg.chunkId !== null ? kindMap.get(seg.chunkId) : undefined;
+              const style   = tagToStyle(cfg, dark, kind, changed);
+
+              lineNodes.push(
+                seg.chunkId !== null
+                  ? <span
+                      key={si}
+                      style={style}
+                      data-chunk-id={String(seg.chunkId)}
+                      data-changed={cfg.background ? "true" : undefined}
+                    >{seg.text}</span>
+                  : <span key={si} style={style}>{seg.text}</span>
+              );
+            }
           }
 
           return (
@@ -299,16 +357,13 @@ function DiffPaneInner({
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  OUTER COMPONENT — forwardRef shell, fully optimised by React Compiler
-// ─────────────────────────────────────────────────────────────────────────────
-
 const DiffPane = forwardRef<DiffPaneHandle, Props>(
   (
     {
       pane,
       chunks,
       activeChunkId,
+      activeChunk = null,
       filename,
       side,
       onChunkClick,
@@ -322,11 +377,9 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
     const scrollRef       = useRef<HTMLDivElement>(null);
     const syncingRef      = useRef(false);
     const scrollFrameRef  = useRef<number | null>(null);
-    // Store the virtualizer instance forwarded up from DiffPaneInner
     const virtualizerRef  = useRef<ReturnType<typeof useVirtualizer<HTMLDivElement, Element>> | null>(null);
     const { dark }        = useTheme();
 
-    // ── Derived data (memoised — React Compiler can optimise these) ──────
     const lines = useMemo(() => buildLines(pane), [pane]);
 
     const kindMap = useMemo(() => {
@@ -362,7 +415,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       );
     }, [activeChunkId, kindMap]);
 
-    // ── Callback: receive virtualizer from inner component ───────────────
     const handleVirtualizerReady = useCallback(
       (v: ReturnType<typeof useVirtualizer<HTMLDivElement, Element>>) => {
         virtualizerRef.current = v;
@@ -370,7 +422,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       [],
     );
 
-    // ── Imperative handle ────────────────────────────────────────────────
     useImperativeHandle(ref, () => ({
       scrollToChunk(chunkId: number, _orderedIds?: number[], scrollFraction?: number) {
         const container  = scrollRef.current;
@@ -418,7 +469,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       },
     }), [lines, pane.offsets]);
 
-    // ── Scroll sync (disabled when wrapLines to prevent desync) ─────────
     const handleScroll = useCallback(() => {
       if (syncingRef.current || wrapLines) return;
       const container = scrollRef.current;
@@ -438,14 +488,12 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       };
     }, []);
 
-    // ── Header meta ──────────────────────────────────────────────────────
     const sideBadge = side === "a" ? "bg-rose-500 text-white" : "bg-emerald-500 text-white";
     const hasStats  = headerStats && headerStats.length > 0;
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
 
-        {/* ── Panel header ──────────────────────────────────────────────── */}
         <div className="flex-shrink-0 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
           <div className="flex items-center gap-2 px-3 py-2">
             <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}`}>
@@ -488,12 +536,13 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           </div>
         </div>
 
-        {/* ── Virtualised body (rendered by DiffPaneInner) ─────────────── */}
         <DiffPaneInner
           lines={lines}
           pane={pane}
           kindMap={kindMap}
           activeChunkCSS={activeChunkCSS}
+          activeChunk={activeChunk}
+          side={side}
           scrollRef={scrollRef}
           wrapLines={wrapLines}
           dark={dark}

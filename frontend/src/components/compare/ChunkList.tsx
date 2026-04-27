@@ -16,9 +16,8 @@ interface Props {
 
 type FilterKind = "all" | ChunkKind;
 
-const CONFIDENCE_THRESHOLD = 0.80; // hide MOD chunks with confidence below this
+const CONFIDENCE_THRESHOLD = 0.80;
 
-// ── Section group type ────────────────────────────────────────────────────────
 interface SectionGroup {
   label: string;
   chunks: Chunk[];
@@ -43,7 +42,6 @@ function buildSectionGroups(chunks: Chunk[]): SectionGroup[] {
   }));
 }
 
-// ── Chunk row component ───────────────────────────────────────────────────────
 const ChunkRow = React.memo(function ChunkRow({
   ch,
   isActive,
@@ -92,17 +90,46 @@ const ChunkRow = React.memo(function ChunkRow({
           </span>
         )}
         {ch.kind === "emp" && ch.emp_detail && (
-          <span className="block mt-1 text-[9px] leading-snug">
+          <span className="block mt-1 text-[9px] leading-snug space-y-0.5">
             {ch.emp_detail.split("|").map((part, i) => {
               const t = part.trim();
-              if (t.startsWith("xml_suggest:")) {
-                return <span key={i} className="block text-amber-400 italic">{t}</span>;
-              }
-              const isRemoved = t.includes("removed");
-              const isAdded = t.includes("added");
+              if (!t) return null;
+
+              const lower = t.toLowerCase();
+              const isXmlSuggest = lower.startsWith("xml_suggest:");
+
+              const colorClass =
+                isXmlSuggest                                     ? "text-amber-400 italic" :
+                lower.includes("bold") && lower.includes("italic") ? "text-violet-400" :
+                lower.includes("bold") && lower.includes("under")  ? "text-violet-400" :
+                lower.includes("bold")                             ? "text-amber-400" :
+                lower.includes("italic")                           ? "text-sky-400" :
+                lower.includes("underline") || lower.includes("under") ? "text-teal-400" :
+                lower.includes("strike")                           ? "text-rose-400" :
+                lower.includes("removed") || lower.includes("deleted")  ? "text-rose-400" :
+                lower.includes("added")                            ? "text-emerald-400" :
+                "text-violet-400";
+
+              const previewText = (ch.text_b || ch.text_a).slice(0, 28);
+              const previewStyle: React.CSSProperties =
+                lower.includes("bold") && lower.includes("italic") ? { fontWeight: 700, fontStyle: "italic" } :
+                lower.includes("bold")   ? { fontWeight: 700 } :
+                lower.includes("italic") ? { fontStyle: "italic" } :
+                lower.includes("underline") || lower.includes("under") ? { textDecoration: "underline" } :
+                lower.includes("strike") ? { textDecoration: "line-through" } :
+                {};
+
               return (
-                <span key={i} className={`${isRemoved ? "text-rose-400" : isAdded ? "text-emerald-400" : "text-violet-400"}`}>
-                  {t}{i < ch.emp_detail!.split("|").length - 1 ? " · " : ""}
+                <span key={i} className={`flex items-center gap-1 ${colorClass}`}>
+                  <span>{t}</span>
+                  {!isXmlSuggest && previewText && Object.keys(previewStyle).length > 0 && (
+                    <span
+                      className="opacity-60 text-slate-300 font-mono"
+                      style={previewStyle}
+                    >
+                      &ldquo;{previewText}{previewText.length < (ch.text_b || ch.text_a).length ? "…" : ""}&rdquo;
+                    </span>
+                  )}
                 </span>
               );
             })}
@@ -119,7 +146,6 @@ const ChunkRow = React.memo(function ChunkRow({
   );
 });
 
-// ── Section header (always expanded) ──────────────────────────────────────────
 function SectionHeader({
   group,
   activeId,
@@ -175,7 +201,6 @@ function SectionHeader({
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
 export default function ChunkList({
   chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions,
 }: Props) {
