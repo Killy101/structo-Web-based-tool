@@ -356,6 +356,9 @@ async def diff_pdfs(
             xml_sections = ce.extract_xml_sections(xml_b)
             if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
                 ce.assign_chunks_to_sections(chunks, xml_sections, xml_b)
+        # Fallback: when no XML, detect sections from PDF structural headings
+        if not xml_sections and hasattr(ce, "assign_chunks_to_pdf_sections"):
+            xml_sections = ce.assign_chunks_to_pdf_sections(chunks, blocks_b)
 
         payload = {
             "success": True,
@@ -494,6 +497,9 @@ async def diff_pdfs_stream(
                 xml_sections = ce.extract_xml_sections(xml_b_text)
                 if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
                     ce.assign_chunks_to_sections(chunks, xml_sections, xml_b_text)
+            # Fallback: detect sections from PDF structural headings when no XML
+            if not xml_sections and hasattr(ce, "assign_chunks_to_pdf_sections"):
+                xml_sections = ce.assign_chunks_to_pdf_sections(chunks, blocks_b)
 
             payload = {
                 "success":      True,
@@ -695,7 +701,8 @@ async def diff_pdfs_stream_large(
                 if start_p > end_p:
                     return []
                 if has_fast_batch and extractor is not None:
-                    return extractor.extract_pdf_batch(src, hf, flags, gap, start_p, end_p)
+                    return extractor.extract_pdf_batch(src, hf, flags, gap, start_p, end_p,
+                                                       enable_brd_markers=False)
                 return _ext_load_pdf(str(src), None, start_p, end_p)
 
             n_pages   = max(n_a, n_b)
@@ -723,6 +730,8 @@ async def diff_pdfs_stream_large(
             all_offsets_b:     dict = {}
             all_offset_ends_a: dict = {}
             all_offset_ends_b: dict = {}
+            # Accumulate heading blocks across batches for PDF section detection
+            all_blocks_b_headings: list = []   # lightweight: heading blocks only
 
             # Pipeline with 4 workers: pre-fetch next batch extraction while
             # diff+render of the current batch runs.
@@ -805,6 +814,19 @@ async def diff_pdfs_stream_large(
                 chunks_dicts = [_chunk_to_dict(ch, id_offset + i) for i, ch in enumerate(chunks)]
                 all_chunks.extend(chunks_dicts)
 
+                # Collect heading blocks from this batch for PDF section detection
+                if not xml_b_text and hasattr(ce, "assign_chunks_to_pdf_sections"):
+                    # Apply section assignment per-batch using live Chunk objects
+                    try:
+                        _batch_secs = ce.assign_chunks_to_pdf_sections(list(chunks), blocks_b)
+                        # Propagate section assignment back into the serialised dicts
+                        for ch_obj, ch_dict in zip(chunks, chunks_dicts):
+                            if getattr(ch_obj, "section", ""):
+                                ch_dict["section"] = ch_obj.section
+                        all_blocks_b_headings.extend(_batch_secs)
+                    except Exception:
+                        pass
+
                 pane_a_json = _pane_to_json(pane_a)
                 pane_b_json = _pane_to_json(pane_b)
 
@@ -818,8 +840,8 @@ async def diff_pdfs_stream_large(
                     all_offsets_b[str(int(cid) + id_offset)] = off
                 for cid, off in pane_b_json["offset_ends"].items():
                     all_offset_ends_b[str(int(cid) + id_offset)] = off
-                last_tag_cfgs_a = pane_a_json["tag_cfgs"]
-                last_tag_cfgs_b = pane_b_json["tag_cfgs"]
+                last_tag_cfgs_a = {**last_tag_cfgs_a, **pane_a_json["tag_cfgs"]}
+                last_tag_cfgs_b = {**last_tag_cfgs_b, **pane_b_json["tag_cfgs"]}
 
                 batch_stats = {
                     "total":         len(chunks),
@@ -849,6 +871,70 @@ async def diff_pdfs_stream_large(
                 )
 
             pipeline_pool.shutdown(wait=False)
+
+            # ── Compute xml_sections from accumulated data ────────────────────
+            xml_sections: list = []
+            if xml_b_text and hasattr(ce, "extract_xml_sections"):
+                xml_sections = ce.extract_xml_sections(xml_b_text)
+            # Fallback: use accumulated PDF heading sections (deduped by label)
+            if not xml_sections and all_blocks_b_headings:
+                seen_labels: set = set()
+                for sec in all_blocks_b_headings:
+                    label = sec.get("label", "")
+                    if label and label not in seen_labels:
+                        seen_labels.add(label)
+                        xml_sections.append(sec)
+
+            # ── Build final aggregated stats ──────────────────────────────────
+            final_stats = {
+                "total":         len(all_chunks),
+                "additions":     sum(1 for c in all_chunks if c.get("kind") == ce.KIND_ADD),
+                "deletions":     sum(1 for c in all_chunks if c.get("kind") == ce.KIND_DEL),
+                "modifications": sum(1 for c in all_chunks if c.get("kind") == ce.KIND_MOD),
+                "emphasis":      sum(1 for c in all_chunks if c.get("kind") == ce.KIND_EMP),
+            }
+
+            # ── Store full result in LRU cache for lazy segment fetch ─────────
+            _result_cache.set(job_id, {
+                "pane_a": {
+                    "segments":    all_pane_a_segs,
+                    "tag_cfgs":    last_tag_cfgs_a,
+                    "offsets":     all_offsets_a,
+                    "offset_ends": all_offset_ends_a,
+                },
+                "pane_b": {
+                    "segments":    all_pane_b_segs,
+                    "tag_cfgs":    last_tag_cfgs_b,
+                    "offsets":     all_offsets_b,
+                    "offset_ends": all_offset_ends_b,
+                },
+                "chunks":      all_chunks,
+                "stats":       final_stats,
+                "total_pages": n_pages,
+            })
+
+            # ── Send "done" message with job_id so frontend can lazy-fetch ────
+            done_payload = {
+                "t":          "done",
+                "job_id":     job_id,
+                "stats":      final_stats,
+                "file_a":     fname_a,
+                "file_b":     fname_b,
+                "total_pages": n_pages,
+                "xml_sections": [
+                    {"id": s["id"], "label": s["label"], "level": s["level"],
+                     "parent_id": s["parent_id"]}
+                    for s in xml_sections
+                ],
+                "pct": 100,
+            }
+            q.put(_dumps_fast(done_payload).rstrip(b"\n") + b"\n")
+            q.put(None)  # signal _generate_large() to stop
+
+            logger.info(
+                "diff/stream/large: job=%s DONE  %d chunks  %.1fs total",
+                job_id, len(all_chunks), time.perf_counter() - t0,
+            )
 
         except Exception as exc:
             logging.exception("diff/stream/large _run_large failed")

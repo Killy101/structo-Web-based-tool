@@ -381,7 +381,12 @@ export async function apiDiffAuto(
   } catch { /* chunked upload not available — fall through to legacy */ }
 
   // ── Legacy single-request path (always works) ─────────────────────────────
-  const LARGE_SIZE_BYTES = 8 * 1024 * 1024;
+  // Use file SIZE as a proxy for page count — 4 MB per file is ~40-50 pages
+  // of typical legal-PDF text, matching the server's LARGE_DOC_THRESHOLD=100.
+  // (8 MB was previously used but mismatched: a 200-page text PDF can be <8 MB
+  //  and would time-out on /diff/stream; a 30-page image PDF can be >8 MB and
+  //  would wastefully hit /diff/stream/large.)
+  const LARGE_SIZE_BYTES = 4 * 1024 * 1024;
   const useLarge = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
 
   if (useLarge) {

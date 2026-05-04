@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import { apiApply, apiLocate } from "./api";
 import ChunkList from "./ChunkList";
-import DiffPane  from "./DiffPane";
+import DiffPane, { buildAlignedLines } from "./DiffPane";
 import XmlPanel  from "./XmlPanel";
 
 interface Props {
@@ -210,6 +210,14 @@ export default function DiffViewer({
     [filteredChunks],
   );
 
+  // Pre-compute aligned line arrays so both panes have the same row count.
+  // Gap rows (null) are inserted on the shorter side at each chunk boundary,
+  // producing Beyond Compare-style vertical alignment.
+  const { linesA: alignedLinesA, linesB: alignedLinesB } = useMemo(
+    () => buildAlignedLines(result.pane_a, result.pane_b, result.chunks),
+    [result],
+  );
+
   function scrollXmlToMark() {
     const el = xmlRef.current;
     if (!el || el.tagName === "TEXTAREA") return;
@@ -232,6 +240,8 @@ export default function DiffViewer({
     xmlEl.scrollTop = Math.max(0, Math.min(1, fraction)) * max;
   }, []);
 
+  // Both panes now have equal row counts (via gap insertion in buildAlignedLines),
+  // so direct fraction mapping keeps them pixel-perfectly aligned during scroll.
   const schedulePanelSync = useCallback(
     (source: "old" | "new" | "xml", fraction: number) => {
       if (navSyncLockRef.current) return;
@@ -554,6 +564,7 @@ export default function DiffViewer({
                 filename={result.file_a}
                 side="a"
                 wrapLines={wrapLines}
+                alignedLines={alignedLinesA}
                 headerStats={paneAHeaderStats}
                 onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
                 onChunkClick={selectChunk}
@@ -586,6 +597,7 @@ export default function DiffViewer({
                 filename={result.file_b}
                 side="b"
                 wrapLines={wrapLines}
+                alignedLines={alignedLinesB}
                 headerStats={paneBHeaderStats}
                 onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
                 onChunkClick={selectChunk}

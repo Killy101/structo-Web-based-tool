@@ -37,7 +37,7 @@ describe("Diff viewer regressions", () => {
     jest.restoreAllMocks();
   });
 
-  it("removes underline styling from unchanged PDF content", () => {
+  it("renders underline styling when extracted from the PDF", () => {
     render(
       <DiffPane
         pane={makePane({
@@ -51,7 +51,37 @@ describe("Diff viewer regressions", () => {
       />,
     );
 
-    expect(screen.getByText("No changes detected")).not.toHaveStyle("text-decoration: underline");
+    expect(screen.getByText("No changes detected")).toHaveStyle("text-decoration: underline");
+  });
+
+  it("does not add synthetic strike-through for deleted chunks", () => {
+    render(
+      <DiffPane
+        pane={makePane({
+          segments: [["Deleted text", "deleted"]],
+          tag_cfgs: { deleted: { background: "#ffd7d5" } },
+          offsets: { "1": 0 },
+          offset_ends: { "1": 12 },
+        })}
+        chunks={[
+          {
+            id: 1,
+            kind: "del",
+            block_a: 0,
+            block_b: -1,
+            text_a: "Deleted text",
+            text_b: "",
+            confidence: 1,
+            reason: "deleted",
+          },
+        ]}
+        activeChunkId={null}
+        filename="old.pdf"
+        side="a"
+      />,
+    );
+
+    expect(screen.getByText("Deleted text")).not.toHaveStyle("text-decoration: line-through");
   });
 
   it("shows line numbers in the PDF and XML panes", () => {

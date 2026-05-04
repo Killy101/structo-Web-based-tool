@@ -127,6 +127,30 @@ try:
 except Exception:
     _USE_RAPIDFUZZ = False
 
+# word_compare — provides diff_match_patch-backed word-level diff.
+# Optional: falls back to difflib if not available.
+_wc_compare_words: Any = None
+_wc_myers_diff:    Any = None
+_wc_tokenise:      Any = None
+try:
+    from src.services.word_compare import (          # type: ignore[import]
+        compare_words   as _wc_compare_words,
+        _tokenise       as _wc_tokenise,
+        _myers_word_diff as _wc_myers_diff,
+    )
+    _HAS_WORD_COMPARE = True
+except ImportError:
+    try:
+        # Running from processing/ root (e.g. pytest)
+        from services.word_compare import (           # type: ignore[import]
+            compare_words    as _wc_compare_words,
+            _tokenise        as _wc_tokenise,
+            _myers_word_diff as _wc_myers_diff,
+        )
+        _HAS_WORD_COMPARE = True
+    except ImportError:
+        _HAS_WORD_COMPARE = False
+
 
 # ─────────────────────────────────────────────────────────────
 #  THEME
@@ -1128,6 +1152,40 @@ def load_pdf(
 
             _merge_two_column_amendment_markers(merged)
             _merge_amendment_section_blocks(merged)
+
+            # Detect drawn strikethrough lines (vector paths that font flags miss).
+            # Common in BCB PDFs and other legal documents.  Mirrors the same logic
+            # in pdf_extractor_core._build_strikeout_rects / _apply_drawn_strikeout.
+            try:
+                _sr: list = []
+                for _path in fz.get_drawings():
+                    _rect = _path.get("rect")
+                    if _rect is None:
+                        continue
+                    _x0, _y0, _x1, _y1 = _rect
+                    if _x1 <= _x0:
+                        continue
+                    _w, _h = _x1 - _x0, abs(_y1 - _y0)
+                    if _w < 15 or _h > 3:
+                        continue
+                    _ph = fz.rect.height or 1.0
+                    _my = (_y0 + _y1) / 2
+                    if _my / _ph < 0.10 or _my / _ph > 0.92:
+                        continue
+                    _sr.append((_x0, _y0, _x1, _y1))
+                if _sr:
+                    for _pl in merged:
+                        for _sp in _pl.spans:
+                            _sp_mid = (_sp.y + _sp.y2) / 2
+                            for (_sx0, _sy0, _sx1, _sy1) in _sr:
+                                if _sx1 <= _sp.x or _sx0 >= _sp.x2:
+                                    continue
+                                if abs((_sy0 + _sy1) / 2 - _sp_mid) <= 7:
+                                    _sp.strikeout = True
+                                    break
+            except Exception:
+                pass
+
             _promote_isolated_provision_markers(merged)
             _promote_section_number_headings(merged)
 
@@ -1869,6 +1927,21 @@ def _median_gap(lines: List[PdfLine]) -> float:
     return gaps[len(gaps) // 2]
 
 
+def _line_is_predominantly_strikethrough(line: PdfLine) -> bool:
+    """True if more than 50 % of the visible character count is strikethrough.
+
+    Used by segment_blocks to prevent mixing strikethrough (superseded) text
+    with regular text into the same block — keeping them separate allows the
+    diff engine to detect 'strikeout added/removed' emphasis changes rather
+    than incorrectly treating the boundary as a content MOD.
+    """
+    total  = sum(len(s.text) for s in line.spans if s.text)
+    if not total:
+        return False
+    strike = sum(len(s.text) for s in line.spans if s.text and s.strikeout)
+    return strike > total * 0.5
+
+
 @functools.lru_cache(maxsize=32768)
 def _line_ends_sentence(text: str) -> bool:
     """True if a line ends with sentence-terminal punctuation or a closing bracket
@@ -2039,6 +2112,30 @@ def segment_blocks(lines: List[PdfLine]) -> List[Block]:
             # Treat the heading as a standalone block; the next non-empty line
             # begins the amendment entry list or a following cross-heading.
             start_new = True
+
+        # Strikethrough boundary: never merge a predominantly-strikethrough line
+        # with a regular line (or vice versa).  This keeps superseded text
+        # (strikethrough) as its own block so the diff can detect EMP changes
+        # instead of treating the formatting boundary as a content change.
+        if not start_new and _open_br <= 0:
+            prev_strike = _line_is_predominantly_strikethrough(lines[i - 1])
+            cur_strike  = _line_is_predominantly_strikethrough(lines[i])
+            if prev_strike != cur_strike:
+                start_new = True
+
+        # Repeated-provision boundary: when a block already has ≥ 2 lines and
+        # the current line's normalised text is identical to the first line of
+        # the block (e.g. a list of sub-provisions that each repeat the same
+        # boilerplate sentence), split so each repetition becomes its own block.
+        # This prevents multiple identical provision paragraphs from being merged
+        # into one giant block that renders as duplicate text in the diff viewer.
+        # Only fires with a paragraph-level gap so genuine single-sentence blocks
+        # that span many lines are never split.
+        if not start_new and _open_br <= 0 and cur_len >= 2 and gap >= max(med, 16.0):
+            _cmp_first = _norm_cmp(norm_texts[cur_start])
+            _cmp_cur   = _norm_cmp(line_text)
+            if _cmp_first and _cmp_cur and _cmp_first == _cmp_cur:
+                start_new = True
 
         if not start_new and anchor:
             # Lone provision labels sometimes break onto their own line between
@@ -2798,6 +2895,136 @@ def assign_chunks_to_sections(
     if assigned or propagated:
         print(f"  [assign_sections] direct={assigned} propagated={propagated} "
               f"total={assigned + propagated}/{len(chunks)}", flush=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PDF-BASED SECTION DETECTION  (fallback when no XML is provided)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Structural heading patterns that work for a wide range of legal jurisdictions
+# including Brazilian BCB resolutions (Título/Capítulo/Seção/Art.) and common
+# English-language legislation (Part/Chapter/Section/Article).
+_RE_PDF_HEADING_PATTERNS: List[tuple] = [
+    # level 1 — top-level divisions
+    (1, re.compile(
+        r'^(?:TÍ?TULO|TITLE|PART(?:E)?|LIVRO)\s+[IVXLCDM\d]+',
+        re.I,
+    )),
+    # level 2 — chapters
+    (2, re.compile(
+        r'^(?:CAP[IÍ]TULO|CHAPTER|SCHEDULE|ANNEX)\s+[IVXLCDM\d]+',
+        re.I,
+    )),
+    # level 3 — sections / seções
+    (3, re.compile(
+        r'^(?:SE[ÇC][ÃA]O|SECTION|DIVISION|SUBDIVISION|APPENDIX)\s+[IVXLCDM\d]+',
+        re.I,
+    )),
+    # level 4 — articles / paragraphs (Art. / Artigo / § / s.)
+    (4, re.compile(
+        r'^(?:Art\.|Artigo|§\s*\d|s\.\s*\d)',
+        re.I,
+    )),
+]
+
+
+def assign_chunks_to_pdf_sections(
+    chunks: List["Chunk"],
+    blocks_b: List[Block],
+) -> List[dict]:
+    """Detect structural headings from blocks_b (the new document) and assign
+    each chunk's ``section`` field to the nearest enclosing heading.
+
+    This is the fallback used when no XML file is provided.  Returns a list of
+    section dicts in the same format as ``extract_xml_sections``:
+        {"id", "label", "level", "parent_id"}
+
+    The returned list can be passed directly to the frontend as ``xml_sections``
+    so the section-filter UI and "N changes across M sections" stat work even
+    in PDF-only comparison mode.
+    """
+    if not blocks_b or not chunks:
+        return []
+
+    # ── Phase 1: collect heading blocks ──────────────────────────────────
+    headings: List[dict] = []  # {id, label, level, block_idx}
+    for bi, blk in enumerate(blocks_b):
+        text = blk.text.strip()
+        if not text or len(text) > 120:
+            continue
+        for level, pat in _RE_PDF_HEADING_PATTERNS:
+            if pat.match(text):
+                # Normalise label: collapse internal whitespace, cap at 80 chars
+                label = re.sub(r'\s+', ' ', text)[:80]
+                headings.append({"id": len(headings), "label": label,
+                                  "level": level, "block_idx": bi})
+                break
+
+    if not headings:
+        return []
+
+    # ── Phase 2: assign parent_id ─────────────────────────────────────────
+    for i, sec in enumerate(headings):
+        sec["parent_id"] = -1
+        for prev in reversed(headings[:i]):
+            if prev["level"] < sec["level"]:
+                sec["parent_id"] = prev["id"]
+                break
+
+    # ── Phase 3: assign chunks to deepest enclosing section ───────────────
+    # Build a simple sorted list of (block_idx, section_id) breakpoints.
+    breakpoints = [(h["block_idx"], h["id"]) for h in headings]
+
+    import bisect as _bisect
+    bp_keys = [b[0] for b in breakpoints]
+
+    def _section_for_block(bi: int) -> Optional[dict]:
+        """Find the deepest heading whose block_idx <= bi."""
+        if bi < 0 or not breakpoints:
+            return None
+        pos = _bisect.bisect_right(bp_keys, bi) - 1
+        if pos < 0:
+            return None
+        # Walk backwards through headings from this breakpoint to find the
+        # most-specific (highest level number) that encloses this block.
+        best: Optional[dict] = None
+        for k in range(pos, max(-1, pos - 20), -1):
+            h = headings[k]
+            if h["block_idx"] <= bi:
+                if best is None or h["level"] > best["level"]:
+                    best = h
+                # Once we reach a higher structural level, stop searching
+                if best and h["level"] < best["level"]:
+                    break
+        return best
+
+    assigned = 0
+    for ch in chunks:
+        if ch.section:
+            continue  # already assigned (e.g. by XML-based assign)
+        bi = ch.block_b if ch.block_b >= 0 else ch.block_a
+        sec = _section_for_block(bi)
+        if sec:
+            ch.section = sec["label"]
+            assigned += 1
+
+    # ── Phase 4: propagate to any remaining unassigned chunks ─────────────
+    for i, ch in enumerate(chunks):
+        if ch.section:
+            continue
+        prev_sec = next((chunks[j].section for j in range(i - 1, max(-1, i - 10), -1)
+                         if chunks[j].section), None)
+        next_sec = next((chunks[j].section for j in range(i + 1, min(len(chunks), i + 10))
+                         if chunks[j].section), None)
+        ch.section = prev_sec or next_sec or ""
+
+    print(f"  [pdf_sections] headings={len(headings)} assigned={assigned}/{len(chunks)}",
+          flush=True)
+
+    # Return only id/label/level/parent_id (same shape as extract_xml_sections)
+    return [{"id": h["id"], "label": h["label"], "level": h["level"],
+             "parent_id": h["parent_id"]}
+            for h in headings]
 
 
 def _apply_within_section(
@@ -4239,7 +4466,7 @@ def compute_diff(
     _line_ends_incomplete.cache_clear()
     _anchor_of.cache_clear()
     _emp_sig_cache.clear()
-    _suppress_cache.clear()
+    _should_suppress_chunk_inner.cache_clear()
 
     blocks_a = segment_blocks(lines_a)
     blocks_b = segment_blocks(lines_b)
@@ -4991,50 +5218,60 @@ def compute_diff(
 def _compute_word_level_diff(ch: Chunk) -> None:
     """Populate words_removed, words_added, words_before, words_after on a MOD chunk.
 
-    Uses difflib to find the precise word-level changes between text_a and text_b.
-    Also captures surrounding context words (before/after the change) so the XML
-    Apply can anchor the edit precisely, even if the same word appears elsewhere.
+    Uses word_compare (diff_match_patch) when available for more accurate detection
+    of which specific words changed.  Falls back to difflib when word_compare is
+    not importable.  Context (words_before / words_after) is always derived from
+    a positional difflib pass so the XML Apply can anchor edits precisely.
     """
     wa = ch.text_a.split()
     wb = ch.text_b.split()
     if not wa or not wb:
         return
 
+    # ── Word removed/added detection ─────────────────────────────────────────
+    if _HAS_WORD_COMPARE and _wc_compare_words is not None:
+        try:
+            result = _wc_compare_words(ch.text_a, ch.text_b)
+            removed_parts = result.get("removals", []) + [
+                m["old"] for m in result.get("modifications", [])
+            ]
+            added_parts = result.get("additions", []) + [
+                m["new"] for m in result.get("modifications", [])
+            ]
+            ch.words_removed = " ".join(removed_parts)[:300]
+            ch.words_added   = " ".join(added_parts)[:300]
+        except Exception:
+            # Fall through to difflib on any error
+            _compute_word_level_diff_difflib(ch, wa, wb)
+    else:
+        _compute_word_level_diff_difflib(ch, wa, wb)
+
+    # ── Context: always use positional difflib for accurate before/after ──────
     sm = difflib.SequenceMatcher(None, wa, wb, autojunk=False)
-    removed_parts = []
-    added_parts = []
-    # Track position of first and last change for context extraction
     first_change_a = len(wa)
-    last_change_a = 0
-    first_change_b = len(wb)
-    last_change_b = 0
-
+    last_change_a  = 0
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == "replace":
-            removed_parts.extend(wa[i1:i2])
-            added_parts.extend(wb[j1:j2])
+        if op != "equal":
             first_change_a = min(first_change_a, i1)
-            last_change_a = max(last_change_a, i2)
-            first_change_b = min(first_change_b, j1)
-            last_change_b = max(last_change_b, j2)
-        elif op == "delete":
-            removed_parts.extend(wa[i1:i2])
-            first_change_a = min(first_change_a, i1)
-            last_change_a = max(last_change_a, i2)
-        elif op == "insert":
-            added_parts.extend(wb[j1:j2])
-            first_change_b = min(first_change_b, j1)
-            last_change_b = max(last_change_b, j2)
-
-    ch.words_removed = " ".join(removed_parts)[:300]
-    ch.words_added = " ".join(added_parts)[:300]
-
-    # Context: capture 1-3 words before and after the change region in source (text_a)
+            last_change_a  = max(last_change_a,  i2)
     if first_change_a < len(wa):
-        before_start = max(0, first_change_a - 3)
-        ch.words_before = " ".join(wa[before_start:first_change_a])[:150]
+        ch.words_before = " ".join(wa[max(0, first_change_a - 3):first_change_a])[:150]
     if last_change_a > 0:
         ch.words_after = " ".join(wa[last_change_a:last_change_a + 3])[:150]
+
+
+def _compute_word_level_diff_difflib(ch: Chunk, wa: list, wb: list) -> None:
+    """Difflib fallback for words_removed / words_added population."""
+    sm = difflib.SequenceMatcher(None, wa, wb, autojunk=False)
+    removed_parts: list = []
+    added_parts:   list = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op in ("replace", "delete"):
+            removed_parts.extend(wa[i1:i2])
+        if op in ("replace", "insert"):
+            added_parts.extend(wb[j1:j2])
+    ch.words_removed = " ".join(removed_parts)[:300]
+    ch.words_added   = " ".join(added_parts)[:300]
 
 
 def _check_xml_emphasis_ids(ch: Chunk, xml_text: str) -> None:
@@ -5930,8 +6167,6 @@ def _is_linewrap_reflow(na: str, nb: str) -> bool:
     return _word_overlap_ratio(na, nb) >= 0.85
 
 
-_suppress_cache: dict = {}
-
 def _should_suppress_chunk(text_a: str, text_b: str) -> bool:
     """
     Tolerance layer: suppress chunk if the difference is formatting/reflow only.
@@ -5940,23 +6175,13 @@ def _should_suppress_chunk(text_a: str, text_b: str) -> bool:
     """
     if not text_a or not text_b:
         return False
-
     # Fast path: identical texts always suppress
     if text_a == text_b:
         return True
-
-    # Memoization: same (text_a, text_b) pair often checked multiple times
-    # across containment, refining, fuzzy, and reflow passes.
-    _ck = (text_a, text_b)
-    cached = _suppress_cache.get(_ck)
-    if cached is not None:
-        return cached
-
-    result = _should_suppress_chunk_inner(text_a, text_b)
-    _suppress_cache[_ck] = result
-    return result
+    return _should_suppress_chunk_inner(text_a, text_b)
 
 
+@functools.lru_cache(maxsize=10_000)
 def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
 
     # 1. Whitespace only
@@ -6360,14 +6585,77 @@ def _bag_changed_words(a: str, b: str, side: str):
     return out
 
 
+def _word_ops_dmp(a: str, b: str):
+    """
+    Word-level diff using diff_match_patch (via word_compare module).
+
+    diff_match_patch applies semantic cleanup so changes like
+    "payroll giving" → "payroll receiving" correctly highlight only
+    "giving"/"receiving" rather than the whole phrase.
+
+    Returns the same op-tuple format as _word_ops_difflib:
+    [("equal"|"delete"|"insert"|"replace", words_a, words_b), ...]
+    """
+    old_toks = _wc_tokenise(a)   # [(original_case, lowercase)]
+    new_toks = _wc_tokenise(b)
+    if not old_toks or not new_toks:
+        return []
+
+    old_words = [t[0] for t in old_toks]
+    new_words = [t[0] for t in new_toks]
+
+    dmp_ops = _wc_myers_diff(old_toks, new_toks)  # [(op_int, [lowercase_toks])]
+
+    ops: list = []
+    old_pos = new_pos = 0
+    pending_del: list = []
+    pending_ins: list = []
+
+    def _flush():
+        if pending_del or pending_ins:
+            ops.append(("replace", pending_del[:], pending_ins[:]))
+            pending_del.clear()
+            pending_ins.clear()
+
+    for op_int, toks in dmp_ops:
+        n = len(toks)
+        if op_int == 0:    # equal
+            _flush()
+            ops.append(("equal", old_words[old_pos:old_pos + n],
+                                  new_words[new_pos:new_pos + n]))
+            old_pos += n
+            new_pos += n
+        elif op_int == -1:  # delete
+            pending_del.extend(old_words[old_pos:old_pos + n])
+            old_pos += n
+        else:               # insert
+            pending_ins.extend(new_words[new_pos:new_pos + n])
+            new_pos += n
+
+    _flush()
+    return ops
+
+
 def _word_ops(a: str, b: str):
     """
     Word-level diff ops between two block texts.
-    Uses difflib.SequenceMatcher for alignment.
+    Tries diff_match_patch (via word_compare) first for better semantic accuracy;
+    falls back to difflib.SequenceMatcher when word_compare is not available.
     Suppresses word-level 'replace' ops where the words differ only in
     punctuation or casing (these are not meaningful changes).
-    Returns empty list if the only differences are outline numbering markers
-    or punctuation-only differences (caller should suppress the whole chunk).
+    """
+    if _HAS_WORD_COMPARE and _wc_myers_diff is not None and _wc_tokenise is not None:
+        try:
+            return _word_ops_dmp(a, b)
+        except Exception:
+            pass  # fall through to difflib
+
+    return _word_ops_difflib(a, b)
+
+
+def _word_ops_difflib(a: str, b: str):
+    """
+    difflib-based word diff (original implementation, kept as fallback).
     """
     wa, wb = a.split(), b.split()
     ops = []

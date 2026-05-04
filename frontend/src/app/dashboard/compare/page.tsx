@@ -15,13 +15,78 @@
 // Both workflows share the same DiffViewer — only the `mode` prop differs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
 import type { DiffResult, WorkflowMode, XmlSection } from "../../../components/compare/types";
-import { apiDiffAuto, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
+import { apiDiffAuto, apiGetSegments, type BatchResult, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
+
+function emptyPane() {
+  return { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} };
+}
+
+function paneCharLength(pane: DiffResult["pane_a"]): number {
+  return pane.segments.reduce((sum, [text]) => sum + text.length, 0);
+}
+
+function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): DiffResult {
+  const base = prev ?? {
+    success: true,
+    chunks: [],
+    pane_a: emptyPane(),
+    pane_b: emptyPane(),
+    stats: { total: 0, additions: 0, deletions: 0, modifications: 0, emphasis: 0 },
+    xml_sections: [],
+    file_a: "",
+    file_b: "",
+  };
+
+  const mergePane = (paneBase: DiffResult["pane_a"], paneBatch: DiffResult["pane_a"]): DiffResult["pane_a"] => {
+    const charBase = paneCharLength(paneBase);
+    const mapChunkKey = (rawKey: string) => {
+      const localIdx = Number(rawKey);
+      const chunkId = batch.chunks[localIdx]?.id;
+      return chunkId == null ? null : String(chunkId);
+    };
+
+    const offsets = { ...paneBase.offsets };
+    for (const [rawKey, off] of Object.entries(paneBatch.offsets)) {
+      const mapped = mapChunkKey(rawKey);
+      if (mapped !== null) offsets[mapped] = Number(off) + charBase;
+    }
+
+    const offsetEnds = { ...paneBase.offset_ends };
+    for (const [rawKey, off] of Object.entries(paneBatch.offset_ends)) {
+      const mapped = mapChunkKey(rawKey);
+      if (mapped !== null) offsetEnds[mapped] = Number(off) + charBase;
+    }
+
+    return {
+      segments: [...paneBase.segments, ...paneBatch.segments],
+      tag_cfgs: { ...paneBase.tag_cfgs, ...paneBatch.tag_cfgs },
+      offsets,
+      offset_ends: offsetEnds,
+    };
+  };
+
+  const chunks = [...base.chunks, ...batch.chunks];
+  return {
+    ...base,
+    success: true,
+    chunks,
+    pane_a: mergePane(base.pane_a, batch.pane_a),
+    pane_b: mergePane(base.pane_b, batch.pane_b),
+    stats: {
+      total: chunks.length,
+      additions: chunks.filter((c) => c.kind === "add").length,
+      deletions: chunks.filter((c) => c.kind === "del").length,
+      modifications: chunks.filter((c) => c.kind === "mod").length,
+      emphasis: chunks.filter((c) => c.kind === "emp").length,
+    },
+  };
+}
 
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
 const DiffViewer = dynamic(() => import("../../../components/compare/DiffViewer"), { ssr: false });
@@ -307,6 +372,7 @@ function ChangeSummaryModal({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function useDiffState() {
+  const latestResultRef = useRef<DiffResult | null>(null);
   const [fileA,       setFileA]       = useState<File | null>(null);
   const [fileB,       setFileB]       = useState<File | null>(null);
   const [xmlFile,     setXmlFile]     = useState<File | null>(null);
@@ -322,6 +388,7 @@ function useDiffState() {
 
   function reset() {
     setFileA(null); setFileB(null); setXmlFile(null);
+    latestResultRef.current = null;
     setResult(null); setError(null);
     setXmlSections([]); setAllSections([]);
     setShowModal(false); setSelectedSec(null);
@@ -338,14 +405,16 @@ function useDiffState() {
       if (!saved) return;
       const parsed = JSON.parse(saved) as DiffResult;
       if (parsed?.success && parsed?.chunks !== undefined) {
+        latestResultRef.current = parsed;
         setResult(parsed);
         if (parsed.xml_sections?.length) setAllSections(parsed.xml_sections);
       }
     } catch { /* corrupted cache — ignore */ }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   async function run() {
     if (!fileA || !fileB) return;
+    latestResultRef.current = null;
     setLoading(true); setError(null); setResult(null);
     setLoadMsg("Uploading files…"); setLoadPct(0);
     try {
@@ -353,30 +422,75 @@ function useDiffState() {
         fileA, fileB,
         {
           onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); },
+          onBatch: (batch: BatchResult) => {
+            setResult((prev) => ({
+              ...mergeBatchIntoResult(prev, batch),
+              file_a: prev?.file_a || fileA.name,
+              file_b: prev?.file_b || fileB.name,
+            }));
+            const merged = {
+              ...mergeBatchIntoResult(latestResultRef.current, batch),
+              file_a: latestResultRef.current?.file_a || fileA.name,
+              file_b: latestResultRef.current?.file_b || fileB.name,
+            };
+            latestResultRef.current = merged;
+            try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
+          },
         },
         xmlFile,
       );
 
       // apiDiffAuto returns DiffResult (small) or LargeDiffResult (large).
       // For large docs the batch viewer handles rendering; we only need stats/sections here.
-      const data: DiffResult = "chunks" in raw
-        ? (raw as DiffResult)
-        : {
-            success:      true,
-            chunks:       [],
-            pane_a:       { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} },
-            pane_b:       { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} },
-            stats:        (raw as LargeDiffResult).stats,
-            xml_sections: (raw as LargeDiffResult).xmlSections,
-            file_a:       (raw as LargeDiffResult).file_a,
-            file_b:       (raw as LargeDiffResult).file_b,
-          };
+      const data = "chunks" in raw ? (raw as DiffResult) : null;
 
-      setResult(data);
-      try { sessionStorage.setItem("diff_last_result", JSON.stringify(data)); } catch { /* ok */ }
+      if (data) {
+        latestResultRef.current = data;
+        setResult(data);
+        try { sessionStorage.setItem("diff_last_result", JSON.stringify(data)); } catch { /* ok */ }
+      } else {
+        let next: DiffResult = {
+          success:      true,
+          chunks:       latestResultRef.current?.chunks ?? [],
+          pane_a:       latestResultRef.current?.pane_a ?? emptyPane(),
+          pane_b:       latestResultRef.current?.pane_b ?? emptyPane(),
+          stats:        (raw as LargeDiffResult).stats,
+          xml_sections: (raw as LargeDiffResult).xmlSections,
+          file_a:       (raw as LargeDiffResult).file_a,
+          file_b:       (raw as LargeDiffResult).file_b,
+        };
+
+        if (
+          next.chunks.length > 0 &&
+          next.pane_a.segments.length === 0 &&
+          next.pane_b.segments.length === 0
+        ) {
+          try {
+            const totalPages = Math.max(1, (raw as LargeDiffResult).totalPages || 1);
+            const window = await apiGetSegments((raw as LargeDiffResult).jobId, 0, Math.min(totalPages - 1, 99));
+            next = {
+              success:      true,
+              chunks:       window.chunks.length > 0 ? window.chunks : next.chunks,
+              pane_a:       window.pane_a,
+              pane_b:       window.pane_b,
+              stats:        next.stats,
+              xml_sections: next.xml_sections,
+              file_a:       next.file_a,
+              file_b:       next.file_b,
+            };
+          } catch {
+            // Keep the streamed chunks/stats even if the fallback segment fetch fails.
+          }
+        }
+
+        latestResultRef.current = next;
+        setResult(next);
+        try { sessionStorage.setItem("diff_last_result", JSON.stringify(next)); } catch { /* ok */ }
+      }
       userLogsApi.logCompare(fileA.name, fileB.name).catch(() => { /* fire-and-forget */ });
-      if (data.xml_sections?.length && allSections.length === 0)
-        setAllSections(data.xml_sections);
+      const finalSections = data?.xml_sections ?? (raw as LargeDiffResult).xmlSections;
+      if (finalSections?.length && allSections.length === 0)
+        setAllSections(finalSections);
       if (xmlSections.length > 0) setShowModal(true);
     } catch (e) {
       setError((e as Error).message);

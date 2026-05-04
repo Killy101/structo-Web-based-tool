@@ -56,10 +56,11 @@ interface Props {
   headerStats?:      HeaderStat[];
   onJumpToFirst?:    () => void;
   wrapLines?:        boolean;
+  alignedLines?:     AlignedLine[];
 }
 
 interface InnerProps {
-  lines:          Line[];
+  lines:          AlignedLine[];
   pane:           PaneData;
   kindMap:        Map<number, ChunkKind>;
   activeChunkCSS: string;
@@ -103,6 +104,7 @@ interface LineSeg {
 }
 
 type Line = LineSeg[];
+export type AlignedLine = Line | null;
 
 function buildLines(pane: PaneData): Line[] {
   const { segments, offsets, offset_ends } = pane;
@@ -136,11 +138,151 @@ function buildLines(pane: PaneData): Line[] {
   return lines;
 }
 
+// ── Alignment helpers ─────────────────────────────────────────────────────────
+
+/** Cumulative character-start position for each line (s[i] = start of line i). */
+function _lineCharStarts(lines: Line[]): number[] {
+  const s: number[] = [0];
+  for (const line of lines) {
+    const len = line.reduce((acc, seg) => acc + seg.text.length, 0) + 1;
+    s.push(s[s.length - 1] + len);
+  }
+  return s;
+}
+
+/** Last index i where arr[i] <= val (binary-search floor). */
+function _bsFloor(arr: number[], val: number): number {
+  let lo = 0, hi = arr.length - 2, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] <= val) { best = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return best;
+}
+
+/**
+ * Align lines from two panes by inserting null "gap" placeholders on the
+ * shorter side at each chunk boundary, so both arrays have equal length and
+ * linesA[i] / linesB[i] correspond to the same vertical row.
+ *
+ * This produces Beyond Compare-style alignment where equal context lines are
+ * always at the same row across both panes.
+ */
+export function buildAlignedLines(
+  paneA: PaneData,
+  paneB: PaneData,
+  chunks: Chunk[],
+): { linesA: AlignedLine[]; linesB: AlignedLine[] } {
+  const rawA = buildLines(paneA);
+  const rawB = buildLines(paneB);
+  if (chunks.length === 0) return { linesA: rawA, linesB: rawB };
+
+  const csA = _lineCharStarts(rawA);
+  const csB = _lineCharStarts(rawB);
+
+  // ── 1. Compute per-chunk line ranges ──────────────────────────────────────
+  interface CRange {
+    firstA: number; lastA: number; // -1 = chunk absent from this pane
+    firstB: number; lastB: number;
+  }
+
+  const rawRanges: CRange[] = [];
+  for (const c of chunks) {
+    const offA = paneA.offsets[String(c.id)];
+    const endA = paneA.offset_ends[String(c.id)];
+    const offB = paneB.offsets[String(c.id)];
+    const endB = paneB.offset_ends[String(c.id)];
+    const hasA = offA != null && rawA.length > 0;
+    const hasB = offB != null && rawB.length > 0;
+    if (!hasA && !hasB) continue;
+    const firstA = hasA ? _bsFloor(csA, offA) : -1;
+    const lastA  = hasA ? _bsFloor(csA, Math.max(offA, (endA ?? offA + 1) - 1)) : -1;
+    const firstB = hasB ? _bsFloor(csB, offB) : -1;
+    const lastB  = hasB ? _bsFloor(csB, Math.max(offB, (endB ?? offB + 1) - 1)) : -1;
+    rawRanges.push({ firstA, lastA, firstB, lastB });
+  }
+
+  // Sort by first occurrence in either pane
+  rawRanges.sort((a, b) => {
+    const pa = a.firstA >= 0 ? a.firstA : (a.firstB >= 0 ? a.firstB + rawA.length : 0);
+    const pb = b.firstA >= 0 ? b.firstA : (b.firstB >= 0 ? b.firstB + rawA.length : 0);
+    return pa - pb;
+  });
+
+  // ── 2. Merge overlapping / adjacent ranges ────────────────────────────────
+  // Two ranges that overlap on either pane side must be treated as one block
+  // to avoid emitting lines twice.
+  const ranges: CRange[] = [];
+  for (const cr of rawRanges) {
+    if (ranges.length === 0) { ranges.push({ ...cr }); continue; }
+    const prev = ranges[ranges.length - 1];
+    const overlapA = cr.firstA >= 0 && prev.lastA >= 0 && cr.firstA <= prev.lastA + 1;
+    const overlapB = cr.firstB >= 0 && prev.lastB >= 0 && cr.firstB <= prev.lastB + 1;
+    if (overlapA || overlapB) {
+      // Merge into previous range
+      if (cr.firstA >= 0) {
+        if (prev.firstA < 0) { prev.firstA = cr.firstA; prev.lastA = cr.lastA; }
+        else { prev.lastA = Math.max(prev.lastA, cr.lastA); }
+      }
+      if (cr.firstB >= 0) {
+        if (prev.firstB < 0) { prev.firstB = cr.firstB; prev.lastB = cr.lastB; }
+        else { prev.lastB = Math.max(prev.lastB, cr.lastB); }
+      }
+    } else {
+      ranges.push({ ...cr });
+    }
+  }
+
+  // ── 3. Walk both panes in lockstep, emitting context then chunk lines ─────
+  const outA: AlignedLine[] = [];
+  const outB: AlignedLine[] = [];
+  let curA = 0, curB = 0;
+
+  for (const cr of ranges) {
+    // Context lines before this chunk — should be equal content in both panes.
+    // Use the count from whichever pane has this chunk (or both if MOD).
+    const ctxA = cr.firstA >= 0 ? cr.firstA - curA : 0;
+    const ctxB = cr.firstB >= 0 ? cr.firstB - curB : 0;
+    const ctxCount = Math.max(0, ctxA, ctxB);
+
+    for (let i = 0; i < ctxCount; i++) {
+      // For context: advance whichever pane has lines, gap the other if short
+      const lineA = curA + i < rawA.length ? rawA[curA + i] : null;
+      const lineB = curB + i < rawB.length ? rawB[curB + i] : null;
+      outA.push(lineA);
+      outB.push(lineB);
+    }
+    // Advance cursors by what was actually consumed (clamp to chunk start)
+    curA = cr.firstA >= 0 ? cr.firstA : curA + ctxCount;
+    curB = cr.firstB >= 0 ? cr.firstB : curB + ctxCount;
+
+    // Chunk lines — pad the shorter side with gap placeholders
+    const countA   = cr.firstA >= 0 ? Math.max(0, cr.lastA - cr.firstA + 1) : 0;
+    const countB   = cr.firstB >= 0 ? Math.max(0, cr.lastB - cr.firstB + 1) : 0;
+    const maxCount = Math.max(countA, countB, 1);
+    for (let i = 0; i < maxCount; i++) {
+      outA.push(i < countA ? rawA[curA + i] : null);
+      outB.push(i < countB ? rawB[curB + i] : null);
+    }
+    curA += countA;
+    curB += countB;
+  }
+
+  // ── 4. Trailing context after last chunk ──────────────────────────────────
+  const trailCount = Math.max(rawA.length - curA, rawB.length - curB, 0);
+  for (let i = 0; i < trailCount; i++) {
+    outA.push(curA + i < rawA.length ? rawA[curA + i] : null);
+    outB.push(curB + i < rawB.length ? rawB[curB + i] : null);
+  }
+
+  return { linesA: outA, linesB: outB };
+}
+
 function tagToStyle(
   cfg: TagConfig,
   dark: boolean,
   kind?: ChunkKind,
-  allowUnderline = false,
 ): React.CSSProperties {
   const s: React.CSSProperties = {};
   if (cfg.background) {
@@ -168,8 +310,8 @@ function tagToStyle(
   }
 
   const decorations: string[] = [];
-  if (allowUnderline && cfg.underline) decorations.push("underline");
-  if (cfg.overstrike || kind === "del") decorations.push("line-through");
+  if (cfg.underline) decorations.push("underline");
+  if (cfg.overstrike) decorations.push("line-through");
   if (decorations.length > 0) s.textDecoration = decorations.join(" ");
   return s;
 }
@@ -202,7 +344,6 @@ function renderWordTokens(tokens: WordToken[], dark: boolean): React.ReactNode[]
         <span key={i} style={{
           backgroundColor: dark ? "rgba(244,63,94,0.30)" : "#ffd7d5",
           color:           dark ? "#fda4af" : "#6e1c1a",
-          textDecoration:  "line-through",
           borderRadius:    2,
           padding:         "0 1px",
         }}>{tok.value}</span>
@@ -290,17 +431,61 @@ function DiffPaneInner({
         }}
       >
         {virtualizer.getVirtualItems().map((vRow) => {
-          const segs      = lines[vRow.index];
+          const segs = lines[vRow.index];
+
+          // Gap placeholder row — inserted to keep both panes vertically aligned
+          if (segs === null) {
+            return (
+              <div
+                key={vRow.index}
+                data-index={vRow.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position:  "absolute",
+                  top:       0,
+                  left:      0,
+                  right:     0,
+                  transform: `translateY(${vRow.start}px)`,
+                  minHeight: ROW_HEIGHT_PX,
+                }}
+              >
+                <div className="grid grid-cols-[52px_minmax(0,1fr)] gap-3">
+                  <span className="sticky left-0 z-[1] select-none border-r border-slate-200 bg-white dark:border-white/10 dark:bg-[#0a1020]" />
+                  <span
+                    style={{
+                      borderBottom: `1px dashed ${dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.12)"}`,
+                      display:      "block",
+                      height:       ROW_HEIGHT_PX,
+                      opacity:      0.45,
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          }
+
           const lineNodes: React.ReactNode[] = [];
 
-          // Check if every segment on this line belongs to the active MOD chunk
+          // Word-diff tokens are only shown on the FIRST line of the active MOD
+          // chunk. Without this guard every line of a multi-line chunk would
+          // replace its actual content with the same token summary, causing the
+          // same few words to repeat for each line of the chunk.
+          const prevLineHasChunk =
+            vRow.index > 0 &&
+            (lines[vRow.index - 1] ?? []).some((s) => s.chunkId === activeChunk?.id);
+          const lineHasRichText = segs.some((s) => {
+            const cfg = pane.tag_cfgs[s.tagName] ?? {};
+            return cfg.underline || cfg.overstrike;
+          });
           const lineIsActiveMod =
             activeModTokens !== null &&
             segs.length > 0 &&
-            segs.every((s) => s.chunkId === activeChunk?.id);
+            segs.every((s) => s.chunkId === activeChunk?.id) &&
+            !lineHasRichText &&
+            !prevLineHasChunk;
 
           if (lineIsActiveMod && activeModTokens) {
-            // Replace the whole line with word-level diff tokens
+            // Replace only the FIRST line with the word-level diff token summary.
             lineNodes.push(
               <span key="word-diff">
                 {renderWordTokens(activeModTokens, dark)}
@@ -310,9 +495,8 @@ function DiffPaneInner({
             for (let si = 0; si < segs.length; si++) {
               const seg     = segs[si];
               const cfg     = pane.tag_cfgs[seg.tagName] ?? {};
-              const changed = seg.chunkId !== null && kindMap.has(seg.chunkId);
               const kind    = seg.chunkId !== null ? kindMap.get(seg.chunkId) : undefined;
-              const style   = tagToStyle(cfg, dark, kind, changed);
+              const style   = tagToStyle(cfg, dark, kind);
 
               lineNodes.push(
                 seg.chunkId !== null
@@ -371,6 +555,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       headerStats,
       onJumpToFirst,
       wrapLines = false,
+      alignedLines,
     },
     ref,
   ) => {
@@ -380,7 +565,10 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
     const virtualizerRef  = useRef<ReturnType<typeof useVirtualizer<HTMLDivElement, Element>> | null>(null);
     const { dark }        = useTheme();
 
-    const lines = useMemo(() => buildLines(pane), [pane]);
+    const lines = useMemo(
+      () => alignedLines ?? buildLines(pane),
+      [alignedLines, pane],
+    );
 
     const kindMap = useMemo(() => {
       const m = new Map<number, ChunkKind>();
@@ -431,19 +619,21 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         syncingRef.current = true;
         const clearSync = () => { syncingRef.current = false; };
 
-        // Find which line index this chunk starts on
-        const chunkOffset = pane.offsets[String(chunkId)];
-        if (chunkOffset != null && virtualizer) {
-          let totalChars = 0;
-          let targetLine = 0;
+        // Find first row that belongs to this chunk (null/gap rows are skipped)
+        if (virtualizer) {
+          let targetLine = -1;
           for (let li = 0; li < lines.length; li++) {
-            const len = lines[li].reduce((acc, seg) => acc + seg.text.length, 0) + 1;
-            if (totalChars + len > chunkOffset) { targetLine = li; break; }
-            totalChars += len;
+            const line = lines[li];
+            if (line !== null && line.some((s) => s.chunkId === chunkId)) {
+              targetLine = li;
+              break;
+            }
           }
-          virtualizer.scrollToIndex(targetLine, { align: "center", behavior: "auto" });
-          requestAnimationFrame(clearSync);
-          return;
+          if (targetLine >= 0) {
+            virtualizer.scrollToIndex(targetLine, { align: "center", behavior: "auto" });
+            requestAnimationFrame(clearSync);
+            return;
+          }
         }
 
         // Fallback: proportional scroll from the other pane
@@ -467,7 +657,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         container.scrollTop = Math.max(0, Math.min(1, fraction)) * maxScroll;
         requestAnimationFrame(() => { syncingRef.current = false; });
       },
-    }), [lines, pane.offsets]);
+    }), [lines]);
 
     const handleScroll = useCallback(() => {
       if (syncingRef.current || wrapLines) return;
@@ -531,7 +721,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
             )}
 
             <span className="flex-shrink-0 text-[9px] font-mono text-slate-400 dark:text-slate-600 select-none">
-              {lines.length.toLocaleString()} lines
+              {lines.filter((l) => l !== null).length.toLocaleString()} lines
             </span>
           </div>
         </div>

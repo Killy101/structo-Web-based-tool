@@ -397,21 +397,142 @@ def _attach_isolated_amendment_markers(lines: List[PdfLine]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  DRAWN-LINE STRIKEOUT DETECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_strikeout_rects(fz) -> list:
+    """
+    Return (x0, y0, x1, y1) bounding boxes of drawn horizontal lines that are
+    likely strikethrough decorations.
+
+    Many PDF generators (including Brazilian BCB resolutions) render
+    strikethrough as a thin vector path drawn OVER the text rather than using
+    the font-level strikeout flag.  fitz.get_text("dict") never sets
+    FLAG_STRIKEOUT for these spans, so we must scan the page drawings.
+
+    We look for nearly-horizontal line segments that are:
+      • wide  ≥ 15 pt  (rules out decorative dots / short dashes)
+      • thin  ≤ 3 pt   (rules out borders, underlines thick rules)
+      • not in the top/bottom 10 % of the page (header/footer)
+    """
+    bboxes: list = []
+    try:
+        drawings = fz.get_drawings()
+    except Exception:
+        return bboxes
+    h = fz.rect.height or 1.0
+    for path in drawings:
+        rect = path.get("rect")
+        if rect is None:
+            continue
+        x0, y0, x1, y1 = rect
+        if x1 <= x0:
+            continue
+        width  = x1 - x0
+        height = abs(y1 - y0)
+        if width < 15 or height > 3:
+            continue
+        mid_y = (y0 + y1) / 2
+        if mid_y / h < 0.10 or mid_y / h > 0.92:
+            continue
+        bboxes.append((x0, y0, x1, y1))
+    return bboxes
+
+
+def _build_underline_rects(fz) -> list:
+    """
+    Return bounding boxes that should render as underline.
+
+    This covers explicit PDF Underline annotations plus hyperlink rectangles,
+    which many legal PDFs use for clickable cross-references without setting
+    the font-level underline flag on spans.
+    """
+    bboxes: list = []
+    try:
+        for annot in (fz.annots() or []):
+            atype = annot.type[1] if annot.type else ""
+            if atype == "Underline":
+                rect = getattr(annot, "rect", None)
+                if rect is not None:
+                    bboxes.append((rect.x0, rect.y0, rect.x1, rect.y1))
+    except Exception:
+        pass
+
+    try:
+        for link in (fz.get_links() or []):
+            rect = link.get("from")
+            if rect is not None:
+                bboxes.append((rect.x0, rect.y0, rect.x1, rect.y1))
+    except Exception:
+        pass
+
+    return bboxes
+
+
+def _apply_drawn_strikeout(merged: List["PdfLine"], strikeout_rects: list) -> None:
+    """
+    For each span whose vertical midpoint is crossed by a drawn strikeout rect,
+    set span.strikeout = True.
+
+    Coordinates are all in local-page space (same as fitz span bboxes).
+    """
+    if not strikeout_rects:
+        return
+    for pl in merged:
+        for sp in pl.spans:
+            sp_mid_y = (sp.y + sp.y2) / 2
+            for (sx0, sy0, sx1, sy1) in strikeout_rects:
+                # Must have horizontal overlap with the span
+                if sx1 <= sp.x or sx0 >= sp.x2:
+                    continue
+                # Drawn line must pass through the span's vertical midpoint (±7 pt)
+                line_y = (sy0 + sy1) / 2
+                if abs(line_y - sp_mid_y) <= 7:
+                    sp.strikeout = True
+                    break
+
+
+def _apply_underline_rects(merged: List["PdfLine"], underline_rects: list) -> None:
+    """
+    Mark spans as underlined when they overlap a PDF underline/link rectangle.
+    """
+    if not underline_rects:
+        return
+    for pl in merged:
+        for sp in pl.spans:
+            for (ux0, uy0, ux1, uy1) in underline_rects:
+                if ux1 <= sp.x or ux0 >= sp.x2:
+                    continue
+                if uy1 <= sp.y or uy0 >= sp.y2:
+                    continue
+                sp.underline = True
+                break
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  INNER PAGE EXTRACTOR  (shared by load_pdf and load_pdf_batched)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_page(
     fz,
-    abs_page:      int,
-    page_y_offset: float,
-    hf_noise:      set,
-    pdf_flags:     int,
+    abs_page:       int,
+    page_y_offset:  float,
+    hf_noise:       set,
+    pdf_flags:      int,
+    enable_brd_markers: bool = True,
 ) -> List[PdfLine]:
     """
     Extract, filter, and merge PdfLines from a single PyMuPDF page object.
 
     Uses the absolute page index for y-offset so coordinate spaces remain
     stable when the caller assembles multiple batches.
+
+    Parameters
+    ----------
+    enable_brd_markers : bool
+        When True (default) runs BRD-specific post-processing:
+        ``_promote_isolated_provision_markers``.  Pass False for the Compare
+        workflow to avoid marking noise as provision anchors in plain PDFs.
     """
     h   = fz.rect.height or 1
     raw = fz.get_text("dict", flags=pdf_flags)
@@ -465,7 +586,18 @@ def _extract_page(
         if len(ml.spans) > 1:
             ml.spans.sort(key=lambda s: s.x)
 
-    _promote_isolated_provision_markers(merged)
+    # Detect drawn strikethrough lines (vector paths over text that the font
+    # flags do not capture).  Common in Brazilian BCB and other legal PDFs.
+    underline_rects = _build_underline_rects(fz)
+    if underline_rects:
+        _apply_underline_rects(merged, underline_rects)
+
+    strikeout_rects = _build_strikeout_rects(fz)
+    if strikeout_rects:
+        _apply_drawn_strikeout(merged, strikeout_rects)
+
+    if enable_brd_markers:
+        _promote_isolated_provision_markers(merged)
     return merged
 
 
@@ -542,6 +674,7 @@ def load_pdf(
     progress_cb = None,
     page_start: int | None = None,
     page_end:   int | None = None,
+    enable_brd_markers: bool = True,
 ) -> List[PdfLine]:
     """
     Load a PDF and return PdfLine objects for the requested page range.
@@ -552,6 +685,9 @@ def load_pdf(
     progress_cb : called as ``progress_cb(batch_idx, batch_size)`` after each page.
     page_start  : 0-based index of first page (inclusive).  Default: 0.
     page_end    : 0-based index of last  page (inclusive).  Default: last page.
+    enable_brd_markers : bool
+        Pass False for Compare workflow to skip BRD-specific provision marker
+        promotion.  Default True preserves existing BRD behaviour.
 
     Y-coordinates use the *absolute* page index so batches have consistent
     coordinate spaces when assembled by the caller.
@@ -577,11 +713,13 @@ def load_pdf(
         fz            = doc[abs_page]
         h             = fz.rect.height or 1
         page_y_offset = abs_page * (h + page_gap)
-        lines.extend(_extract_page(fz, abs_page, page_y_offset, hf_noise, pdf_flags))
+        lines.extend(_extract_page(fz, abs_page, page_y_offset, hf_noise, pdf_flags,
+                                   enable_brd_markers=enable_brd_markers))
         if progress_cb:
             progress_cb(batch_idx + 1, batch_size)
 
-    _attach_isolated_amendment_markers(lines)
+    if enable_brd_markers:
+        _attach_isolated_amendment_markers(lines)
     doc.close()
     return lines
 
@@ -620,6 +758,7 @@ def extract_pdf_batch(
     page_gap:  float,
     page_start: int,
     page_end:   int,
+    enable_brd_markers: bool = False,
 ) -> List[PdfLine]:
     """
     Extract one page range from an already-open fitz document.
@@ -629,6 +768,10 @@ def extract_pdf_batch(
     The caller is responsible for calling doc.close() when all batches finish.
 
     page_start / page_end: 0-based inclusive indices, clipped to doc length.
+
+    enable_brd_markers : bool
+        Default False — the large-doc Compare path does not need BRD provision
+        marker promotion.  Pass True when using this function for BRD extraction.
     """
     total = len(doc)
     p0    = max(0, min(page_start, total - 1))
@@ -641,9 +784,11 @@ def extract_pdf_batch(
         fz            = doc[abs_page]
         h             = fz.rect.height or 1
         page_y_offset = abs_page * (h + page_gap)
-        lines.extend(_extract_page(fz, abs_page, page_y_offset, hf_noise, pdf_flags))
+        lines.extend(_extract_page(fz, abs_page, page_y_offset, hf_noise, pdf_flags,
+                                   enable_brd_markers=enable_brd_markers))
 
-    _attach_isolated_amendment_markers(lines)
+    if enable_brd_markers:
+        _attach_isolated_amendment_markers(lines)
     return lines
 
 
