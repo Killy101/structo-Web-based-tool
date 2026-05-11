@@ -412,8 +412,16 @@ def _build_strikeout_rects(fz) -> list:
 
     We look for nearly-horizontal line segments that are:
       • wide  ≥ 15 pt  (rules out decorative dots / short dashes)
-      • thin  ≤ 3 pt   (rules out borders, underlines thick rules)
+      • thin  ≤ 3 pt   (rules out borders / thick rules)
       • not in the top/bottom 10 % of the page (header/footer)
+
+    FIX: We pre-collect the y-positions of all PDF Underline annotations and
+    hyperlink rectangles and exclude any drawn line whose mid-y matches one of
+    those positions (within 2pt).  BCB hyperlinks draw a thin underline path
+    that is geometrically identical to a strikethrough --- the only reliable
+    distinguisher is that it sits at the BOTTOM of the glyph box, not at
+    mid-height.  This exclusion prevents hyperlink underlines from being
+    misclassified as strikethroughs in the diff viewer.
     """
     bboxes: list = []
     try:
@@ -421,6 +429,26 @@ def _build_strikeout_rects(fz) -> list:
     except Exception:
         return bboxes
     h = fz.rect.height or 1.0
+
+    # Collect y-midpoints of known underline/link annotations (bucket to 2pt).
+    underline_ys: set = set()
+    try:
+        for annot in (fz.annots() or []):
+            atype = annot.type[1] if annot.type else ""
+            if atype in ("Underline", "Link"):
+                rect = getattr(annot, "rect", None)
+                if rect is not None:
+                    underline_ys.add(round((rect.y0 + rect.y1) / 2 / 2) * 2)
+    except Exception:
+        pass
+    try:
+        for link in (fz.get_links() or []):
+            rect = link.get("from")
+            if rect is not None:
+                underline_ys.add(round((rect.y0 + rect.y1) / 2 / 2) * 2)
+    except Exception:
+        pass
+
     for path in drawings:
         rect = path.get("rect")
         if rect is None:
@@ -430,10 +458,13 @@ def _build_strikeout_rects(fz) -> list:
             continue
         width  = x1 - x0
         height = abs(y1 - y0)
-        if width < 15 or height > 3:
+        if width < 8 or height > 3:
             continue
         mid_y = (y0 + y1) / 2
         if mid_y / h < 0.10 or mid_y / h > 0.92:
+            continue
+        # Exclude lines that coincide with a known underline/link annotation.
+        if round(mid_y / 2) * 2 in underline_ys:
             continue
         bboxes.append((x0, y0, x1, y1))
     return bboxes
@@ -469,41 +500,79 @@ def _build_underline_rects(fz) -> list:
     return bboxes
 
 
-def _apply_drawn_strikeout(merged: List["PdfLine"], strikeout_rects: list) -> None:
+def _apply_drawn_strikeout(
+    merged: List["PdfLine"],
+    strikeout_rects: list,
+    page_y_offset: float = 0.0,
+) -> None:
     """
     For each span whose vertical midpoint is crossed by a drawn strikeout rect,
     set span.strikeout = True.
 
-    Coordinates are all in local-page space (same as fitz span bboxes).
+    COORDINATE SPACES
+    -----------------
+    Span y-coordinates (sp.y, sp.y2) are ABSOLUTE — they include page_y_offset
+    added in _extract_page.  Drawn-line rects from fitz.get_drawings() are in
+    LOCAL page space (no offset).  We subtract page_y_offset from span coords
+    before comparing so both are in the same local space.
+
+    RELATIVE-POSITION GUARD
+    -----------------------
+    A true strikethrough crosses near the vertical CENTRE of the glyph box
+    (relative position 0.40–0.65).  An underline sits near the BOTTOM edge
+    (relative 0.85–0.95).  Any drawn line above 0.75 is rejected — this
+    catches hyperlink underlines in SUIN-Juriscol, BCB, and similar PDFs that
+    draw underlines as vector paths with no annotation metadata.
     """
     if not strikeout_rects:
         return
     for pl in merged:
         for sp in pl.spans:
-            sp_mid_y = (sp.y + sp.y2) / 2
+            # Convert absolute span coords back to local page space
+            sp_top    = sp.y  - page_y_offset
+            sp_bot    = sp.y2 - page_y_offset
+            sp_height = sp_bot - sp_top
+            if sp_height <= 0:
+                continue
+            sp_mid_y = (sp_top + sp_bot) / 2
             for (sx0, sy0, sx1, sy1) in strikeout_rects:
                 # Must have horizontal overlap with the span
                 if sx1 <= sp.x or sx0 >= sp.x2:
                     continue
-                # Drawn line must pass through the span's vertical midpoint (±7 pt)
                 line_y = (sy0 + sy1) / 2
-                if abs(line_y - sp_mid_y) <= 7:
-                    sp.strikeout = True
-                    break
+                # Primary check: line within ±7 pt of span midpoint (local coords)
+                if abs(line_y - sp_mid_y) > 7:
+                    continue
+                # Secondary check: line must be in the top 75% of span height.
+                # Underlines sit at 0.85-0.95; true strikethroughs at 0.40-0.65.
+                relative = (line_y - sp_top) / sp_height  # 0=top, 1=bottom
+                if relative > 0.75:
+                    continue
+                sp.strikeout = True
+                break
 
 
-def _apply_underline_rects(merged: List["PdfLine"], underline_rects: list) -> None:
+def _apply_underline_rects(
+    merged: List["PdfLine"],
+    underline_rects: list,
+    page_y_offset: float = 0.0,
+) -> None:
     """
     Mark spans as underlined when they overlap a PDF underline/link rectangle.
+
+    Span y-coords are absolute (include page_y_offset); rect coords are local.
+    Subtract the offset before comparing.
     """
     if not underline_rects:
         return
     for pl in merged:
         for sp in pl.spans:
+            sp_top = sp.y  - page_y_offset
+            sp_bot = sp.y2 - page_y_offset
             for (ux0, uy0, ux1, uy1) in underline_rects:
                 if ux1 <= sp.x or ux0 >= sp.x2:
                     continue
-                if uy1 <= sp.y or uy0 >= sp.y2:
+                if uy1 <= sp_top or uy0 >= sp_bot:
                     continue
                 sp.underline = True
                 break
@@ -590,11 +659,11 @@ def _extract_page(
     # flags do not capture).  Common in Brazilian BCB and other legal PDFs.
     underline_rects = _build_underline_rects(fz)
     if underline_rects:
-        _apply_underline_rects(merged, underline_rects)
+        _apply_underline_rects(merged, underline_rects, page_y_offset)
 
     strikeout_rects = _build_strikeout_rects(fz)
     if strikeout_rects:
-        _apply_drawn_strikeout(merged, strikeout_rects)
+        _apply_drawn_strikeout(merged, strikeout_rects, page_y_offset)
 
     if enable_brd_markers:
         _promote_isolated_provision_markers(merged)
@@ -864,11 +933,16 @@ def load_pdf_batched(
 
 def _detect_header_footer_patterns(doc) -> set:
     total = len(doc)
+    # Sample size scales with document length so very large compilations
+    # (1000+ pages) get adequate coverage. 40 pages gives strong statistics
+    # without significant overhead — each page sample is just a text-dict
+    # extraction, ~5–10ms.
     if total <= 20:
         sample_indices = list(range(total))
     else:
-        step = total / 20
-        sample_indices = [int(i * step) for i in range(20)]
+        n_samples = min(40, total)
+        step = total / n_samples
+        sample_indices = [int(i * step) for i in range(n_samples)]
 
     page_entries: List[List[tuple]] = []
     for i in sample_indices:

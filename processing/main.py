@@ -16,15 +16,16 @@ from src.services.extractors.image_extractor import extract_and_store_images_fro
 app = FastAPI(title="BRD Processing Service", version="1.0.0")
 
 
-# GZip everything EXCEPT the streaming diff endpoint (buffering kills SSE/NDJSON)
+# GZip everything EXCEPT streaming compare endpoints (buffering kills NDJSON)
 class _GzipSkipStreaming:
-    """Wraps GZipMiddleware but bypasses it for /compare/diff/stream."""
+    """Wraps GZipMiddleware but bypasses it for streaming compare endpoints."""
     def __init__(self, app: ASGIApp) -> None:
         self._gzip = GZipMiddleware(app, minimum_size=1000)
         self._app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope.get("path", "").endswith("/diff/stream"):
+        path = scope.get("path", "")
+        if scope["type"] == "http" and path.endswith(("/diff/stream", "/diff/stream/large")):
             await self._app(scope, receive, send)
         else:
             await self._gzip(scope, receive, send)

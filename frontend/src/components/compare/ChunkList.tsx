@@ -14,7 +14,7 @@ interface Props {
   headerActions?: React.ReactNode;
 }
 
-type FilterKind = "all" | ChunkKind;
+type FilterKind = "all" | ChunkKind;  // includes "strike"
 
 const CONFIDENCE_THRESHOLD = 0.80;
 
@@ -99,16 +99,10 @@ const ChunkRow = React.memo(function ChunkRow({
               const isXmlSuggest = lower.startsWith("xml_suggest:");
 
               const colorClass =
-                isXmlSuggest                                     ? "text-amber-400 italic" :
-                lower.includes("bold") && lower.includes("italic") ? "text-violet-400" :
-                lower.includes("bold") && lower.includes("under")  ? "text-violet-400" :
-                lower.includes("bold")                             ? "text-amber-400" :
-                lower.includes("italic")                           ? "text-sky-400" :
-                lower.includes("underline") || lower.includes("under") ? "text-teal-400" :
-                lower.includes("strike")                           ? "text-rose-400" :
-                lower.includes("removed") || lower.includes("deleted")  ? "text-rose-400" :
-                lower.includes("added")                            ? "text-emerald-400" :
-                "text-violet-400";
+                isXmlSuggest                                     ? "text-orange-400 italic" :
+                lower.includes("removed") || lower.includes("deleted") ? "text-red-400" :
+                lower.includes("added")                            ? "text-green-500" :
+                "text-orange-400";   // bold, italic, bold+italic, underline, strikeout, monospace → orange
 
               const previewText = (ch.text_b || ch.text_a).slice(0, 28);
               const previewStyle: React.CSSProperties =
@@ -163,9 +157,10 @@ function SectionHeader({
       if (c.kind === "add") acc.add++;
       else if (c.kind === "del") acc.del++;
       else if (c.kind === "mod") acc.mod++;
+      else if (c.kind === "strike") acc.strike = (acc.strike ?? 0) + 1;
       return acc;
     },
-    { add: 0, del: 0, mod: 0 },
+    { add: 0, del: 0, mod: 0, strike: 0 },
   );
 
   return (
@@ -293,6 +288,7 @@ export default function ChunkList({
           {filterBtn("del", "−", stats.deletions, "bg-rose-600")}
           {filterBtn("mod", "~", stats.modifications, "bg-amber-600")}
           {filterBtn("emp", "○", stats.emphasis, "bg-violet-600")}
+          {(stats.strike ?? 0) > 0 && filterBtn("strike", "~̶", stats.strike ?? 0, "bg-rose-800")}
         </div>
         {/* Confidence filter toggle — hides low-confidence MOD chunks */}
         {stats.modifications > 0 && (

@@ -62,6 +62,27 @@ except ImportError:
     def _dumps_fast(obj: object) -> bytes:     # type: ignore[misc]
         return (_json.dumps(obj) + "\n").encode()
 
+
+def _emit_ndjson(payload: object | bytes | str) -> bytes:
+    """Normalise any payload to a single newline-terminated bytes line.
+
+    The streaming endpoints previously mixed bytes (from _dumps_fast) and
+    str (from _json.dumps + "\n") in the producer queue. The consumer
+    handled both cases, but downstream byte-counting/buffering layers
+    (uvicorn / nginx) can drop or mis-frame mixed types under load — most
+    visibly as the very first batch failing to render. Normalising at the
+    producer side eliminates the risk entirely.
+    """
+    if isinstance(payload, (bytes, bytearray)):
+        b = bytes(payload).rstrip(b"\n")
+    elif isinstance(payload, str):
+        b = payload.rstrip("\n").encode("utf-8")
+    else:
+        # Generic JSON-able object
+        b = _dumps_fast(payload).rstrip(b"\n")
+    return b + b"\n"
+
+
 logger = logging.getLogger(__name__)
 
 # ── Concurrency guard ─────────────────────────────────────────────────────────
@@ -269,10 +290,13 @@ def _pane_to_json(data: dict) -> dict:
         serial_cfgs[key] = cleaned
 
     return {
-        "segments":    serialised_segs,
-        "tag_cfgs":    serial_cfgs,
-        "offsets":     {str(k): v for k, v in data.get("offsets", {}).items()},
-        "offset_ends": {str(k): v for k, v in data.get("offset_ends", {}).items()},
+        "segments":         serialised_segs,
+        "tag_cfgs":         serial_cfgs,
+        "offsets":          {str(k): v for k, v in data.get("offsets", {}).items()},
+        "offset_ends":      {str(k): v for k, v in data.get("offset_ends", {}).items()},
+        # Server-emitted line numbers — used by frontend to avoid char→line binary search
+        "line_offsets":     {str(k): v for k, v in data.get("line_offsets", {}).items()},
+        "line_offset_ends": {str(k): v for k, v in data.get("line_offset_ends", {}).items()},
     }
 
 
@@ -322,75 +346,109 @@ async def diff_pdfs(
     xml_file_a: Optional[UploadFile] = File(None),
     xml_file_b: Optional[UploadFile] = File(None),
 ):
-    tmp_a = tmp_b = None
+    """
+    Compare two PDFs synchronously with background execution and timeout protection.
+    
+    Uses loop.run_in_executor to prevent blocking the event loop on large documents.
+    Timeout defaults to 30 minutes but can be configured via COMPARE_TIMEOUT_SECONDS env var.
+    """
     try:
         _check_file_size(old_file)
         _check_file_size(new_file)
         data_a = await old_file.read()
         data_b = await new_file.read()
-        xml_a  = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
-        xml_b  = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
+        xml_a_text = (await xml_file_a.read()).decode("utf-8", errors="replace") if xml_file_a else None
+        xml_b_text = (await xml_file_b.read()).decode("utf-8", errors="replace") if xml_file_b else None
+        fname_a = old_file.filename
+        fname_b = new_file.filename
+    except Exception as exc:
+        logger.exception("diff_pdfs: file read failed")
+        raise HTTPException(status_code=400, detail=str(exc))
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
-            fa.write(data_a); tmp_a = fa.name
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
-            fb.write(data_b); tmp_b = fb.name
+    def _run():
+        """Background task: load, diff, precompute."""
+        tmp_a = tmp_b = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
+                fa.write(data_a); tmp_a = fa.name
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
+                fb.write(data_b); tmp_b = fb.name
 
-        t0 = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_a = pool.submit(ce.load_pdf, tmp_a)
-            fut_b = pool.submit(ce.load_pdf, tmp_b)
-            lines_a = fut_a.result()
-            lines_b = fut_b.result()
+            t0 = time.perf_counter()
 
-        blocks_a, blocks_b, chunks = ce.compute_diff(lines_a, lines_b, xml_text_a=xml_a, xml_text_b=xml_b)
+            # Load PDFs in parallel
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_a = pool.submit(ce.load_pdf, tmp_a)
+                fut_b = pool.submit(ce.load_pdf, tmp_b)
+                lines_a = fut_a.result()
+                lines_b = fut_b.result()
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
-            fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
-            pane_a = fut_pa.result()
-            pane_b = fut_pb.result()
+            # Compute diff
+            blocks_a, blocks_b, chunks = ce.compute_diff(
+                lines_a, lines_b,
+                xml_text_a=xml_a_text, xml_text_b=xml_b_text,
+            )
 
-        xml_sections = []
-        if xml_b and hasattr(ce, "extract_xml_sections"):
-            xml_sections = ce.extract_xml_sections(xml_b)
-            if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
-                ce.assign_chunks_to_sections(chunks, xml_sections, xml_b)
-        # Fallback: when no XML, detect sections from PDF structural headings
-        if not xml_sections and hasattr(ce, "assign_chunks_to_pdf_sections"):
-            xml_sections = ce.assign_chunks_to_pdf_sections(chunks, blocks_b)
+            # Precompute panes in parallel
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+                fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+                pane_a = fut_pa.result()
+                pane_b = fut_pb.result()
 
-        payload = {
-            "success": True,
-            "chunks":  [_chunk_to_dict(ch, i) for i, ch in enumerate(chunks)],
-            "pane_a":  _pane_to_json(pane_a),
-            "pane_b":  _pane_to_json(pane_b),
-            "stats":   {
-                "total":         len(chunks),
-                "additions":     sum(1 for c in chunks if c.kind == ce.KIND_ADD),
-                "deletions":     sum(1 for c in chunks if c.kind == ce.KIND_DEL),
-                "modifications": sum(1 for c in chunks if c.kind == ce.KIND_MOD),
-                "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
-            },
-            "xml_sections": [{"id": s["id"], "label": s["label"], "level": s["level"],
-                               "parent_id": s["parent_id"]} for s in xml_sections],
-            "file_a": old_file.filename,
-            "file_b": new_file.filename,
-        }
-        logger.info("diff: %.2fs total", time.perf_counter() - t0)
-        return ORJSONResponse(payload)
+            # Extract XML sections
+            xml_sections = []
+            if xml_b_text and hasattr(ce, "extract_xml_sections"):
+                xml_sections = ce.extract_xml_sections(xml_b_text)
+                if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
+                    ce.assign_chunks_to_sections(chunks, xml_sections, xml_b_text)
+            if not xml_sections and hasattr(ce, "assign_chunks_to_pdf_sections"):
+                xml_sections = ce.assign_chunks_to_pdf_sections(chunks, blocks_b)
 
+            t_total = time.perf_counter() - t0
+            logger.info("diff: %.2fs total, %d chunks", t_total, len(chunks))
+
+            return {
+                "success": True,
+                "chunks":  [_chunk_to_dict(ch, i) for i, ch in enumerate(chunks)],
+                "pane_a":  _pane_to_json(pane_a),
+                "pane_b":  _pane_to_json(pane_b),
+                "stats":   {
+                    "total":         len(chunks),
+                    "additions":     sum(1 for c in chunks if c.kind == ce.KIND_ADD),
+                    "deletions":     sum(1 for c in chunks if c.kind == ce.KIND_DEL),
+                    "modifications": sum(1 for c in chunks if c.kind == ce.KIND_MOD),
+                    "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
+                    "strike":        sum(1 for c in chunks if getattr(c, "kind", ce.KIND_EMP) == "strike"),
+                },
+                "xml_sections": [{"id": s["id"], "label": s["label"], "level": s["level"],
+                                   "parent_id": s["parent_id"]} for s in xml_sections],
+                "file_a": fname_a,
+                "file_b": fname_b,
+            }
+
+        finally:
+            for p in (tmp_a, tmp_b):
+                if p and os.path.exists(p):
+                    try: os.unlink(p)
+                    except OSError: pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _run),
+            timeout=_COMPARE_TIMEOUT_SECONDS,
+        )
+        return ORJSONResponse(result)
+    except asyncio.TimeoutError:
+        logger.error("diff_pdfs: timeout after %ds", _COMPARE_TIMEOUT_SECONDS)
+        raise HTTPException(
+            status_code=504,
+            detail=f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s",
+        )
     except Exception as exc:
         logger.exception("diff_pdfs failed")
-        raise HTTPException(
-            status_code=500,
-            detail={"error": str(exc)},
-        )
-    finally:
-        for p in (tmp_a, tmp_b):
-            if p and os.path.exists(p):
-                try: os.unlink(p)
-                except OSError: pass
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── POST /compare/diff/stream  (streaming, ≤100 pages) ───────────────────────
@@ -451,27 +509,27 @@ async def diff_pdfs_stream(
 
             def _prog_old(page: int, total: int):
                 if page == total or page % _thr_a == 0:
-                    q.put(_json.dumps({"t": "p", "s": "old", "p": page, "n": total}) + "\n")
+                    q.put(_emit_ndjson({"t": "p", "s": "old", "p": page, "n": total}))
 
             def _prog_new(page: int, total: int):
                 if page == total or page % _thr_b == 0:
-                    q.put(_json.dumps({"t": "p", "s": "new", "p": page, "n": total}) + "\n")
+                    q.put(_emit_ndjson({"t": "p", "s": "new", "p": page, "n": total}))
 
-            q.put(_json.dumps({"t": "p", "s": "old", "p": 0, "n": _n_a}) + "\n")
+            q.put(_emit_ndjson({"t": "p", "s": "old", "p": 0, "n": _n_a}))
             with ThreadPoolExecutor(max_workers=2) as load_pool:
                 fut_a   = load_pool.submit(ce.load_pdf, tmp_a, _prog_old, page_start_a, page_end_a)
                 fut_b   = load_pool.submit(ce.load_pdf, tmp_b, _prog_new, page_start_b, page_end_b)
                 lines_a = fut_a.result()
                 lines_b = fut_b.result()
-            q.put(_json.dumps({"t": "p", "s": "new", "p": _n_b, "n": _n_b}) + "\n")
+            q.put(_emit_ndjson({"t": "p", "s": "new", "p": _n_b, "n": _n_b}))
 
             t1 = time.perf_counter()
             logger.info("[TIMING] load_pdf: %d+%d lines, %.2fs", len(lines_a), len(lines_b), t1 - t0)
 
-            q.put(_json.dumps({"t": "p", "s": "diff"}) + "\n")
+            q.put(_emit_ndjson({"t": "p", "s": "diff"}))
 
             def _diff_progress(sub: str, pct: int):
-                q.put(_json.dumps({"t": "p", "s": "diff", "sub": sub, "sp": pct}) + "\n")
+                q.put(_emit_ndjson({"t": "p", "s": "diff", "sub": sub, "sp": pct}))
 
             blocks_a, blocks_b, chunks = ce.compute_diff(
                 lines_a, lines_b,
@@ -482,7 +540,7 @@ async def diff_pdfs_stream(
             t2 = time.perf_counter()
             logger.info("[TIMING] compute_diff: %d chunks, %.2fs", len(chunks), t2 - t1)
 
-            q.put(_json.dumps({"t": "p", "s": "render", "chunks": len(chunks)}) + "\n")
+            q.put(_emit_ndjson({"t": "p", "s": "render", "chunks": len(chunks)}))
             with ThreadPoolExecutor(max_workers=2) as pool:
                 fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
                 fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
@@ -512,6 +570,7 @@ async def diff_pdfs_stream(
                     "deletions":     sum(1 for c in chunks if c.kind == ce.KIND_DEL),
                     "modifications": sum(1 for c in chunks if c.kind == ce.KIND_MOD),
                     "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
+                    "strike":        sum(1 for c in chunks if getattr(c, "kind", ce.KIND_EMP) == "strike"),
                 },
                 "xml_sections": [{"id": s["id"], "label": s["label"], "level": s["level"],
                                    "parent_id": s["parent_id"]} for s in xml_sections],
@@ -524,12 +583,12 @@ async def diff_pdfs_stream(
             logger.info("[TIMING] serialize: %.1f MB, TOTAL=%.2fs",
                         len(result_bytes) / 1048576, time.perf_counter() - t0)
 
-            q.put(result_bytes)
+            q.put(_emit_ndjson(result_bytes))
             q.put(None)
 
         except Exception as exc:
             logging.exception("diff/stream _run failed")
-            q.put((_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode())
+            q.put(_emit_ndjson({"t": "e", "msg": str(exc)}))
             q.put(None)
         finally:
             for p in (tmp_a, tmp_b):
@@ -709,11 +768,11 @@ async def diff_pdfs_stream_large(
             batches   = list(range(0, n_pages, PAGE_BATCH_SIZE))
             n_batches = len(batches)
 
-            q.put(_json.dumps({
+            q.put(_emit_ndjson({
                 "t": "p", "s": "schedule",
                 "batches": n_batches, "pages": n_pages,
                 "old_pages": n_a, "new_pages": n_b,
-            }) + "\n")
+            }))
 
             logger.info(
                 "diff/stream/large: job=%s  old=%d pages  new=%d pages  "
@@ -757,13 +816,13 @@ async def diff_pdfs_stream_large(
                 pct_start = int(batch_k / n_batches * 90)
                 pct_end   = int((batch_k + 1) / n_batches * 90)
 
-                q.put(_json.dumps({
+                q.put(_emit_ndjson({
                     "t": "p", "s": "batch",
                     "batch": batch_k + 1, "of": n_batches,
                     "pages": [batch_start, batch_end],
                     "pct":   pct_start,
                     "msg":   f"Extracting pages {batch_start}-{batch_end}...",
-                }) + "\n")
+                }))
 
                 # Collect current batch (already running in thread pool).
                 # next_futs is always a 2-tuple; futures are None only when
@@ -779,13 +838,13 @@ async def diff_pdfs_stream_large(
                 else:
                     next_futs = (None, None)
 
-                q.put(_json.dumps({
+                q.put(_emit_ndjson({
                     "t": "p", "s": "batch",
                     "batch": batch_k + 1, "of": n_batches,
                     "pages": [batch_start, batch_end],
                     "pct":   pct_start + (pct_end - pct_start) // 3,
                     "msg":   f"Diffing pages {batch_start}-{batch_end}...",
-                }) + "\n")
+                }))
 
                 try:
                     blocks_a, blocks_b, chunks = ce.compute_diff(
@@ -794,15 +853,47 @@ async def diff_pdfs_stream_large(
                     )
                 except Exception as diff_exc:
                     logger.warning("batch %d diff failed: %s", batch_k, diff_exc)
-                    chunks = []; blocks_a = lines_a; blocks_b = lines_b
+                    q.put(_emit_ndjson({
+                        "t": "p", "s": "batch",
+                        "batch": batch_k + 1, "of": n_batches,
+                        "pages": [batch_start, batch_end],
+                        "pct":   pct_start + 2 * (pct_end - pct_start) // 3,
+                        "msg":   f"Batch {batch_k + 1} failed during diff; continuing.",
+                    }))
 
-                q.put(_json.dumps({
+                    pane_empty = {
+                        "segments": [],
+                        "tag_cfgs": {},
+                        "offsets": {},
+                        "offset_ends": {},
+                    }
+                    batch_payload = {
+                        "t":          "batch",
+                        "batch":      batch_k + 1,
+                        "of":         n_batches,
+                        "page_range": [batch_start, batch_end],
+                        "chunks":     [],
+                        "pane_a":     pane_empty,
+                        "pane_b":     pane_empty,
+                        "stats":      {
+                            "total": 0,
+                            "additions": 0,
+                            "deletions": 0,
+                            "modifications": 0,
+                            "emphasis": 0,
+                        },
+                    }
+                    q.put(_emit_ndjson(batch_payload))
+                    del lines_a, lines_b
+                    continue
+
+                q.put(_emit_ndjson({
                     "t": "p", "s": "batch",
                     "batch": batch_k + 1, "of": n_batches,
                     "pages": [batch_start, batch_end],
                     "pct":   pct_start + 2 * (pct_end - pct_start) // 3,
                     "msg":   f"Rendering {len(chunks)} changes for pages {batch_start}-{batch_end}...",
-                }) + "\n")
+                }))
 
                 with ThreadPoolExecutor(max_workers=2) as render_pool:
                     fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
@@ -849,6 +940,7 @@ async def diff_pdfs_stream_large(
                     "deletions":     sum(1 for c in chunks if c.kind == ce.KIND_DEL),
                     "modifications": sum(1 for c in chunks if c.kind == ce.KIND_MOD),
                     "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
+                    "strike":        sum(1 for c in chunks if getattr(c, "kind", ce.KIND_EMP) == "strike"),
                 }
 
                 batch_payload = {
@@ -861,7 +953,7 @@ async def diff_pdfs_stream_large(
                     "pane_b":     pane_b_json,
                     "stats":      batch_stats,
                 }
-                q.put(_dumps_fast(batch_payload).rstrip(b"\n") + b"\n")
+                q.put(_emit_ndjson(batch_payload))
 
                 del lines_a, lines_b, blocks_a, blocks_b, chunks, pane_a, pane_b
                 logger.info(
@@ -892,6 +984,7 @@ async def diff_pdfs_stream_large(
                 "deletions":     sum(1 for c in all_chunks if c.get("kind") == ce.KIND_DEL),
                 "modifications": sum(1 for c in all_chunks if c.get("kind") == ce.KIND_MOD),
                 "emphasis":      sum(1 for c in all_chunks if c.get("kind") == ce.KIND_EMP),
+                "strike":        sum(1 for c in all_chunks if c.get("kind") == "strike"),
             }
 
             # ── Store full result in LRU cache for lazy segment fetch ─────────
@@ -928,7 +1021,7 @@ async def diff_pdfs_stream_large(
                 ],
                 "pct": 100,
             }
-            q.put(_dumps_fast(done_payload).rstrip(b"\n") + b"\n")
+            q.put(_emit_ndjson(done_payload))
             q.put(None)  # signal _generate_large() to stop
 
             logger.info(
@@ -938,7 +1031,7 @@ async def diff_pdfs_stream_large(
 
         except Exception as exc:
             logging.exception("diff/stream/large _run_large failed")
-            q.put((_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode())
+            q.put(_emit_ndjson({"t": "e", "msg": str(exc)}))
             q.put(None)
         finally:
             for doc in (doc_a, doc_b):
@@ -1150,6 +1243,50 @@ async def health():
         "large_threshold": LARGE_DOC_THRESHOLD,
         "cache_ttl":       _RESULT_CACHE_TTL,
     }
+
+
+# ── POST /compare/pdf/page-count  (routing hint for frontend) ───────────────
+
+@router.post("/pdf/page-count")
+async def pdf_page_count(
+    old_file: UploadFile = File(...),
+    new_file: UploadFile = File(...),
+):
+    """
+    Return page counts for both PDFs so frontend can choose small vs large mode
+    based on page count (not compressed file size).
+    """
+    tmp_a = tmp_b = None
+    try:
+        _check_file_size(old_file)
+        _check_file_size(new_file)
+        data_a = await old_file.read()
+        data_b = await new_file.read()
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
+            fa.write(data_a)
+            tmp_a = fa.name
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
+            fb.write(data_b)
+            tmp_b = fb.name
+
+        n_a = _ext_page_count(tmp_a)
+        n_b = _ext_page_count(tmp_b)
+        return ORJSONResponse({
+            "old_pages": n_a,
+            "new_pages": n_b,
+            "max_pages": max(n_a, n_b),
+            "large_threshold": LARGE_DOC_THRESHOLD,
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        for p in (tmp_a, tmp_b):
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 # ── POST /compare/pdf/sections  (section picker — fast heading scan) ────────────

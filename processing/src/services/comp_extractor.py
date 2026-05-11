@@ -170,29 +170,37 @@ RED        = "#f85149"
 GREEN      = "#3fb950"
 YELLOW     = "#e3b341"
 
-ADD_BG  = "#ccffd8";  ADD_FG  = "#1a4d2e"
-DEL_BG  = "#ffd7d5";  DEL_FG  = "#6e1c1a"
-MOD_BG  = "#fff3b0";  MOD_FG  = "#5a3e00"
-EMP_BG  = "#ead8ff";  EMP_FG  = "#3d007a"
+# Diff palette per product spec:
+#   ADD = green   (added text in new version)
+#   DEL = hotpink (removed text in old version)
+#   MOD = orange  (modified text)
+#   EMP = lightblue (emphasis change — bold/italic/underline/strikeout toggle)
+ADD_BG  = "#bbf7d0";  ADD_FG  = "#14532d"   # tailwind green-200 / green-900
+DEL_BG  = "#fecdd3";  DEL_FG  = "#881337"   # tailwind rose-200 / rose-900 (hot pink)
+MOD_BG  = "#fed7aa";  MOD_FG  = "#7c2d12"   # tailwind orange-200 / orange-900
+EMP_BG  = "#bfdbfe";  EMP_FG  = "#1e3a8a"   # tailwind blue-200 / blue-900 (light blue)
 NAV_BG  = "#b8d8ff"
 
-PILL_ADD = "#1a5c1a"
-PILL_DEL = "#7a1010"
-PILL_MOD = "#7a5000"
-PILL_EMP = "#4a007a"
+PILL_ADD = "#1a6b1a"
+PILL_DEL = "#be185d"   # rose-700
+PILL_MOD = "#c2410c"   # orange-700
+PILL_EMP = "#1d4ed8"   # blue-700
 
 FONT_SM   = ("Consolas", 9)
 FONT_BOLD = ("Consolas", 10, "bold")
 PAGE_BG   = "#ffffff"
 EQL_FG    = "#111111"
 
-COL_BOLD      = "#b05a00"
-COL_ITALIC    = "#0066cc"
-COL_BOLD_IT   = "#6600aa"
-COL_MONO      = "#007070"
-COL_SUPER     = "#cc2200"
-COL_UNDERLINE = "#006622"
-COL_STRIKE    = "#888888"
+# Emphasis-axis colours (used only on diff-marked spans inside precompute).
+# All map to the EMP foreground so emphasis changes look consistent regardless
+# of which axis (bold/italic/underline/strikeout) flipped.
+COL_BOLD      = "#1d4ed8"
+COL_ITALIC    = "#1d4ed8"
+COL_BOLD_IT   = "#1d4ed8"
+COL_MONO      = "#1d4ed8"
+COL_SUPER     = "#1d4ed8"
+COL_UNDERLINE = "#1d4ed8"
+COL_STRIKE    = "#be185d"   # struck-out spans pick up DEL-pink semantically
 COL_SMALL     = "#777777"
 COL_NORMAL    = "#111111"
 
@@ -527,12 +535,14 @@ def _detect_header_footer_patterns(doc) -> set:
     Returns a set of normalised text strings to treat as noise.
     """
     total = len(doc)
-    # Sample up to 20 pages spread evenly across the document
+    # Sample size scales with document length so very large compilations
+    # (1000+ pages) get adequate coverage.
     if total <= 20:
         sample_indices = list(range(total))
     else:
-        step = total / 20
-        sample_indices = [int(i * step) for i in range(20)]
+        n_samples = min(40, total)
+        step = total / n_samples
+        sample_indices = [int(i * step) for i in range(n_samples)]
 
     page_entries: List[List[tuple]] = []
     for i in sample_indices:
@@ -1154,9 +1164,24 @@ def load_pdf(
             _merge_amendment_section_blocks(merged)
 
             # Detect drawn strikethrough lines (vector paths that font flags miss).
-            # Common in BCB PDFs and other legal documents.  Mirrors the same logic
-            # in pdf_extractor_core._build_strikeout_rects / _apply_drawn_strikeout.
+            # Three guards mirror pdf_extractor_core fixes:
+            #   1. Exclude y-positions matching PDF Link/Underline annotations
+            #   2. Reject lines at relative position > 0.75 (underlines at 0.85-0.95)
+            #   3. Use local page coords: subtract page_y_offset from span coords
             try:
+                # Guard 1: pre-collect y-midpoints of Link/Underline annotations
+                _annot_ys: set = set()
+                for _an in (fz.annots() or []):
+                    _atype = _an.type[1] if _an.type else ""
+                    if _atype in ("Underline", "Link"):
+                        _ar = getattr(_an, "rect", None)
+                        if _ar is not None:
+                            _annot_ys.add(round((_ar.y0 + _ar.y1) / 2 / 2) * 2)
+                for _lk in (fz.get_links() or []):
+                    _lr = _lk.get("from")
+                    if _lr is not None:
+                        _annot_ys.add(round((_lr.y0 + _lr.y1) / 2 / 2) * 2)
+
                 _sr: list = []
                 for _path in fz.get_drawings():
                     _rect = _path.get("rect")
@@ -1166,23 +1191,43 @@ def load_pdf(
                     if _x1 <= _x0:
                         continue
                     _w, _h = _x1 - _x0, abs(_y1 - _y0)
-                    if _w < 15 or _h > 3:
+                    # Min width 8pt (was 15pt) — matches pdf_extractor_core's
+                    # canonical detector. Short struck-out words like "if",
+                    # "or", "by" have line widths of ~10–14pt and would
+                    # otherwise be missed.
+                    if _w < 8 or _h > 3:
                         continue
                     _ph = fz.rect.height or 1.0
                     _my = (_y0 + _y1) / 2
                     if _my / _ph < 0.10 or _my / _ph > 0.92:
                         continue
+                    # Guard 1: skip lines at same y as a known link/underline annot
+                    if round(_my / 2) * 2 in _annot_ys:
+                        continue
                     _sr.append((_x0, _y0, _x1, _y1))
+
                 if _sr:
                     for _pl in merged:
                         for _sp in _pl.spans:
-                            _sp_mid = (_sp.y + _sp.y2) / 2
+                            # Guard 3: convert absolute span coords to local page space
+                            _sp_top = _sp.y  - page_y_offset
+                            _sp_bot = _sp.y2 - page_y_offset
+                            _sp_h   = _sp_bot - _sp_top
+                            if _sp_h <= 0:
+                                continue
+                            _sp_mid = (_sp_top + _sp_bot) / 2
                             for (_sx0, _sy0, _sx1, _sy1) in _sr:
                                 if _sx1 <= _sp.x or _sx0 >= _sp.x2:
                                     continue
-                                if abs((_sy0 + _sy1) / 2 - _sp_mid) <= 7:
-                                    _sp.strikeout = True
-                                    break
+                                _line_y = (_sy0 + _sy1) / 2
+                                if abs(_line_y - _sp_mid) > 7:
+                                    continue
+                                # Guard 2: underlines at 0.85-0.95; strikethroughs at 0.40-0.65
+                                _rel = (_line_y - _sp_top) / _sp_h
+                                if _rel > 0.75:
+                                    continue
+                                _sp.strikeout = True
+                                break
             except Exception:
                 pass
 
@@ -1747,6 +1792,22 @@ _RE_SUBHEADING = re.compile(
     re.I,
 )
 
+# Inline list-item marker. Used by segment_blocks to split enumerated lists
+# whose items share a common leading caput/lead-in phrase (e.g. Brazilian
+# regulatory text where each item I, II, III, IV restates the parent caput).
+# Without this split, all list items merge into a single block whose text
+# is the caput repeated N times, which causes the duplicate-line rendering
+# bug visible in the diff viewer.
+_RE_LIST_MARKER = re.compile(
+    r'^(?:'
+    r'[IVXLCDM]{1,6}\b'           # roman numerals upper (I, II, III, IV)
+    r'|[ivxlcdm]{1,6}\b'           # roman numerals lower (i, ii, iii, iv)
+    r'|\([a-zA-Z]{1,3}\)'          # (a), (b), (bb)
+    r'|\(\d{1,3}\)'                # (1), (2), (12)
+    r'|\d{1,3}[.)]\s'              # 1. or 1)
+    r')',
+)
+
 
 def _is_short_heading_text(text: str) -> bool:
     """True for short legal heading/subheading lines that should stand alone."""
@@ -1928,7 +1989,12 @@ def _median_gap(lines: List[PdfLine]) -> float:
 
 
 def _line_is_predominantly_strikethrough(line: PdfLine) -> bool:
-    """True if more than 50 % of the visible character count is strikethrough.
+    """True if any meaningful span (>= 4 chars) is struck out, OR if struck
+    chars are >= 30 % of the visible character count.
+
+    Lowered from 50 % to 30 % and added the "substantial-span" check so
+    partial-line strikes that mark editorial deletion (e.g. "Art. 1° was
+    struck through" where only the predicate is struck) are caught.
 
     Used by segment_blocks to prevent mixing strikethrough (superseded) text
     with regular text into the same block — keeping them separate allows the
@@ -1939,7 +2005,10 @@ def _line_is_predominantly_strikethrough(line: PdfLine) -> bool:
     if not total:
         return False
     strike = sum(len(s.text) for s in line.spans if s.text and s.strikeout)
-    return strike > total * 0.5
+    if strike >= total * 0.30:
+        return True
+    # Any substantial struck span (>= 4 chars after strip) is enough.
+    return any(s.strikeout and len(s.text.strip()) >= 4 for s in line.spans)
 
 
 @functools.lru_cache(maxsize=32768)
@@ -2123,19 +2192,33 @@ def segment_blocks(lines: List[PdfLine]) -> List[Block]:
             if prev_strike != cur_strike:
                 start_new = True
 
-        # Repeated-provision boundary: when a block already has ≥ 2 lines and
-        # the current line's normalised text is identical to the first line of
-        # the block (e.g. a list of sub-provisions that each repeat the same
-        # boilerplate sentence), split so each repetition becomes its own block.
-        # This prevents multiple identical provision paragraphs from being merged
-        # into one giant block that renders as duplicate text in the diff viewer.
-        # Only fires with a paragraph-level gap so genuine single-sentence blocks
-        # that span many lines are never split.
-        if not start_new and _open_br <= 0 and cur_len >= 2 and gap >= max(med, 16.0):
+        # Repeated-provision boundary: when a block already has ≥ 1 line and
+        # the current line either (a) is identical to the first line of the
+        # block, or (b) starts with a list marker (I/II/(a)/(1)/1./...) and
+        # has different leading words, split so each repetition becomes its
+        # own block.
+        #
+        # Case (b) is the critical one for enumerated legal lists where each
+        # item begins with the same caput/lead-in phrase but a different list
+        # marker. Without it, all items merge into a single block whose text
+        # is the caput repeated N times — causing duplicate-line rendering
+        # in the diff viewer.
+        #
+        # The gap threshold is slightly more permissive (1.4× median) than
+        # the original (1.0× median) but still requires a paragraph-level
+        # gap so genuine wrapped sentences are never split.
+        if not start_new and _open_br <= 0 and cur_len >= 1 and gap >= max(med * 1.4, 14.0):
             _cmp_first = _norm_cmp(norm_texts[cur_start])
             _cmp_cur   = _norm_cmp(line_text)
-            if _cmp_first and _cmp_cur and _cmp_first == _cmp_cur:
+            # Case (a): exact repetition of the first line.
+            if cur_len >= 2 and _cmp_first and _cmp_cur and _cmp_first == _cmp_cur:
                 start_new = True
+            # Case (b): list marker prefix with differing leading content.
+            elif _RE_LIST_MARKER.match(line_text.strip()):
+                _first_words = _cmp_first.split()[:5]
+                _cur_words   = _cmp_cur.split()[:5]
+                if _first_words and _cur_words and _first_words != _cur_words:
+                    start_new = True
 
         if not start_new and anchor:
             # Lone provision labels sometimes break onto their own line between
@@ -2269,6 +2352,7 @@ KIND_ADD = "add"
 KIND_DEL = "del"
 KIND_MOD = "mod"
 KIND_EMP = "emp"
+KIND_STRIKE = "strike"  # intentional legislative strikethrough
 
 
 @dataclass
@@ -3399,8 +3483,13 @@ def _emp_diff(block_a: Block, block_b: Block) -> bool:
         w for w in common
         if wm_a[w][0] != wm_b[w][0]   # bold changed
         or wm_a[w][1] != wm_b[w][1]   # italic changed
-        or wm_a[w][2] != wm_b[w][2]   # underline changed
         or wm_a[w][3] != wm_b[w][3]   # strikeout changed
+        # Underline: only treat as emphasis if another axis (bold/italic/strikeout)
+        # also changed on the same word.  Pure underline-toggle = hyperlink artefact.
+        or (wm_a[w][2] != wm_b[w][2]
+            and (wm_a[w][0] != wm_b[w][0]
+                 or wm_a[w][1] != wm_b[w][1]
+                 or wm_a[w][3] != wm_b[w][3]))
     ]
     if not changed_words:
         return False
@@ -3462,6 +3551,35 @@ def _emp_diff(block_a: Block, block_b: Block) -> bool:
     return True
 
 
+
+
+def _is_strike_only_change(block_a: Block, block_b: Block) -> bool:
+    """
+    True when the ONLY emphasis change between the two blocks is that some
+    shared words gained or lost the strikeout flag, while bold and italic
+    stayed constant.  This indicates intentional legislative strikethrough
+    (e.g. <s> elements in regulatory XML), not a PDF hyperlink artefact.
+    Pure strikeout changes → KIND_STRIKE, not KIND_EMP.
+    """
+    wm_a = _emp_word_map(block_a)
+    wm_b = _emp_word_map(block_b)
+    common = set(wm_a) & set(wm_b)
+    if not common:
+        return False
+    strike_changed = [
+        w for w in common
+        if wm_a[w][3] != wm_b[w][3]  # strikeout changed
+    ]
+    if not strike_changed:
+        return False
+    # Ensure no bold/italic also changed on the same words
+    other_changed = [
+        w for w in strike_changed
+        if wm_a[w][0] != wm_b[w][0] or wm_a[w][1] != wm_b[w][1]
+    ]
+    # If bold/italic also changed → this is a compound emphasis change (EMP), not pure STRIKE
+    return len(other_changed) == 0
+
 def _emp_detail(block_a: Block, block_b: Block) -> str:
     """Return a human-readable description of which emphasis changed and how.
 
@@ -3496,7 +3614,7 @@ def _emp_detail(block_a: Block, block_b: Block) -> str:
         if axis_name in added:
             words = " ".join(added[axis_name][:8])
             parts.append(f"{axis_name} added: {words}")
-    return "; ".join(parts)
+    return "|".join(parts)
 
 
 @functools.lru_cache(maxsize=65536)
@@ -4516,7 +4634,7 @@ def compute_diff(
             merged = False
             # Allow larger windows for famend block runs (amendment sections).
             is_famend_run = src_list[i].startswith('ANCH::famend:')
-            max_n = 10 if is_famend_run else 6
+            max_n = 6 if is_famend_run else 4
             for n in range(2, max_n + 1):
                 if i + n > len(src_list):
                     break
@@ -4526,7 +4644,25 @@ def compute_diff(
                 joined = ' '.join(src_list[i:i+n])
                 if len(joined) > 2400:
                     break
-                is_match = (joined in ref_set) or (_wbag(joined) in ref_wbag)
+                # Exact-match merges are always safe.
+                if joined in ref_set:
+                    is_match = True
+                else:
+                    # Word-bag fallback: only safe when the run is long enough
+                    # to be distinctive AND no anchored block is involved.
+                    # Short or anchor-bearing runs are the most likely to
+                    # misalign because legal anchors like (a),(b),(1),(2)
+                    # repeat throughout a document and produce coincidental
+                    # bag matches.
+                    word_count = len(joined.split())
+                    has_anchor_run = any(
+                        s.startswith('ANCH::') or s.startswith('GUIDE::')
+                        for s in src_list[i:i+n]
+                    )
+                    if word_count < 8 or has_anchor_run:
+                        is_match = False
+                    else:
+                        is_match = (_wbag(joined) in ref_wbag)
                 if is_match:
                     merged_idx = []
                     for k in range(n):
@@ -4610,11 +4746,11 @@ def compute_diff(
                     # Very high similarity + same numbers = layout/formatting
                     # artefact (e.g. citation-space, hyperlink underline toggle).
                     # Suppress entirely — skip EMP check too.
-                    if _sim_eq >= 0.94 and _nums_eq:
+                    if _sim_eq >= 0.92 and _nums_eq:
                         continue
                     # Cache suppress decision — reused to gate both MOD and EMP.
                     _supp_eq = _should_suppress_chunk(bla.text, blb.text)
-                    if _sim_eq < 0.92 and not _supp_eq:
+                    if _sim_eq < 0.88 and not _supp_eq:
                         chunks.append(Chunk(KIND_MOD, ri, rj,
                                             bla.text, blb.text))
                         continue
@@ -4643,7 +4779,12 @@ def compute_diff(
                             continue
 
                 if _emp_sig_block(bla) != _emp_sig_block(blb):
-                    if _emp_diff(bla, blb):
+                    if _is_strike_only_change(bla, blb):
+                        # Pure legislative strikethrough change → KIND_STRIKE
+                        ch = Chunk(KIND_STRIKE, ri, rj, bla.text, blb.text)
+                        ch.emp_detail = "strikeout changed"
+                        chunks.append(ch)
+                    elif _emp_diff(bla, blb):
                         detail = _emp_detail(bla, blb)
                         ch = Chunk(KIND_EMP, ri, rj,
                                    bla.text, blb.text)
@@ -4715,7 +4856,7 @@ def compute_diff(
                 for ri, bla in leftovers_a:
                     if ri in seen_a:
                         continue
-                    best_score = 0.70
+                    best_score = 0.78
                     best_j = None
                     best_meta = ("", 0.0)
                     prov_bla = _prov(bla.anchor)
@@ -4795,7 +4936,12 @@ def compute_diff(
                 if _should_suppress_chunk(bla.text, blb.text):
                     continue
                 ratio = _combined_similarity(bla.cmp, blb.cmp)
-                if ratio >= 0.65:
+                # Use higher threshold when neither block has a structural anchor:
+                # boilerplate-heavy legal text can falsely score 0.78 between
+                # unrelated provisions that share common phrases.
+                _has_anchor = bool(bla.anchor and blb.anchor)
+                _mod_threshold = 0.78 if _has_anchor else 0.85
+                if ratio >= _mod_threshold:
                     chunks.append(Chunk(KIND_MOD, ri, rj, bla.text, blb.text,
                                         confidence=min(0.99, max(conf, ratio)), reason=reason))
                 else:
@@ -6812,17 +6958,31 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             char_pos[0] += len(text)
 
     def emit_span(span: Span, bg_tag: str = ""):
-        fg   = _span_fg(span)
+        # For unchanged text: suppress formatting-based colours to reduce visual
+        # noise (bold=orange, italic=blue, etc.).  Only diff-marked spans get the
+        # rich colour treatment.  Underline is also suppressed on unchanged spans
+        # because most underlined text in legal PDFs is a hyperlink, not an actual
+        # underline — applying underline to unchanged hyperlinks gives a false
+        # impression that they are highlighted changes.
+        if bg_tag:
+            fg = _span_fg(span)
+        else:
+            fg = COL_NORMAL
         font = _span_font(span)
         kw   = {"foreground": fg, "font": font}
-        if span.underline:  kw["underline"]  = True
-        if span.strikeout:  kw["overstrike"] = True
+        # Show underline only on diff-marked spans (bg_tag set); unchanged underlines
+        # are suppressed because they are almost always hyperlinks in legal PDFs.
+        if span.underline and bg_tag:  kw["underline"]  = True
+        # Show strikethrough only on diff-marked spans.
+        # Unchanged strikeout flags are often PDF artefacts on hyperlink text.
+        if span.strikeout and bg_tag:  kw["overstrike"] = True
         if bg_tag:
             bg = diff_styles[bg_tag]["background"]
             kw["background"] = bg
             pool_key = ("_pool_", fg, font, span.underline, span.strikeout, bg)
         else:
-            pool_key = ("_pool_", fg, font, span.underline, span.strikeout, None)
+            # Unchanged text: all spans collapse to same plain-text tag per font/strikeout
+            pool_key = ("_pool_", COL_NORMAL, font, False, span.strikeout, None)
 
         existing = tag_cfgs.get(pool_key)
         if existing is None:
@@ -6848,8 +7008,14 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             _wa_len = len(ch.text_a.split())
             _wb_len = len(ch.text_b.split())
             if _wa_len > _WORD_DIFF_MAX or _wb_len > _WORD_DIFF_MAX:
-                # Block is too long for word-level diff — treat as whole-block MOD
-                raw_ops = [("replace", ch.text_a.split(), ch.text_b.split())]
+                # Block is too long for safe word-level diff. Render the
+                # whole block as a flat MOD highlight via emit_span; the
+                # chunk list still surfaces the words_added / words_removed
+                # delta from the chunk metadata so the user sees what
+                # changed. Setting mod_word_ops = None routes through the
+                # plain-emit branch which has no word-mapping risks.
+                mod_word_ops = None
+                raw_ops = []
             else:
                 raw_ops = _word_ops(ch.text_a, ch.text_b)
             # Suppress MOD highlight entirely if all changed words are trivial
@@ -6905,6 +7071,23 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                     if span.text:
                         emit_span(span, "add")
 
+            elif ch.kind == "strike":
+                # KIND_STRIKE: intentional legislative strikethrough.
+                # Render with the DEL palette + line-through on every span so
+                # the user sees clearly that the content was struck through.
+                # Shown on BOTH sides so context is preserved.
+                for span in line.spans:
+                    if span.text:
+                        # Use "del" colour (pink) and force line-through via the
+                        # span's strikeout attribute. emit_span already respects
+                        # span.strikeout when bg_tag is set.
+                        _orig_strike = span.strikeout
+                        try:
+                            span.strikeout = True
+                            emit_span(span, "del")
+                        finally:
+                            span.strikeout = _orig_strike
+
             elif ch.kind == KIND_EMP:
                 # Word-level EMP: highlight words whose emphasis (bold/italic/
                 # underline/strikeout) changed between versions.
@@ -6922,10 +7105,17 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                             block._emp_changed = {
                                 w: (wm_self[w], wm_other[w])
                                 for w in (set(wm_self) & set(wm_other))
+                                # Include bold, italic, strikeout changes.
+                                # Underline: only flag when bold/italic/strikeout
+                                # also changed on the same word — pure underline
+                                # toggle is a hyperlink artefact.
                                 if (wm_self[w][0] != wm_other[w][0]   # bold
-                                    or wm_self[w][1] != wm_other[w][1]   # italic
-                                    or wm_self[w][2] != wm_other[w][2]   # underline
-                                    or wm_self[w][3] != wm_other[w][3])  # strikeout
+                                    or wm_self[w][1] != wm_other[w][1]  # italic
+                                    or wm_self[w][3] != wm_other[w][3]  # strikeout (re-enabled)
+                                    or (wm_self[w][2] != wm_other[w][2]  # underline (conditional)
+                                        and (wm_self[w][0] != wm_other[w][0]
+                                             or wm_self[w][1] != wm_other[w][1]
+                                             or wm_self[w][3] != wm_other[w][3])))
                             }
                         else:
                             block._emp_changed = {}
@@ -7000,12 +7190,20 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                         block._mod_sw_words   = None
                         block._mod_line_map   = None
                     else:
-                        # Build flat (word, Span) list indexed by line
-                        all_sw: list = []   # [(word, Span, line_idx)]
-                        for _li2, _bl in enumerate(block.lines):
+                        # Build per-line span buckets — one bucket per PDF
+                        # line containing the spans of each word in that
+                        # line, in left-to-right order. This replaces the
+                        # original flat all_sw list because flat positional
+                        # indexing is unsafe when len(diff_words) drifts
+                        # from len(all_sw) due to text cleanup divergence
+                        # (F-cluster stripping, hyphen de-wrapping, etc.).
+                        line_span_buckets: list = []   # [[span, span, ...], ...]
+                        for _bl in block.lines:
+                            bucket: list = []
                             for _sp in _bl.spans:
                                 for _w in _sp.text.split():
-                                    all_sw.append((_w, _sp, _li2))
+                                    bucket.append(_sp)
+                            line_span_buckets.append(bucket)
 
                         # Build (word, is_changed). For high-overlap chunks,
                         # use order-independent token deltas so newline reflow
@@ -7036,16 +7234,42 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                                     for w in wb2:
                                         diff_words.append((w, changed))
 
-                        # Map each diff word to a line index via all_sw
-                        # (zip by position; extra diff words stay on last line)
+                        # Map each diff word to a (line_idx, span) using the
+                        # actual per-line word count rather than positional
+                        # indexing into a flat span list. Words consumed
+                        # within a line advance pos_in_line; when a line is
+                        # exhausted we move to the next non-empty line.
+                        # Words that exceed the available line budget get
+                        # mapped with span=None so the renderer's existing
+                        # `if sp2 is None: continue` branch suppresses them
+                        # rather than reusing the previous line's span (which
+                        # was the source of the duplicate-rendering bug).
                         dw_line_entries: list = []  # [(word, is_changed, line_idx, span)]
-                        for di2, (dw2, is_c) in enumerate(diff_words):
-                            li2 = all_sw[di2][2] if di2 < len(all_sw) else (all_sw[-1][2] if all_sw else 0)
-                            sp2 = all_sw[di2][1] if di2 < len(all_sw) else (all_sw[-1][1] if all_sw else None)
+                        cur_line = 0
+                        pos_in_line = 0
+
+                        for (dw2, is_c) in diff_words:
+                            # Advance past empty / fully-consumed lines.
+                            while (cur_line < len(line_span_buckets) and
+                                   pos_in_line >= len(line_span_buckets[cur_line])):
+                                cur_line += 1
+                                pos_in_line = 0
+
+                            if cur_line < len(line_span_buckets):
+                                sp2 = line_span_buckets[cur_line][pos_in_line]
+                                li2 = cur_line
+                                pos_in_line += 1
+                            else:
+                                # Diff has more words than the block lines
+                                # account for. Mark unmapped — renderer
+                                # will skip these via the sp2 is None branch.
+                                li2 = len(line_span_buckets) - 1 if line_span_buckets else 0
+                                sp2 = None
+
                             dw_line_entries.append((dw2, is_c, li2, sp2))
 
                         block._mod_diff_words = dw_line_entries
-                        block._mod_sw_words   = all_sw
+                        block._mod_sw_words   = None  # legacy; no longer used
 
                 # Emit words belonging to this line index
                 dw_line = block._mod_diff_words
@@ -7085,8 +7309,14 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                         if sp2.underline:  kw2["underline"]  = True
                         if sp2.strikeout:  kw2["overstrike"] = True
                         if is_c:
-                            kw2["background"] = DEL_BG if side == "a" else MOD_BG
-                            kw2["foreground"] = DEL_FG if side == "a" else MOD_FG
+                            # Side A (old): paint removed words with DEL palette (pink)
+                            # Side B (new): paint inserted words with ADD palette (green)
+                            # Using MOD_BG on side B was a bug — the client's
+                            # _serverPaletteKind() maps MOD_BG→"mod", which does NOT
+                            # satisfy the isInlineWordDiff guard (requires "del"|"add"),
+                            # so side B never rendered green inserted words correctly.
+                            kw2["background"] = DEL_BG if side == "a" else ADD_BG
+                            kw2["foreground"] = DEL_FG if side == "a" else ADD_FG
 
                         sig2 = (fg2, font2, sp2.underline, sp2.strikeout, is_c)
                         if buf_words2 and sig2 != buf_sig2:
@@ -7112,8 +7342,31 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
     clean_cfgs = {k: v for k, v in tag_cfgs.items()
                   if isinstance(k, str) and isinstance(v, dict)}
 
-    return {"segments": segments, "tag_cfgs": clean_cfgs,
-            "offsets": offsets, "offset_ends": offset_ends}
+    # Emit per-chunk line numbers so the frontend can skip char→line binary-search,
+    # eliminating accumulated rounding errors that caused 1-2 row drift on long docs.
+    line_offsets:     dict = {}
+    line_offset_ends: dict = {}
+    line_idx = 0
+    pos2 = 0
+    for text, _tag in segments:
+        for cid, off in offsets.items():
+            off_end = offset_ends.get(cid, off + 1)
+            if pos2 >= off and pos2 < off_end:
+                if cid not in line_offsets:
+                    line_offsets[cid] = line_idx
+                line_offset_ends[cid] = line_idx
+        if text == "\n":
+            line_idx += 1
+        pos2 += len(text)
+
+    return {
+        "segments":         segments,
+        "tag_cfgs":         clean_cfgs,
+        "offsets":          offsets,
+        "offset_ends":      offset_ends,
+        "line_offsets":     {str(k): v for k, v in line_offsets.items()},
+        "line_offset_ends": {str(k): v for k, v in line_offset_ends.items()},
+    }
 
 
 # ─────────────────────────────────────────────────────────────

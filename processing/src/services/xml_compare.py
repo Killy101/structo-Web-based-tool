@@ -473,10 +473,11 @@ def _annotate_xml(
 
         void_tags: set[str] = set()  # self-closing tags
 
-        _open_re  = re.compile(r'<([A-Za-z_][\w:\-\.]*)')
-        _close_re = re.compile(r'</([A-Za-z_][\w:\-\.]*)')
-        _self_re  = re.compile(r'<([A-Za-z_][\w:\-\.]*)(?:[^>]*/>\s*)$')
-        _decl_re  = re.compile(r'<[?!]')
+        _open_re   = re.compile(r'<([A-Za-z_][\w:\-\.]*)')
+        _close_re  = re.compile(r'</([A-Za-z_][\w:\-\.]*)')
+        _self_re   = re.compile(r'<([A-Za-z_][\w:\-\.]*)(?:[^>]*/>\s*)$')
+        _inline_re = re.compile(r'<([A-Za-z_][\w:\-\.]*)(?:[^>]*)>.*?</\1>')
+        _decl_re   = re.compile(r'<[?!]')
 
         sibling_counters: list[dict[str, int]] = [{}]  # stack of {tag: count}
         open_paths: list[str] = [""]  # parallel to tag_stack, tracks current path
@@ -486,13 +487,35 @@ def _annotate_xml(
             if not stripped or _decl_re.match(stripped):
                 continue
 
-            # Self-closing
+            # Self-closing elements: <tag ... />
+            # Bug 2 fix: use a flag so the outer loop iteration is skipped after
+            # self-closing tags are handled — the inner `continue` only advanced
+            # the inner loop, not the outer one.
+            had_self_close = False
             for sc in _self_re.finditer(stripped):
                 tag = sc.group(1)
                 cnt = sibling_counters[-1].get(tag, 0)
                 sibling_counters[-1][tag] = cnt + 1
                 path = f"{open_paths[-1]}/{tag}[{cnt}]"
                 path_lines[path] = (ln0, ln0)
+                had_self_close = True
+            if had_self_close:
+                continue
+
+            # Bug 1 fix: inline elements (<tag>...</tag> on one line) must be
+            # detected BEFORE closing/opening tag processing.  Without this the
+            # closing-tag pass fires first (tag not yet on the stack → missed),
+            # then the opening-tag pass pushes the tag and leaves it there
+            # forever, corrupting all subsequent sibling/child path construction.
+            had_inline = False
+            for il in _inline_re.finditer(stripped):
+                tag = il.group(1)
+                cnt = sibling_counters[-1].get(tag, 0)
+                sibling_counters[-1][tag] = cnt + 1
+                path = f"{open_paths[-1]}/{tag}[{cnt}]"
+                path_lines[path] = (ln0, ln0)
+                had_inline = True
+            if had_inline:
                 continue
 
             # Closing tags
@@ -505,7 +528,7 @@ def _annotate_xml(
                     path_lines[path] = (start_ln, ln0)
                 break  # only one close per line matters
 
-            # Opening tags (after self-closing already handled)
+            # Opening tags (after self-closing and inline already handled)
             for op in _open_re.finditer(stripped):
                 tag = op.group(1)
                 # skip closing

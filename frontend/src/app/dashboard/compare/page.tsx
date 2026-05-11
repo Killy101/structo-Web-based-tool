@@ -20,7 +20,7 @@ import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
 import type { DiffResult, WorkflowMode, XmlSection } from "../../../components/compare/types";
-import { apiDiffAuto, apiGetSegments, type BatchResult, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
+import { apiDiffAuto, apiGetSegments, buildLoadingStages, type BatchResult, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
 
 function emptyPane() {
@@ -91,13 +91,12 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
 const DiffViewer = dynamic(() => import("../../../components/compare/DiffViewer"), { ssr: false });
 const DiffUpload = dynamic(() => import("../../../components/compare/DiffUpload"), { ssr: false });
-const MergePanel = dynamic(() => import("../../../components/compare/MergePanel"),  { ssr: false });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Workflow selector
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ActiveWorkflow = "selector" | "wf2" | "wf3" | "merge";
+type ActiveWorkflow = "selector" | "wf2" | "wf3";
 
 const PALETTES = {
   teal: {
@@ -178,9 +177,9 @@ function WorkflowCard({
 }
 
 function WorkflowSelector({
-  canWf2, canWf3, canMerge, onSelect,
+  canWf2, canWf3, onSelect,
 }: {
-  canWf2: boolean; canWf3: boolean; canMerge: boolean;
+  canWf2: boolean; canWf3: boolean;
   onSelect: (w: ActiveWorkflow) => void;
 }) {
   return (
@@ -241,31 +240,6 @@ function WorkflowSelector({
           }
         />
       </div>
-
-      {canMerge && (
-        <div className="max-w-3xl mx-auto mt-5">
-          <button
-            onClick={() => onSelect("merge")}
-            className="w-full flex items-center gap-4 p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/4 hover:bg-emerald-500/8 transition-all text-left"
-          >
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 border border-emerald-500/20 bg-emerald-500/12 text-emerald-400">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-emerald-300">Merge XML Chunks</p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Combine reviewed XML chunks (SourceName_innod.NNNNN.xml) into a final document
-              </p>
-            </div>
-            <svg className="w-4 h-4 text-slate-600 ml-auto flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        </div>
-      )}
 
       {!canWf2 && !canWf3 && (
         <div className="max-w-3xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
@@ -380,6 +354,7 @@ function useDiffState() {
   const [loading,     setLoading]     = useState(false);
   const [loadMsg,     setLoadMsg]     = useState("Uploading files…");
   const [loadPct,     setLoadPct]     = useState(0);
+  const [progress,    setProgress]    = useState<DiffProgress | null>(null);
   const [error,       setError]       = useState<string | null>(null);
   const [xmlSections, setXmlSections] = useState<XmlSection[]>([]);
   const [allSections, setAllSections] = useState<XmlSection[]>([]);
@@ -389,7 +364,7 @@ function useDiffState() {
   function reset() {
     setFileA(null); setFileB(null); setXmlFile(null);
     latestResultRef.current = null;
-    setResult(null); setError(null);
+    setResult(null); setError(null); setProgress(null);
     setXmlSections([]); setAllSections([]);
     setShowModal(false); setSelectedSec(null);
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
@@ -415,13 +390,13 @@ function useDiffState() {
   async function run() {
     if (!fileA || !fileB) return;
     latestResultRef.current = null;
-    setLoading(true); setError(null); setResult(null);
+    setLoading(true); setError(null); setResult(null); setProgress(null);
     setLoadMsg("Uploading files…"); setLoadPct(0);
     try {
       const raw = await apiDiffAuto(
         fileA, fileB,
         {
-          onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); },
+          onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p); },
           onBatch: (batch: BatchResult) => {
             setResult((prev) => ({
               ...mergeBatchIntoResult(prev, batch),
@@ -435,6 +410,8 @@ function useDiffState() {
             };
             latestResultRef.current = merged;
             try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
+            // Also persist to localStorage so result survives tab close
+            try { localStorage.setItem("diff_batch_result", JSON.stringify(merged)); } catch { /* ok */ }
           },
         },
         xmlFile,
@@ -449,15 +426,17 @@ function useDiffState() {
         setResult(data);
         try { sessionStorage.setItem("diff_last_result", JSON.stringify(data)); } catch { /* ok */ }
       } else {
+        const largePart  = raw as LargeDiffResult;
+        const prevResult = latestResultRef.current as DiffResult | null;
         let next: DiffResult = {
           success:      true,
-          chunks:       latestResultRef.current?.chunks ?? [],
-          pane_a:       latestResultRef.current?.pane_a ?? emptyPane(),
-          pane_b:       latestResultRef.current?.pane_b ?? emptyPane(),
-          stats:        (raw as LargeDiffResult).stats,
-          xml_sections: (raw as LargeDiffResult).xmlSections,
-          file_a:       (raw as LargeDiffResult).file_a,
-          file_b:       (raw as LargeDiffResult).file_b,
+          chunks:       prevResult !== null ? prevResult.chunks  : [],
+          pane_a:       prevResult !== null ? prevResult.pane_a  : emptyPane(),
+          pane_b:       prevResult !== null ? prevResult.pane_b  : emptyPane(),
+          stats:        largePart.stats,
+          xml_sections: largePart.xmlSections,
+          file_a:       largePart.file_a,
+          file_b:       largePart.file_b,
         };
 
         if (
@@ -466,8 +445,8 @@ function useDiffState() {
           next.pane_b.segments.length === 0
         ) {
           try {
-            const totalPages = Math.max(1, (raw as LargeDiffResult).totalPages || 1);
-            const window = await apiGetSegments((raw as LargeDiffResult).jobId, 0, Math.min(totalPages - 1, 99));
+            const totalPages = Math.max(1, largePart.totalPages || 1);
+            const window = await apiGetSegments(largePart.jobId, 0, Math.min(totalPages - 1, 99));
             next = {
               success:      true,
               chunks:       window.chunks.length > 0 ? window.chunks : next.chunks,
@@ -501,7 +480,7 @@ function useDiffState() {
 
   return {
     fileA, setFileA, fileB, setFileB, xmlFile, setXmlFile,
-    result, loading, loadMsg, loadPct, error,
+    result, loading, loadMsg, loadPct, progress, error,
     xmlSections, setXmlSections, allSections, setAllSections,
     showModal, setShowModal, selectedSec, setSelectedSec,
     reset, run,
@@ -518,7 +497,6 @@ export default function ComparePage() {
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
   const canWf2       = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
   const canWf3       = isSuperAdmin || features.includes("compare-pdf-xml-only");
-  const canMerge     = isSuperAdmin || features.includes("compare-merge");
 
   const [active, setActive] = useState<ActiveWorkflow>("selector");
   const d = useDiffState();
@@ -586,13 +564,7 @@ export default function ComparePage() {
     <div className="relative flex flex-col h-full min-h-0">
 
       {active === "selector" && (
-        <WorkflowSelector canWf2={canWf2} canWf3={canWf3} canMerge={canMerge} onSelect={selectWorkflow} />
-      )}
-
-      {active === "merge" && canMerge && (
-        <div className="flex-1 overflow-hidden px-5 pb-5 pt-4 min-h-0">
-          <MergePanel />
-        </div>
+        <WorkflowSelector canWf2={canWf2} canWf3={canWf3} onSelect={selectWorkflow} />
       )}
 
       {(active === "wf2" || active === "wf3") && (
@@ -627,6 +599,7 @@ export default function ComparePage() {
               loading={d.loading}
               loadingMsg={d.loadMsg}
               loadingPct={d.loadPct}
+              loadingStages={buildLoadingStages(d.progress)}
               error={d.error}
               xmlSections={d.xmlSections}
               onSectionsLoaded={d.setXmlSections}

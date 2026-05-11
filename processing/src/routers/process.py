@@ -8,7 +8,6 @@ Aligned with Innodata Tool architecture:
   GET  /compare/compare/{chunk_id}  — Load comparison data for a single chunk
   POST /compare/save-xml            — Save edited XML for a chunk
   POST /compare/merge               — Merge XML (legacy: old/new + accept/reject)
-  POST /compare/merge/chunks        — Merge all XML chunk files into final output
   POST /compare/chunk               — Chunk XML file (legacy, tag-based)
   POST /compare/chunk/pdf           — LangChain PDF + XML chunking pipeline
   POST /compare/chunk/download      — Download a single XML chunk
@@ -39,8 +38,44 @@ from src.services.pdf_chunk import (
     merge_pdfs_with_xml,
     detect_pdf_changes,
     validate_xml_chunk,
-    merge_xml_chunks,
 )
+try:
+    from src.services.word_compare import build_git_inline_diff as _build_git_inline_diff
+    from src.services.word_compare import compare_words as _compare_words
+except ImportError:
+    def _build_git_inline_diff(old_text: str, new_text: str) -> list:  # type: ignore[misc]
+        return []
+    def _compare_words(old_text: str, new_text: str) -> dict:  # type: ignore[misc]
+        return {"has_changes": True, "change_ratio": 1.0, "summary": {}, "old_word_count": 0, "new_word_count": 0}
+
+
+def _make_word_diff(old_text: str, new_text: str) -> dict | None:
+    """Compute word-level diff for a modified sentence pair.
+    Returns a word_diff dict compatible with the frontend WordDiffResult type,
+    or None if the sentences are too dissimilar (similarity < 0.6) or an error
+    occurs — callers fall back to plain before/after display in that case.
+    """
+    import difflib as _dl
+    if not old_text or not new_text:
+        return None
+    # Only build word diff when sentences are similar enough (≥0.6);
+    # below this threshold return None so the UI shows full old/new instead.
+    ratio = _dl.SequenceMatcher(None, old_text.lower(), new_text.lower()).ratio()
+    if ratio < 0.6:
+        return None
+    try:
+        tokens = _build_git_inline_diff(old_text, new_text)
+        wd = _compare_words(old_text, new_text)
+        return {
+            "tokens":         tokens,
+            "has_changes":    wd["has_changes"],
+            "change_ratio":   wd["change_ratio"],
+            "summary":        wd["summary"],
+            "old_word_count": wd["old_word_count"],
+            "new_word_count": wd["new_word_count"],
+        }
+    except Exception:
+        return None
 from src.services.pdf_layout_diff import compare_pdfs_layout
 
 router = APIRouter(prefix="/compare", tags=["compare"])
@@ -723,10 +758,15 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
             # locals for the whole _detect() function (would cause UnboundLocalError
             # because they are read from the outer scope before the trim call).
             # When baseline is XML, skip anchor-trimming (XML is already clean).
+            # Dual-track: alignment_text (XML or old PDF) drives SequenceMatcher;
+            # display_old_trimmed (always original old PDF) is what the user sees
+            # on the left pane — viewer shows the real document, not XML-derived text.
             if baseline_label == "xml":
-                old_text_trimmed = baseline_text
+                old_text_trimmed  = baseline_text
+                display_old_trimmed = _trim_to_anchor_text(old_text, old_anchor, chunk_tag)
             else:
-                old_text_trimmed = _trim_to_anchor_text(baseline_text, old_anchor, chunk_tag)
+                old_text_trimmed  = _trim_to_anchor_text(baseline_text, old_anchor, chunk_tag)
+                display_old_trimmed = old_text_trimmed
             new_text_trimmed = _trim_to_anchor_text(new_text, new_anchor, chunk_tag)
 
             # ── Text diff (always authoritative) ────────────────────────────
@@ -734,6 +774,9 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                          if ln.strip() and not _is_noise_line(ln.strip())]
             new_lines = [ln.strip() for ln in new_text_trimmed.splitlines()
                          if ln.strip() and not _is_noise_line(ln.strip())]
+            # Display track: original old PDF lines (never XML-derived)
+            display_old_lines = [ln.strip() for ln in display_old_trimmed.splitlines()
+                                  if ln.strip() and not _is_noise_line(ln.strip())]
 
             # ── Sentence reflow joining ──────────────────────────────────────
             # PyMuPDF splits long sentences at the PDF column width, so the same
@@ -790,6 +833,52 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
 
             old_lines = _join_continuation_lines(old_lines)
             new_lines = _join_continuation_lines(new_lines)
+            display_old_lines = _join_continuation_lines(display_old_lines)
+
+            # ── Option A: Pre-align XML→PDF index map for dual-track display ─
+            # One-pass SequenceMatcher maps each alignment index (old_lines,
+            # which may be XML-derived) to the closest display index
+            # (display_old_lines, original PDF text).  Equal blocks get exact
+            # 1:1 mapping; replace/delete blocks point to the nearest PDF line
+            # so the viewer always shows real document text on the left pane.
+            def _build_xml_to_pdf_map(
+                xml_lines: list[str], pdf_lines: list[str]
+            ) -> dict[int, int]:
+                if not xml_lines or not pdf_lines:
+                    return {}
+                xml_n = [_norm_line(l) for l in xml_lines]
+                pdf_n = [_norm_line(l) for l in pdf_lines]
+                pre = difflib.SequenceMatcher(None, xml_n, pdf_n, autojunk=False)
+                al_map: dict[int, int] = {}
+                last_j = 0
+                for op, i1, i2, j1, j2 in pre.get_opcodes():
+                    if op == "equal":
+                        for k in range(i2 - i1):
+                            al_map[i1 + k] = j1 + k
+                            last_j = j1 + k
+                    elif op == "replace":
+                        for k in range(i2 - i1):
+                            pdf_idx = min(j1 + k, j2 - 1, len(pdf_lines) - 1)
+                            al_map[i1 + k] = pdf_idx
+                            last_j = pdf_idx
+                    elif op == "delete":
+                        for k in range(i2 - i1):
+                            al_map[i1 + k] = min(last_j, len(pdf_lines) - 1)
+                    elif op == "insert":
+                        last_j = min(j2 - 1, len(pdf_lines) - 1)
+                return al_map
+
+            if baseline_label == "xml" and display_old_lines:
+                _xml_to_pdf = _build_xml_to_pdf_map(old_lines, display_old_lines)
+            else:
+                _xml_to_pdf = {i: i for i in range(len(old_lines))}
+
+            def _disp_old(idx: int) -> str:
+                """Return display text for alignment index idx (always real PDF text)."""
+                if not display_old_lines:
+                    return old_lines[idx] if idx < len(old_lines) else ""
+                pdf_idx = _xml_to_pdf.get(idx, min(idx, len(display_old_lines) - 1))
+                return display_old_lines[pdf_idx]
 
             old_norms = [_norm_line(l) for l in old_lines]
             new_norms = [_norm_line(l) for l in new_lines]
@@ -824,14 +913,15 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                 elif op == "delete":
                     for k in range(i1, i2):
                         cid += 1
+                        _od = _disp_old(k)
                         changes.append({
                             "id": f"chg_{cid:04d}", "type": "removal",
-                            "text": old_lines[k], "old_text": old_lines[k], "new_text": None,
+                            "text": _od, "old_text": _od, "new_text": None,
                             "page": old_page_start or 1, "old_page": old_page_start or 1,
                             "new_page": None,
                             "bbox": None, "old_bbox": None, "new_bbox": None,
                             "old_formatting": None, "new_formatting": None,
-                            "suggested_xml": f"<del>{old_lines[k]}</del>",
+                            "suggested_xml": f"<del>{_od}</del>",
                         })
                 elif op == "replace":
                     paired = min(i2 - i1, j2 - j1)
@@ -860,29 +950,33 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                         # "modification" (overlap ≤ 0.25), emit BOTH removal and
                         # addition.  The old code emitted only "addition", silently
                         # hiding the removed content and producing ghost additions.
+                        _od = _disp_old(i1+k)
+                        _nw = new_lines[j1+k]
                         if overlap > 0.25:
-                            # Similar enough — treat as a modification
+                            # Similar enough — treat as a modification with word diff
                             cid += 1
                             changes.append({
                                 "id": f"chg_{cid:04d}", "type": "modification",
-                                "text": new_lines[j1+k],
-                                "old_text": old_lines[i1+k], "new_text": new_lines[j1+k],
+                                "text": _nw,
+                                "old_text": _od, "new_text": _nw,
                                 "page": new_page_start or 1,
                                 "old_page": old_page_start or 1, "new_page": new_page_start or 1,
                                 "bbox": None, "old_bbox": None, "new_bbox": None,
                                 "old_formatting": None, "new_formatting": None,
-                                "suggested_xml": f"<del>{old_lines[i1+k]}</del><ins>{new_lines[j1+k]}</ins>",
+                                "suggested_xml": f"<del>{_od}</del><ins>{_nw}</ins>",
+                                "word_diff": _make_word_diff(_od, _nw),
                             })
                         else:
                             # Too dissimilar — emit explicit removal then addition
                             cid += 1
                             changes.append({
                                 "id": f"chg_{cid:04d}", "type": "removal",
-                                "text": old_lines[i1+k], "old_text": old_lines[i1+k], "new_text": None,
+                                "text": _od, "old_text": _od, "new_text": None,
                                 "page": old_page_start or 1, "old_page": old_page_start or 1, "new_page": None,
                                 "bbox": None, "old_bbox": None, "new_bbox": None,
                                 "old_formatting": None, "new_formatting": None,
-                                "suggested_xml": f"<del>{old_lines[i1+k]}</del>",
+                                "suggested_xml": f"<del>{_od}</del>",
+                                "word_diff": None,
                             })
                             cid += 1
                             changes.append({
@@ -895,13 +989,14 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                             })
                     for k in range(paired, i2 - i1):
                         cid += 1
+                        _od = _disp_old(i1+k)
                         changes.append({
                             "id": f"chg_{cid:04d}", "type": "removal",
-                            "text": old_lines[i1+k], "old_text": old_lines[i1+k], "new_text": None,
+                            "text": _od, "old_text": _od, "new_text": None,
                             "page": old_page_start or 1, "old_page": old_page_start or 1, "new_page": None,
                             "bbox": None, "old_bbox": None, "new_bbox": None,
                             "old_formatting": None, "new_formatting": None,
-                            "suggested_xml": f"<del>{old_lines[i1+k]}</del>",
+                            "suggested_xml": f"<del>{_od}</del>",
                         })
                     for k in range(paired, j2 - j1):
                         cid += 1
@@ -914,13 +1009,10 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                             "suggested_xml": f"<ins>{new_lines[j1+k]}</ins>",
                         })
 
-            # ── Layout diff: enrich changes with bbox + harvest emphasis ────────
+            # ── Layout diff: enrich changes with bbox ────────────────────────
             # Only run when page ranges are known.
-            # Two jobs:
-            #   1. Enrich text-diff changes with bbox from layout (was the only job before).
-            #   2. NEW: collect emphasis changes from layout (bold/italic/underline
-            #      flips on lines whose text is identical).  Plain-text extraction
-            #      has no formatting metadata so emphasis can only come from here.
+            # Job: enrich text-diff changes with bbox/page from the layout diff.
+            # Emphasis detection is now handled by the PyMuPDF span pass below.
             if page_ranges_known:
                 try:
                     layout_result = compare_pdfs_layout(
@@ -936,7 +1028,7 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                             if t and len(t) > 5:
                                 layout_by_text[t] = lc
 
-                    # 1. Enrich text-diff changes with bbox from layout
+                    # Enrich text-diff changes with bbox from layout
                     for c in changes:
                         search_key = (c.get("new_text") or c.get("old_text") or c.get("text") or "").strip().lower()[:80]
                         if search_key and search_key in layout_by_text:
@@ -948,12 +1040,78 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                             c["new_page"] = lc.get("new_page") or c["new_page"]
                             c["page"]     = lc.get("page")     or c["page"]
 
-                    # 2. Harvest emphasis changes from layout diff.
-                    # A layout emphasis change means: text is identical across old/new
-                    # but bold/italic/underline differs on that line.  The text diff
-                    # above operates on plain text so it misses these entirely.
-                    # De-duplicate against text-diff changes by normalised text so we
-                    # never produce a duplicate entry for the same line.
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning("layout diff (bbox enrichment) failed: %s", e)
+
+            # ── PyMuPDF span pass: detect emphasis changes (all axes) ───────────
+            # Runs on both old and new PDFs using _extract_pdf_spans + _spans_to_lines
+            # from pdf_chunk.py.  This detects bold, italic, underline, strikethrough,
+            # and is_link — axes that pdfminer cannot reliably extract.
+            #
+            # Algorithm:
+            #   1. Extract formatted lines from both PDFs for the chunk page range.
+            #   2. Build a text_norm → line dict lookup for both sides.
+            #   3. For every old line whose text_norm matches a new line:
+            #      a. If any formatting axis changed → emit an emphasis change.
+            #      b. Compute emp_fmt_diff (per-axis "added"/"removed"/"same").
+            #   4. De-duplicate against already-detected text-diff changes.
+            if page_ranges_known:
+                try:
+                    from src.services.pdf_chunk import (
+                        _extract_pdf_spans as _esp,
+                        _spans_to_lines    as _s2l,
+                        _emphasis_tag      as _etag,
+                        _norm_line         as _nl,
+                    )
+
+                    _FMT_AXES = ("bold", "italic", "underline", "strikethrough", "is_link")
+
+                    def _line_fmt(line: dict) -> dict:
+                        return {ax: bool(line.get(ax)) for ax in _FMT_AXES}
+
+                    def _compute_emp_fmt_diff(
+                        old_fmt: dict, new_fmt: dict,
+                    ) -> dict | None:
+                        result: dict[str, str] = {}
+                        changed = False
+                        for ax in _FMT_AXES:
+                            o, n = old_fmt[ax], new_fmt[ax]
+                            if n and not o:
+                                result[ax] = "added";   changed = True
+                            elif o and not n:
+                                result[ax] = "removed"; changed = True
+                            else:
+                                result[ax] = "same"
+                        return result if changed else None
+
+                    def _build_emphasis_list(fmt: dict) -> list[str]:
+                        flags: list[str] = []
+                        if fmt.get("bold"):           flags.append("bold")
+                        if fmt.get("italic"):         flags.append("italic")
+                        if fmt.get("is_link"):        flags.append("link")
+                        elif fmt.get("underline"):    flags.append("underline")
+                        if fmt.get("strikethrough"):  flags.append("strikethrough")
+                        return flags
+
+                    old_sp = _esp(old_bytes, page_start=old_page_start, page_end=old_page_end)
+                    new_sp = _esp(new_bytes, page_start=new_page_start, page_end=new_page_end)
+
+                    old_fmt_lines = _s2l(old_sp)
+                    new_fmt_lines = _s2l(new_sp)
+
+                    # Normalise
+                    for ln in old_fmt_lines: ln["_norm"] = _nl(ln["text"])
+                    for ln in new_fmt_lines: ln["_norm"] = _nl(ln["text"])
+
+                    # Build new-side lookup: norm → line (last one wins for duplicates)
+                    new_by_norm: dict[str, dict] = {}
+                    for ln in new_fmt_lines:
+                        n = ln["_norm"]
+                        if n and len(n) > 5:
+                            new_by_norm[n] = ln
+
+                    # Keys already covered by the text diff — skip to avoid duplication
                     text_diff_keys: set[str] = set()
                     for c in changes:
                         for key in ("old_text", "new_text", "text"):
@@ -961,51 +1119,62 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                             if t:
                                 text_diff_keys.add(t)
 
-                    for lc in layout_result.get("changes", []):
-                        if lc.get("type") != "emphasis":
+                    for ol in old_fmt_lines:
+                        norm = ol["_norm"]
+                        if not norm or len(norm) <= 5:
                             continue
-                        # Skip if the same text was already caught by the text diff
-                        # (shouldn't happen — emphasis means text is equal — but guard anyway)
-                        lc_key = (lc.get("new_text") or lc.get("old_text") or lc.get("text") or "").strip().lower()[:80]
-                        if lc_key in text_diff_keys:
-                            continue
-                        if not lc_key or len(lc_key) <= 4:
+                        nl_match = new_by_norm.get(norm)
+                        if nl_match is None:
+                            continue   # not identical text — handled by text diff
+
+                        old_fmt_d = _line_fmt(ol)
+                        new_fmt_d = _line_fmt(nl_match)
+                        diff = _compute_emp_fmt_diff(old_fmt_d, new_fmt_d)
+                        if diff is None:
+                            continue   # formatting identical — no emphasis change
+
+                        # Skip if already caught by the text diff
+                        norm_key = norm[:80]
+                        if norm_key in text_diff_keys:
+                            # Even though the text diff caught this line, it didn't
+                            # compute formatting. Enrich that existing change in-place.
+                            for c in changes:
+                                c_key = (c.get("text") or c.get("new_text") or "").strip().lower()[:80]
+                                if c_key == norm_key and not c.get("emp_fmt_diff"):
+                                    c["old_formatting"] = old_fmt_d
+                                    c["new_formatting"] = new_fmt_d
+                                    c["emp_fmt_diff"]   = diff
+                                    c["emphasis"]       = _build_emphasis_list(new_fmt_d)
                             continue
 
-                        # Build the emphasis list from new_formatting
-                        fmt_new = lc.get("new_formatting") or {}
-                        emphasis_flags: list[str] = []
-                        if fmt_new.get("bold"):
-                            emphasis_flags.append("bold")
-                        if fmt_new.get("italic"):
-                            emphasis_flags.append("italic")
-                        # pdfminer Line objects expose bold/italic only; underline is
-                        # not reliably extracted by pdfminer so omit to avoid noise.
-
+                        # New emphasis-only change
                         cid += 1
-                        emphasis_entry: dict = {
+                        old_text_s = ol["text"].strip()
+                        new_text_s = nl_match["text"].strip()
+                        changes.append({
                             "id":             f"chg_{cid:04d}",
                             "type":           "emphasis",
-                            "text":           lc.get("text") or lc.get("new_text") or "",
-                            "old_text":       lc.get("old_text"),
-                            "new_text":       lc.get("new_text"),
-                            "page":           lc.get("page") or new_page_start or 1,
-                            "old_page":       lc.get("old_page") or old_page_start or 1,
-                            "new_page":       lc.get("new_page") or new_page_start or 1,
-                            "bbox":           lc.get("bbox"),
-                            "old_bbox":       lc.get("old_bbox"),
-                            "new_bbox":       lc.get("new_bbox"),
-                            "old_formatting": lc.get("old_formatting"),
-                            "new_formatting": lc.get("new_formatting"),
-                            "emphasis":       emphasis_flags,
-                            "suggested_xml":  lc.get("suggested_xml"),
-                        }
-                        changes.append(emphasis_entry)
-                        text_diff_keys.add(lc_key)   # prevent double-adding
+                            "text":           new_text_s,
+                            "old_text":       old_text_s,
+                            "new_text":       new_text_s,
+                            "page":           nl_match.get("page") or new_page_start or 1,
+                            "old_page":       ol.get("page")       or old_page_start or 1,
+                            "new_page":       nl_match.get("page") or new_page_start or 1,
+                            "bbox":           None,
+                            "old_bbox":       None,
+                            "new_bbox":       None,
+                            "old_formatting": old_fmt_d,
+                            "new_formatting": new_fmt_d,
+                            "emp_fmt_diff":   diff,
+                            "emphasis":       _build_emphasis_list(new_fmt_d),
+                            "suggested_xml":  _etag(nl_match),
+                            "word_diff":      None,
+                        })
+                        text_diff_keys.add(norm_key)   # prevent double-adding
 
                 except Exception as e:
                     import logging
-                    logging.getLogger(__name__).warning("layout diff (bbox+emphasis) failed: %s", e)
+                    logging.getLogger(__name__).warning("PyMuPDF emphasis pass failed: %s", e)
 
             summary = {"addition": 0, "removal": 0, "modification": 0, "emphasis": 0}
             for c in changes:
@@ -1083,8 +1252,11 @@ async def detect_chunk_endpoint(payload: DetectChunkRequest):
                 "summary":       summary,
                 "xml_content":   xml_content,
                 "baseline":      baseline_label,  # "xml" or "old_pdf"
-                # Full plain text for the text-diff viewer (one line per entry)
-                "old_full_text": "\n".join(old_text_trimmed.splitlines()),
+                # Full plain text for the text-diff viewer (one line per entry).
+                # old_full_text must always be the real PDF text (display track),
+                # not the XML-derived alignment text, so the left pane shows the
+                # user's actual document.
+                "old_full_text": "\n".join(display_old_trimmed.splitlines()),
                 "new_full_text": "\n".join(new_text_trimmed.splitlines()),
             }
 
@@ -1371,72 +1543,7 @@ async def validate_endpoint(payload: ValidateRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. MERGE XML chunks → final document
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ChunkItem(BaseModel):
-    filename:    str
-    xml_content: str
-    has_changes: bool = False
-
-
-class MergeChunksRequest(BaseModel):
-    chunks:      list[ChunkItem]
-    source_name: str = "Document"
-
-
-@router.post("/merge/chunks")
-async def merge_chunks_endpoint(payload: MergeChunksRequest):
-    """
-    Merge all XML chunk files into a single final XML document.
-
-    Input:  SourceName_innod.00001.xml, 00002.xml, ...
-    Output: SourceName_final.xml  (saved to MERGED/ folder in production)
-
-    Validates each chunk, combines sequentially, generates final output.
-    """
-    try:
-        merged = merge_xml_chunks(
-            chunks=[c.model_dump() for c in payload.chunks],
-            source_name=payload.source_name,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    safe     = re.sub(r'[^\w\-]', '_', payload.source_name).strip('_') or 'Document'
-    filename = f"{safe}_final.xml"
-
-    return {
-        "success":     True,
-        "merged_xml":  merged,
-        "filename":    filename,
-        "source_name": payload.source_name,
-    }
-
-
-@router.post("/merge/chunks/download")
-async def merge_chunks_download_endpoint(payload: MergeChunksRequest):
-    """Merge chunks and return the result as a file download."""
-    try:
-        merged = merge_xml_chunks(
-            chunks=[c.model_dump() for c in payload.chunks],
-            source_name=payload.source_name,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    safe     = re.sub(r'[^\w\-]', '_', payload.source_name).strip('_') or 'Document'
-    filename = f"{safe}_final.xml"
-
-    return Response(
-        content=merged.encode("utf-8"),
-        media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. DIFF — compare two XML files
+# 10. DIFF — compare two XML files
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/diff")
@@ -1470,7 +1577,7 @@ async def diff_endpoint(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 12. MERGE (legacy: old/new XML + accept/reject lists)
+# 11. MERGE (legacy: old/new XML + accept/reject lists)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MergeRequest(BaseModel):
@@ -1517,7 +1624,7 @@ async def merge_download_endpoint(payload: MergeRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 13. DIFF PDF — compare two PDFs alongside XML reference
+# 12. DIFF PDF — compare two PDFs alongside XML reference
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/diff/pdf")

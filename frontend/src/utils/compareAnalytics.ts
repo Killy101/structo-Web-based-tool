@@ -1,4 +1,5 @@
 export type CompareType = "wf2" | "wf3" | "direct" | "chunk";
+export type CanonicalCompareType = "wf2" | "wf3";
 
 export interface CompareEvent {
   type: CompareType;
@@ -7,6 +8,12 @@ export interface CompareEvent {
 }
 
 const STORAGE_KEY = "structo_compare_analytics";
+
+function normalizeCompareType(type: CompareType): CanonicalCompareType {
+  if (type === "chunk") return "wf2";
+  if (type === "direct") return "wf3";
+  return type;
+}
 
 export function trackCompareUsage(type: CompareType, userId: string): void {
   if (typeof window === "undefined") return;
@@ -29,11 +36,11 @@ export function getCompareEvents(): CompareEvent[] {
   }
 }
 
-/** Returns counts per day (last N days) for each comparison type. */
+/** Returns counts per day for the active compare workflows. */
 export function getCompareUsageByDay(days = 7): {
   dates: Date[];
-  directCounts: number[];
-  chunkCounts: number[];
+  workflow1Counts: number[];
+  workflow2Counts: number[];
 } {
   const events = getCompareEvents();
   const now = new Date();
@@ -46,40 +53,47 @@ export function getCompareUsageByDay(days = 7): {
     return d;
   });
 
-  const directCounts = Array(days).fill(0) as number[];
-  const chunkCounts = Array(days).fill(0) as number[];
+  const workflow1Counts = Array(days).fill(0) as number[];
+  const workflow2Counts = Array(days).fill(0) as number[];
 
-  events.forEach((e) => {
-    const ts = new Date(e.timestamp).getTime();
+  events.forEach((event) => {
+    const ts = new Date(event.timestamp).getTime();
     const daysAgo = Math.floor((Date.now() - ts) / DAY);
     const idx = days - 1 - daysAgo;
-    if (idx >= 0 && idx < days) {
-      if (e.type === "direct") directCounts[idx]++;
-      else chunkCounts[idx]++;
-    }
+    if (idx < 0 || idx >= days) return;
+
+    const canonicalType = normalizeCompareType(event.type);
+    if (canonicalType === "wf2") workflow1Counts[idx] += 1;
+    if (canonicalType === "wf3") workflow2Counts[idx] += 1;
   });
 
-  return { dates, directCounts, chunkCounts };
+  return { dates, workflow1Counts, workflow2Counts };
 }
 
-/** Total usage counts split by type. */
+/** Total usage counts split by workflow. */
 export function getCompareUsageTotals(): {
-  direct: number;
-  chunk: number;
+  workflow1: number;
+  workflow2: number;
   total: number;
-  directUnique: number;
-  chunkUnique: number;
+  workflow1Unique: number;
+  workflow2Unique: number;
+  totalUnique: number;
 } {
-  const events = getCompareEvents();
-  const direct = events.filter((e) => e.type === "direct");
-  const chunk = events.filter((e) => e.type === "chunk");
-  const directUnique = new Set(direct.map((e) => e.userId)).size;
-  const chunkUnique = new Set(chunk.map((e) => e.userId)).size;
+  const events = getCompareEvents().map((event) => ({
+    ...event,
+    type: normalizeCompareType(event.type),
+  }));
+  const workflow1 = events.filter((event) => event.type === "wf2");
+  const workflow2 = events.filter((event) => event.type === "wf3");
+  const workflow1Unique = new Set(workflow1.map((event) => event.userId)).size;
+  const workflow2Unique = new Set(workflow2.map((event) => event.userId)).size;
+  const totalUnique = new Set(events.map((event) => event.userId)).size;
   return {
-    direct: direct.length,
-    chunk: chunk.length,
+    workflow1: workflow1.length,
+    workflow2: workflow2.length,
     total: events.length,
-    directUnique,
-    chunkUnique,
+    workflow1Unique,
+    workflow2Unique,
+    totalUnique,
   };
 }

@@ -17,7 +17,7 @@ const ENSURE_POLICY_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 const FEATURE_CATALOG: Record<string, string> = {
   dashboard: 'Dashboard', 'brd-process': 'BRD Process', 'brd-view-generate': 'BRD View and Generate Sources',
   'user-management': 'User Management', 'compare-basic': 'Workflow 1 · Chunk & Compare',
-  'compare-merge': 'Merge XML Chunks', 'compare-pdf-xml-only': 'Workflow 2 · Compare & Apply', 'user-logs': 'User Logs',
+  'compare-pdf-xml-only': 'Workflow 2 · Compare & Apply', 'user-logs': 'User Logs',
 }
 
 function humanizeFeatureKey(key: string): string {

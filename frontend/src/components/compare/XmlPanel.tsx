@@ -1,5 +1,6 @@
 "use client";
 import React, { forwardRef, useRef } from "react";
+import XmlEditor from "./XmlEditor";
 import type { Chunk, WorkflowMode } from "./types";
 
 interface Props {
@@ -38,27 +39,168 @@ function _countNewlinesBefore(text: string, pos: number): number {
   return count;
 }
 
-function _renderHighlightedLine(
+// ─────────────────────────────────────────────────────────────────────────────
+// VS Code–style XML tokenizer
+// Tokens: tag-bracket < >, tag-name, attr-name, = , attr-value " ", text,
+//         comment <!-- -->, cdata <![CDATA[...]]>, pi <?...?>, doctype <!...>
+// ─────────────────────────────────────────────────────────────────────────────
+
+type XmlTokenKind =
+  | "bracket"    // < > / = ?
+  | "tag"        // element name
+  | "attr"       // attribute name
+  | "value"      // "…" attribute value
+  | "comment"    // <!-- … -->
+  | "cdata"      // <![CDATA[…]]>
+  | "pi"         // <?…?>
+  | "doctype"    // <!DOCTYPE…>
+  | "text";      // bare text content
+
+interface XmlToken {
+  kind: XmlTokenKind;
+  text: string;
+}
+
+// VS Code token colours — light values match VS Light theme, dark match VS Dark theme.
+const TOKEN_CLASS: Record<XmlTokenKind, string> = {
+  bracket:  "text-slate-500 dark:text-slate-400",
+  tag:      "text-[#800000] dark:text-[#4ec9b0]",        // maroon / teal
+  attr:     "text-[#ff0000] dark:text-[#9cdcfe]",        // red / light-blue
+  value:    "text-[#0000ff] dark:text-[#ce9178]",        // blue / orange-brown
+  comment:  "text-[#008000] dark:text-[#6a9955] italic", // green (both)
+  cdata:    "text-slate-700 dark:text-[#d4d4d4]",        // dark-grey / near-white
+  pi:       "text-[#800080] dark:text-[#c586c0]",        // purple (both)
+  doctype:  "text-[#0000ff] dark:text-[#569cd6]",        // blue (both)
+  text:     "text-slate-800 dark:text-[#d4d4d4]",        // near-black / near-white
+};
+
+function _tokenizeLine(line: string): XmlToken[] {
+  const tokens: XmlToken[] = [];
+  let i = 0;
+
+  function push(kind: XmlTokenKind, text: string) {
+    if (text) tokens.push({ kind, text });
+  }
+
+  while (i < line.length) {
+    // Comment
+    if (line.startsWith("<!--", i)) {
+      const end = line.indexOf("-->", i + 4);
+      if (end === -1) { push("comment", line.slice(i)); i = line.length; }
+      else            { push("comment", line.slice(i, end + 3)); i = end + 3; }
+      continue;
+    }
+    // CDATA
+    if (line.startsWith("<![CDATA[", i)) {
+      const end = line.indexOf("]]>", i + 9);
+      if (end === -1) { push("cdata", line.slice(i)); i = line.length; }
+      else            { push("cdata", line.slice(i, end + 3)); i = end + 3; }
+      continue;
+    }
+    // DOCTYPE
+    if (line.startsWith("<!", i) && !line.startsWith("<!--", i)) {
+      const end = line.indexOf(">", i);
+      if (end === -1) { push("doctype", line.slice(i)); i = line.length; }
+      else            { push("doctype", line.slice(i, end + 1)); i = end + 1; }
+      continue;
+    }
+    // PI <?…?>
+    if (line.startsWith("<?", i)) {
+      const end = line.indexOf("?>", i + 2);
+      if (end === -1) { push("pi", line.slice(i)); i = line.length; }
+      else            { push("pi", line.slice(i, end + 2)); i = end + 2; }
+      continue;
+    }
+    // Tag <…>
+    if (line[i] === "<") {
+      push("bracket", "<");
+      i += 1;
+      // optional /
+      if (line[i] === "/") { push("bracket", "/"); i += 1; }
+      // tag name
+      const nameStart = i;
+      while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
+      push("tag", line.slice(nameStart, i));
+      // attributes until >
+      while (i < line.length && line[i] !== ">") {
+        if (line[i] === "/" && line[i + 1] === ">") {
+          push("bracket", "/>"); i += 2; break;
+        }
+        if (line[i] === "=") { push("bracket", "="); i += 1; continue; }
+        // quoted value
+        if (line[i] === '"' || line[i] === "'") {
+          const q = line[i]; let j = i + 1;
+          while (j < line.length && line[j] !== q) j += 1;
+          push("value", line.slice(i, j + 1)); i = j + 1; continue;
+        }
+        // whitespace
+        if (/\s/.test(line[i])) {
+          let ws = "";
+          while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i += 1; }
+          push("text", ws); continue;
+        }
+        // attr name
+        const attrStart = i;
+        while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
+        push("attr", line.slice(attrStart, i));
+      }
+      if (i < line.length && line[i] === ">") { push("bracket", ">"); i += 1; }
+      continue;
+    }
+    // Plain text
+    const txtStart = i;
+    while (i < line.length && line[i] !== "<") i += 1;
+    push("text", line.slice(txtStart, i));
+  }
+
+  return tokens;
+}
+
+function _renderTokensWithHighlight(
+  tokens: XmlToken[],
   lineText: string,
   lineStart: number,
   navSpan: { start: number; end: number } | null,
-) {
-  if (!navSpan) return lineText || " ";
+): React.ReactNode {
+  // If no navSpan highlight needed, fast path
+  if (!navSpan) {
+    return tokens.map((t, k) => (
+      <span key={k} className={TOKEN_CLASS[t.kind]}>{t.text}</span>
+    ));
+  }
 
+  // Build char offset per token, then slice mark overlay
   const lineEnd = lineStart + lineText.length;
   const hlStart = Math.max(lineStart, navSpan.start);
-  const hlEnd = Math.min(lineEnd, navSpan.end);
-  if (hlStart >= hlEnd) return lineText || " ";
+  const hlEnd   = Math.min(lineEnd,   navSpan.end);
+  const hasHL   = hlStart < hlEnd;
 
-  const startOffset = hlStart - lineStart;
-  const endOffset = hlEnd - lineStart;
-  return (
-    <>
-      {lineText.slice(0, startOffset)}
-      <Mark>{lineText.slice(startOffset, endOffset)}</Mark>
-      {lineText.slice(endOffset) || ""}
-    </>
-  );
+  if (!hasHL) {
+    return tokens.map((t, k) => (
+      <span key={k} className={TOKEN_CLASS[t.kind]}>{t.text}</span>
+    ));
+  }
+
+  let cursor = lineStart;
+  return tokens.map((t, k) => {
+    const tStart = cursor;
+    const tEnd   = cursor + t.text.length;
+    cursor = tEnd;
+
+    const oStart = Math.max(tStart, hlStart) - tStart;
+    const oEnd   = Math.min(tEnd,   hlEnd)   - tStart;
+
+    if (oStart >= oEnd) {
+      return <span key={k} className={TOKEN_CLASS[t.kind]}>{t.text}</span>;
+    }
+    return (
+      <span key={k} className={TOKEN_CLASS[t.kind]}>
+        {t.text.slice(0, oStart)}
+        <Mark>{t.text.slice(oStart, oEnd)}</Mark>
+        {t.text.slice(oEnd)}
+      </span>
+    );
+  });
 }
 
 function XmlBody({
@@ -95,14 +237,26 @@ function XmlBody({
   });
 
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-0">
       {prefixHidden > 0 && <Ellipsis chars={prefixHidden} />}
       {lines.map((lineText, idx) => {
         const lineStart = lineStarts[idx];
+        const tokens    = _tokenizeLine(lineText);
+        const lineNum   = startLineNumber + idx;
+        const isHL = navSpan && lineStart < navSpan.end && lineStart + lineText.length > navSpan.start;
         return (
-          <div key={`${startLineNumber + idx}-${lineStart}`} className="grid grid-cols-[56px_minmax(0,1fr)] gap-2">
-            <span className="select-none border-r border-slate-200 pr-2 text-right text-[10px] font-medium tabular-nums text-slate-500 dark:border-white/10 dark:text-slate-500">{startLineNumber + idx}</span>
-            <span className="whitespace-pre-wrap break-words">{_renderHighlightedLine(lineText, lineStart, navSpan)}</span>
+          <div
+            key={`${lineNum}-${lineStart}`}
+            className={`grid grid-cols-[48px_minmax(0,1fr)] gap-0 leading-[1.75]
+              ${isHL ? "bg-yellow-300/10 dark:bg-yellow-400/8" : "hover:bg-white/3"}`}
+          >
+            <span className="select-none border-r border-slate-200 dark:border-white/8 pr-2 text-right
+              text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-600 self-start pt-px">
+              {lineNum}
+            </span>
+            <span className="pl-3 whitespace-pre-wrap break-words text-[11px]">
+              {_renderTokensWithHighlight(tokens, lineText, lineStart, navSpan)}
+            </span>
           </div>
         );
       })}
@@ -112,7 +266,7 @@ function XmlBody({
 }
 
 
-const XmlPanel = forwardRef<HTMLDivElement, Props>(
+const XmlPanel = forwardRef<HTMLElement, Props>(
   ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -212,34 +366,33 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
 
         {xmlText ? (
           isWf3 ? (
-            <textarea
-              ref={ref as React.Ref<HTMLTextAreaElement>}
+            /*
+             * WF3 editable mode: forward the panel ref straight to the XmlEditor
+             * textarea so DiffViewer's syncXmlScroll can set scrollTop on the
+             * actual scrollable element. The outer div uses overflow:hidden only
+             * to clip the layout; the textarea itself is the scroll container.
+             */
+            <div
               data-testid="xml-panel-scroll"
-              value={xmlText}
-              onChange={(e) => onXmlChange?.(e.target.value)}
-              onScroll={(e) => {
-                if (!onScrollFraction) return;
-                const el = e.currentTarget;
-                const max = el.scrollHeight - el.clientHeight;
-                if (max <= 0) return;
-                onScrollFraction(el.scrollTop / max);
-              }}
-              spellCheck={false}
-              className="flex-1 resize-none w-full p-3 font-mono text-[11px] leading-[1.75]
-                text-blue-700 dark:text-[#7aadca]
-                bg-white dark:bg-[#0a1118]
-                border-0 outline-none
-                scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
-              style={{ tabSize: 2 }}
-            />
+              className="flex-1 overflow-hidden"
+            >
+              <XmlEditor
+                ref={ref as React.Ref<HTMLTextAreaElement>}
+                value={xmlText}
+                onChange={onXmlChange}
+                navSpan={navSpan}
+                onScrollFraction={onScrollFraction}
+              />
+            </div>
           ) : (
             <div
-              ref={ref}
+              ref={ref as React.Ref<HTMLDivElement>}
               data-testid="xml-panel-scroll"
-              className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
+              className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10
+                bg-white dark:bg-[#1e1e1e]"
               onScroll={handleScroll}
             >
-              <pre className="text-[11px] leading-[1.75] font-mono text-blue-700 dark:text-[#7aadca]">
+              <pre className="text-[11px] leading-[1.75] font-mono">
                 <XmlBody text={xmlText} navSpan={navSpan} />
               </pre>
             </div>
@@ -275,4 +428,4 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
 );
 
 XmlPanel.displayName = "XmlPanel";
-export default XmlPanel;
+export default XmlPanel;  

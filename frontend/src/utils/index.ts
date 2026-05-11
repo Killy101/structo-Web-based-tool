@@ -10,14 +10,14 @@ export const normalizeRole = (role: Role | string | null | undefined): Role => {
 };
 
 // ─── ROLE CONFIG ───────────────────────────────────────────
-export const ROLE_LABELS: Record<Role, string> = {
+export const ROLE_LABELS: Record<Role | "SADMIN", string> = {
   SUPER_ADMIN: "Super Admin",
   SADMIN: "Super Admin",
   ADMIN: "Admin",
   USER: "User",
 };
 
-export const ROLE_BADGE_COLORS: Record<Role, string> = {
+export const ROLE_BADGE_COLORS: Record<Role | "SADMIN", string> = {
   SUPER_ADMIN:
     "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
   SADMIN:
@@ -27,7 +27,7 @@ export const ROLE_BADGE_COLORS: Record<Role, string> = {
   USER: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
 };
 
-export const ROLE_CHART_COLORS: Record<Role, string> = {
+export const ROLE_CHART_COLORS: Record<Role | "SADMIN", string> = {
   SUPER_ADMIN: "#6366f1",
   SADMIN: "#6366f1",
   ADMIN: "#8b5cf6",
@@ -65,7 +65,6 @@ export const FEATURE_LABELS: Record<string, string> = {
   "brd-process": "BRD Process",
   "brd-view-generate": "BRD View and Generate Sources",
   "compare-basic": "Workflow 1 · Chunk & Compare",
-  "compare-merge": "Merge XML Chunks",
   "compare-pdf-xml-only": "Workflow 2 · Compare & Apply",
   "user-logs": "History",
   "user-management": "User Management",
@@ -85,7 +84,7 @@ export const ROUTE_FEATURE_GATES: Array<{
   { path: "/dashboard/users",                features: "user-management" },
   { path: "/dashboard/history",              features: "user-logs" },
   { path: "/dashboard/brd",                  features: ["brd-process", "brd-view-generate"] },
-  { path: "/dashboard/compare",              features: ["compare-basic", "compare-merge", "compare-pdf-xml-only"] },
+  { path: "/dashboard/compare",              features: ["compare-basic", "compare-pdf-xml-only"] },
 ];
 
 // ─── DYNAMIC ROLE DISPLAY ─────────────────────────────────

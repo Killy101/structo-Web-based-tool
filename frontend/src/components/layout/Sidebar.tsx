@@ -67,7 +67,6 @@ const NAV_ITEMS: NavItem[] = [
     roles: ["SUPER_ADMIN", "ADMIN", "USER"],
     feature: [
       "compare-basic",
-      "compare-merge",
       "compare-pdf-xml-only",
     ],
     icon: (

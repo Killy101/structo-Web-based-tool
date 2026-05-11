@@ -22,6 +22,8 @@ interface Props {
   title?: string;
   subtitle?: string;
   onBack?: () => void;
+  // Stage-based loading (optional — falls back to single bar if not provided)
+  loadingStages?: LoadingStage[];
 }
 
 /* ─── Accent palette ────────────────────────────────────────────────────── */
@@ -48,19 +50,10 @@ const ACCENT = {
 
 /* ─── Reusable drop zone ────────────────────────────────────────────────── */
 function DropZone({
-  label,
-  hint,
-  file,
-  onFile,
-  accept,
-  accent,
-  icon,
+  label, hint, file, onFile, accept, accent, icon,
 }: {
-  label: string;
-  hint: string;
-  file: File | null;
-  onFile: (f: File) => void;
-  accept: string;
+  label: string; hint: string; file: File | null;
+  onFile: (f: File) => void; accept: string;
   accent: (typeof ACCENT)[keyof typeof ACCENT];
   icon: React.ReactNode;
 }) {
@@ -102,9 +95,7 @@ function DropZone({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <p className={`text-xs font-semibold ${accent.text} truncate max-w-[90%] text-center`}>
-            {file.name}
-          </p>
+          <p className={`text-xs font-semibold ${accent.text} truncate max-w-[90%] text-center`}>{file.name}</p>
           <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{sizeLabel}</p>
         </>
       ) : (
@@ -116,6 +107,182 @@ function DropZone({
           <p className="text-xs font-medium text-slate-600 dark:text-slate-300">{label}</p>
           <p className="text-[10px] text-slate-400 mt-0.5">{hint}</p>
         </>
+      )}
+    </div>
+  );
+}
+
+/* ─── Stage-based progress indicator ───────────────────────────────────── */
+
+// Extended LoadingStage to carry batch details (batch stages only)
+export interface LoadingStage {
+  id: string;
+  label: string;
+  status: "pending" | "active" | "done" | "error";
+  pct?: number;        // 0–100 within this stage
+  detail?: string;     // e.g. "page 12/47"
+  batch?: number;
+  totalBatches?: number;
+  pageRange?: [number, number];
+}
+
+function _batchPills(
+  batch: number | undefined,
+  total: number | undefined,
+  pageRange?: [number, number],
+) {
+  if (!total || !batch) return null;
+  return (
+    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+      {/* mini progress pills */}
+      <div className="flex gap-0.5 flex-wrap max-w-[220px]">
+        {Array.from({ length: total }, (_, i) => (
+          <div
+            key={i}
+            className={`h-2 rounded-sm transition-all ${
+              i < batch     ? "w-4 bg-teal-500"
+              : i === batch - 1 ? "w-4 bg-teal-400 animate-pulse"
+              : "w-4 bg-slate-200 dark:bg-white/10"
+            }`}
+          />
+        ))}
+      </div>
+      <span className="text-[10px] font-mono tabular-nums text-teal-600 dark:text-teal-400 font-semibold">
+        {batch}/{total}
+      </span>
+      {pageRange && (
+        <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+          pp. {pageRange[0]+1}–{pageRange[1]+1}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function StageProgress({ stages, fallbackMsg, fallbackPct }: {
+  stages: LoadingStage[];
+  fallbackMsg: string;
+  fallbackPct: number;
+}) {
+  const activeStage = stages.find((s) => s.status === "active");
+
+  if (stages.length === 0) {
+    // Fallback to single bar (backward compat)
+    return (
+      <div className="rounded-2xl border border-teal-200 dark:border-teal-500/20 bg-teal-50 dark:bg-teal-500/5 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-semibold text-teal-700 dark:text-teal-400">{fallbackMsg}</span>
+          <span className="text-sm font-bold text-teal-600 dark:text-teal-400 tabular-nums">{fallbackPct}%</span>
+        </div>
+        <div className="w-full h-2 rounded-full bg-teal-100 dark:bg-white/10 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-teal-500 to-cyan-400 transition-all duration-500 ease-out"
+            style={{ width: `${fallbackPct}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-white/[0.025] p-4 space-y-3">
+      {stages.map((stage) => {
+        const isActive  = stage.status === "active";
+        const isDone    = stage.status === "done";
+        const isError   = stage.status === "error";
+        const isPending = stage.status === "pending";
+        const isBatch   = stage.id === "batch" && isActive;
+
+        return (
+          <div key={stage.id} className="flex items-start gap-3">
+            {/* Status icon */}
+            <div className={`mt-0.5 w-5 h-5 flex-shrink-0 rounded-full flex items-center justify-center transition-all ${
+              isDone   ? "bg-emerald-500" :
+              isError  ? "bg-rose-500" :
+              isActive ? "bg-teal-500 ring-2 ring-teal-300/50 dark:ring-teal-500/30" :
+              "bg-slate-200 dark:bg-white/10"
+            }`}>
+              {isDone && (
+                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+              {isError && (
+                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+              {isActive && (
+                <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+              )}
+            </div>
+
+            {/* Label + bar + batch pills */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className={`text-[11px] font-semibold truncate ${
+                  isDone    ? "text-emerald-600 dark:text-emerald-400" :
+                  isError   ? "text-rose-600 dark:text-rose-400" :
+                  isActive  ? "text-teal-700 dark:text-teal-300" :
+                  "text-slate-400 dark:text-slate-600"
+                }`}>
+                  {stage.label}
+                  {isBatch && stage.totalBatches && (
+                    <span className="ml-2 text-slate-400 dark:text-slate-500 font-normal">
+                      · {stage.batch ?? 0}/{stage.totalBatches} batches
+                    </span>
+                  )}
+                </span>
+                {stage.detail && isActive && !isBatch && (
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono tabular-nums ml-2 flex-shrink-0">
+                    {stage.detail}
+                  </span>
+                )}
+                {isActive && (stage.pct ?? 0) > 0 && (
+                  <span className="text-[10px] font-mono tabular-nums text-teal-600 dark:text-teal-400 ml-2 flex-shrink-0">
+                    {stage.pct}%
+                  </span>
+                )}
+              </div>
+
+              {isActive && (
+                <div className="w-full h-1.5 rounded-full bg-teal-100 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      isBatch
+                        ? "bg-gradient-to-r from-teal-600 via-cyan-400 to-teal-500 bg-[length:200%] animate-[shimmer_1.5s_linear_infinite]"
+                        : "bg-gradient-to-r from-teal-500 to-cyan-400"
+                    }`}
+                    style={{ width: `${stage.pct ?? 5}%` }}
+                  />
+                </div>
+              )}
+              {isDone && (
+                <div className="w-full h-1.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 overflow-hidden">
+                  <div className="h-full w-full rounded-full bg-emerald-500" />
+                </div>
+              )}
+              {isPending && (
+                <div className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-white/5" />
+              )}
+
+              {/* Batch progress pills */}
+              {isBatch && _batchPills(stage.batch, stage.totalBatches, stage.pageRange)}
+
+              {/* Active detail line (non-batch) */}
+              {isActive && stage.detail && !isBatch && (
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{stage.detail}</p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Overall status summary */}
+      {activeStage && !activeStage.detail && (
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 pl-8 -mt-1">
+          {activeStage.label}…
+        </p>
       )}
     </div>
   );
@@ -137,8 +304,10 @@ const CodeBrackets = (
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export default function DiffUpload({
-  fileA, fileB, xmlFile, onFileA, onFileB, onXmlFile, onRun, loading, loadingMsg, loadingPct, error,
-  xmlSections, onSectionsLoaded, onAllSectionsLoaded, skipChunking, title, subtitle, onBack,
+  fileA, fileB, xmlFile, onFileA, onFileB, onXmlFile, onRun,
+  loading, loadingMsg, loadingPct, error,
+  xmlSections, onSectionsLoaded, onAllSectionsLoaded, skipChunking,
+  title, subtitle, onBack, loadingStages = [],
 }: Props) {
   const [allSections, setAllSections] = useState<XmlSection[]>([]);
   const [chosenLevel, setChosenLevel] = useState<number | null>(null);
@@ -190,7 +359,7 @@ export default function DiffUpload({
     <div className="flex flex-col items-center h-full overflow-y-auto px-4 py-8">
       <div className="w-full max-w-lg space-y-5">
 
-        {/* ── Back button ────────────────────────────────────────────── */}
+        {/* ── Back button ─────────────────────────────────────────────── */}
         {onBack && (
           <div className="flex justify-start -mb-2">
             <button
@@ -344,22 +513,13 @@ export default function DiffUpload({
           </div>
         )}
 
-        {/* ── Action ─────────────────────────────────────────────────────── */}
+        {/* ── Action / Loading ────────────────────────────────────────────── */}
         {loading ? (
-          <div className="rounded-2xl border border-teal-200 dark:border-teal-500/20
-            bg-teal-50 dark:bg-teal-500/5 p-5">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-teal-700 dark:text-teal-400">{loadingMsg}</span>
-              <span className="text-sm font-bold text-teal-600 dark:text-teal-400 tabular-nums">{loadingPct}%</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-teal-100 dark:bg-white/10 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-teal-500 to-cyan-400 transition-all duration-500 ease-out
-                  shadow-[0_0_8px_rgba(20,184,166,0.4)]"
-                style={{ width: `${loadingPct}%` }}
-              />
-            </div>
-          </div>
+          <StageProgress
+            stages={loadingStages}
+            fallbackMsg={loadingMsg}
+            fallbackPct={loadingPct}
+          />
         ) : (
           <button
             disabled={!ready}

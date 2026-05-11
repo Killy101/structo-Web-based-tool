@@ -1,21 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // api.ts — HTTP client for the FastAPI compare service
-//
-// LARGE-DOCUMENT CHANGES
-// ────────────────────────
-//  apiDiffLarge()   — calls /diff/stream/large, yields batch results as they
-//                     arrive.  Each batch covers 50 pages.  The frontend
-//                     renders chunks immediately as batches stream in.
-//
-//  apiDiffAuto()    — chooses /diff/stream or /diff/stream/large based on
-//                     page count.  Use this as the single entry point.
-//
-//  apiGetSegments() — fetches pane segments for a page window from the
-//                     server-side result cache.  Call this as the user
-//                     scrolls instead of holding 500k segments in the browser.
-//
-//  LARGE_DOC_THRESHOLD — docs with more pages than this are sent to the large
-//                         endpoint.  Must match the server value.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type {
@@ -26,29 +10,30 @@ import type {
   PaneData,
   XmlSection,
 } from "./types";
+import type { LoadingStage } from "./DiffUpload";
 
 const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
   ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
   : "http://localhost:8000/compare";
 
-// Keep in sync with LARGE_DOC_THRESHOLD in compare.py.
 export const LARGE_DOC_THRESHOLD = 100;
 
 // ── Chunked upload ────────────────────────────────────────────────────────────
-// Splits large files into 2 MB parts uploaded 4 at a time so no single
-// request can hit a proxy timeout.  Falls back to a single-request upload
-// when the backend doesn't expose /upload/chunk (graceful degradation).
-
-const CHUNK_SIZE   = 2 * 1024 * 1024; // 2 MB per part
+const CHUNK_SIZE   = 2 * 1024 * 1024;
 const MAX_PARALLEL = 4;
 
 interface UploadResult { fileId: string; sha256: string; path: string; }
+
+interface PageCountResult {
+  old_pages: number;
+  new_pages: number;
+  max_pages: number;
+}
 
 async function _uploadChunked(
   file:       File,
   onProgress: (pct: number) => void,
 ): Promise<UploadResult | null> {
-  // Quick probe — if the endpoint doesn't exist, return null and fall back.
   const probe = await fetch(`${BASE.replace("/compare", "")}/upload/chunk`, {
     method: "HEAD",
   }).catch(() => null);
@@ -85,23 +70,25 @@ async function _uploadChunked(
   return { fileId: data.file_id, sha256: data.sha256, path: data.path };
 }
 
-// ── SHA-256 deduplication cache ───────────────────────────────────────────────
-// When the same file pair is submitted again the backend returns the cached
-// job_id immediately — no re-processing.  We store the mapping in
-// sessionStorage so it survives page refreshes within the same session.
+async function _probePageCount(oldFile: File, newFile: File): Promise<PageCountResult | null> {
+  try {
+    const form = new FormData();
+    form.append("old_file", oldFile);
+    form.append("new_file", newFile);
+    const res = await fetch(`${BASE}/pdf/page-count`, { method: "POST", body: form });
+    if (!res.ok) return null;
+    return await res.json() as PageCountResult;
+  } catch {
+    return null;
+  }
+}
 
+// ── SHA-256 deduplication cache ───────────────────────────────────────────────
 function _getCachedJobId(sha_a: string, sha_b: string): string | null {
   try {
     const key = `diff_cache_${sha_a.slice(0, 16)}_${sha_b.slice(0, 16)}`;
     return sessionStorage.getItem(key);
   } catch { return null; }
-}
-
-function _setCachedJobId(sha_a: string, sha_b: string, jobId: string): void {
-  try {
-    const key = `diff_cache_${sha_a.slice(0, 16)}_${sha_b.slice(0, 16)}`;
-    sessionStorage.setItem(key, jobId);
-  } catch { /* sessionStorage unavailable */ }
 }
 
 // ── Progress reporting ────────────────────────────────────────────────────────
@@ -111,12 +98,56 @@ export interface DiffProgress {
   page?:       number;
   totalPages?: number;
   chunks?:     number;
-  pct:         number;    // 0–100
+  pct:         number;
   message:     string;
-  // Large-doc extras
   batch?:      number;
   totalBatches?: number;
   pageRange?:  [number, number];
+}
+
+// ── Stage-based progress builder ──────────────────────────────────────────────
+// Call this in your component to convert a DiffProgress into LoadingStage[].
+// The stage list reflects: Uploading → Extracting → Computing → Rendering
+
+export function buildLoadingStages(progress: DiffProgress | null): LoadingStage[] {
+  const STAGE_DEFS: { id: DiffProgress["stage"] | "upload"; label: string }[] = [
+    { id: "upload",  label: "Uploading files" },
+    { id: "old",     label: "Extracting original PDF" },
+    { id: "new",     label: "Extracting revised PDF" },
+    { id: "diff",    label: "Computing differences" },
+    { id: "render",  label: "Preparing viewer" },
+    { id: "batch",   label: "Processing batches" },
+  ];
+
+  if (!progress) {
+    return STAGE_DEFS.map((s) => ({ id: s.id, label: s.label, status: "pending" as const }));
+  }
+
+  const ORDER = ["upload", "old", "new", "diff", "render", "batch", "done"] as const;
+  const currentIdx = ORDER.indexOf(progress.stage as typeof ORDER[number]);
+
+  return STAGE_DEFS.map((def) => {
+    const stageOrder = ORDER.indexOf(def.id as typeof ORDER[number]);
+    if (progress.stage === "done") {
+      return { id: def.id, label: def.label, status: "done" as const };
+    }
+    if (stageOrder < currentIdx) {
+      return { id: def.id, label: def.label, status: "done" as const };
+    }
+    if (stageOrder === currentIdx) {
+      return {
+        id: def.id,
+        label: def.label,
+        status: "active" as const,
+        pct: progress.pct,
+        detail: progress.message,
+        batch: progress.batch,
+        totalBatches: progress.totalBatches,
+        pageRange: progress.pageRange,
+      };
+    }
+    return { id: def.id, label: def.label, status: "pending" as const };
+  });
 }
 
 // Batch result streamed from /diff/stream/large
@@ -131,10 +162,9 @@ export interface BatchResult {
 }
 
 // ── Retry config ──────────────────────────────────────────────────────────────
-
-const _DIFF_MAX_RETRIES    = 4;
-const _DIFF_BASE_DELAY_MS  = 8_000;
-const _DIFF_MAX_DELAY_MS   = 60_000;
+const _DIFF_MAX_RETRIES   = 4;
+const _DIFF_BASE_DELAY_MS = 8_000;
+const _DIFF_MAX_DELAY_MS  = 60_000;
 
 async function _retryDelay(
   attempt: number,
@@ -156,7 +186,6 @@ async function _retryDelay(
 }
 
 // ── NDJSON stream reader ──────────────────────────────────────────────────────
-
 async function* _readNDJSON(res: Response): AsyncGenerator<unknown> {
   const reader  = res.body!.getReader();
   const decoder = new TextDecoder();
@@ -182,7 +211,6 @@ async function* _readNDJSON(res: Response): AsyncGenerator<unknown> {
 }
 
 // ── Standard diff (≤ LARGE_DOC_THRESHOLD pages) ───────────────────────────────
-
 export async function apiDiff(
   oldFile:     File,
   newFile:     File,
@@ -227,10 +255,9 @@ export async function apiDiff(
 }
 
 // ── Large diff (> LARGE_DOC_THRESHOLD pages) — batched streaming ──────────────
-
 export interface LargeDiffCallbacks {
   onProgress?:    (p: DiffProgress) => void;
-  onBatch?:       (b: BatchResult) => void;   // called as each 50-page batch arrives
+  onBatch?:       (b: BatchResult) => void;
 }
 
 export interface LargeDiffResult {
@@ -278,11 +305,8 @@ export async function apiDiffLarge(
       const m = msg as Record<string, unknown>;
 
       if (m.t === "p") {
-        // Progress message
         onProgress?.(_parseLargeProgress(m));
-
       } else if (m.t === "batch") {
-        // A 50-page batch result — notify the UI immediately
         onBatch?.({
           batch:     m.batch as number,
           of:        m.of    as number,
@@ -292,7 +316,6 @@ export async function apiDiffLarge(
           pane_b:    m.pane_b    as PaneData,
           stats:     m.stats     as DiffResult["stats"],
         });
-
       } else if (m.t === "done") {
         doneMsg = {
           jobId:       m.job_id     as string,
@@ -307,7 +330,6 @@ export async function apiDiffLarge(
           stage: "done", pct: 100,
           message: `Done — ${doneMsg.stats.total} changes across ${doneMsg.totalPages} pages`,
         });
-
       } else if (m.t === "e") {
         throw new Error((m.msg as string) || "Large diff failed");
       }
@@ -321,7 +343,6 @@ export async function apiDiffLarge(
 }
 
 // ── Auto-routing: pick standard or large endpoint based on page count ─────────
-
 export async function apiDiffAuto(
   oldFile:   File,
   newFile:   File,
@@ -333,10 +354,9 @@ export async function apiDiffAuto(
 ): Promise<DiffResult | LargeDiffResult> {
   const { onProgress, onBatch } = callbacks;
 
-  // ── Attempt chunked upload + SHA-256 dedup ────────────────────────────────
-  // Upload both files in parallel via chunked multipart if the backend
-  // supports it.  On success we get a SHA-256 hash for each file, which
-  // lets the backend skip re-processing an identical file pair.
+  const pageCount = await _probePageCount(oldFile, newFile);
+  const useLargeByPages = (pageCount?.max_pages ?? 0) > LARGE_DOC_THRESHOLD;
+
   try {
     let oldPct = 0, newPct = 0;
     const notifyUpload = () =>
@@ -349,48 +369,22 @@ export async function apiDiffAuto(
     ]);
 
     if (oldUp && newUp) {
-      // Check session cache — same pair as before?
       const cachedJobId = _getCachedJobId(oldUp.sha256, newUp.sha256);
       if (cachedJobId) {
         onProgress?.({ stage: "batch", pct: 5, message: "Previous result found — reloading…" });
       }
-
-      // POST /diff/start — backend returns from cache if hash pair is known
-      const startForm = new FormData();
-      startForm.append("old_file_id", oldUp.fileId);
-      startForm.append("old_sha",     oldUp.sha256);
-      startForm.append("new_file_id", newUp.fileId);
-      startForm.append("new_sha",     newUp.sha256);
-      const startRes = await fetch(`${BASE}/diff/start`, { method: "POST", body: startForm });
-
-      if (startRes.ok) {
-        const startData = await startRes.json() as {
-          job_id: string; cached: boolean; pages: number;
-        };
-        _setCachedJobId(oldUp.sha256, newUp.sha256, startData.job_id);
-        // If the server says cached, stream results from disk — no CPU work
-        if (startData.cached) {
-          onProgress?.({ stage: "batch", pct: 10,
-                         message: `Cached result — streaming ${startData.pages} pages…` });
-        }
-        // Fall through to regular large/standard streaming using the job_id.
-        // The server streams immediately from cache if cached=true.
-      }
-      // If /diff/start doesn't exist yet, fall through to legacy path below.
     }
   } catch { /* chunked upload not available — fall through to legacy */ }
 
-  // ── Legacy single-request path (always works) ─────────────────────────────
-  // Use file SIZE as a proxy for page count — 4 MB per file is ~40-50 pages
-  // of typical legal-PDF text, matching the server's LARGE_DOC_THRESHOLD=100.
-  // (8 MB was previously used but mismatched: a 200-page text PDF can be <8 MB
-  //  and would time-out on /diff/stream; a 30-page image PDF can be >8 MB and
-  //  would wastefully hit /diff/stream/large.)
   const LARGE_SIZE_BYTES = 4 * 1024 * 1024;
-  const useLarge = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
+  const useLargeBySize = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
+  const useLarge = useLargeByPages || useLargeBySize;
 
   if (useLarge) {
-    onProgress?.({ stage: "batch", pct: 0, message: "Large document detected — using batched mode…" });
+    const reason = useLargeByPages && pageCount
+      ? `Large document detected (${pageCount.max_pages} pages) — using batched mode…`
+      : "Large document detected — using batched mode…";
+    onProgress?.({ stage: "batch", pct: 0, message: reason });
     return apiDiffLarge(oldFile, newFile, { onProgress, onBatch }, xmlFile);
   }
 
@@ -398,7 +392,6 @@ export async function apiDiffAuto(
 }
 
 // ── Lazy segment fetch (large docs only) ──────────────────────────────────────
-
 export interface SegmentWindow {
   jobId:      string;
   pageRange:  [number, number];
@@ -425,19 +418,17 @@ export async function apiGetSegments(
 
 // ── XML operations ────────────────────────────────────────────────────────────
 
-// ── XML session cache ─────────────────────────────────────────────────────────
-// Uploads XML text once, reuses session_id for subsequent locate calls.
-// Avoids posting the full XML (up to 40 MB) on every chunk click.
-
 function _fnv32(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
   return h;
 }
 
-const _xmlSessionCache = new Map<number, string>(); // hash → session_id
+const _xmlSessionCache = new Map<number, string>();
+let _xmlSessionSupported: boolean | null = null;
 
 async function _getXmlSessionId(xmlText: string): Promise<string | null> {
+  if (_xmlSessionSupported === false) return null;
   const hash = _fnv32(xmlText);
   if (_xmlSessionCache.has(hash)) return _xmlSessionCache.get(hash)!;
   try {
@@ -445,16 +436,26 @@ async function _getXmlSessionId(xmlText: string): Promise<string | null> {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ xml_text: xmlText }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      _xmlSessionSupported = false;
+      return null;
+    }
     const data = await res.json() as { session_id?: string };
-    if (!data.session_id) return null;
+    if (!data.session_id) {
+      _xmlSessionSupported = false;
+      return null;
+    }
+    _xmlSessionSupported = true;
     if (_xmlSessionCache.size >= 5) {
       const first = _xmlSessionCache.keys().next().value;
       if (first !== undefined) _xmlSessionCache.delete(first);
     }
     _xmlSessionCache.set(hash, data.session_id);
     return data.session_id;
-  } catch { return null; }
+  } catch {
+    _xmlSessionSupported = false;
+    return null;
+  }
 }
 
 export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
@@ -472,7 +473,6 @@ export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResu
 
 export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateResult | null> {
   try {
-    // Try lightweight session-id first — avoids POSTing full XML on every click
     const sessionId = await _getXmlSessionId(xmlText);
     if (sessionId) {
       const res = await fetch(`${BASE}/xml/locate`, {
@@ -481,7 +481,6 @@ export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateRe
       });
       if (res.ok) return res.json() as Promise<LocateResult>;
     }
-    // Fallback: send full XML (works even without session endpoint)
     const res = await fetch(`${BASE}/xml/locate`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ xml_text: xmlText, chunk }),
@@ -492,7 +491,6 @@ export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateRe
 }
 
 // ── XML section parsing (client-side, no network) ─────────────────────────────
-
 export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
   if (!xmlText) return [];
   try {
@@ -568,7 +566,7 @@ function _parseProgress(msg: Record<string, unknown>): DiffProgress {
       pct:     Math.min(40, Math.round(10 + (p / n) * 30)),
       message: p === 0 ? `Extracting old PDF… (${n} pages)`
              : p >= n  ? "Old PDF extracted"
-             :           `Extracting old PDF… page ${p}/${n}`,
+             :           `page ${p}/${n}`,
     };
   }
 
@@ -579,7 +577,7 @@ function _parseProgress(msg: Record<string, unknown>): DiffProgress {
       stage: "new", page: p, totalPages: n,
       pct:     Math.min(55, Math.round(40 + (p / n) * 15)),
       message: p >= n ? "Both PDFs extracted — starting diff…"
-             :          `Extracting new PDF… page ${p}/${n}`,
+             :          `page ${p}/${n}`,
     };
   }
 
@@ -597,13 +595,13 @@ function _parseProgress(msg: Record<string, unknown>): DiffProgress {
     return {
       stage:   "diff",
       pct:     sub ? Math.round(65 + sp * 0.25) : 65,
-      message: sub ? (SUB_LABELS[sub] ?? `Diff: ${sub}…`) : "Computing diff…",
+      message: sub ? (SUB_LABELS[sub] ?? `${sub}…`) : "Computing diff…",
     };
   }
 
   if (s === "render") {
     return { stage: "render", chunks: msg.chunks as number, pct: 92,
-             message: `Rendering ${msg.chunks} changes…` };
+             message: `${msg.chunks} changes` };
   }
 
   return { stage: "diff", pct: 50, message: "Processing…" };
@@ -617,7 +615,7 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
     const batches = msg.batches as number;
     return {
       stage: "batch", pct: 0, batch: 0, totalBatches: batches,
-      message: `${pages} pages — processing in ${batches} batches of 50…`,
+      message: `${pages} pages — ${batches} batches`,
     };
   }
 
@@ -629,7 +627,7 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
       stage: "batch", pct: msg.pct as number ?? Math.round((batch / of) * 90),
       batch, totalBatches: of,
       pageRange: pages,
-      message: msg.msg as string ?? `Processing batch ${batch}/${of}…`,
+      message: msg.msg as string ?? `Batch ${batch}/${of}`,
     };
   }
 

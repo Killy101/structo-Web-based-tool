@@ -1628,9 +1628,10 @@ def _extract_pdf_spans(
         p1 = min(page_count - 1, p1)
         for page_num in range(p0, p1 + 1):
             page = doc[page_num]
-            # Collect underline / strikethrough annotation rects for this page
+            # Collect underline / strikethrough / link annotation rects for this page
             underline_rects: list = []
             strikeout_rects: list = []
+            link_rects:      list = []
             try:
                 for annot in page.annots():
                     atype = annot.type[1] if annot.type else ""
@@ -1638,6 +1639,17 @@ def _extract_pdf_spans(
                         underline_rects.append(annot.rect)
                     elif atype in ("StrikeOut", "StrikeThrough"):
                         strikeout_rects.append(annot.rect)
+                    elif atype in ("Link", "URI"):
+                        link_rects.append(annot.rect)
+            except Exception:
+                pass
+            # Also collect hyperlink rects from page.get_links() (covers
+            # inline URI actions that PDF producers store outside annotations).
+            try:
+                for lnk in page.get_links():
+                    r = lnk.get("from")
+                    if r is not None:
+                        link_rects.append(r)
             except Exception:
                 pass
 
@@ -1707,6 +1719,7 @@ def _extract_pdf_spans(
                                 "italic":        bool(f & 0x02),
                                 "underline":     _bbox_overlaps(bbox, underline_rects),
                                 "strikethrough": _bbox_overlaps(bbox, strikeout_rects),
+                                "is_link":       _bbox_overlaps(bbox, link_rects),
                                 "color":         c,
                                 "is_colored":    c not in (0, 16777215),
                                 "size":          round(first.get("size", 12), 1),
@@ -1729,6 +1742,7 @@ def _extract_pdf_spans(
                                     "italic":        bool(flags & 0x02),
                                     "underline":     _bbox_overlaps(bbox, underline_rects),
                                     "strikethrough": _bbox_overlaps(bbox, strikeout_rects),
+                                    "is_link":       _bbox_overlaps(bbox, link_rects),
                                     "color":         color,
                                     "is_colored":    color not in (0, 16777215),  # not black/white
                                     "size":          round(span.get("size", 12), 1),
@@ -1750,6 +1764,7 @@ def _extract_pdf_spans(
                             "italic":        False,
                             "underline":     False,
                             "strikethrough": False,
+                            "is_link":       False,
                             "color":         0,
                             "is_colored":    False,
                             "size":          12.0,
@@ -1903,8 +1918,9 @@ def _emphasis_tag(span: dict) -> str | None:
     Maps PDF formatting to standard XML emphasis tags:
       bold          → <b>
       italic        → <i>
-      underline     → <u>
-      strikethrough → <s>
+      is_link       → <a>   (hyperlink — NEVER mapped to strikethrough)
+      underline     → <u>   (only when NOT a hyperlink)
+      strikethrough → <s>   (detected strictly from StrikeOut annotation)
       colored       → <em>  (only when no other tag applies)
     """
     tags: list[str] = []
@@ -1912,10 +1928,12 @@ def _emphasis_tag(span: dict) -> str | None:
         tags.append("b")
     if span.get("italic"):
         tags.append("i")
-    if span.get("underline"):
-        tags.append("u")
+    if span.get("is_link"):
+        tags.append("a")        # hyperlink — never treat as underline or strike
+    elif span.get("underline"):
+        tags.append("u")        # underline only when genuinely not a link
     if span.get("strikethrough"):
-        tags.append("s")
+        tags.append("s")        # strikethrough from annotation only
     if span.get("is_colored") and not tags:
         tags.append("em")
     if not tags:
@@ -1982,6 +2000,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
         italic_chars        = sum(len(s["text"].strip()) for s in buf if s.get("italic"))
         underline_chars     = sum(len(s["text"].strip()) for s in buf if s.get("underline"))
         strikethrough_chars = sum(len(s["text"].strip()) for s in buf if s.get("strikethrough"))
+        link_chars          = sum(len(s["text"].strip()) for s in buf if s.get("is_link"))
         colored_chars       = sum(len(s["text"].strip()) for s in buf if s.get("is_colored"))
         THRESHOLD = 0.40
         dominant = max(buf, key=lambda s: len(s.get("text", "")))  # color/size fallback
@@ -1995,6 +2014,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
             "italic":        italic_chars        / total_chars > THRESHOLD,
             "underline":     underline_chars     / total_chars > THRESHOLD,
             "strikethrough": strikethrough_chars / total_chars > THRESHOLD,
+            "is_link":       link_chars          / total_chars > THRESHOLD,
             "color":         dominant["color"],
             "is_colored":    colored_chars       / total_chars > THRESHOLD,
             "size":          dominant.get("size", 12.0),
@@ -2060,6 +2080,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
             italic_chars     = sum(len(s["text"].strip()) for s in all_spans if s.get("italic"))
             underline_chars  = sum(len(s["text"].strip()) for s in all_spans if s.get("underline"))
             strike_chars     = sum(len(s["text"].strip()) for s in all_spans if s.get("strikethrough"))
+            link_chars       = sum(len(s["text"].strip()) for s in all_spans if s.get("is_link"))
             colored_chars    = sum(len(s["text"].strip()) for s in all_spans if s.get("is_colored"))
             THRESHOLD        = 0.40
             dominant         = max(all_spans, key=lambda s: len(s.get("text", ""))) if all_spans else line
@@ -2073,6 +2094,7 @@ def _spans_to_lines(spans: list[dict]) -> list[dict]:
                 "italic":        italic_chars    / total_chars > THRESHOLD,
                 "underline":     underline_chars / total_chars > THRESHOLD,
                 "strikethrough": strike_chars    / total_chars > THRESHOLD,
+                "is_link":       link_chars      / total_chars > THRESHOLD,
                 "color":         dominant.get("color", 0),
                 "is_colored":    colored_chars   / total_chars > THRESHOLD,
                 "size":          dominant.get("size", 12.0),
@@ -2168,6 +2190,306 @@ def _norm_line(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hybrid XML-aligned diff helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class _XmlNode:
+    """
+    Lightweight container for one XML element used during hybrid alignment.
+    Holds only the *direct* (leaf) text of that element — not its descendants —
+    so child nodes are not absorbed by their parents during mapping.
+    """
+    __slots__ = ("path", "tag", "depth", "leaf_norm", "old_lines", "new_lines")
+
+    def __init__(self, path: str, tag: str, depth: int, leaf_norm: str) -> None:
+        self.path      = path
+        self.tag       = tag
+        self.depth     = depth
+        self.leaf_norm = leaf_norm          # direct text, normalised
+        self.old_lines: list[dict] = []     # PDF lines assigned from OLD
+        self.new_lines: list[dict] = []     # PDF lines assigned from NEW
+
+
+def _build_xml_node_list(xml_root) -> list[_XmlNode]:
+    """
+    Walk the XML tree and return a flat list of _XmlNode objects.
+
+    leaf_norm = direct text of this element only (not descendant text),
+    so parent elements do not absorb their children's text during fuzzy mapping.
+    Nodes with no direct text are still included so structural coverage is
+    complete — they just have an empty leaf_norm and are low-priority matches.
+    """
+    nodes: list[_XmlNode] = []
+    _MAX = 200
+
+    def _visit(elem, path: str, depth: int) -> None:
+        if depth > _MAX:
+            return
+        try:
+            tag = elem.tag if isinstance(elem.tag, str) else "node"
+        except Exception:
+            tag = "node"
+
+        # Direct text only: elem.text + each child's .tail (not full itertext)
+        parts: list[str] = []
+        if elem.text:
+            parts.append(elem.text.strip())
+        for child in elem:
+            if child.tail:
+                parts.append(child.tail.strip())
+        leaf_norm = " ".join(" ".join(parts).split()).lower()
+
+        nodes.append(_XmlNode(path=path, tag=tag, depth=depth, leaf_norm=leaf_norm))
+
+        for idx, child in enumerate(elem):
+            try:
+                ctag = child.tag if isinstance(child.tag, str) else "node"
+            except Exception:
+                ctag = "node"
+            _visit(child, f"{path}/{ctag}[{idx}]", depth + 1)
+
+    _visit(xml_root, f"/{xml_root.tag}", 0)
+    return nodes
+
+
+def _tfidf_score(needle_words: set[str], haystack_norm: str) -> float:
+    """
+    Keyword overlap score: |shared content words| / |union of content words|.
+    Ignores words shorter than 3 characters to avoid stop-word noise.
+    Returns 0.0 when either side is empty.
+    """
+    if not needle_words or not haystack_norm:
+        return 0.0
+    hay_words = {w for w in haystack_norm.split() if len(w) >= 3}
+    if not hay_words:
+        return 0.0
+    shared = needle_words & hay_words
+    return len(shared) / len(needle_words | hay_words)
+
+
+def _map_pdf_lines_to_xml_nodes(
+    pdf_lines: list[dict],
+    nodes:     list[_XmlNode],
+    side:      str,                  # "old" or "new" — stored on the node
+    threshold: float = 0.25,
+) -> list[dict]:
+    """
+    Assign each PDF line to the best-matching _XmlNode.
+
+    Scoring per (line, node) pair:
+      1. Exact substring match        → guaranteed boost (score = 0.85)
+      2. TF-IDF keyword overlap       → 0-0.55
+      3. SequenceMatcher ratio        → 0-0.30
+      4. Depth bonus                  → +0.04 × depth (prefers specific nodes)
+
+    Lines that score below *threshold* on every node are left unmatched
+    (returned as a separate list under the "_unmatched" pseudo-node path).
+
+    Returns the same list of pdf_lines, each annotated with a new key
+    "_xml_node_path" so callers can bucket them.
+    """
+    import difflib as _dl
+
+    # Pre-compute per-node word sets for TF-IDF (done once, not per line)
+    node_words: list[set[str]] = [
+        {w for w in n.leaf_norm.split() if len(w) >= 3}
+        for n in nodes
+    ]
+
+    annotated: list[dict] = []
+    for line in pdf_lines:
+        needle_norm  = line.get("text_norm") or _norm_line(line.get("text", ""))
+        needle_words = {w for w in needle_norm.split() if len(w) >= 3}
+
+        best_score = 0.0
+        best_path  = "_unmatched"
+
+        for ni, node in enumerate(nodes):
+            if not node.leaf_norm:
+                continue
+            hay = node.leaf_norm
+
+            # Fast-path: exact substring
+            if needle_norm and needle_norm in hay:
+                # Penalise by proportion of noise (how much bigger the hay is)
+                score = 0.85 - 0.25 * max(0, len(hay) - len(needle_norm)) / max(len(hay), 1)
+            else:
+                tf = _tfidf_score(needle_words, hay)
+                if tf < 0.05:
+                    # Very little word overlap — skip expensive SequenceMatcher
+                    score = tf
+                else:
+                    sm = _dl.SequenceMatcher(None, needle_norm[:120], hay[:120]).ratio()
+                    score = tf * 0.55 + sm * 0.30
+
+            # Depth bonus: deeper = more specific = preferred
+            score += node.depth * 0.04
+
+            if score > best_score:
+                best_score = score
+                best_path  = node.path
+
+        annotated_line = dict(line)
+        annotated_line["_xml_node_path"] = best_path if best_score >= threshold else "_unmatched"
+        annotated.append(annotated_line)
+
+        # Assign line to node object for later diffing
+        if best_score >= threshold:
+            node_by_path = next((n for n in nodes if n.path == best_path), None)
+            if node_by_path:
+                if side == "old":
+                    node_by_path.old_lines.append(annotated_line)
+                else:
+                    node_by_path.new_lines.append(annotated_line)
+
+    return annotated
+
+
+def _diff_xml_aligned(
+    nodes:     list[_XmlNode],
+    old_unmatched: list[dict],
+    new_unmatched: list[dict],
+    xml_index: list[dict],
+    *,
+    # Forward the inner _make / summary / cid state via mutable containers
+    make_fn,        # callable(_make signature) → dict
+    summary: dict,
+    cid_ref: list,  # [int] — mutable reference to current change id counter
+    align_sentences_fn,
+    chunk_has_real_changes_fn,
+) -> list[dict]:
+    """
+    Perform diff scoped per XML node.
+
+    For each node that has lines in both old and new, run SequenceMatcher
+    within that node's line set only — preventing cross-section misalignment.
+
+    Nodes present in only one side produce bulk addition/removal entries.
+    Unmatched lines are diffed together as a final fallback group.
+    """
+    import difflib as _dl
+
+    changes: list[dict] = []
+
+    def _diff_line_lists(old_ls: list[dict], new_ls: list[dict]) -> list[dict]:
+        """Run the standard line-level diff on a scoped pair of line lists."""
+        local: list[dict] = []
+        if not old_ls and not new_ls:
+            return local
+
+        old_norms = [l.get("text_norm") or _norm_line(l.get("text", "")) for l in old_ls]
+        new_norms = [l.get("text_norm") or _norm_line(l.get("text", "")) for l in new_ls]
+
+        def _isjunk(s: str) -> bool:
+            return len(s) <= 2 or bool(re.match(r'^[\d\s.,;:\-\(\)]+$', s))
+
+        matcher = _dl.SequenceMatcher(_isjunk, old_norms, new_norms, autojunk=False)
+
+        _PUNCT = str.maketrans("", "", ".,;: \t")
+
+        for op, i1, i2, j1, j2 in matcher.get_opcodes():
+            if op == "equal":
+                for k in range(i2 - i1):
+                    ol = old_ls[i1 + k]
+                    nl = new_ls[j1 + k]
+                    _bold_chg          = ol.get("bold",          False) != nl.get("bold",          False)
+                    _italic_chg        = ol.get("italic",        False) != nl.get("italic",        False)
+                    _strikethrough_chg = ol.get("strikethrough", False) != nl.get("strikethrough", False)
+                    # Underline: ignore when either side is a hyperlink (pure link toggle = artefact)
+                    _underline_chg     = (ol.get("underline",    False) != nl.get("underline",     False)
+                                          and not ol.get("is_link", False)
+                                          and not nl.get("is_link", False))
+                    fmt_changes = sum([_bold_chg, _italic_chg, _strikethrough_chg, _underline_chg])
+                    if fmt_changes >= 1:
+                        local.append(make_fn("emphasis", nl["text"].strip(), ol, nl, nl["page"]))
+                        summary["emphasis"] += 1
+
+            elif op == "insert":
+                for k in range(j1, j2):
+                    nl = new_ls[k]
+                    local.append(make_fn("addition", nl["text"].strip(), None, nl, nl["page"]))
+                    summary["addition"] += 1
+
+            elif op == "delete":
+                for k in range(i1, i2):
+                    ol = old_ls[k]
+                    local.append(make_fn("removal", ol["text"].strip(), ol, None, ol["page"]))
+                    summary["removal"] += 1
+
+            elif op == "replace":
+                old_block = old_ls[i1:i2]
+                new_block = new_ls[j1:j2]
+                if not old_block and not new_block:
+                    continue
+                old_page = old_block[0]["page"] if old_block else None
+                new_page = new_block[0]["page"] if new_block else None
+                old_text_block = " ".join(l["text"] for l in old_block)
+                new_text_block = " ".join(l["text"] for l in new_block)
+
+                aligned = align_sentences_fn(old_text_block, new_text_block)
+                for old_sent, new_sent, score in aligned:
+                    old_sent = (old_sent or "").strip()
+                    new_sent = (new_sent or "").strip()
+                    if not old_sent and new_sent and new_page is not None:
+                        local.append(make_fn("addition", new_sent, None,
+                                             {"text": new_sent, "page": new_page}, new_page))
+                        summary["addition"] += 1
+                        continue
+                    if old_sent and not new_sent and old_page is not None:
+                        local.append(make_fn("removal", old_sent,
+                                             {"text": old_sent, "page": old_page}, None, old_page))
+                        summary["removal"] += 1
+                        continue
+                    if not old_sent or not new_sent:
+                        continue
+                    old_core = old_sent.translate(_PUNCT)
+                    new_core = new_sent.translate(_PUNCT)
+                    if old_core == new_core:
+                        if old_sent != new_sent and (old_page is not None or new_page is not None):
+                            page = new_page if new_page is not None else old_page
+                            if page is None:
+                                continue
+                            local.append(make_fn("emphasis", new_sent,
+                                {"text": old_sent, "page": old_page} if old_page is not None else None,
+                                {"text": new_sent, "page": new_page} if new_page is not None else None,
+                                int(page)))
+                            summary["emphasis"] += 1
+                        continue
+                    meaningful, _ = chunk_has_real_changes_fn(
+                        old_sent, new_sent,
+                        change_ratio_threshold=0.008, min_changed_words=2,
+                    )
+                    if not meaningful:
+                        continue
+                    ratio    = _dl.SequenceMatcher(None, old_sent, new_sent).ratio()
+                    combined = (ratio + score) / 2
+                    ctype    = "modification" if combined >= 0.75 else "mismatch"
+                    page     = new_page if new_page is not None else old_page
+                    if page is None:
+                        continue
+                    local.append(make_fn(
+                        ctype, new_sent,
+                        {"text": old_sent, "page": old_page} if old_page is not None else None,
+                        {"text": new_sent, "page": new_page} if new_page is not None else None,
+                        page,
+                    ))
+                    summary[ctype] += 1
+        return local
+
+    # ── Per-node diff ─────────────────────────────────────────────────────────
+    for node in nodes:
+        if node.old_lines or node.new_lines:
+            changes.extend(_diff_line_lists(node.old_lines, node.new_lines))
+
+    # ── Fallback: unmatched lines diffed together ─────────────────────────────
+    if old_unmatched or new_unmatched:
+        changes.extend(_diff_line_lists(old_unmatched, new_unmatched))
+
+    return changes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def detect_pdf_changes(
     old_pdf_bytes: bytes,
     new_pdf_bytes: bytes,
@@ -2291,13 +2613,34 @@ def detect_pdf_changes(
 
     def _fmt(line: dict) -> dict:
         return {
-            "bold":          line["bold"],
-            "italic":        line["italic"],
-            "underline":     line["underline"],
-            "strikethrough": line["strikethrough"],
-            "color":         line["color"],
-            "is_colored":    line["is_colored"],
+            "bold":          line.get("bold",          False),
+            "italic":        line.get("italic",        False),
+            "underline":     line.get("underline",     False),
+            "strikethrough": line.get("strikethrough", False),
+            "is_link":       line.get("is_link",       False),
+            "color":         line.get("color",         0),
+            "is_colored":    line.get("is_colored",    False),
         }
+
+    _FMT_AXES = ("bold", "italic", "underline", "strikethrough", "is_link")
+
+    def _fmt_diff(old_fmt: dict | None, new_fmt: dict | None) -> dict | None:
+        """Compare two formatting dicts, return per-axis "added"/"removed"/"same".
+        Returns None when either side is missing or no axis changed."""
+        if not old_fmt or not new_fmt:
+            return None
+        result: dict[str, str] = {}
+        any_change = False
+        for ax in _FMT_AXES:
+            o = bool(old_fmt.get(ax))
+            n = bool(new_fmt.get(ax))
+            if n and not o:
+                result[ax] = "added";   any_change = True
+            elif o and not n:
+                result[ax] = "removed"; any_change = True
+            else:
+                result[ax] = "same"
+        return result if any_change else None
 
     def _make(
         ctype:    str,
@@ -2322,11 +2665,12 @@ def detect_pdf_changes(
 
         emphasis: list[str] = []
         if new_line:
-            if new_line["bold"]:           emphasis.append("bold")
-            if new_line["italic"]:         emphasis.append("italic")
-            if new_line["underline"]:      emphasis.append("underline")
-            if new_line["strikethrough"]:  emphasis.append("strikethrough")
-            if new_line["is_colored"] and not emphasis:
+            if new_line.get("bold"):           emphasis.append("bold")
+            if new_line.get("italic"):         emphasis.append("italic")
+            if new_line.get("is_link"):        emphasis.append("link")
+            elif new_line.get("underline"):    emphasis.append("underline")  # only if not already a link
+            if new_line.get("strikethrough"): emphasis.append("strikethrough")
+            if new_line.get("is_colored") and not emphasis:
                 emphasis.append("color")
 
         # Suggested XML markup
@@ -2380,6 +2724,7 @@ def detect_pdf_changes(
             "new_text":       new_text,
             "old_formatting": fmt_old,
             "new_formatting": fmt_new,
+            "emp_fmt_diff":   _fmt_diff(fmt_old, fmt_new),
             "emphasis":       emphasis,
             "xml_path":       xml_path,
             "page":           page,
@@ -2389,133 +2734,183 @@ def detect_pdf_changes(
             "word_diff":      word_diff_result,
         }
 
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+    # ── Hybrid XML-aligned diff (when XML is provided) ───────────────────────
+    # When XML is available we route through the structural alignment pipeline:
+    #   1. Build an XmlNode tree from the parsed XML
+    #   2. Map each PDF line to its best-matching node
+    #   3. Diff per-node (SequenceMatcher scoped to the node's line set)
+    #   4. Collect unmatched lines and diff them as a plain fallback group
+    #
+    # This prevents cross-section misalignment: a line from Section 5 can
+    # never be compared against a line from Section 2 because they are
+    # assigned to different nodes before any diffing happens.
+    #
+    # When XML is absent the pipeline falls straight to the original flat diff.
+    if xml_root is not None and (old_lines or new_lines):
+        logger.info("detect_pdf_changes: using hybrid XML-aligned diff")
+        try:
+            _xml_nodes = _build_xml_node_list(xml_root)
 
-        if op == "equal":
-            # Lines match — only flag if BOTH bold AND italic changed simultaneously,
-            # or a clearly meaningful formatting change occurred.
-            # We intentionally IGNORE font-size-only differences (same word, same
-            # bold/italic, different size) because size varies across editions.
-            for k in range(i2 - i1):
-                ol = old_lines[i1 + k]
-                nl = new_lines[j1 + k]
-                # Count how many formatting axes changed
-                fmt_changes = sum([
-                    ol["bold"]          != nl["bold"],
-                    ol["italic"]        != nl["italic"],
-                    ol["underline"]     != nl["underline"],
-                    ol["strikethrough"] != nl["strikethrough"],
-                ])
-                # Only flag as emphasis change if at least one SEMANTIC formatting
-                # axis (bold/italic/underline/strikethrough) actually changed.
-                # Color-only changes are ignored (colour rendering differs across
-                # PDF viewers and doesn't affect document meaning).
-                if fmt_changes >= 1:
-                    changes.append(_make("emphasis", nl["text"].strip(), ol, nl, nl["page"]))
-                    summary["emphasis"] += 1
+            # Annotate + assign lines to nodes (side-effect: fills node.old_lines / new_lines)
+            old_annotated = _map_pdf_lines_to_xml_nodes(old_lines, _xml_nodes, "old")
+            new_annotated = _map_pdf_lines_to_xml_nodes(new_lines, _xml_nodes, "new")
 
-        elif op == "insert":
-            # Lines only in new PDF
-            for k in range(j1, j2):
-                nl = new_lines[k]
-                changes.append(_make("addition", nl["text"].strip(), None, nl, nl["page"]))
-                summary["addition"] += 1
+            old_unmatched = [l for l in old_annotated if l.get("_xml_node_path") == "_unmatched"]
+            new_unmatched = [l for l in new_annotated if l.get("_xml_node_path") == "_unmatched"]
 
-        elif op == "delete":
-            # Lines only in old PDF
-            for k in range(i1, i2):
-                ol = old_lines[k]
-                changes.append(_make("removal", ol["text"].strip(), ol, None, ol["page"]))
-                summary["removal"] += 1
+            logger.debug(
+                "detect_pdf_changes: xml_nodes=%d  old_unmatched=%d  new_unmatched=%d",
+                len(_xml_nodes), len(old_unmatched), len(new_unmatched),
+            )
 
-        elif op == "replace":
-            old_block = old_lines[i1:i2]
-            new_block = new_lines[j1:j2]
+            cid_ref = [cid]  # mutable so _diff_xml_aligned can share the counter via _make
 
-            if not old_block and not new_block:
-                continue
+            def _make_for_hybrid(ctype, text, old_line, new_line, page):
+                # Re-use the _make closure defined above — cid is nonlocal there
+                return _make(ctype, text, old_line, new_line, page)
 
-            old_page = old_block[0]["page"] if old_block else None
-            new_page = new_block[0]["page"] if new_block else None
+            changes = _diff_xml_aligned(
+                nodes            = _xml_nodes,
+                old_unmatched    = old_unmatched,
+                new_unmatched    = new_unmatched,
+                xml_index        = xml_index,
+                make_fn          = _make_for_hybrid,
+                summary          = summary,
+                cid_ref          = cid_ref,
+                align_sentences_fn         = align_sentences,
+                chunk_has_real_changes_fn  = chunk_has_real_changes,
+            )
+            logger.info("detect_pdf_changes: hybrid produced %d changes", len(changes))
+        except Exception as _hybrid_err:
+            logger.warning("detect_pdf_changes: hybrid alignment failed (%s) — falling back to flat diff", _hybrid_err)
+            # fall through to the original flat diff below
+            changes = []
+            _run_flat_diff = True
+        else:
+            _run_flat_diff = False
+    else:
+        _run_flat_diff = True
 
-            old_text_block = " ".join([l["text"] for l in old_block])
-            new_text_block = " ".join([l["text"] for l in new_block])
+    if _run_flat_diff:
+        # ── Original flat diff (unchanged from pre-hybrid) ────────────────────
+        for op, i1, i2, j1, j2 in matcher.get_opcodes():
 
-            aligned = align_sentences(old_text_block, new_text_block)
-
-            _PUNCT = str.maketrans("", "", ".,;: \t")
-
-            for old_sent, new_sent, score in aligned:
-                old_sent = (old_sent or "").strip()
-                new_sent = (new_sent or "").strip()
-
-                if not old_sent and new_sent and new_page is not None:
-                    changes.append(_make(
-                        "addition",
-                        new_sent,
-                        None,
-                        {"text": new_sent, "page": new_page},
-                        new_page,
-                    ))
-                    summary["addition"] += 1
-                    continue
-
-                if old_sent and not new_sent and old_page is not None:
-                    changes.append(_make(
-                        "removal",
-                        old_sent,
-                        {"text": old_sent, "page": old_page},
-                        None,
-                        old_page,
-                    ))
-                    summary["removal"] += 1
-                    continue
-
-                old_core = old_sent.translate(_PUNCT)
-                new_core = new_sent.translate(_PUNCT)
-
-                if old_core == new_core:
-                    if old_sent != new_sent and (old_page is not None or new_page is not None):
-                        page = new_page if new_page is not None else old_page
-                        if page is None:
-                            continue
-                        changes.append(_make(
-                            "emphasis",
-                            new_sent,
-                            {"text": old_sent, "page": old_page} if old_page is not None else None,
-                            {"text": new_sent, "page": new_page} if new_page is not None else None,
-                            int(page),
-                        ))
+            if op == "equal":
+                for k in range(i2 - i1):
+                    ol = old_lines[i1 + k]
+                    nl = new_lines[j1 + k]
+                    _bold_chg          = ol.get("bold",          False) != nl.get("bold",          False)
+                    _italic_chg        = ol.get("italic",        False) != nl.get("italic",        False)
+                    _strikethrough_chg = ol.get("strikethrough", False) != nl.get("strikethrough", False)
+                    # Underline: ignore when either side is a hyperlink (pure link toggle = artefact)
+                    _underline_chg     = (ol.get("underline",    False) != nl.get("underline",     False)
+                                          and not ol.get("is_link", False)
+                                          and not nl.get("is_link", False))
+                    fmt_changes = sum([_bold_chg, _italic_chg, _strikethrough_chg, _underline_chg])
+                    if fmt_changes >= 1:
+                        changes.append(_make("emphasis", nl["text"].strip(), ol, nl, nl["page"]))
                         summary["emphasis"] += 1
+
+            elif op == "insert":
+                for k in range(j1, j2):
+                    nl = new_lines[k]
+                    changes.append(_make("addition", nl["text"].strip(), None, nl, nl["page"]))
+                    summary["addition"] += 1
+
+            elif op == "delete":
+                for k in range(i1, i2):
+                    ol = old_lines[k]
+                    changes.append(_make("removal", ol["text"].strip(), ol, None, ol["page"]))
+                    summary["removal"] += 1
+
+            elif op == "replace":
+                old_block = old_lines[i1:i2]
+                new_block = new_lines[j1:j2]
+
+                if not old_block and not new_block:
                     continue
 
-                meaningful, _ = chunk_has_real_changes(
-                    old_sent,
-                    new_sent,
-                    change_ratio_threshold=0.008,
-                    min_changed_words=2,
-                )
+                old_page = old_block[0]["page"] if old_block else None
+                new_page = new_block[0]["page"] if new_block else None
 
-                if not meaningful:
-                    continue
+                old_text_block = " ".join([l["text"] for l in old_block])
+                new_text_block = " ".join([l["text"] for l in new_block])
 
-                ratio = difflib.SequenceMatcher(None, old_sent, new_sent).ratio()
-                combined_score = (ratio + score) / 2
+                aligned = align_sentences(old_text_block, new_text_block)
 
-                ctype = "modification" if combined_score >= 0.75 else "mismatch"
-                page = new_page if new_page is not None else old_page
-                if page is None:
-                    continue
+                _PUNCT = str.maketrans("", "", ".,;: \t")
 
-                changes.append(_make(
-                    ctype,
-                    new_sent,
-                    {"text": old_sent, "page": old_page} if old_page is not None else None,
-                    {"text": new_sent, "page": new_page} if new_page is not None else None,
-                    page,
-                ))
+                for old_sent, new_sent, score in aligned:
+                    old_sent = (old_sent or "").strip()
+                    new_sent = (new_sent or "").strip()
 
-                summary[ctype] += 1
+                    if not old_sent and new_sent and new_page is not None:
+                        changes.append(_make(
+                            "addition",
+                            new_sent,
+                            None,
+                            {"text": new_sent, "page": new_page},
+                            new_page,
+                        ))
+                        summary["addition"] += 1
+                        continue
+
+                    if old_sent and not new_sent and old_page is not None:
+                        changes.append(_make(
+                            "removal",
+                            old_sent,
+                            {"text": old_sent, "page": old_page},
+                            None,
+                            old_page,
+                        ))
+                        summary["removal"] += 1
+                        continue
+
+                    old_core = old_sent.translate(_PUNCT)
+                    new_core = new_sent.translate(_PUNCT)
+
+                    if old_core == new_core:
+                        if old_sent != new_sent and (old_page is not None or new_page is not None):
+                            page = new_page if new_page is not None else old_page
+                            if page is None:
+                                continue
+                            changes.append(_make(
+                                "emphasis",
+                                new_sent,
+                                {"text": old_sent, "page": old_page} if old_page is not None else None,
+                                {"text": new_sent, "page": new_page} if new_page is not None else None,
+                                int(page),
+                            ))
+                            summary["emphasis"] += 1
+                        continue
+
+                    meaningful, _ = chunk_has_real_changes(
+                        old_sent,
+                        new_sent,
+                        change_ratio_threshold=0.008,
+                        min_changed_words=2,
+                    )
+
+                    if not meaningful:
+                        continue
+
+                    ratio = difflib.SequenceMatcher(None, old_sent, new_sent).ratio()
+                    combined_score = (ratio + score) / 2
+
+                    ctype = "modification" if combined_score >= 0.75 else "mismatch"
+                    page = new_page if new_page is not None else old_page
+                    if page is None:
+                        continue
+
+                    changes.append(_make(
+                        ctype,
+                        new_sent,
+                        {"text": old_sent, "page": old_page} if old_page is not None else None,
+                        {"text": new_sent, "page": new_page} if new_page is not None else None,
+                        page,
+                    ))
+
+                    summary[ctype] += 1
 
     logger.debug("detect_pdf_changes: %d changes detected: %s", len(changes), summary)
 
@@ -2585,6 +2980,24 @@ def detect_pdf_changes(
                 seen_toc_labels.add(label)
         deduped_changes.append(ch)
 
+    # ── Broader dedup: collapse identical (type, old_text, new_text) entries ──
+    # The hybrid pipeline (flat diff + XML-aligned diff) can emit the same
+    # logical change twice when both passes detect the same line.
+    seen_change_keys: set[str] = set()
+    final_deduped: list[dict] = []
+    for ch in deduped_changes:
+        norm_old = " ".join((ch.get("old_text") or "").lower().split())[:120]
+        norm_new = " ".join((ch.get("new_text") or "").lower().split())[:120]
+        key = f"{ch.get('type', '')}\x00{norm_old}\x00{norm_new}"
+        if key in seen_change_keys:
+            ctype = ch.get("type", "")
+            if ctype in summary:
+                summary[ctype] = max(0, summary[ctype] - 1)
+            continue
+        seen_change_keys.add(key)
+        final_deduped.append(ch)
+    deduped_changes = final_deduped
+
     return {
         "changes":        deduped_changes,
         "xml_content":    xml_content,
@@ -2639,61 +3052,3 @@ def validate_xml_chunk(xml_content: str) -> dict:
     }
 
 
-# ── Merge XML chunks ───────────────────────────────────────────────────────────
-
-def merge_xml_chunks(
-    chunks: list[dict],
-    source_name: str = "Document",
-) -> str:
-    """
-    Merge multiple XML chunks into a single final XML file.
-
-    Parameters
-    ----------
-    chunks : list of dicts with keys:
-        filename  : str  – chunk filename
-        xml_content : str  – XML content of the chunk
-        has_changes : bool
-    source_name : str
-
-    Returns
-    -------
-    str – merged XML string
-    """
-    import html as _html
-    from xml.etree import ElementTree as ET
-
-    safe_name = _sanitize_source_name(source_name)
-    merged_parts: list[str] = []
-    missing: list[int] = []
-
-    for i, chunk in enumerate(chunks):
-        xml_c = chunk.get("xml_content", "").strip()
-        if not xml_c:
-            missing.append(i + 1)
-            continue
-
-        # Try to parse and extract the inner body
-        try:
-            root = ET.fromstring(xml_c)
-            # Skip XML declaration wrapper if present
-            inner = ET.tostring(root, encoding="unicode")
-            merged_parts.append(f'  <!-- chunk {i + 1}: {chunk.get("filename", "")} -->\n  {inner}')
-        except ET.ParseError:
-            # Use raw content if parsing fails
-            merged_parts.append(f'  <!-- chunk {i + 1}: {chunk.get("filename", "")} -->\n  {xml_c}')
-
-    missing_comment = ""
-    if missing:
-        missing_comment = f'  <!-- WARNING: Missing chunks: {missing} -->\n'
-
-    body = "\n".join(merged_parts)
-    return (
-        f'<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<!-- Merged: {_html.escape(source_name)}_final.xml -->\n'
-        f'<!-- Total chunks: {len(chunks)} | Missing: {len(missing)} -->\n'
-        f'<document source="{_html.escape(source_name)}">\n'
-        f'{missing_comment}'
-        f'{body}\n'
-        f'</document>\n'
-    )
