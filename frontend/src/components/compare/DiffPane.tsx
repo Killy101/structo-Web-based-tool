@@ -44,8 +44,10 @@ import type { Chunk, ChunkKind, DiffPaneHandle, PaneData, TagConfig } from "./ty
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ROW_HEIGHT_PX  = 24;
-/** Lines of unchanged context to show either side of each chunk (Beyond Compare default = 3) */
-const CONTEXT_LINES  = 3;
+/** Lines of unchanged context to show either side of each chunk.
+ *  10 gives enough legal-document context; the UI exposes a "Show all" toggle
+ *  that passes Infinity to foldUnchangedLines to disable folding entirely. */
+const CONTEXT_LINES  = 10;
 
 interface HeaderStat {
   label:      string;
@@ -134,8 +136,8 @@ interface LineSeg {
 
 type Line = LineSeg[];
 
-/** null = gap placeholder; { type:"fold" } = collapsed unchanged rows */
-export type AlignedLine = Line | null | { type: "fold"; count: number };
+/** null = gap placeholder; { type:"fold" } = collapsed unchanged/gap rows */
+export type AlignedLine = Line | null | { type: "fold"; count: number; hasGap?: boolean };
 
 // ── Colour helper ─────────────────────────────────────────────────────────────
 
@@ -168,15 +170,34 @@ function tagToStyle(
 ): React.CSSProperties {
   const s: React.CSSProperties = {};
 
-  // Resolve the effective rendering kind. If the server has painted this
-  // span with a per-word palette (DEL inside a MOD chunk, etc.) trust that
-  // — it represents inline word-level highlighting that must be preserved.
-  // Otherwise fall back to the chunk's kind.
+  /**
+   * ISSUE 1 FIX — Excessive highlighting root cause:
+   *
+   * The server (precompute) does word-level diff for MOD chunks:
+   *   • Changed words  → cfg.background = DEL_BG (pink) or ADD_BG (green)
+   *   • Unchanged words → cfg.background = null (no marking)
+   *   • Whole-block MOD (word-diff skipped, >200 words) → ALL cfg.background = null
+   *
+   * Previously, tagToStyle applied the MOD orange (#fed7aa) to EVERY segment
+   * that belonged to a MOD chunk (kind === "mod"), regardless of whether the
+   * server had explicitly marked that word as changed. This painted the entire
+   * paragraph orange even when only 2 words out of 50 changed.
+   *
+   * Fix: when kind === "mod" and cfg.background is null (server left this word
+   * unmarked), treat the segment as plain text (effectiveKind = undefined).
+   * Changed words keep their server-assigned DEL/ADD color via isInlineWordDiff.
+   */
   const serverKind = _serverPaletteKind(cfg.background);
   const isInlineWordDiff =
     kind === "mod" && (serverKind === "del" || serverKind === "add");
+
+  // For MOD chunks: only colour segments the server explicitly marked.
+  // Unchanged words within a MOD block → effectiveKind = undefined → plain text.
+  // ADD and DEL chunks → server marks all spans → effectiveKind preserves kind.
   const effectiveKind: ChunkKind | undefined =
-    isInlineWordDiff && serverKind ? (serverKind as ChunkKind) : kind;
+    isInlineWordDiff && serverKind ? (serverKind as ChunkKind) :
+    kind === "mod" && !cfg.background ? undefined :          // ← KEY FIX
+    kind;
 
   if (cfg.font) {
     if (cfg.font.style.includes("bold"))   s.fontWeight = "bold";
@@ -223,7 +244,20 @@ function tagToStyle(
 
   const decorations: string[] = [];
   if (cfg.underline  && effectiveKind !== undefined) decorations.push("underline");
-  if (cfg.overstrike && !isStrikeContent && !isInlineWordDiff)
+  // Line-through from cfg.overstrike is only applied to unstyled (context)
+  // segments — effectiveKind === undefined.
+  //
+  // Rationale:
+  //   • "strike" / "emp"+overstrike → handled above by isStrikeContent, which
+  //     already sets textDecoration="line-through" with the correct pink colour.
+  //   • "mod" / "add" / "del" → must NEVER receive line-through from this path.
+  //     A PDF span may carry strikeout formatting on text that is part of a MOD/
+  //     ADD/DEL chunk. Showing orange/green/pink + strikethrough would visually
+  //     conflate "content was struck in the PDF" with "this diff marks a
+  //     legislative repeal", confusing reviewers.
+  //   • undefined (no diff kind) → safe to mirror the source PDF's overstrike
+  //     decoration so unchanged struck-through content renders correctly.
+  if (cfg.overstrike && !isStrikeContent && !isInlineWordDiff && effectiveKind === undefined)
     decorations.push("line-through");
   if (decorations.length > 0 && !isStrikeContent && !isInlineWordDiff) {
     s.textDecoration = decorations.join(" ");
@@ -234,9 +268,9 @@ function tagToStyle(
 
 // ── Word-level token types ────────────────────────────────────────────────────
 
-type WordToken = { type: "equal" | "delete" | "insert"; value: string };
+export type WordToken = { type: "equal" | "delete" | "insert"; value: string };
 
-function buildWordTokens(chunk: Chunk, side: "a" | "b"): WordToken[] | null {
+export function buildWordTokens(chunk: Chunk, side: "a" | "b"): WordToken[] | null {
   const removed = chunk.words_removed?.split(/\s+/).filter(Boolean) ?? [];
   const added   = chunk.words_added?.split(/\s+/).filter(Boolean)   ?? [];
   if (removed.length === 0 && added.length === 0) return null;
@@ -255,7 +289,7 @@ function buildWordTokens(chunk: Chunk, side: "a" | "b"): WordToken[] | null {
   return tokens;
 }
 
-function renderWordTokens(tokens: WordToken[], dark: boolean): React.ReactNode[] {
+export function renderWordTokens(tokens: WordToken[], dark: boolean): React.ReactNode[] {
   const nodes = tokens.map((tok, i) => {
     if (tok.type === "delete") {
       return (
@@ -465,8 +499,15 @@ export function buildAlignedLines(
       outA.push(i < countA ? rawA[curA + i] : null);
       outB.push(i < countB ? rawB[curB + i] : null);
     }
-    curA += countA;
-    curB += countB;
+    // FIX Issue 3c: advance curA/curB by the lines actually consumed in BOTH
+    // the context region AND the chunk rows.  Previously, ADD-only ranges
+    // (countA=0) left curA at the same position, so the next range's ctxA_native
+    // was computed relative to the un-advanced curA, inflating the context size
+    // and inserting spurious null gaps before the next chunk.
+    // The correct advance is: if this side had a chunk, move past it; otherwise
+    // move past however many context lines were consumed from this side.
+    curA = cr.firstA >= 0 ? cr.firstA + countA : curA + ctxA;
+    curB = cr.firstB >= 0 ? cr.firstB + countB : curB + ctxB;
   }
 
   // Trailing context
@@ -488,25 +529,43 @@ export function buildAlignedLines(
 // ── Fix 1: Context folding ────────────────────────────────────────────────────
 
 /**
- * Collapse runs of unchanged, non-gap rows that are farther than contextLines
- * rows from any chunk row into fold placeholders.
- * Mirrors Beyond Compare's "3 context lines" behaviour.
+ * Collapse runs of unchanged/gap rows that are farther than contextLines rows
+ * from any real chunk row into fold placeholders.
+ *
+ * FIX Issue 1c + Issue 2:
+ *   Previously null-gap rows (`a === null || b === null`) were treated as
+ *   "chunk-adjacent" (anchor[i] = true), so they were NEVER folded.  For a
+ *   document with an 18 K-line size mismatch, this produced thousands of
+ *   individual blank rows that rendered as blank pages.
+ *
+ *   Now:
+ *   - Only rows that ACTUALLY CONTAIN a chunk segment (chunkId != null) are
+ *     treated as anchors.  Gap rows are treated the same as unchanged rows and
+ *     ARE folded when they are far from any real chunk.
+ *   - Pass contextLines = Infinity (or a very large number) to disable folding
+ *     entirely — used by the "Show all context" toolbar toggle.
+ *   - The fold placeholder carries both count and a `hasGap` flag so the
+ *     renderer can style gap-folds differently from unchanged-line folds.
  */
 export function foldUnchangedLines(
   linesA: AlignedLine[],
   linesB: AlignedLine[],
   contextLines: number = CONTEXT_LINES,
 ): { linesA: AlignedLine[]; linesB: AlignedLine[] } {
+  // Infinity (show-all mode) — return as-is without allocating new arrays
+  if (!isFinite(contextLines) || contextLines >= linesA.length) {
+    return { linesA, linesB };
+  }
+
   const n = linesA.length;
 
-  // A row is "chunk-adjacent" if it contains a chunkId, is a gap (null), or is
-  // within contextLines of such a row.
+  // A row is an "anchor" only when it carries at least one diff-tagged segment.
+  // Null gaps and plain unchanged lines are NOT anchors — they can be folded.
   const anchor = new Array(n).fill(false);
   for (let i = 0; i < n; i++) {
     const a = linesA[i];
     const b = linesB[i];
     const isChunkRow =
-      a === null || b === null ||           // gap placeholder
       (Array.isArray(a) && a.some((s) => s.chunkId != null)) ||
       (Array.isArray(b) && b.some((s) => s.chunkId != null));
     if (isChunkRow) {
@@ -519,12 +578,14 @@ export function foldUnchangedLines(
   const outA: AlignedLine[] = [];
   const outB: AlignedLine[] = [];
   let foldCount = 0;
+  let foldHasGap = false;   // true if this fold run contains null-gap rows
 
   const flushFold = () => {
     if (foldCount > 0) {
-      outA.push({ type: "fold", count: foldCount });
-      outB.push({ type: "fold", count: foldCount });
+      outA.push({ type: "fold", count: foldCount, hasGap: foldHasGap });
+      outB.push({ type: "fold", count: foldCount, hasGap: foldHasGap });
       foldCount = 0;
+      foldHasGap = false;
     }
   };
 
@@ -534,6 +595,7 @@ export function foldUnchangedLines(
       outA.push(linesA[i]);
       outB.push(linesB[i]);
     } else {
+      if (linesA[i] === null || linesB[i] === null) foldHasGap = true;
       foldCount++;
     }
   }
@@ -614,6 +676,10 @@ function DiffPaneInner({
 
           // ── Fix 1: Fold row ───────────────────────────────────────────────
           if (item && !Array.isArray(item) && "type" in item && item.type === "fold") {
+            const isGapFold = !!item.hasGap;
+            const label = isGapFold
+              ? `··· ${item.count} line${item.count !== 1 ? "s" : ""} not in this version ···`
+              : `··· ${item.count} unchanged line${item.count !== 1 ? "s" : ""} ···`;
             return (
               <div
                 key={`fold-${vRow.index}`}
@@ -633,14 +699,15 @@ function DiffPaneInner({
                   fontSize:  10,
                   fontFamily: "monospace",
                   color:     dark ? "rgba(148,163,184,0.7)" : "rgba(100,116,139,0.8)",
-                  background: dark
-                    ? "rgba(15,25,41,0.85)"
-                    : "rgba(241,245,249,0.85)",
+                  // Gap-folds get a purple tint; unchanged-line folds get standard grey.
+                  background: isGapFold
+                    ? (dark ? "rgba(30,15,60,0.85)" : "rgba(220,210,255,0.55)")
+                    : (dark ? "rgba(15,25,41,0.85)" : "rgba(241,245,249,0.85)"),
                   borderTop:    `1px solid ${dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.08)"}`,
                   borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.08)"}`,
                 }}
               >
-                ···  {item.count} unchanged line{item.count !== 1 ? "s" : ""}  ···
+                {label}
               </div>
             );
           }
@@ -797,6 +864,25 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
     const syncingRef      = useRef(false);
     const hSyncRef        = useRef(false);   // Fix 3: prevent horiz scroll loop
     const scrollFrameRef  = useRef<number | null>(null);
+    /**
+     * ISSUE 2 FIX — Scroll sync echo loop root cause:
+     *
+     * scrollToFraction() sets syncingRef = true, calls scrollToIndex(row),
+     * then clears syncingRef after 32 ms via setTimeout. But scrollToIndex
+     * is asynchronous — the browser fires the scroll event for it in a later
+     * frame, often AFTER the 32 ms timeout has already cleared syncingRef.
+     * When syncingRef is false, handleScroll treats the programmatic scroll
+     * as a user scroll, emits onScrollFraction back to the sibling pane, which
+     * calls scrollToFraction again → oscillation / jump.
+     *
+     * Fix: record the last fraction we received via scrollToFraction in
+     * lastReceivedFractionRef. Before emitting onScrollFraction in handleScroll,
+     * compare the new fraction against the recorded one. If they are within one
+     * row (< 1/totalRows), the scroll was caused by our own programmatic scroll
+     * → suppress the outgoing event. This breaks the echo loop without relying
+     * on any timing window.
+     */
+    const lastReceivedFractionRef = useRef(-1);
     const virtualizerRef  = useRef<ReturnType<typeof useVirtualizer<HTMLDivElement, Element>> | null>(null);
     const { dark }        = useTheme();
 
@@ -886,7 +972,9 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
             }
           }
           if (targetLine >= 0) {
-            virtualizer.scrollToIndex(targetLine, { align: "center", behavior: "auto" });
+            try {
+              virtualizer.scrollToIndex(targetLine, { align: "center", behavior: "auto" });
+            } catch { /* ignore — TanStack can throw plain objects before first measure */ }
             setTimeout(clearSync, 16);
             return;
           }
@@ -904,9 +992,24 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       },
 
       scrollToFraction(fraction: number) {
+        const virtualizer = virtualizerRef.current;
+        if (virtualizer && lines.length > 0) {
+          const targetRow = Math.round(fraction * Math.max(0, lines.length - 1));
+          const clamped   = Math.max(0, Math.min(lines.length - 1, targetRow));
+          syncingRef.current = true;
+          // Record the fraction we're syncing to so handleScroll can detect
+          // and suppress the resulting echo scroll event (Issue 2 fix).
+          lastReceivedFractionRef.current = fraction;
+          try {
+            virtualizer.scrollToIndex(clamped, { align: "start", behavior: "auto" });
+          } catch { /* ignore TanStack edge-case throws */ }
+          setTimeout(() => { syncingRef.current = false; }, 32);
+          return;
+        }
         const container = scrollRef.current;
         if (!container) return;
         syncingRef.current = true;
+        lastReceivedFractionRef.current = fraction;
         const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
         container.scrollTop = Math.max(0, Math.min(1, fraction)) * maxScroll;
         setTimeout(() => { syncingRef.current = false; }, 16);
@@ -917,20 +1020,39 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       const container = scrollRef.current;
       if (!container) return;
 
-      // Fix 3: emit horizontal scroll for sibling sync
       if (!hSyncRef.current && onScrollLeft) {
         onScrollLeft(container.scrollLeft);
       }
 
+      // Suppress scroll events triggered by our own scrollToFraction calls
+      // even after syncingRef has timed out (Issue 2 fix).
       if (syncingRef.current || wrapLines) return;
       if (!onScrollFraction) return;
       if (scrollFrameRef.current !== null) return;
       scrollFrameRef.current = requestAnimationFrame(() => {
         scrollFrameRef.current = null;
+        const v = virtualizerRef.current;
+        if (v && lines.length > 0) {
+          const items = v.getVirtualItems();
+          if (items.length > 0) {
+            const firstRow     = items[0].index;
+            const emitFraction = firstRow / Math.max(1, lines.length - 1);
+            // Suppress if this scroll was triggered by our own scrollToFraction.
+            // One-row tolerance: Math.round can shift the target by ±1 row.
+            const oneRow = 1 / Math.max(1, lines.length - 1);
+            if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= oneRow) {
+              lastReceivedFractionRef.current = -1;  // clear so next real scroll passes
+              return;
+            }
+            lastReceivedFractionRef.current = -1;
+            onScrollFraction(emitFraction);
+            return;
+          }
+        }
         const maxScroll = container.scrollHeight - container.clientHeight;
         if (maxScroll > 0) onScrollFraction(container.scrollTop / maxScroll);
       });
-    }, [onScrollFraction, onScrollLeft, wrapLines]);
+    }, [onScrollFraction, onScrollLeft, wrapLines, lines]);
 
     useEffect(() => {
       return () => {

@@ -337,8 +337,23 @@ def _parse_span(raw: dict) -> Span:
         italic      = bool(f & FLAG_ITALIC) or italic_from_font,
         monospace   = bool(f & FLAG_MONOSPACE),
         superscript = bool(f & FLAG_SUPERSCRIPT),
-        underline   = bool(f & FLAG_UNDERLINE),
-        strikeout   = bool(f & FLAG_STRIKEOUT),
+        # FLAG_UNDERLINE=4 is PyMuPDF's "serifed" bit, NOT underline.
+        # Underline in PDFs is conveyed via Underline annotations, which
+        # comp_extractor.py does not have access to (only _extract_pdf_spans
+        # in pdf_chunk.py uses annotation-based detection). Defaulting to
+        # False prevents all serifed-font text from being falsely flagged as
+        # underlined, which previously caused underline decoration on every
+        # diff-marked span in legislative documents.
+        underline   = False,
+        # FLAG_STRIKEOUT=32 is not a documented PyMuPDF span flag (standard
+        # bits are 0-4: superscript, italic, serifed, monospaced, bold).
+        # Bit 5 may be set by various PDF producers for unrelated reasons,
+        # producing false-positive strikethrough detection.  Keep font-flag
+        # detection as a last-resort signal but add a font-name heuristic
+        # as a more reliable guard for explicitly-named strikethrough fonts.
+        strikeout   = bool(f & FLAG_STRIKEOUT) or bool(
+            re.search(r'(^|[-_ ,])(strikeout|strikethrough|struck)([-_ ,]|$)', fn)
+        ),
         size        = round(raw["size"], 2),
         font        = font_name,
         color       = f"#{raw['color']:06x}",
@@ -3347,6 +3362,137 @@ def _apply_word_level_change(
     return updated, True, "Applied word-level change", (abs_start, abs_end)
 
 
+def _apply_emp_chunk_to_xml(
+    xml_text: str, ch: "Chunk"
+) -> Tuple[str, bool, str, Optional[Tuple[int, int]]]:
+    """Apply emphasis changes from an EMP chunk to the target XML.
+
+    Algorithm
+    ─────────
+    1. Parse emp_detail to extract (tag, action, [words]) triples.
+       Format: "bold removed: word1 word2|italic added: word3"
+       Supported axes: bold→<b>, italic→<i>, underline→<u>, strikeout→<s>
+
+    2. Find the paragraph (<p>) in the XML that best matches ch.text_b
+       using fuzzy similarity.
+
+    3. For each (tag, action, words) triple:
+       - "added"   → wrap bare occurrences of the word with <tag>…</tag>
+       - "removed" → strip existing <tag>…</tag> wrappers around the word
+
+    4. Return the modified XML with the updated paragraph span.
+
+    Limitations:
+    - Paragraph matching relies on text similarity; very short paragraphs or
+      paragraphs with many identical words may match incorrectly.
+    - Regex-based tag manipulation handles common cases but will not perfectly
+      reconstruct nested emphasis (e.g. <b><i>word</i></b>); in those cases
+      the change is still applied but nesting may not be ideal.
+    - If emp_detail is missing or no paragraph can be matched, returns a no-op
+      with an informative message instead of raising.
+    """
+    if not ch.emp_detail:
+        return xml_text, False, "No emphasis detail available (emp_detail missing)", None
+
+    # ── Parse emp_detail ──────────────────────────────────────────────────────
+    tag_map = {"bold": "b", "italic": "i", "underline": "u", "strikeout": "s"}
+    changes: list = []   # (tag_name, action, [words])
+    for part in ch.emp_detail.split("|"):
+        part = part.strip()
+        if not part or part.startswith("xml_suggest"):
+            continue
+        m = re.match(r'(\w+)\s+(added|removed):\s+(.+)', part)
+        if not m:
+            continue
+        axis, action, words_str = m.group(1), m.group(2), m.group(3)
+        tag = tag_map.get(axis)
+        if tag:
+            words = words_str.split()[:20]   # cap at 20 words to avoid runaway regex
+            changes.append((tag, action, words))
+
+    if not changes:
+        return xml_text, False, "No applicable emphasis axes found in emp_detail", None
+
+    # ── Find the best matching paragraph ─────────────────────────────────────
+    probe = _norm_cmp(ch.text_b or ch.text_a or "")
+    if len(probe) < 4:
+        return xml_text, False, "Chunk text too short for reliable paragraph matching", None
+
+    _p_pat = re.compile(r'(<p\b[^>]*>)(.*?)(</p>)', re.I | re.S)
+    best_match = None
+    best_score = 0.0
+    for m in _p_pat.finditer(xml_text):
+        inner_plain = _xml_plain_text(m.group(2))
+        inner_n = _norm_cmp(inner_plain)
+        if not inner_n:
+            continue
+        # Exact substring hit → immediate winner
+        if probe[:60] in inner_n or inner_n[:60] in probe:
+            best_score = 1.0
+            best_match = m
+            break
+        sc = _similarity(probe[:80], inner_n[:80])
+        if sc > best_score:
+            best_score = sc
+            best_match = m
+
+    if best_match is None or best_score < 0.70:
+        return xml_text, False, (
+            "No matching paragraph found for emphasis change "
+            f"(best score {best_score:.2f} < 0.70)"
+        ), None
+
+    open_tag, content, close_tag = (
+        best_match.group(1), best_match.group(2), best_match.group(3)
+    )
+    new_content = content
+    applied: list = []
+
+    for (tag, action, words) in changes:
+        for word in words:
+            word_re = re.escape(word)
+            if action == "added":
+                # Only wrap the word if it is not already inside the same tag.
+                # Python re does not support variable-length lookbehind, so we
+                # use a two-pass approach: temporarily protect already-wrapped
+                # occurrences, wrap bare occurrences, then restore protected.
+                already_pat = re.compile(
+                    r'(<' + re.escape(tag) + r'>)(\s*' + word_re + r'\s*)(</?' + re.escape(tag) + r'>)',
+                    re.I,
+                )
+                # Sentinel must not appear in any real XML body
+                sentinel = f'\x00WRAP_{tag.upper()}_{word}\x00'
+                shielded = already_pat.sub(lambda m: sentinel, new_content)
+                bare_pat = re.compile(r'\b' + word_re + r'\b', re.I)
+                shielded, n = bare_pat.subn(f'<{tag}>{word}</{tag}>', shielded, count=1)
+                # Restore shielded occurrences to original form
+                new_content = shielded.replace(sentinel, f'<{tag}>{word}</{tag}>')
+                if n:
+                    applied.append(f'+<{tag}>{word}</{tag}>')
+            elif action == "removed":
+                # Remove the tag wrapper around the word.
+                pat = re.compile(
+                    r'<' + re.escape(tag) + r'>\s*' + word_re + r'\s*</' + re.escape(tag) + r'>',
+                    re.I,
+                )
+                new_content, n = pat.subn(word, new_content, count=1)
+                if n:
+                    applied.append(f'-<{tag}>{word}</{tag}>')
+
+    if new_content == content:
+        return xml_text, False, (
+            "Emphasis change had no effect — words may use different markup or "
+            "could not be located in the paragraph"
+        ), None
+
+    new_para = open_tag + new_content + close_tag
+    span_start = best_match.start()
+    span_end   = span_start + len(new_para)
+    new_xml    = xml_text[:span_start] + new_para + xml_text[best_match.end():]
+    summary    = "; ".join(applied[:8])
+    return new_xml, True, f"Applied emphasis change(s): {summary}", (span_start, span_end)
+
+
 def _apply_chunk_to_xml(xml_text: str, ch: Chunk) -> Tuple[str, bool, str, Optional[Tuple[int, int]]]:
     """Apply one diff chunk into target XML — context-aware for innod format.
 
@@ -3361,13 +3507,13 @@ def _apply_chunk_to_xml(xml_text: str, ch: Chunk) -> Tuple[str, bool, str, Optio
     2. For MOD with word-level data: find and replace specific words in the section.
     3. For full-content changes: apply the edit within that section.
     4. If no section can be resolved, fall back to locate-only (c/o EDG).
-
-    EMP chunks are always no-ops (emphasis/formatting only).
+    5. EMP chunks: attempt to apply emphasis tag changes to the XML using
+       emp_detail (bold/italic/underline added/removed per word).
     """
     if not xml_text:
         return xml_text, False, "No XML loaded", None
     if ch.kind == KIND_EMP:
-        return xml_text, False, "Skipped emphasis-only change", None
+        return _apply_emp_chunk_to_xml(xml_text, ch)
 
     old_text = (ch.text_a or "").strip()
     new_text = (ch.text_b or "").strip()
@@ -7139,10 +7285,13 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                     def _fe(buf, hi, fg, font, span, empinfo=None):
                         if not buf: return
                         kw = {"foreground": (EMP_FG if hi else fg), "font": font}
-                        # Preserve emphasis display on the span itself
-                        if span.underline:  kw["underline"]  = True
-                        if span.strikeout:  kw["overstrike"] = True
                         if hi:
+                            # Only apply the span's decorations (underline/overstrike)
+                            # to highlighted (changed) words.  Applying them to
+                            # unchanged context words would incorrectly decorate
+                            # words whose emphasis did NOT change.
+                            if span.underline:  kw["underline"]  = True
+                            if span.strikeout:  kw["overstrike"] = True
                             kw["background"] = EMP_BG
                             # Annotate what kind of change occurred:
                             # If emphasis was ADDED in B (self has it, A does not),

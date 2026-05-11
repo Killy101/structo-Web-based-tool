@@ -235,7 +235,7 @@ export async function apiDiff(
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(typeof err.detail === "object" ? err.detail.error : (err.detail ?? "Diff failed"));
+      throw new Error(_extractErrMsg(err, "Diff failed"));
     }
 
     let result: DiffResult | null = null;
@@ -244,7 +244,7 @@ export async function apiDiff(
       const m = msg as Record<string, unknown>;
       if      (m.t === "p" && onProgress) onProgress(_parseProgress(m));
       else if (m.t === "r")               result = m.d as DiffResult;
-      else if (m.t === "e")               throw new Error((m.msg as string) || "Diff failed");
+      else if (m.t === "e")               throw new Error(_msgToStr(m.msg) || "Diff failed");
     }
 
     if (!result) throw new Error("No result received from server");
@@ -296,7 +296,7 @@ export async function apiDiffLarge(
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(typeof err.detail === "object" ? err.detail.error : (err.detail ?? "Diff failed"));
+      throw new Error(_extractErrMsg(err, "Diff failed"));
     }
 
     let doneMsg: LargeDiffResult | null = null;
@@ -331,7 +331,7 @@ export async function apiDiffLarge(
           message: `Done — ${doneMsg.stats.total} changes across ${doneMsg.totalPages} pages`,
         });
       } else if (m.t === "e") {
-        throw new Error((m.msg as string) || "Large diff failed");
+        throw new Error(_msgToStr(m.msg) || "Large diff failed");
       }
     }
 
@@ -418,73 +418,147 @@ export async function apiGetSegments(
 
 // ── XML operations ────────────────────────────────────────────────────────────
 
+// ── XML session management ────────────────────────────────────────────────────
+// Keeps a client-side reference to the server-side session ID for the current
+// XML document.  When a session exists, apply and locate calls send only the
+// session_id + chunk (not the full xml_text) which avoids re-transmitting
+// large legal documents (1 MB+) on every operation.
+//
+// Session lifecycle:
+//   1. First call to apiApply or apiLocate triggers session creation via
+//      _ensureXmlSession().
+//   2. Session ID is stored in _activeXmlSession.
+//   3. When a new XML file is loaded, call invalidateXmlSession() to reset.
+//   4. If the server returns 404 (session expired), we fall back to full-text
+//      and create a new session automatically.
+
+interface _XmlSession {
+  sessionId: string;
+  /** FNV-32 hash of the xml_text when the session was created — used to
+   *  detect stale sessions when the client-side text drifts from the server. */
+  textHash:  number;
+}
+
+let _activeXmlSession: _XmlSession | null = null;
+/**
+ * In-flight session creation promise — deduplicates concurrent calls
+ * (e.g. apiApply + apiLocate both triggered within the same user action).
+ */
+let _sessionCreationPromise: Promise<string | null> | null = null;
+
 function _fnv32(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
   return h;
 }
 
-const _xmlSessionCache = new Map<number, string>();
-let _xmlSessionSupported: boolean | null = null;
+export function invalidateXmlSession(): void {
+  _activeXmlSession = null;
+  _sessionCreationPromise = null;
+}
 
-async function _getXmlSessionId(xmlText: string): Promise<string | null> {
-  if (_xmlSessionSupported === false) return null;
-  const hash = _fnv32(xmlText);
-  if (_xmlSessionCache.has(hash)) return _xmlSessionCache.get(hash)!;
+async function _createXmlSession(xmlText: string, hash: number): Promise<string | null> {
   try {
     const res = await fetch(`${BASE}/xml/session`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ xml_text: xmlText }),
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ xml_text: xmlText }),
     });
-    if (!res.ok) {
-      _xmlSessionSupported = false;
-      return null;
-    }
+    if (!res.ok) return null;
     const data = await res.json() as { session_id?: string };
-    if (!data.session_id) {
-      _xmlSessionSupported = false;
-      return null;
-    }
-    _xmlSessionSupported = true;
-    if (_xmlSessionCache.size >= 5) {
-      const first = _xmlSessionCache.keys().next().value;
-      if (first !== undefined) _xmlSessionCache.delete(first);
-    }
-    _xmlSessionCache.set(hash, data.session_id);
+    if (!data.session_id) return null;
+    _activeXmlSession = { sessionId: data.session_id, textHash: hash };
     return data.session_id;
   } catch {
-    _xmlSessionSupported = false;
     return null;
+  } finally {
+    _sessionCreationPromise = null;
   }
 }
 
+async function _ensureXmlSession(xmlText: string): Promise<string | null> {
+  const hash = _fnv32(xmlText);
+  if (_activeXmlSession && _activeXmlSession.textHash === hash) {
+    return _activeXmlSession.sessionId;
+  }
+  // Dedup concurrent calls — reuse the in-flight promise instead of
+  // making two simultaneous POST /xml/session requests.
+  if (_sessionCreationPromise) {
+    return _sessionCreationPromise;
+  }
+  _sessionCreationPromise = _createXmlSession(xmlText, hash);
+  return _sessionCreationPromise;
+}
+
 export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
-  const res = await fetch(`${BASE}/xml/apply`, {
+  // Try session-based apply first (avoids sending full XML on every call).
+  // Falls back to full-text if session creation fails or session expired.
+  const sessionId = await _ensureXmlSession(xmlText);
+
+  const body = sessionId
+    ? { session_id: sessionId, chunk }
+    : { xml_text: xmlText, chunk };
+
+  let res = await fetch(`${BASE}/xml/apply`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ xml_text: xmlText, chunk }),
+    body:    JSON.stringify(body),
   });
+
+  // Session expired server-side — retry with full text and create new session
+  if (res.status === 404 && sessionId) {
+    _activeXmlSession = null;
+    res = await fetch(`${BASE}/xml/apply`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ xml_text: xmlText, chunk }),
+    });
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? "Apply failed");
+    throw new Error((err as { detail?: string }).detail ?? "Apply failed");
   }
-  return res.json() as Promise<ApplyResult>;
+
+  const result = await res.json() as ApplyResult;
+
+  // After a successful apply the server has the new xml_text stored.
+  // Update our local session hash so the next call reuses the session
+  // (the session_id is unchanged; only the stored text changed server-side).
+  if (result.changed && _activeXmlSession) {
+    _activeXmlSession = {
+      sessionId: _activeXmlSession.sessionId,
+      textHash:  _fnv32(result.xml_text),
+    };
+  }
+
+  return result;
 }
 
 export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateResult | null> {
   try {
-    const sessionId = await _getXmlSessionId(xmlText);
-    if (sessionId) {
-      const res = await fetch(`${BASE}/xml/locate`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, chunk }),
-      });
-      if (res.ok) return res.json() as Promise<LocateResult>;
-    }
-    const res = await fetch(`${BASE}/xml/locate`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ xml_text: xmlText, chunk }),
+    const sessionId = await _ensureXmlSession(xmlText);
+
+    const body = sessionId
+      ? { session_id: sessionId, chunk }
+      : { xml_text: xmlText, chunk };
+
+    let res = await fetch(`${BASE}/xml/locate`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(body),
     });
+
+    // Session expired — retry with full text
+    if (res.status === 404 && sessionId) {
+      _activeXmlSession = null;
+      res = await fetch(`${BASE}/xml/locate`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ xml_text: xmlText, chunk }),
+      });
+    }
+
     if (!res.ok) return null;
     return res.json() as Promise<LocateResult>;
   } catch { return null; }
@@ -551,6 +625,32 @@ export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
   } catch {
     return [];
   }
+}
+
+// ── Error message helpers ────────────────────────────────────────────────────
+
+/** Convert any server error value to a plain string safely. */
+function _msgToStr(msg: unknown): string {
+  if (typeof msg === "string") return msg;
+  if (msg == null) return "";
+  if (typeof msg === "object") return JSON.stringify(msg);
+  return String(msg);
+}
+
+/** Extract a human-readable message from a JSON error body (FastAPI format). */
+function _extractErrMsg(err: { detail?: unknown }, fallback: string): string {
+  const d = err?.detail;
+  if (d == null) return fallback;
+  if (typeof d === "string") return d || fallback;
+  if (Array.isArray(d)) {
+    const first = (d[0] as { msg?: string })?.msg;
+    return typeof first === "string" ? first : JSON.stringify(d);
+  }
+  if (typeof d === "object") {
+    const e = (d as { error?: string }).error;
+    return typeof e === "string" ? e : JSON.stringify(d);
+  }
+  return String(d) || fallback;
 }
 
 // ── Progress parsers ──────────────────────────────────────────────────────────
@@ -627,7 +727,7 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
       stage: "batch", pct: msg.pct as number ?? Math.round((batch / of) * 90),
       batch, totalBatches: of,
       pageRange: pages,
-      message: msg.msg as string ?? `Batch ${batch}/${of}`,
+      message: msg.msg != null ? String(msg.msg) : `Batch ${batch}/${of}`,
     };
   }
 

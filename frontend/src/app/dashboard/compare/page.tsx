@@ -28,10 +28,24 @@ function emptyPane() {
 }
 
 function paneCharLength(pane: DiffResult["pane_a"]): number {
-  return pane.segments.reduce((sum, [text]) => sum + text.length, 0);
+  return (pane?.segments ?? []).reduce((sum, [text]) => sum + (text?.length ?? 0), 0);
 }
 
 function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): DiffResult {
+  // Defensive guards — a malformed batch must never crash the state updater
+  if (!batch || !Array.isArray(batch.chunks)) {
+    return prev ?? {
+      success: true,
+      chunks: [],
+      pane_a: emptyPane(),
+      pane_b: emptyPane(),
+      stats: { total: 0, additions: 0, deletions: 0, modifications: 0, emphasis: 0 },
+      xml_sections: [],
+      file_a: "",
+      file_b: "",
+    };
+  }
+
   const base = prev ?? {
     success: true,
     chunks: [],
@@ -43,7 +57,11 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     file_b: "",
   };
 
-  const mergePane = (paneBase: DiffResult["pane_a"], paneBatch: DiffResult["pane_a"]): DiffResult["pane_a"] => {
+  const safePaneBatch = (p: DiffResult["pane_a"] | undefined): DiffResult["pane_a"] =>
+    p && Array.isArray(p.segments) ? p : emptyPane();
+
+  const mergePane = (paneBase: DiffResult["pane_a"], paneBatchRaw: DiffResult["pane_a"] | undefined): DiffResult["pane_a"] => {
+    const paneBatch = safePaneBatch(paneBatchRaw);
     const charBase = paneCharLength(paneBase);
     const mapChunkKey = (rawKey: string) => {
       const localIdx = Number(rawKey);
@@ -52,26 +70,51 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     };
 
     const offsets = { ...paneBase.offsets };
-    for (const [rawKey, off] of Object.entries(paneBatch.offsets)) {
+    for (const [rawKey, off] of Object.entries(paneBatch.offsets ?? {})) {
       const mapped = mapChunkKey(rawKey);
       if (mapped !== null) offsets[mapped] = Number(off) + charBase;
     }
 
     const offsetEnds = { ...paneBase.offset_ends };
-    for (const [rawKey, off] of Object.entries(paneBatch.offset_ends)) {
+    for (const [rawKey, off] of Object.entries(paneBatch.offset_ends ?? {})) {
       const mapped = mapChunkKey(rawKey);
       if (mapped !== null) offsetEnds[mapped] = Number(off) + charBase;
     }
 
+    // Merge server-emitted line offsets so buildAlignedLines keeps its precise
+    // line-number alignment (avoids falling back to slower binary-search on char offsets).
+    const baseSegs = paneBase.segments ?? [];
+    // FIX Issue 3a: lineBase must equal the number of newlines in the previous
+    // batches, NOT newlines + 1. precompute() starts line_idx at 0 and increments
+    // AFTER each "\n", so N newlines → lines 0…N-1 are used → next batch starts
+    // at global line N = count("\n"). The old "+ 1" shifted all batch-2+ chunk
+    // line offsets by one row, causing scrollToChunk to land on the wrong line.
+    const lineBase = baseSegs.length === 0
+      ? 0
+      : baseSegs.filter(([t]) => t === "\n").length;
+
+    const lineOffsets: Record<string, number> = { ...(paneBase.line_offsets ?? {}) };
+    for (const [rawKey, lo] of Object.entries(paneBatch.line_offsets ?? {})) {
+      const mapped = mapChunkKey(rawKey);
+      if (mapped !== null) lineOffsets[mapped] = Number(lo) + lineBase;
+    }
+    const lineOffsetEnds: Record<string, number> = { ...(paneBase.line_offset_ends ?? {}) };
+    for (const [rawKey, lo] of Object.entries(paneBatch.line_offset_ends ?? {})) {
+      const mapped = mapChunkKey(rawKey);
+      if (mapped !== null) lineOffsetEnds[mapped] = Number(lo) + lineBase;
+    }
+
     return {
-      segments: [...paneBase.segments, ...paneBatch.segments],
-      tag_cfgs: { ...paneBase.tag_cfgs, ...paneBatch.tag_cfgs },
+      segments: [...(paneBase.segments ?? []), ...(paneBatch.segments ?? [])],
+      tag_cfgs: { ...(paneBase.tag_cfgs ?? {}), ...(paneBatch.tag_cfgs ?? {}) },
       offsets,
       offset_ends: offsetEnds,
+      line_offsets:     lineOffsets,
+      line_offset_ends: lineOffsetEnds,
     };
   };
 
-  const chunks = [...base.chunks, ...batch.chunks];
+  const chunks = [...(base.chunks ?? []), ...batch.chunks];
   return {
     ...base,
     success: true,
@@ -347,24 +390,28 @@ function ChangeSummaryModal({
 
 function useDiffState() {
   const latestResultRef = useRef<DiffResult | null>(null);
-  const [fileA,       setFileA]       = useState<File | null>(null);
-  const [fileB,       setFileB]       = useState<File | null>(null);
-  const [xmlFile,     setXmlFile]     = useState<File | null>(null);
-  const [result,      setResult]      = useState<DiffResult | null>(null);
-  const [loading,     setLoading]     = useState(false);
-  const [loadMsg,     setLoadMsg]     = useState("Uploading files…");
-  const [loadPct,     setLoadPct]     = useState(0);
-  const [progress,    setProgress]    = useState<DiffProgress | null>(null);
-  const [error,       setError]       = useState<string | null>(null);
-  const [xmlSections, setXmlSections] = useState<XmlSection[]>([]);
-  const [allSections, setAllSections] = useState<XmlSection[]>([]);
-  const [showModal,   setShowModal]   = useState(false);
-  const [selectedSec, setSelectedSec] = useState<string | null>(null);
+  const [fileA,              setFileA]              = useState<File | null>(null);
+  const [fileB,              setFileB]              = useState<File | null>(null);
+  const [xmlFile,            setXmlFile]            = useState<File | null>(null);
+  const [result,             setResult]             = useState<DiffResult | null>(null);
+  const [loading,            setLoading]            = useState(false);
+  // FIX Issue 1: track whether the first streaming batch has arrived so we can
+  // show DiffViewer immediately without waiting for all batches to complete.
+  const [firstBatchReceived, setFirstBatchReceived] = useState(false);
+  const [loadMsg,            setLoadMsg]            = useState("Uploading files…");
+  const [loadPct,            setLoadPct]            = useState(0);
+  const [progress,           setProgress]           = useState<DiffProgress | null>(null);
+  const [error,              setError]              = useState<string | null>(null);
+  const [xmlSections,        setXmlSections]        = useState<XmlSection[]>([]);
+  const [allSections,        setAllSections]        = useState<XmlSection[]>([]);
+  const [showModal,          setShowModal]          = useState(false);
+  const [selectedSec,        setSelectedSec]        = useState<string | null>(null);
 
   function reset() {
     setFileA(null); setFileB(null); setXmlFile(null);
     latestResultRef.current = null;
     setResult(null); setError(null); setProgress(null);
+    setFirstBatchReceived(false);
     setXmlSections([]); setAllSections([]);
     setShowModal(false); setSelectedSec(null);
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
@@ -398,20 +445,27 @@ function useDiffState() {
         {
           onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p); },
           onBatch: (batch: BatchResult) => {
-            setResult((prev) => ({
-              ...mergeBatchIntoResult(prev, batch),
-              file_a: prev?.file_a || fileA.name,
-              file_b: prev?.file_b || fileB.name,
-            }));
-            const merged = {
-              ...mergeBatchIntoResult(latestResultRef.current, batch),
-              file_a: latestResultRef.current?.file_a || fileA.name,
-              file_b: latestResultRef.current?.file_b || fileB.name,
-            };
-            latestResultRef.current = merged;
-            try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
-            // Also persist to localStorage so result survives tab close
-            try { localStorage.setItem("diff_batch_result", JSON.stringify(merged)); } catch { /* ok */ }
+            try {
+              // FIX Issue 1: mark first batch so DiffViewer renders immediately
+              setFirstBatchReceived(true);
+              setResult((prev) => ({
+                ...mergeBatchIntoResult(prev, batch),
+                file_a: prev?.file_a || fileA.name,
+                file_b: prev?.file_b || fileB.name,
+              }));
+              const merged = {
+                ...mergeBatchIntoResult(latestResultRef.current, batch),
+                file_a: latestResultRef.current?.file_a || fileA.name,
+                file_b: latestResultRef.current?.file_b || fileB.name,
+              };
+              latestResultRef.current = merged;
+              try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
+              // Also persist to localStorage so result survives tab close
+              try { localStorage.setItem("diff_batch_result", JSON.stringify(merged)); } catch { /* ok */ }
+            } catch (batchErr) {
+              // Batch merge errors are non-fatal — log and continue streaming
+              console.error("[compare] batch merge error:", batchErr);
+            }
           },
         },
         xmlFile,
@@ -467,12 +521,15 @@ function useDiffState() {
         try { sessionStorage.setItem("diff_last_result", JSON.stringify(next)); } catch { /* ok */ }
       }
       userLogsApi.logCompare(fileA.name, fileB.name).catch(() => { /* fire-and-forget */ });
-      const finalSections = data?.xml_sections ?? (raw as LargeDiffResult).xmlSections;
-      if (finalSections?.length && allSections.length === 0)
-        setAllSections(finalSections);
-      if (xmlSections.length > 0) setShowModal(true);
+      const finalSections = data?.xml_sections ?? (raw as LargeDiffResult).xmlSections ?? [];
+      if (finalSections.length > 0) {
+        if (allSections.length === 0) setAllSections(finalSections);
+        // Populate xmlSections from diff result when user didn't pre-select a level
+        if (xmlSections.length === 0) setXmlSections(finalSections);
+      }
+      if (xmlSections.length > 0 || finalSections.length > 0) setShowModal(true);
     } catch (e) {
-      setError((e as Error).message);
+      setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
     } finally {
       setLoading(false);
     }
@@ -481,6 +538,7 @@ function useDiffState() {
   return {
     fileA, setFileA, fileB, setFileB, xmlFile, setXmlFile,
     result, loading, loadMsg, loadPct, progress, error,
+    firstBatchReceived,
     xmlSections, setXmlSections, allSections, setAllSections,
     showModal, setShowModal, selectedSec, setSelectedSec,
     reset, run,
@@ -569,17 +627,23 @@ export default function ComparePage() {
 
       {(active === "wf2" || active === "wf3") && (
         <div className="flex-1 overflow-hidden min-h-0">
-          {d.result && !d.showModal ? (
+          {/* FIX Issue 1: show DiffViewer as soon as the first batch arrives.
+              Pass isStreaming so it can display a progress bar while remaining
+              batches continue loading in the background.
+              The ChangeSummaryModal is only shown after all batches finish. */}
+          {d.result && d.firstBatchReceived && !d.showModal ? (
             <DiffViewer
               mode={workflowMode}
               result={d.result}
+              isStreaming={d.loading}
+              streamingProgress={d.progress}
               onReset={() => { d.reset(); setActive(active); }}
               initialXmlFile={d.xmlFile}
               xmlSections={d.xmlSections}
               initialSection={d.selectedSec}
               sectionMapper={sectionMapper}
             />
-          ) : d.result && d.showModal ? (
+          ) : d.result && d.showModal && !d.loading ? (
             <ChangeSummaryModal
               result={d.result}
               xmlSections={d.xmlSections}
