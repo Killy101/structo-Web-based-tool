@@ -219,3 +219,61 @@ export const notificationsApi = {
     api.delete<{ message: string }>(`/notifications/${id}`).then((r) => r.data),
 };
 
+// ── WebScrape API ────────────────────────────────────────────────────────────
+
+export interface WebScrapePageSummary {
+  url: string;
+  depth: number;
+  parent_url: string | null;
+  title: string;
+  heading_count: number;
+  paragraph_count: number;
+  list_count: number;
+  has_ocr_text: boolean;
+  child_url_count: number;
+  error: string | null;
+}
+
+export interface WebScrapeJobStatus {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  url: string;
+  pages: WebScrapePageSummary[];
+  page_count: number;
+  success_count: number;
+  html_available: boolean;
+  pdf_available: boolean;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export const webScrapeApi = {
+  start: (params: {
+    url: string;
+    max_depth?: number;
+    max_pages?: number;
+    include_images_ocr?: boolean;
+    follow_same_domain?: boolean;
+  }) =>
+    api
+      .post<{ job_id: string; status: string }>("/webscrape/start", params)
+      .then((r) => r.data),
+
+  getStatus: (jobId: string) =>
+    api
+      .get<WebScrapeJobStatus>(`/webscrape/${jobId}`)
+      .then((r) => r.data),
+
+  downloadHtml: (jobId: string) =>
+    api
+      .get<string>(`/webscrape/${jobId}/html`, { responseType: "text" })
+      .then((r) => r.data),
+
+  downloadPdf: (jobId: string) =>
+    api
+      .get<ArrayBuffer>(`/webscrape/${jobId}/pdf`, { responseType: "arraybuffer" })
+      .then((r) => r.data),
+};
+

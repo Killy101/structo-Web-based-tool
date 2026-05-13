@@ -123,7 +123,7 @@ export default function DiffViewer({
   const [xmlFilename,   setXmlFilename]   = useState<string | null>(null);
   const [xmlStatus,     setXmlStatus]     = useState("");
   const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
-  const [xmlOpen,       setXmlOpen]       = useState(mode === "wf3" || !!initialXmlFile);
+  const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
   const [wrapLines,     setWrapLines]     = useState(false);
   const [syncScrollLeft, setSyncScrollLeft] = useState<{side:"a"|"b"; left:number} | null>(null);
@@ -141,6 +141,11 @@ export default function DiffViewer({
   // Fix 1: fold expansion state lives here (DiffViewer) so that both panes
   // see the same expanded fold rows simultaneously.
   const [expandedFoldKeys, setExpandedFoldKeys] = useState<Set<number>>(new Set());
+  // Tracks which chunks the user has visited. Used for "Next unreviewed" navigation.
+  const [reviewedIds, setReviewedIds] = useState<Set<number>>(new Set());
+  // pulseSide: briefly highlights the pane header that last triggered scroll sync
+  // so the user can see which panel is the scroll leader.
+  const [pulseSide, setPulseSide] = useState<"old" | "new" | null>(null);
 
   const containerRef   = useRef<HTMLDivElement>(null);
   const paneARef       = useRef<DiffPaneHandle>(null);
@@ -152,6 +157,14 @@ export default function DiffViewer({
   const xmlRef         = useRef<XmlScrollTarget>(null);
   const locateSeqRef   = useRef(0);
   const navSyncLockRef = useRef(false);
+  // Safety net: unconditionally releases navSyncLockRef after 500ms to guarantee
+  // scroll-sync never stays permanently locked if an exception fires mid-navigation.
+  const navSyncLockSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pulse animation timer: clears pulseSide after the visual feedback completes.
+  const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Auto-advance timer: stored in a ref so it can be cancelled when the user
+  // manually selects a different chunk before the timer fires.
+  const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20,  80);
   const [xmlHeight, startDragH] = useDragSplitter(containerRef, 260, "y", 120, 560);
@@ -162,7 +175,7 @@ export default function DiffViewer({
     reader.onload = (e) => {
       setXmlFilename(initialXmlFile.name);
       setXmlText(e.target?.result as string);
-      setXmlStatus(mode === "wf2"
+      setXmlStatus(mode === "browse"
         ? `Baseline: ${initialXmlFile.name}`
         : `Loaded: ${initialXmlFile.name}`);
       setXmlOpen(true);
@@ -259,8 +272,11 @@ export default function DiffViewer({
     [filteredChunks],
   );
 
+  // Include ALL chunk kinds (including emp/strike) in alignment anchors.
+  // Previously filtering these out caused surrounding unchanged lines to drift
+  // out of sync when one side had emphasis-only or strike-only differences.
   const alignmentChunks = useMemo(
-    () => result.chunks.filter((c) => c.kind !== "emp" && c.kind !== "strike"),
+    () => result.chunks,
     [result.chunks],
   );
 
@@ -306,10 +322,11 @@ export default function DiffViewer({
     return { linesA: outA, linesB: outB };
   }, [rawLinesA, rawLinesB, wrapLines, expandedFoldKeys, showAllContext]);
 
-  // Reset fold expansion when chunks change (new diff loaded).
+  // Reset fold expansion and review tracking when a new diff is loaded.
   useEffect(() => {
     setExpandedFoldKeys(new Set());
-    setShowAllContext(false);  // FIX: reset to folded view on new diff
+    setShowAllContext(false);
+    setReviewedIds(new Set());
   }, [result.chunks]);
 
   const handleUnfoldRow = useCallback((foldIndex: number) => {
@@ -371,6 +388,13 @@ export default function DiffViewer({
       if (source !== "old") paneARef.current?.scrollToFraction(f);
       if (source !== "new") paneBRef.current?.scrollToFraction(f);
       if (source !== "xml") syncXmlScroll(f);
+      // Briefly highlight the scroll-source pane header so the user can see
+      // which panel is driving the synchronisation (clears after 700ms).
+      if (source === "old" || source === "new") {
+        if (pulseTimerRef.current) clearTimeout(pulseTimerRef.current);
+        setPulseSide(source);
+        pulseTimerRef.current = setTimeout(() => setPulseSide(null), 700);
+      }
     },
     [syncXmlScroll],
   );
@@ -378,8 +402,18 @@ export default function DiffViewer({
   const selectChunk = useCallback(async (id: number) => {
     const seq = ++locateSeqRef.current;
     setActiveId(id);
-    setApplyStatus("idle");  // FIX: reset apply status when selecting a new chunk
+    setApplyStatus("idle");
     navSyncLockRef.current = true;
+    // Unconditional safety net: guarantee the scroll-sync lock is always released
+    // after 500ms, regardless of what happens inside the try/finally below.
+    // This prevents a permanent lock if an uncaught exception fires before `finally`.
+    if (navSyncLockSafetyTimerRef.current) clearTimeout(navSyncLockSafetyTimerRef.current);
+    navSyncLockSafetyTimerRef.current = setTimeout(() => { navSyncLockRef.current = false; }, 500);
+    // Cancel any pending auto-advance so we don't jump away from the chunk
+    // the user just manually selected.
+    if (autoAdvanceTimerRef.current) { clearTimeout(autoAdvanceTimerRef.current); autoAdvanceTimerRef.current = null; }
+    // Mark this chunk as reviewed so "Next unreviewed" can skip over it.
+    setReviewedIds((prev) => { const next = new Set(prev); next.add(id); return next; });
 
     try {
       const chunk = result.chunks.find((c) => c.id === id);
@@ -436,8 +470,11 @@ export default function DiffViewer({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); goTo(1);  }
-      if (e.key === "ArrowLeft"  || e.key === "ArrowUp")   { e.preventDefault(); goTo(-1); }
+      // Also block Monaco editor (contenteditable div with role="textbox")
+      if ((e.target as HTMLElement).closest?.('.monaco-editor')) return;
+      // Arrow keys and vim-style j/k for chunk navigation
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); goTo(1);  }
+      if (e.key === "ArrowLeft"  || e.key === "ArrowUp"   || e.key === "k") { e.preventDefault(); goTo(-1); }
       if (e.key === "w" || e.key === "W") setWrapLines((v) => !v);
       if (e.key === "x" || e.key === "X") setXmlOpen((v) => !v);
     };
@@ -445,16 +482,29 @@ export default function DiffViewer({
     return () => window.removeEventListener("keydown", handler);
   }, [goTo]);
 
+  // Clean up all timer refs on unmount to prevent setState on unmounted component.
+  useEffect(() => {
+    return () => {
+      if (navSyncLockSafetyTimerRef.current) clearTimeout(navSyncLockSafetyTimerRef.current);
+      if (pulseTimerRef.current) clearTimeout(pulseTimerRef.current);
+      if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
+    };
+  }, []);
+
   // FIX: Optimistic apply UI with per-chunk status feedback
   const applyChunk = useCallback(async () => {
-    if (mode !== "wf3" || !xmlText || activeId === null) return;
+    if (mode !== "edit" || !xmlText || activeId === null) return;
     const chunk = result.chunks.find((c) => c.id === activeId);
     if (!chunk) return;
     // All chunk kinds (including emp) are now sent to the backend.
     // The backend's _apply_chunk_to_xml handles emp via _apply_emp_chunk_to_xml.
 
     // Push current state to the undo history stack before mutating.
-    setApplyHistory((prev) => [...prev, { xmlText, appliedId: activeId }]);
+    // Capped at 50 entries to prevent unbounded memory growth in long sessions.
+    setApplyHistory((prev) => {
+      const entry = { xmlText, appliedId: activeId };
+      return prev.length >= 50 ? [...prev.slice(1), entry] : [...prev, entry];
+    });
 
     // Optimistic: show "applying" immediately, don't wait for server
     setApplyStatus("applying");
@@ -471,8 +521,10 @@ export default function DiffViewer({
           setNavSpan({ start: res.span_start, end: res.span_end! });
           requestAnimationFrame(scrollXmlToMark);
         }
-        // Auto-advance to next unapplied chunk after a short delay
-        setTimeout(() => {
+        // Auto-advance to next unapplied chunk (stored in ref so it can be cancelled
+        // if the user manually selects a different chunk before 800ms elapses).
+        autoAdvanceTimerRef.current = setTimeout(() => {
+          autoAdvanceTimerRef.current = null;
           const nextChunk = filteredChunks.find(
             (c) => c.id !== activeId && !appliedIds.has(c.id)
           );
@@ -502,7 +554,7 @@ export default function DiffViewer({
     // Invalidate the server-side XML session so the next apply/locate
     // creates a fresh session for the new file rather than reusing a stale one.
     invalidateXmlSession();
-    setXmlStatus(mode === "wf2" ? `Baseline: ${f.name}` : `Loaded: ${f.name}`);
+    setXmlStatus(mode === "browse" ? `Baseline: ${f.name}` : `Loaded: ${f.name}`);
     setXmlOpen(true);
     const reader = new FileReader();
     reader.onload = (e) => setXmlText(e.target?.result as string);
@@ -530,8 +582,60 @@ export default function DiffViewer({
     });
   }, []);
 
+  /**
+   * Apply all currently-visible (filtered, unapplied) chunks sequentially.
+   * Each apply feeds its output XML as the input for the next apply, so changes
+   * accumulate correctly even when chunk positions are interleaved in the file.
+   */
+  const applyAllVisible = useCallback(async () => {
+    if (mode !== "edit" || !xmlText) return;
+    // Cancel any pending single-chunk auto-advance that may have been triggered
+    // before the user clicked "Apply All Visible".
+    if (autoAdvanceTimerRef.current) { clearTimeout(autoAdvanceTimerRef.current); autoAdvanceTimerRef.current = null; }
+    const toApply = filteredChunks.filter((c) => !appliedIds.has(c.id));
+    if (toApply.length === 0) return;
+    setXmlStatus(`Applying ${toApply.length} change${toApply.length !== 1 ? "s" : ""}…`);
+    setApplyStatus("applying");
+    // Accumulate XML text locally to avoid stale-closure issues with React state.
+    let currentXml = xmlText;
+    let appliedCount = 0;
+    for (const chunk of toApply) {
+      try {
+        const res = await apiApply(currentXml, chunk);
+        if (res.changed) {
+          const prevXml = currentXml;
+          currentXml = res.xml_text;
+          appliedCount++;
+          setApplyHistory((prev) => {
+            const entry = { xmlText: prevXml, appliedId: chunk.id };
+            return prev.length >= 50 ? [...prev.slice(1), entry] : [...prev, entry];
+          });
+          setAppliedIds((prev) => new Set([...prev, chunk.id]));
+        }
+      } catch {
+        // Non-fatal: continue applying remaining chunks if one fails.
+      }
+    }
+    setXmlText(currentXml);
+    setXmlStatus(`✓ Applied ${appliedCount} of ${toApply.length} change${toApply.length !== 1 ? "s" : ""}`);
+    setApplyStatus(appliedCount > 0 ? "done" : "idle");
+    if (appliedCount > 0) setTimeout(() => setApplyStatus((s) => s === "done" ? "idle" : s), 3000);
+  }, [mode, xmlText, filteredChunks, appliedIds]);
+
+  /** Navigate to the first chunk in the current filter that hasn't been visited. */
+  const goToNextUnreviewed = useCallback(() => {
+    // Start search after the active chunk to avoid immediately re-visiting it.
+    const startIdx = activeFilteredIndex >= 0 ? activeFilteredIndex + 1 : 0;
+    const candidates = [
+      ...filteredChunks.slice(startIdx),
+      ...filteredChunks.slice(0, startIdx),
+    ];
+    const next = candidates.find((c) => !reviewedIds.has(c.id));
+    if (next) void selectChunk(next.id);
+  }, [filteredChunks, activeFilteredIndex, reviewedIds, selectChunk]);
+
   const downloadXml = useCallback(() => {
-    if (mode !== "wf3") return;
+    if (mode !== "edit") return;
     const blob = new Blob([xmlText], { type: "text/xml" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
@@ -648,7 +752,7 @@ export default function DiffViewer({
     ? `${activeFilteredIndex + 1} / ${filteredChunks.length}`
     : `— / ${filteredChunks.length}`;
 
-  const modeColor = mode === "wf3"
+  const modeColor = mode === "edit"
     ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
     : "bg-slate-500/10 text-slate-400 border-slate-500/20";
 
@@ -717,7 +821,7 @@ export default function DiffViewer({
           <button
             onClick={() => goTo(-1)}
             disabled={activeFilteredIndex <= 0}
-            title="Previous change  (← or ↑)"
+            title="Previous change  (← or ↑ or K)"
             className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -730,7 +834,7 @@ export default function DiffViewer({
           <button
             onClick={() => goTo(1)}
             disabled={activeFilteredIndex < 0 || activeFilteredIndex >= filteredChunks.length - 1}
-            title="Next change  (→ or ↓)"
+            title="Next change  (→ or ↓ or J)"
             className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -738,6 +842,22 @@ export default function DiffViewer({
             </svg>
           </button>
         </div>
+
+        {/* "Next unreviewed" — jumps to the first chunk not yet visited */}
+        {filteredChunks.length > 0 && reviewedIds.size > 0 && filteredChunks.some((c) => !reviewedIds.has(c.id)) && (
+          <button
+            onClick={goToNextUnreviewed}
+            title="Jump to next unreviewed change"
+            className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold
+              bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 border border-teal-500/20 transition-all"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+            <span className="hidden sm:inline">Unreviewed ({filteredChunks.filter((c) => !reviewedIds.has(c.id)).length})</span>
+          </button>
+        )}
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
 
@@ -804,7 +924,7 @@ export default function DiffViewer({
         <div className="flex-1" />
 
         {/* FIX: Apply status indicator in header */}
-        {mode === "wf3" && applyStatus !== "idle" && (
+        {mode === "edit" && applyStatus !== "idle" && (
           <div className={`flex-shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-semibold ${
             applyStatus === "applying" ? "bg-amber-500/15 text-amber-400" :
             applyStatus === "done"     ? "bg-emerald-500/15 text-emerald-400" :
@@ -832,11 +952,12 @@ export default function DiffViewer({
         )}
 
         <span className={`flex-shrink-0 text-[9px] font-bold px-2 py-0.5 rounded-full border ${modeColor}`}>
-          {mode === "wf3" ? "WF3 · editable" : "WF1 · read-only"}
+          {mode === "edit" ? "WF2 · editable" : "WF1 · read-only"}
         </span>
 
         <span className="hidden lg:flex items-center gap-1 text-[9px] text-slate-500 dark:text-slate-600 flex-shrink-0">
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">← →</kbd>
+          <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">J K</kbd>
           navigate
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">W</kbd>
           wrap
@@ -898,7 +1019,24 @@ export default function DiffViewer({
               stats={filteredStats}
               activeId={activeId}
               appliedIds={appliedIds}
+              reviewedIds={reviewedIds}
               onSelect={selectChunk}
+              headerActions={mode === "edit" && filteredChunks.some((c) => !appliedIds.has(c.id)) ? (
+                <button
+                  onClick={() => void applyAllVisible()}
+                  disabled={applyStatus === "applying"}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg
+                    text-[10px] font-semibold bg-violet-500/15 text-violet-400
+                    hover:bg-violet-500/25 border border-violet-500/30 transition-all
+                    disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Apply all currently-visible unapplied changes to the XML"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Apply All Visible ({filteredChunks.filter((c) => !appliedIds.has(c.id)).length})
+                </button>
+              ) : undefined}
             />
           </div>
         )}
@@ -925,6 +1063,7 @@ export default function DiffViewer({
                 onScrollLeft={(left) => !wrapLines && setSyncScrollLeft({ side: "a", left })}
                 syncScrollLeft={syncScrollLeft?.side === "b" ? syncScrollLeft.left : null}
                 onUnfoldRow={handleUnfoldRow}
+                isScrollSource={pulseSide === "old"}
               />
             </div>
 
@@ -961,6 +1100,7 @@ export default function DiffViewer({
                 onScrollLeft={(left) => !wrapLines && setSyncScrollLeft({ side: "b", left })}
                 syncScrollLeft={syncScrollLeft?.side === "a" ? syncScrollLeft.left : null}
                 onUnfoldRow={handleUnfoldRow}
+                isScrollSource={pulseSide === "new"}
               />
             </div>
           </div>

@@ -458,7 +458,7 @@ def _build_strikeout_rects(fz) -> list:
             continue
         width  = x1 - x0
         height = abs(y1 - y0)
-        if width < 8 or height > 3:
+        if width < 4 or height > 3:
             continue
         mid_y = (y0 + y1) / 2
         if mid_y / h < 0.10 or mid_y / h > 0.92:

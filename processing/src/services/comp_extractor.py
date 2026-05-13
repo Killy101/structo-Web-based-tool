@@ -7119,9 +7119,13 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
         # Show underline only on diff-marked spans (bg_tag set); unchanged underlines
         # are suppressed because they are almost always hyperlinks in legal PDFs.
         if span.underline and bg_tag:  kw["underline"]  = True
-        # Show strikethrough only on diff-marked spans.
-        # Unchanged strikeout flags are often PDF artefacts on hyperlink text.
-        if span.strikeout and bg_tag:  kw["overstrike"] = True
+        # Show strikethrough on ALL spans (bg_tag or not).
+        # Unlike underlines (which are often hyperlink artefacts), struck-through text
+        # in legislative/regulatory PDFs is intentional content that must always be
+        # visible.  The frontend gates the visual treatment: unchanged struck text
+        # (effectiveKind=undefined) gets plain line-through with no diff colouring;
+        # diff-marked struck text gets the pink/DEL palette.
+        if span.strikeout:  kw["overstrike"] = True
         if bg_tag:
             bg = diff_styles[bg_tag]["background"]
             kw["background"] = bg
@@ -7143,8 +7147,23 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
         ci = p2c.get(bi)
         ch = chunks[ci] if ci is not None else None
 
-        if ci is not None:
-            offsets[ci] = char_pos[0]
+        if ci is not None and ch is not None:
+            # Record offsets only when the chunk will actually paint something on
+            # this side. Plain-emit MOD segments (long blocks / all-trivial changes)
+            # have chunkId but no background — don't trigger row-level highlight.
+            chunk_will_paint = (
+                (ch.kind == KIND_ADD and side == "b") or
+                (ch.kind == KIND_DEL and side == "a") or
+                (ch.kind == "strike") or
+                (ch.kind == KIND_EMP) or
+                (
+                    ch.kind == KIND_MOD and
+                    len(ch.text_a.split()) <= _WORD_DIFF_MAX and
+                    len(ch.text_b.split()) <= _WORD_DIFF_MAX
+                )
+            )
+            if chunk_will_paint:
+                offsets[ci] = char_pos[0]
 
         # Pre-compute word-level diff for MOD blocks (across entire block text)
         # Guard: skip word diff for very long texts — SequenceMatcher is O(n²)
@@ -7485,7 +7504,7 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             emit("\n", "nl")
 
         # Record end-of-block char position for accurate nav highlight sizing
-        if ci is not None:
+        if ci is not None and ci in offsets:
             offset_ends[ci] = char_pos[0]
 
     clean_cfgs = {k: v for k, v in tag_cfgs.items()

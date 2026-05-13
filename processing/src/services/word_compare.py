@@ -227,7 +227,7 @@ def chunk_has_real_changes(
     return meaningful, result
 
 
-def _split_sentences(text: str):
+def _split_sentences(text: str) -> list[str]:
     """
     Split normalised text into sentences using a legal-aware splitter.
     Handles .!? and also ;/: followed by a capital letter or parenthesis,
@@ -242,7 +242,7 @@ def _word_count(s: str) -> int:
     return len(_RE_SPLIT_WORDS.split(s.strip()))
 
 
-def align_sentences(old_text: str, new_text: str):
+def align_sentences(old_text: str, new_text: str) -> list[tuple[str, str, float]]:
     """
     Align sentences between old and new text using global optimal matching
     (Hungarian algorithm via scipy, falling back to greedy if unavailable).
@@ -261,9 +261,9 @@ def align_sentences(old_text: str, new_text: str):
     if not old_s and not new_s:
         return []
     if not old_s:
-        return [("", n, 0) for n in new_s]
+        return [("", n, 0.0) for n in new_s]
     if not new_s:
-        return [(o, "", 0) for o in old_s]
+        return [(o, "", 0.0) for o in old_s]
 
     m, n = len(old_s), len(new_s)
 

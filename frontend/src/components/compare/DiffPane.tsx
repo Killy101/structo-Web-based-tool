@@ -73,6 +73,9 @@ interface Props {
   alignedLines?:     AlignedLine[];
   contextLines?:     number;   // override CONTEXT_LINES per-instance
   onUnfoldRow?:      (foldIndex: number) => void;   // Fix 1: forward unfold event
+  /** When true, briefly highlights the pane header badge to indicate this pane
+   *  was the scroll leader (triggered by user scrolling in this pane). */
+  isScrollSource?:   boolean;
 }
 
 interface InnerProps {
@@ -80,6 +83,7 @@ interface InnerProps {
   allChunkTokens: Map<number, WordToken[]>;   // Fix 2: all MOD chunks
   pane:           PaneData;
   kindMap:        Map<number, ChunkKind>;
+  activeChunkId:  number | null;             // used for row-level active highlight
   activeChunkCSS: string;
   scrollRef:      React.RefObject<HTMLDivElement>;
   wrapLines:      boolean;
@@ -222,8 +226,16 @@ function tagToStyle(
     // Inline DEL words inside a MOD chunk also get strikethrough — matches BC.
     if (isInlineWordDiff) s.textDecoration = "line-through";
   } else if (effectiveKind === "mod") {
-    s.backgroundColor = dark ? "rgba(249,115,22,0.22)" : "#fed7aa";
-    s.color           = dark ? "#fdba74"                : "#7c2d12";
+    // Patch 5: If the source span was struck through in the PDF, render it
+    // with the DEL palette + line-through instead of MOD orange.
+    if (cfg.overstrike) {
+      s.backgroundColor = dark ? "rgba(244,63,94,0.22)" : "#fecdd3";
+      s.color           = dark ? "#fda4af"               : "#881337";
+      s.textDecoration  = "line-through";
+    } else {
+      s.backgroundColor = dark ? "rgba(249,115,22,0.22)" : "#fed7aa";
+      s.color           = dark ? "#fdba74"                : "#7c2d12";
+    }
   } else if (effectiveKind === "emp") {
     s.backgroundColor = dark ? "rgba(96,165,250,0.22)" : "#bfdbfe";
     s.color           = dark ? "#93c5fd"                : "#1e3a8a";
@@ -611,6 +623,7 @@ function DiffPaneInner({
   allChunkTokens,
   pane,
   kindMap,
+  activeChunkId,
   activeChunkCSS,
   scrollRef,
   wrapLines,
@@ -810,6 +823,24 @@ function DiffPaneInner({
             }
           }
 
+          // Patch 4: Only count this row as "actually changed" if at least one
+          // segment carries a server-painted background. Plain-emit MOD segments
+          // (long blocks, all-trivial changes) have chunkId but no background and
+          // must NOT trigger row-level highlight.
+          const lineHasPaintedSegment = segs.some((s) => {
+            if (s.chunkId == null) return false;
+            const cfg = pane.tag_cfgs[s.tagName] ?? {};
+            return !!cfg.background;
+          });
+
+          // Row-level highlight: 3px left border + subtle background tint for the
+          // active chunk row. This is complementary to the span-level CSS injection
+          // (activeChunkCSS) which adds outline to individual text spans.
+          const isActiveRow = activeChunkId !== null
+            && lineChunkId === activeChunkId
+            && lineHasPaintedSegment; // ← Patch 4: only highlight rows with actual paint
+          const activeHl = isActiveRow && lineKind ? ACTIVE_HL[lineKind] : null;
+
           return (
             <div
               key={`row-${vRow.index}`}
@@ -820,6 +851,12 @@ function DiffPaneInner({
                 top: 0, left: 0, right: 0,
                 transform: `translateY(${vRow.start}px)`,
                 minHeight: ROW_HEIGHT_PX,
+                // Active chunk row gets a colored left border + subtle bg tint
+                borderLeft: activeHl
+                  ? `3px solid ${activeHl.border}`
+                  : "3px solid transparent",
+                backgroundColor: activeHl ? activeHl.bg : undefined,
+                transition: "border-left-color 0.12s, background-color 0.12s",
               }}
             >
               <div className="grid grid-cols-[52px_minmax(0,1fr)] gap-3">
@@ -857,6 +894,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       wrapLines = false,
       alignedLines,
       onUnfoldRow,
+      isScrollSource = false,
     },
     ref,
   ) => {
@@ -926,13 +964,13 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       const ahl = ACTIVE_HL[kind] ?? ACTIVE_HL.mod;
       const sel = `[data-chunk-id="${activeChunkId}"]`;
       if (kind === "mod") {
-        return (
-          `${sel} { border-radius: 2px; outline: 1px solid ${ahl.border}; outline-offset: 0px; }`
-        );
+        // MOD: span-level outline only — word-level inline colours handle the fill.
+        return `${sel} { border-radius: 2px; outline: 2px solid ${ahl.border}; outline-offset: 0px; }`;
       }
+      // ADD/DEL/EMP/STRIKE: stronger outline + background for maximum visibility.
       return (
         `${sel} { background-color: ${ahl.bg} !important; border-radius: 2px;` +
-        ` outline: 2px solid ${ahl.border}; outline-offset: 0px; }`
+        ` outline: 2px solid ${ahl.border}; outline-offset: 1px; }`
       );
     }, [activeChunkId, kindMap]);
 
@@ -1029,30 +1067,24 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       if (syncingRef.current || wrapLines) return;
       if (!onScrollFraction) return;
       if (scrollFrameRef.current !== null) return;
+      // Patch 6: use raw scrollTop/maxScroll — the same metric syncXmlScroll uses,
+      // so panes and XML stay in lockstep instead of drifting on long docs.
       scrollFrameRef.current = requestAnimationFrame(() => {
         scrollFrameRef.current = null;
-        const v = virtualizerRef.current;
-        if (v && lines.length > 0) {
-          const items = v.getVirtualItems();
-          if (items.length > 0) {
-            const firstRow     = items[0].index;
-            const emitFraction = firstRow / Math.max(1, lines.length - 1);
-            // Suppress if this scroll was triggered by our own scrollToFraction.
-            // One-row tolerance: Math.round can shift the target by ±1 row.
-            const oneRow = 1 / Math.max(1, lines.length - 1);
-            if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= oneRow) {
-              lastReceivedFractionRef.current = -1;  // clear so next real scroll passes
-              return;
-            }
-            lastReceivedFractionRef.current = -1;
-            onScrollFraction(emitFraction);
-            return;
-          }
-        }
+        if (!onScrollFraction) return;
         const maxScroll = container.scrollHeight - container.clientHeight;
-        if (maxScroll > 0) onScrollFraction(container.scrollTop / maxScroll);
+        if (maxScroll <= 0) return;
+        const emitFraction = container.scrollTop / maxScroll;
+        // Suppress echo from our own scrollToFraction (Issue 2 fix).
+        const oneRow = ROW_HEIGHT_PX / Math.max(1, container.scrollHeight);
+        if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= oneRow) {
+          lastReceivedFractionRef.current = -1;
+          return;
+        }
+        lastReceivedFractionRef.current = -1;
+        onScrollFraction(emitFraction);
       });
-    }, [onScrollFraction, onScrollLeft, wrapLines, lines]);
+    }, [onScrollFraction, onScrollLeft, wrapLines]);
 
     useEffect(() => {
       return () => {
@@ -1076,7 +1108,10 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
         <div className="flex-shrink-0 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
           <div className="flex items-center gap-2 px-3 py-2">
-            <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}`}>
+            {/* isScrollSource adds a brief ring to show which pane is the scroll leader */}
+            <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}${
+              isScrollSource ? " ring-2 ring-white/60 ring-offset-1" : ""
+            }`}>
               {side.toUpperCase()}
             </span>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate flex-1 min-w-0">
@@ -1121,6 +1156,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           allChunkTokens={allChunkTokens}
           pane={pane}
           kindMap={kindMap}
+          activeChunkId={activeChunkId}
           activeChunkCSS={activeChunkCSS}
           scrollRef={scrollRef}
           wrapLines={wrapLines}

@@ -43,7 +43,8 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing as _mp
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +99,26 @@ PAGE_BATCH_SIZE: int = int(os.environ.get("COMPARE_BATCH_SIZE", "100"))
 
 # ── File size limit (200 MB) ──────────────────────────────────────────────────
 MAX_FILE_SIZE_BYTES: int = int(os.environ.get("MAX_FILE_SIZE_MB", "200")) * 1024 * 1024
+
+# ── Module-level ProcessPool for precompute (Patch 7) ────────────────────────
+# Per-batch ThreadPoolExecutor startup was too expensive for large docs.
+# A long-lived pool amortises spawn cost across batches.
+_RENDER_WORKERS: int = int(os.environ.get("COMPARE_RENDER_WORKERS", "4"))
+_render_pool: ProcessPoolExecutor | None = None
+_render_pool_lock = threading.Lock()
+
+
+def _get_render_pool() -> ProcessPoolExecutor:
+    global _render_pool
+    with _render_pool_lock:
+        if _render_pool is None:
+            # spawn context avoids fork-deadlock with the threaded HTTP server.
+            _render_pool = ProcessPoolExecutor(
+                max_workers=_RENDER_WORKERS,
+                mp_context=_mp.get_context("spawn"),
+            )
+    return _render_pool
+
 
 # Large-document threshold — docs with more pages than this use the batched
 # endpoint automatically when called via /diff/stream/large.
@@ -776,14 +797,47 @@ async def diff_pdfs_stream_large(
 
             # Single _do_load definition — no duplicate declaration.
             # Captures has_fast_batch, hf_*, flags_*, gap_* from the enclosing scope.
+            # Patch 8: wrap with extraction cache keyed by sha256 + page range.
+            # Define no-op fallbacks so the names are always callable for Pylance.
+            def _ec_get_noop(*_a):   # type: ignore[misc]
+                return None
+            def _ec_put_noop(*_a) -> None:  # type: ignore[misc]
+                pass
+            _ec_get = _ec_get_noop
+            _ec_put = _ec_put_noop
+            _cache_available = False
+            _sha_a = _sha_b = ""
+            try:
+                from src.services.extraction_cache import (
+                    file_sha256 as _ec_sha256,
+                    get as _ec_get,
+                    put as _ec_put,
+                )
+                _sha_a = _ec_sha256(tmp_a)
+                _sha_b = _ec_sha256(tmp_b)
+                _cache_available = True
+            except Exception:
+                pass
+
             def _do_load(src: object, hf: set, flags: int, gap: float,
                          start_p: int, end_p: int) -> list:
                 if start_p > end_p:
                     return []
+                # Try cache first when available
+                if _cache_available:
+                    _sha = _sha_a if src is src_a or str(src) == tmp_a else _sha_b
+                    cached = _ec_get(_sha, start_p, end_p)
+                    if cached is not None:
+                        return cached
                 if has_fast_batch and extractor is not None:
-                    return extractor.extract_pdf_batch(src, hf, flags, gap, start_p, end_p,
-                                                       enable_brd_markers=False)
-                return _ext_load_pdf(str(src), None, start_p, end_p)
+                    lines = extractor.extract_pdf_batch(src, hf, flags, gap, start_p, end_p,
+                                                        enable_brd_markers=False)
+                else:
+                    lines = _ext_load_pdf(str(src), None, start_p, end_p)
+                if _cache_available:
+                    _sha = _sha_a if src is src_a or str(src) == tmp_a else _sha_b
+                    _ec_put(_sha, start_p, end_p, lines)
+                return lines
 
             n_pages   = max(n_a, n_b)
             batches   = list(range(0, n_pages, PAGE_BATCH_SIZE))
@@ -916,11 +970,11 @@ async def diff_pdfs_stream_large(
                     "msg":   f"Rendering {len(chunks)} changes for pages {batch_start}-{batch_end}...",
                 }))
 
-                with ThreadPoolExecutor(max_workers=2) as render_pool:
-                    fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
-                    fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
-                    pane_a = fut_pa.result()
-                    pane_b = fut_pb.result()
+                render_pool = _get_render_pool()
+                fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+                fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+                pane_a = fut_pa.result()
+                pane_b = fut_pb.result()
 
                 id_offset    = len(all_chunks)
                 chunks_dicts = [_chunk_to_dict(ch, id_offset + i) for i, ch in enumerate(chunks)]
@@ -1168,19 +1222,63 @@ async def get_segments(
         # Walk segments, yielding only those within the char window
         pos = 0
         filtered_segs: list = []
+        window_abs_start = None
         for text, tag in segments:
             seg_end = pos + len(text)
             if seg_end >= char_start and pos <= char_end:
+                if window_abs_start is None:
+                    window_abs_start = pos
                 filtered_segs.append([text, tag])
             pos = seg_end
             if pos > char_end:
                 break
 
+        # Rebase offsets into the returned segment window so frontend char
+        # mapping and chunk highlighting use local coordinates (0-based within
+        # filtered_segs), not full-document absolute offsets.
+        if window_abs_start is None:
+            window_abs_start = 0
+
+        filtered_offsets = {}
+        filtered_offset_ends = {}
+        for k, v in offsets.items():
+            if int(k) not in chunk_ids:
+                continue
+            local_start = int(v) - window_abs_start
+            local_end = int(offset_ends.get(k, v + 1)) - window_abs_start
+            if local_end <= 0:
+                continue
+            if local_start < 0:
+                local_start = 0
+            if local_end <= local_start:
+                local_end = local_start + 1
+            filtered_offsets[k] = local_start
+            filtered_offset_ends[k] = local_end
+
+        # Recompute per-chunk line offsets inside the local segment window.
+        # This keeps frontend row anchoring deterministic in lazy-fetch mode.
+        line_offsets = {}
+        line_offset_ends = {}
+        line_idx = 0
+        pos2 = 0
+        for text, _tag in filtered_segs:
+            for cid, off in filtered_offsets.items():
+                off_end = filtered_offset_ends.get(cid, off + 1)
+                if pos2 >= off and pos2 < off_end:
+                    if cid not in line_offsets:
+                        line_offsets[cid] = line_idx
+                    line_offset_ends[cid] = line_idx
+            if text == "\n":
+                line_idx += 1
+            pos2 += len(text)
+
         return {
             "segments":    filtered_segs,
             "tag_cfgs":    pane.get("tag_cfgs", {}),
-            "offsets":     {k: v for k, v in offsets.items()     if int(k) in chunk_ids},
-            "offset_ends": {k: v for k, v in offset_ends.items() if int(k) in chunk_ids},
+            "offsets":     filtered_offsets,
+            "offset_ends": filtered_offset_ends,
+            "line_offsets": line_offsets,
+            "line_offset_ends": line_offset_ends,
         }
 
     return ORJSONResponse({

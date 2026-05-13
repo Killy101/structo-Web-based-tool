@@ -5,10 +5,14 @@
 // ── Workflow mode ─────────────────────────────────────────────────────────────
 
 /**
- * wf2 = Workflow 1 · Chunk & Compare  (4-panel, XML read-only, no Apply/Save)
- * wf3 = Workflow 2 · Compare & Apply  (4-panel, XML editable, Apply/Save enabled)
+ * browse = Workflow 1 · Chunk & Compare  (4-panel, XML read-only, no Apply/Save)
+ * edit   = Workflow 2 · Compare & Apply  (4-panel, XML editable, Apply/Save enabled)
+ *
+ * Renamed from wf2/wf3 to align internal names with user-facing labels.
+ * Old code may still reference "wf2"/"wf3" in persisted state — see the
+ * migration logic in useDiffState's session-restore effect.
  */
-export type WorkflowMode = "wf2" | "wf3";
+export type WorkflowMode = "browse" | "edit";
 
 // ── Diff engine ───────────────────────────────────────────────────────────────
 
@@ -101,8 +105,8 @@ export interface DiffResult {
 // ── XML scroll-sync abstraction ───────────────────────────────────────────────
 /**
  * Common interface for the XML panel scroll target.  Implemented by:
- *   - HTMLDivElement      (WF2 read-only viewer — structurally compatible)
- *   - XmlEditorHandle     (WF3 Monaco editor — exposed via useImperativeHandle)
+ *   - HTMLDivElement      (browse mode read-only viewer — structurally compatible)
+ *   - XmlEditorHandle     (edit mode Monaco editor — exposed via useImperativeHandle)
  *
  * DiffViewer.syncXmlScroll reads/writes these properties directly so it can
  * drive the XML panel position from the diff-pane scroll events without knowing
@@ -134,6 +138,15 @@ export interface LocateResult {
   success:    boolean;
   span_start: number | null;
   span_end:   number | null;
+}
+
+/** Server response for /compare/xml/chunk-locate — server-side XML→chunk lookup. */
+export interface ChunkLocateResult {
+  success:    boolean;
+  /** Resolved chunk id, or null if no chunk matched the given XML offset. */
+  chunk_id:   number | null;
+  /** Confidence score 0..1 — exposed so client can decide whether to act on weak matches. */
+  score:      number;
 }
 
 // ── Emphasis types ────────────────────────────────────────────────────────────
