@@ -140,6 +140,26 @@ class _LRUCache:
 
 _result_cache = _LRUCache(_RESULT_CACHE_MAX, _RESULT_CACHE_TTL)
 
+# ── XML session store ─────────────────────────────────────────────────────────
+# Stores the "current state" of the XML for a session so subsequent apply/locate
+# calls do not need to retransmit the full document.
+#
+# Session lifecycle:
+#   1. Client POSTs /compare/xml/session with the full xml_text → gets session_id
+#   2. Client uses session_id in /compare/xml/apply and /compare/xml/locate
+#   3. After each successful apply the server updates the stored xml_text
+#   4. Sessions expire after XML_SESSION_TTL seconds of inactivity (default 1h)
+#
+# Design trade-offs:
+#   - Server-side state (not stateless REST). Acceptable for a tool used
+#     interactively by a single user within a browser session.
+#   - Max 50 concurrent sessions × typical 1–5 MB = ≤250 MB overhead.
+#   - No persistence: restart clears all sessions (clients fall back to full-text).
+
+_XML_SESSION_TTL  = int(os.environ.get("XML_SESSION_TTL",  "3600"))   # 1 hour
+_XML_SESSION_MAX  = int(os.environ.get("XML_SESSION_MAX",  "50"))
+_xml_session_store = _LRUCache(_XML_SESSION_MAX, _XML_SESSION_TTL)
+
 
 # ── Diff engine loader ────────────────────────────────────────────────────────
 
@@ -317,6 +337,7 @@ def _dict_to_chunk(d: dict):
         words_before = d.get("words_before", ""),
         words_after  = d.get("words_after",  ""),
         section      = d.get("section",      ""),
+        emp_detail   = d.get("emp_detail",   ""),
     )
 
 
@@ -1172,10 +1193,39 @@ async def get_segments(
     })
 
 
+# ── POST /compare/xml/session ─────────────────────────────────────────────────
+
+class XmlSessionRequest(BaseModel):
+    xml_text: str
+
+
+class XmlSessionResponse(BaseModel):
+    session_id: str
+
+
+@router.post("/xml/session", response_model=XmlSessionResponse)
+async def create_xml_session(body: XmlSessionRequest):
+    """Register an XML document server-side and return a session ID.
+
+    Subsequent /xml/apply and /xml/locate calls can pass this session_id
+    instead of re-sending the full xml_text, which avoids retransmitting
+    large documents on every operation.
+
+    The server updates the stored XML after each successful apply so
+    subsequent applies continue from the latest state.
+    """
+    if not body.xml_text:
+        raise HTTPException(status_code=400, detail="xml_text is required")
+    session_id = str(uuid.uuid4())
+    _xml_session_store.set(session_id, {"xml_text": body.xml_text})
+    return XmlSessionResponse(session_id=session_id)
+
+
 # ── POST /compare/xml/apply ───────────────────────────────────────────────────
 
 class ApplyRequest(BaseModel):
-    xml_text: str
+    xml_text: Optional[str] = None
+    session_id: Optional[str] = None
     chunk: dict
 
 
@@ -1186,18 +1236,55 @@ class ApplyResponse(BaseModel):
     message:    str
     span_start: Optional[int] = None
     span_end:   Optional[int] = None
+    session_id: Optional[str] = None
 
 
 @router.post("/xml/apply", response_model=ApplyResponse)
 async def apply_chunk(body: ApplyRequest):
+    """Apply one diff chunk to an XML document.
+
+    Accepts either:
+      - xml_text + chunk  (full-text mode; no session required)
+      - session_id + chunk (session mode; avoids sending large XML repeatedly)
+
+    In session mode the server looks up the current XML from the session
+    store, applies the chunk, and updates the stored XML so subsequent
+    applies continue from the latest state.  The full updated XML is always
+    returned in xml_text so the client stays in sync.
+    """
+    # Resolve xml_text from session or direct payload
+    xml_text = body.xml_text
+    session_id = body.session_id
+
+    if not xml_text and session_id:
+        session_data = _xml_session_store.get(session_id)
+        if session_data is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"XML session '{session_id}' not found or expired. "
+                       "Please reload the XML file and create a new session.",
+            )
+        xml_text = session_data["xml_text"]
+
+    if not xml_text:
+        raise HTTPException(status_code=400, detail="Either xml_text or a valid session_id is required")
+
     try:
         ch = _dict_to_chunk(body.chunk)
-        updated, changed, msg, span = ce._apply_chunk_to_xml(body.xml_text, ch)
+        updated, changed, msg, span = ce._apply_chunk_to_xml(xml_text, ch)
+
+        # Update session store with the new XML so subsequent calls are incremental
+        if session_id and changed:
+            _xml_session_store.set(session_id, {"xml_text": updated})
+
         return ApplyResponse(
             success=True, changed=changed, xml_text=updated, message=msg,
             span_start=span[0] if span else None,
             span_end=span[1]   if span else None,
+            session_id=session_id,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -1205,7 +1292,8 @@ async def apply_chunk(body: ApplyRequest):
 # ── POST /compare/xml/locate ──────────────────────────────────────────────────
 
 class LocateRequest(BaseModel):
-    xml_text: str
+    xml_text: Optional[str] = None
+    session_id: Optional[str] = None
     chunk: dict
 
 
@@ -1217,15 +1305,34 @@ class LocateResponse(BaseModel):
 
 @router.post("/xml/locate", response_model=LocateResponse)
 async def locate_chunk(body: LocateRequest):
+    """Locate a chunk span in an XML document (read-only, no mutation).
+
+    Accepts either xml_text or session_id (same as /xml/apply).
+    """
+    xml_text = body.xml_text
+    if not xml_text and body.session_id:
+        session_data = _xml_session_store.get(body.session_id)
+        if session_data is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"XML session '{body.session_id}' not found or expired.",
+            )
+        xml_text = session_data["xml_text"]
+
+    if not xml_text:
+        raise HTTPException(status_code=400, detail="Either xml_text or a valid session_id is required")
+
     try:
         ch    = _dict_to_chunk(body.chunk)
         probe = (ch.text_b if ch.kind in (ce.KIND_ADD, ce.KIND_MOD) else ch.text_a) or ch.text_a or ""
-        span  = ce._locate_xml_span(body.xml_text, probe)
+        span  = ce._locate_xml_span(xml_text, probe)
         return LocateResponse(
             success=True,
             span_start=span[0] if span else None,
             span_end=span[1]   if span else None,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

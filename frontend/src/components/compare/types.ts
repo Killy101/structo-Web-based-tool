@@ -98,6 +98,27 @@ export interface DiffResult {
   file_b:        string;
 }
 
+// ── XML scroll-sync abstraction ───────────────────────────────────────────────
+/**
+ * Common interface for the XML panel scroll target.  Implemented by:
+ *   - HTMLDivElement      (WF2 read-only viewer — structurally compatible)
+ *   - XmlEditorHandle     (WF3 Monaco editor — exposed via useImperativeHandle)
+ *
+ * DiffViewer.syncXmlScroll reads/writes these properties directly so it can
+ * drive the XML panel position from the diff-pane scroll events without knowing
+ * whether it's talking to a plain div or a Monaco editor instance.
+ */
+export interface XmlScrollTarget {
+  /** Total scrollable height in px (like HTMLElement.scrollHeight). */
+  readonly scrollHeight: number;
+  /** Visible viewport height in px (like HTMLElement.clientHeight). */
+  readonly clientHeight: number;
+  /** Current scroll offset in px — readable and settable. */
+  scrollTop: number;
+  /** Allows callers to branch on element type ("DIV" | "TEXTAREA" | "MONACO"). */
+  readonly tagName: string;
+}
+
 export interface ApplyResult {
   success:    boolean;
   changed:    boolean;
@@ -105,6 +126,8 @@ export interface ApplyResult {
   message:    string;
   span_start: number | null;
   span_end:   number | null;
+  /** Session ID echoed back from the server after a session-based apply. */
+  session_id?: string | null;
 }
 
 export interface LocateResult {

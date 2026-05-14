@@ -1,7 +1,7 @@
 "use client";
-import React, { forwardRef, useRef } from "react";
+import React, { forwardRef, useRef, useState } from "react";
 import XmlEditor from "./XmlEditor";
-import type { Chunk, WorkflowMode } from "./types";
+import type { Chunk, WorkflowMode, XmlScrollTarget } from "./types";
 
 interface Props {
   mode:        WorkflowMode;
@@ -16,6 +16,16 @@ interface Props {
   onDownload:  () => void;     // no-op in wf2
   onXmlChange?: (text: string) => void;  // wf3 only: user edits XML directly
   onScrollFraction?: (scrollFraction: number) => void;
+  /** Whether there is an apply to undo (history stack non-empty). */
+  canUndo?:    boolean;
+  /** Revert the last apply operation. */
+  onUndo?:     () => void;
+  /**
+   * Called when the user clicks a line in the XML viewer/editor.
+   * Receives the character offsets [lineStart, lineEnd] in the full xmlText.
+   * DiffViewer uses this to locate the matching diff chunk and scroll both PDF panes.
+   */
+  onXmlLineClick?: (lineStart: number, lineEnd: number) => void;
 }
 
 /** Max chars to render at once — keeps DOM small for large XML files */
@@ -206,9 +216,11 @@ function _renderTokensWithHighlight(
 function XmlBody({
   text,
   navSpan,
+  onLineClick,
 }: {
-  text:    string;
-  navSpan: { start: number; end: number } | null;
+  text:          string;
+  navSpan:       { start: number; end: number } | null;
+  onLineClick?:  (lineStart: number, lineEnd: number) => void;
 }) {
   const center = navSpan?.start ?? 0;
   let winStart = 0;
@@ -244,11 +256,31 @@ function XmlBody({
         const tokens    = _tokenizeLine(lineText);
         const lineNum   = startLineNumber + idx;
         const isHL = navSpan && lineStart < navSpan.end && lineStart + lineText.length > navSpan.start;
+
+        // FIX Issue 2: detect tag-only lines — after stripping all XML tags and
+        // whitespace, if fewer than 4 meaningful characters remain the line carries
+        // no navigable content and should not register as a clickable target.
+        // This prevents the silent early-return in handleXmlLineClick that was
+        // triggered by Innodata's tag-dense structure (innodReplace, innodIdentifier…).
+        const plainLineText = lineText
+          .replace(/<[^>]*>/g, "")
+          .replace(/&[a-z]+;/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const isNavigable = onLineClick && plainLineText.length >= 4;
+
         return (
           <div
             key={`${lineNum}-${lineStart}`}
+            role={isNavigable ? "button" : undefined}
+            tabIndex={isNavigable ? 0 : undefined}
+            onClick={isNavigable ? () => onLineClick(lineStart, lineStart + lineText.length) : undefined}
+            onKeyDown={isNavigable ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onLineClick(lineStart, lineStart + lineText.length);
+            } : undefined}
             className={`grid grid-cols-[48px_minmax(0,1fr)] gap-0 leading-[1.75]
-              ${isHL ? "bg-yellow-300/10 dark:bg-yellow-400/8" : "hover:bg-white/3"}`}
+              ${isHL ? "bg-yellow-300/10 dark:bg-yellow-400/8" : ""}
+              ${isNavigable ? "cursor-pointer hover:bg-teal-400/8 dark:hover:bg-teal-400/10 focus:outline-none focus:bg-teal-400/8" : "hover:bg-white/3"}`}
           >
             <span className="select-none border-r border-slate-200 dark:border-white/8 pr-2 text-right
               text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-600 self-start pt-px">
@@ -266,18 +298,29 @@ function XmlBody({
 }
 
 
-const XmlPanel = forwardRef<HTMLElement, Props>(
-  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction }, ref) => {
+const XmlPanel = forwardRef<XmlScrollTarget, Props>(
+  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const isWf3    = mode === "wf3";
-    const canApply = isWf3 && !!xmlText && !!activeChunk &&
-                     activeChunk.kind !== "emp" && !appliedIds.has(activeChunk.id);
+    // XML validation error surfaced up from XmlEditor's DOMParser check
+    const [xmlError, setXmlError] = useState<string | null>(null);
 
-    const applyTitle = !isWf3                              ? "Read-only in Workflow 1"
-      : activeChunk?.kind === "emp"                         ? "Emphasis — not applicable"
-      : appliedIds.has(activeChunk?.id ?? -1)               ? "Already applied"
-      :                                                       "Apply selected change to XML";
+    const isWf3    = mode === "wf3";
+    // EMP chunks are now supported for apply (see backend _apply_emp_chunk_to_xml)
+    const canApply = isWf3 && !!xmlText && !!activeChunk &&
+                     !appliedIds.has(activeChunk.id) &&
+                     // Block apply on invalid XML to prevent sending malformed content
+                     !xmlError;
+
+    const applyTitle = !isWf3
+      ? "Read-only in Workflow 1"
+      : !!xmlError
+        ? `Cannot apply — XML is invalid: ${xmlError.slice(0, 80)}`
+      : appliedIds.has(activeChunk?.id ?? -1)
+        ? "Already applied"
+        : activeChunk?.kind === "emp"
+          ? "Apply emphasis change to XML"
+          : "Apply selected change to XML";
 
     const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
       if (!onScrollFraction) return;
@@ -305,7 +348,7 @@ const XmlPanel = forwardRef<HTMLElement, Props>(
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
                 : "bg-slate-500/10 text-slate-400 border-slate-500/20"
             }`}>
-              {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
+              {isWf3 ? "WF3 · editable" : "WF1 · read-only"}
             </span>
 
             {!xmlText && (
@@ -334,8 +377,22 @@ const XmlPanel = forwardRef<HTMLElement, Props>(
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Apply
+                  {activeChunk?.kind === "emp" ? "Apply Formatting" : "Apply"}
                 </button>
+
+                {/* Undo last apply — only shown when history is non-empty */}
+                {canUndo && (
+                  <button
+                    onClick={onUndo}
+                    title="Undo last apply"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[11px] font-semibold transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                    </svg>
+                    Undo
+                  </button>
+                )}
 
                 <button
                   onClick={onDownload}
@@ -367,22 +424,39 @@ const XmlPanel = forwardRef<HTMLElement, Props>(
         {xmlText ? (
           isWf3 ? (
             /*
-             * WF3 editable mode: forward the panel ref straight to the XmlEditor
-             * textarea so DiffViewer's syncXmlScroll can set scrollTop on the
-             * actual scrollable element. The outer div uses overflow:hidden only
-             * to clip the layout; the textarea itself is the scroll container.
+             * WF3 editable mode: forward the panel ref to XmlEditor which
+             * exposes XmlScrollTarget via useImperativeHandle on the Monaco
+             * editor instance.  The outer div clips the layout; Monaco's own
+             * virtualised renderer is the scroll container.
              */
             <div
               data-testid="xml-panel-scroll"
-              className="flex-1 overflow-hidden"
+              className="flex-1 overflow-hidden flex flex-col"
             >
               <XmlEditor
-                ref={ref as React.Ref<HTMLTextAreaElement>}
+                ref={ref as React.Ref<XmlScrollTarget>}
                 value={xmlText}
                 onChange={onXmlChange}
                 navSpan={navSpan}
                 onScrollFraction={onScrollFraction}
+                onValidationChange={setXmlError}
+                onCursorOffset={onXmlLineClick ? (offset) => {
+                  // Convert Monaco cursor character offset → line char range → chunk lookup
+                  const lineStart  = xmlText.lastIndexOf("\n", offset - 1) + 1;
+                  const lineEndIdx = xmlText.indexOf("\n", offset);
+                  onXmlLineClick(lineStart, lineEndIdx === -1 ? xmlText.length : lineEndIdx);
+                } : undefined}
               />
+              {/* Inline validation error bar — shown below editor when XML is malformed */}
+              {xmlError && (
+                <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1
+                  bg-rose-500/10 border-t border-rose-500/30 text-rose-400 text-[10px] font-mono">
+                  <svg className="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  <span className="truncate">XML error: {xmlError}</span>
+                </div>
+              )}
             </div>
           ) : (
             <div
@@ -393,7 +467,7 @@ const XmlPanel = forwardRef<HTMLElement, Props>(
               onScroll={handleScroll}
             >
               <pre className="text-[11px] leading-[1.75] font-mono">
-                <XmlBody text={xmlText} navSpan={navSpan} />
+                <XmlBody text={xmlText} navSpan={navSpan} onLineClick={onXmlLineClick} />
               </pre>
             </div>
           )
@@ -428,4 +502,4 @@ const XmlPanel = forwardRef<HTMLElement, Props>(
 );
 
 XmlPanel.displayName = "XmlPanel";
-export default XmlPanel;  
+export default XmlPanel;
