@@ -1,4 +1,5 @@
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -7,13 +8,31 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from src.routers.process import router as process_router
-from src.routers.compare import router as compare_router
+from src.routers.compare import router as compare_router, _get_render_pool as _compare_get_render_pool
+from src.routers.scrape import router as scrape_router
 from src.services.extraction_diagnostics import build_extraction_diagnostics, build_format_fingerprint
 from src.services.extractor import _is_mhtml_doc, convert_doc_to_docx, extract_all_sections, extract_text
 from src.services.extractors.image_extractor import extract_and_store_images_from_mhtml
 
 
-app = FastAPI(title="BRD Processing Service", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-warm the ProcessPool workers so the first batch isn't slow
+    try:
+        _compare_get_render_pool()
+    except Exception:
+        pass  # non-fatal — pool will be created lazily on first use
+    yield
+    # Shutdown render pool gracefully on exit
+    from src.routers import compare as _compare_mod
+    if _compare_mod._render_pool is not None:
+        try:
+            _compare_mod._render_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+
+app = FastAPI(title="BRD Processing Service", version="1.0.0", lifespan=lifespan)
 
 
 # GZip everything EXCEPT streaming compare endpoints (buffering kills NDJSON)
@@ -41,6 +60,7 @@ app.add_middleware(
 
 app.include_router(process_router)
 app.include_router(compare_router)
+app.include_router(scrape_router)
 
 
 @app.post("/process")

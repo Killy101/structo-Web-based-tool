@@ -14,6 +14,7 @@ import userLogsRoutes from './routes/user-logs'
 import brdRouter from './routes/brd'
 import notificationsRoutes from './routes/notifications'
 import inboundEmailsRoutes from './routes/inbound-emails'
+import webScrapeRoutes from './routes/webscrape'
 import { governanceControlsMiddleware } from './middleware/governanceControls'
 import {
   generalLimiter,
@@ -94,6 +95,7 @@ app.use('/user-logs',     userLogsRoutes)
 app.use('/brd',           brdRouter)
 app.use('/notifications', notificationsRoutes)
 app.use('/emails',        inboundEmailsRoutes)
+app.use('/webscrape',     webScrapeRoutes)
 
 app.get('/health', async (_req, res) => {
   try {

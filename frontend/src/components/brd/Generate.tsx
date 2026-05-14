@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import SimpleMetajson from "@/components/brd/simplemetajson";
 import InnodMetajson from "@/components/brd/innodmetajson";
 import { buildBrdImageBlobUrl } from "@/utils/brdImageUrl";
+import { downloadBrdOutput } from "@/utils/brdDownload";
 import { brdRichTextToPlain, extractBrdRichTextHref, hasBrdRichTextColor, hasBrdRichTextMarkup, sanitizeBrdRichTextHtml, stripLeadingBrdLabel } from "@/utils/brdRichText";
 import {
   normalizeBrdMetadataCommentKey as normalizeMetadataCommentKey,
@@ -2577,16 +2578,26 @@ export default function Generate({ brdId, title, format, status, initialData, on
     doneResetTimers.current[key] = window.setTimeout(() => { setDone(p => ({ ...p, [key]: false })); delete doneResetTimers.current[key]; }, ms);
   }
 
-  function downloadExcelFile(base: string, t: string, el: HTMLElement) {
+  async function downloadExcelFile(base: string, t: string, el: HTMLElement) {
+    const filename = `${sanitizeFilePart(base)}.xls`;
     const blob = new Blob(["\ufeff", buildExcelHtml(el.outerHTML, t)], {type:"application/vnd.ms-excel;charset=utf-8;"});
-    const url = URL.createObjectURL(blob); const a = document.createElement("a");
-    a.href = url; a.download = `${sanitizeFilePart(base)}.xls`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    await downloadBrdOutput(blob, filename, "contentprofile");
   }
 
-  function downloadDocxFile(base: string, t: string, el: HTMLElement) {
+  async function downloadDocxFile(base: string, t: string, el: HTMLElement) {
+    const filename = `${sanitizeFilePart(base)}.docx`;
     const blob = buildWordDocxBlob(el.outerHTML, t);
-    const url = URL.createObjectURL(blob); const a = document.createElement("a");
-    a.href = url; a.download = `${sanitizeFilePart(base)}.docx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    await downloadBrdOutput(blob, filename, "brd");
+  }
+
+  async function handleDownloadSimpleMetajson(json: Record<string, unknown>, filename: string) {
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
+    await downloadBrdOutput(blob, filename, "simplemetajson");
+  }
+
+  async function handleDownloadInnodMetajson(json: Record<string, unknown>, filename: string) {
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
+    await downloadBrdOutput(blob, filename, "innodmetajson");
   }
 
   async function syncGeneratedJsonOutputs() {
@@ -2692,7 +2703,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
       const page = docPageRef.current; if (!page) throw new Error("BRD content not found");
       const clone = await prepareBrdExportElement(page);
       const exportName = buildBrdExportFilename(resolvedTitle, brdId);
-      downloadDocxFile(exportName.replace(/\.docx$/i, ""), `${resolvedTitle || brdId || "BRD"} - BRD`, clone);
+      await downloadDocxFile(exportName.replace(/\.docx$/i, ""), `${resolvedTitle || brdId || "BRD"} - BRD`, clone);
       setCompleted(p=>({...p,brd:true})); markDone("brd");
     } catch (error) { console.log("[runGenerateBrdDocx]", error); window.alert("Failed to generate BRD Word document."); setDone(p=>({...p,brd:false})); setCompleted(p=>({...p,brd:false})); }
     finally { setGenerating(p=>({...p,brd:false})); }
@@ -2702,7 +2713,7 @@ export default function Generate({ brdId, title, format, status, initialData, on
     setGenerating(p=>({...p,content:true}));
     try {
       const s = contentProfileRef.current; if (!s) throw new Error("Section not found");
-      downloadExcelFile(`${brdId||"BRD"}_ContentProfile`, `${brdId||"BRD"} - Content Profile`, s.cloneNode(true) as HTMLElement);
+      await downloadExcelFile(`${brdId||"BRD"}_ContentProfile`, `${brdId||"BRD"} - Content Profile`, s.cloneNode(true) as HTMLElement);
       setCompleted(p=>({...p,content:true})); markDone("content");
     } catch { window.alert("Failed to generate Content Profile Excel."); setDone(p=>({...p,content:false})); setCompleted(p=>({...p,content:false})); }
     finally { setGenerating(p=>({...p,content:false})); }
@@ -3006,8 +3017,8 @@ export default function Generate({ brdId, title, format, status, initialData, on
           </div>
         </div>
       </div>
-      <SimpleMetajson open={metajsonModal.open} onClose={()=>setMetajsonModal(p=>({...p,open:false}))} metajson={metajsonModal.data} filename={metajsonModal.filename} onSave={handleSaveSimpleMetajson}/>
-      <InnodMetajson open={innodModal.open} onClose={()=>setInnodModal(p=>({...p,open:false}))} metajson={innodModal.data} filename={innodModal.filename} onSave={handleSaveInnodMetajson}/>
+      <SimpleMetajson open={metajsonModal.open} onClose={()=>setMetajsonModal(p=>({...p,open:false}))} metajson={metajsonModal.data} filename={metajsonModal.filename} onSave={handleSaveSimpleMetajson} onDownload={handleDownloadSimpleMetajson}/>
+      <InnodMetajson open={innodModal.open} onClose={()=>setInnodModal(p=>({...p,open:false}))} metajson={innodModal.data} filename={innodModal.filename} onSave={handleSaveInnodMetajson} onDownload={handleDownloadInnodMetajson}/>
     </>
   );
 }

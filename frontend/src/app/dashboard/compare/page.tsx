@@ -4,18 +4,18 @@
 //
 // Two workflows remain and are shown to users as Workflow 1 and Workflow 2:
 //
-//  Workflow 1 (internal wf2) "Chunk & Compare"  — Old PDF + New PDF + XML
+//  Workflow 1 (internal "browse") "Chunk & Compare"  — Old PDF + New PDF + XML
 //                                                  4-panel view, XML panel is read-only
 //                                                  Browse changes by section
 //
-//  Workflow 2 (internal wf3) "Compare & Apply"  — Old PDF + New PDF + XML
+//  Workflow 2 (internal "edit")   "Compare & Apply"  — Old PDF + New PDF + XML
 //                                                  4-panel view, XML panel is editable
 //                                                  Accept / Reject / Edit changes → save updated XML
 //
 // Both workflows share the same DiffViewer — only the `mode` prop differs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, startTransition } from "react";
 import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
@@ -62,7 +62,23 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
 
   const mergePane = (paneBase: DiffResult["pane_a"], paneBatchRaw: DiffResult["pane_a"] | undefined): DiffResult["pane_a"] => {
     const paneBatch = safePaneBatch(paneBatchRaw);
-    const charBase = paneCharLength(paneBase);
+
+    // ── Cross-batch sentinel ─────────────────────────────────────────────────
+    // The server's compute_diff/precompute runs per-batch with a fresh
+    // char_pos = 0 and line_idx = 0. If the previous batch ended mid-paragraph
+    // (no trailing "\n") and we concatenate raw segments, the first text of
+    // batch N+1 fuses onto the last line of batch N, shifting every subsequent
+    // line number by 1.
+    //
+    // Fix: inject a "\n" sentinel between batches when the previous batch's
+    // last segment is not a newline. charBase and lineBase are adjusted to
+    // account for this sentinel so chunk offsets land on the correct line.
+    const baseSegs = paneBase.segments ?? [];
+    const lastSeg  = baseSegs[baseSegs.length - 1];
+    const needsSentinel = baseSegs.length > 0 && lastSeg?.[0] !== "\n";
+    const sentinelChars = needsSentinel ? 1 : 0;
+
+    const charBase = paneCharLength(paneBase) + sentinelChars;
     const mapChunkKey = (rawKey: string) => {
       const localIdx = Number(rawKey);
       const chunkId = batch.chunks[localIdx]?.id;
@@ -81,17 +97,14 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
       if (mapped !== null) offsetEnds[mapped] = Number(off) + charBase;
     }
 
-    // Merge server-emitted line offsets so buildAlignedLines keeps its precise
-    // line-number alignment (avoids falling back to slower binary-search on char offsets).
-    const baseSegs = paneBase.segments ?? [];
-    // FIX Issue 3a: lineBase must equal the number of newlines in the previous
-    // batches, NOT newlines + 1. precompute() starts line_idx at 0 and increments
-    // AFTER each "\n", so N newlines → lines 0…N-1 are used → next batch starts
-    // at global line N = count("\n"). The old "+ 1" shifted all batch-2+ chunk
-    // line offsets by one row, causing scrollToChunk to land on the wrong line.
-    const lineBase = baseSegs.length === 0
+    // lineBase counts newlines already present in the base, plus the sentinel
+    // newline we're about to inject. precompute increments line_idx AFTER each
+    // "\n" emission, so N newlines means lines 0…N-1 were used and the next
+    // batch's local lines map to global lines starting at N.
+    const baseNewlines = baseSegs.filter(([t]) => t === "\n").length;
+    const lineBase     = baseSegs.length === 0
       ? 0
-      : baseSegs.filter(([t]) => t === "\n").length;
+      : baseNewlines + (needsSentinel ? 1 : 0);
 
     const lineOffsets: Record<string, number> = { ...(paneBase.line_offsets ?? {}) };
     for (const [rawKey, lo] of Object.entries(paneBatch.line_offsets ?? {})) {
@@ -104,11 +117,16 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
       if (mapped !== null) lineOffsetEnds[mapped] = Number(lo) + lineBase;
     }
 
+    // Build the new segments array, injecting the sentinel "\n" if needed.
+    const newSegs: typeof baseSegs = [...baseSegs];
+    if (needsSentinel) newSegs.push(["\n", "nl"]);
+    newSegs.push(...(paneBatch.segments ?? []));
+
     return {
-      segments: [...(paneBase.segments ?? []), ...(paneBatch.segments ?? [])],
-      tag_cfgs: { ...(paneBase.tag_cfgs ?? {}), ...(paneBatch.tag_cfgs ?? {}) },
+      segments:         newSegs,
+      tag_cfgs:         { ...(paneBase.tag_cfgs ?? {}), ...(paneBatch.tag_cfgs ?? {}) },
       offsets,
-      offset_ends: offsetEnds,
+      offset_ends:      offsetEnds,
       line_offsets:     lineOffsets,
       line_offset_ends: lineOffsetEnds,
     };
@@ -134,12 +152,13 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
 const DiffViewer = dynamic(() => import("../../../components/compare/DiffViewer"), { ssr: false });
 const DiffUpload = dynamic(() => import("../../../components/compare/DiffUpload"), { ssr: false });
+const ChunkDetectionModal = dynamic(() => import("../../../components/compare/ChunkDetectionModal"), { ssr: false });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Workflow selector
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ActiveWorkflow = "selector" | "wf2" | "wf3";
+type ActiveWorkflow = "selector" | "browse" | "edit";
 
 const PALETTES = {
   teal: {
@@ -220,9 +239,9 @@ function WorkflowCard({
 }
 
 function WorkflowSelector({
-  canWf2, canWf3, onSelect,
+  canBrowse, canEdit, onSelect,
 }: {
-  canWf2: boolean; canWf3: boolean;
+  canBrowse: boolean; canEdit: boolean;
   onSelect: (w: ActiveWorkflow) => void;
 }) {
   return (
@@ -254,8 +273,8 @@ function WorkflowSelector({
             "Browse changes — XML panel shows structure alongside diff",
           ]}
           color="teal"
-          locked={!canWf2}
-          onClick={() => onSelect("wf2")}
+          locked={!canBrowse}
+          onClick={() => onSelect("browse")}
           icon={
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -273,8 +292,8 @@ function WorkflowSelector({
             "Accept / reject / edit changes → download updated XML",
           ]}
           color="violet"
-          locked={!canWf3}
-          onClick={() => onSelect("wf3")}
+          locked={!canEdit}
+          onClick={() => onSelect("edit")}
           icon={
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -284,7 +303,7 @@ function WorkflowSelector({
         />
       </div>
 
-      {!canWf2 && !canWf3 && (
+      {!canBrowse && !canEdit && (
         <div className="max-w-3xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
           <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -304,13 +323,14 @@ function WorkflowSelector({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ChangeSummaryModal({
-  result, xmlSections, sectionMapper, onViewAll, onSelectSection,
+  result, xmlSections, sectionMapper, onViewAll, onSelectSection, onViewDetection,
 }: {
   result:          DiffResult;
   xmlSections:     XmlSection[];
   sectionMapper:   (s: string) => string | null;
   onViewAll:       () => void;
   onSelectSection: (label: string) => void;
+  onViewDetection: () => void;
 }) {
   const sectionCounts = React.useMemo(() => {
     const m = new Map<string, { total: number; adds: number; dels: number; mods: number }>();
@@ -345,12 +365,20 @@ function ChangeSummaryModal({
               {result.stats.total} changes across {sectionsWithChanges.length} section{sectionsWithChanges.length !== 1 ? "s" : ""}
             </p>
           </div>
-          <button
-            onClick={onViewAll}
-            className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white transition-colors"
-          >
-            View All
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onViewDetection}
+              className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-slate-300 dark:border-white/15 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors"
+            >
+              View Detection
+            </button>
+            <button
+              onClick={onViewAll}
+              className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white transition-colors"
+            >
+              View All
+            </button>
+          </div>
         </div>
 
         <div className="max-h-[60vh] overflow-y-auto p-2">
@@ -389,31 +417,34 @@ function ChangeSummaryModal({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function useDiffState() {
-  const latestResultRef = useRef<DiffResult | null>(null);
-  const [fileA,              setFileA]              = useState<File | null>(null);
-  const [fileB,              setFileB]              = useState<File | null>(null);
-  const [xmlFile,            setXmlFile]            = useState<File | null>(null);
-  const [result,             setResult]             = useState<DiffResult | null>(null);
-  const [loading,            setLoading]            = useState(false);
-  // FIX Issue 1: track whether the first streaming batch has arrived so we can
-  // show DiffViewer immediately without waiting for all batches to complete.
-  const [firstBatchReceived, setFirstBatchReceived] = useState(false);
-  const [loadMsg,            setLoadMsg]            = useState("Uploading files…");
-  const [loadPct,            setLoadPct]            = useState(0);
-  const [progress,           setProgress]           = useState<DiffProgress | null>(null);
-  const [error,              setError]              = useState<string | null>(null);
-  const [xmlSections,        setXmlSections]        = useState<XmlSection[]>([]);
-  const [allSections,        setAllSections]        = useState<XmlSection[]>([]);
-  const [showModal,          setShowModal]          = useState(false);
-  const [selectedSec,        setSelectedSec]        = useState<string | null>(null);
+  const latestResultRef    = useRef<DiffResult | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const [fileA,         setFileA]         = useState<File | null>(null);
+  const [fileB,         setFileB]         = useState<File | null>(null);
+  const [xmlFile,       setXmlFile]       = useState<File | null>(null);
+  const [result,        setResult]        = useState<DiffResult | null>(null);
+  const [loading,       setLoading]       = useState(false);
+  const [loadMsg,       setLoadMsg]       = useState("Uploading files…");
+  const [loadPct,       setLoadPct]       = useState(0);
+  const [progress,      setProgress]      = useState<DiffProgress | null>(null);
+  const [error,         setError]         = useState<string | null>(null);
+  const [xmlSections,   setXmlSections]   = useState<XmlSection[]>([]);
+  const [allSections,   setAllSections]   = useState<XmlSection[]>([]);
+  const [showModal,     setShowModal]     = useState(false);
+  const [showDetection, setShowDetection] = useState(false);
+  const [selectedSec,   setSelectedSec]   = useState<string | null>(null);
 
   function reset() {
+    // Cancel any in-flight diff request (Issue 11.3 / 11.4).
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+
     setFileA(null); setFileB(null); setXmlFile(null);
     latestResultRef.current = null;
     setResult(null); setError(null); setProgress(null);
     setFirstBatchReceived(false);
     setXmlSections([]); setAllSections([]);
-    setShowModal(false); setSelectedSec(null);
+    setShowModal(false); setShowDetection(false); setSelectedSec(null);
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
   }
 
@@ -421,10 +452,20 @@ function useDiffState() {
   // sessionStorage survives page refresh but not tab close.  IndexedDB would
   // survive tab close but requires an async setup — sessionStorage is enough
   // for the "accidental refresh" UX win with zero extra dependencies.
+  //
+  // Also drops any stale localStorage entry from older builds and migrates
+  // away from the wf2/wf3 internal naming.
   useEffect(() => {
+    try { localStorage.removeItem("diff_batch_result"); } catch { /* ok */ }
     try {
       const saved = sessionStorage.getItem("diff_last_result");
       if (!saved) return;
+      // Stale entries from the wf2/wf3 era contain those identifiers and may
+      // carry incompatible shapes — drop them rather than guess.
+      if (saved.includes('"wf2"') || saved.includes('"wf3"')) {
+        sessionStorage.removeItem("diff_last_result");
+        return;
+      }
       const parsed = JSON.parse(saved) as DiffResult;
       if (parsed?.success && parsed?.chunks !== undefined) {
         latestResultRef.current = parsed;
@@ -437,6 +478,12 @@ function useDiffState() {
 
   async function run() {
     if (!fileA || !fileB) return;
+
+    // Cancel any prior in-flight run before starting a new one.
+    abortControllerRef.current?.abort();
+    const ac = new AbortController();
+    abortControllerRef.current = ac;
+
     latestResultRef.current = null;
     setLoading(true); setError(null); setResult(null); setProgress(null);
     setLoadMsg("Uploading files…"); setLoadPct(0);
@@ -444,25 +491,29 @@ function useDiffState() {
       const raw = await apiDiffAuto(
         fileA, fileB,
         {
-          onProgress: (p: DiffProgress) => { setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p); },
+          signal: ac.signal,
+          onProgress: (p: DiffProgress) => {
+            // Keep progress updates synchronous so the progress bar stays
+            // responsive — they're cheap (a few small setStates).
+            setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p);
+          },
           onBatch: (batch: BatchResult) => {
             try {
-              // FIX Issue 1: mark first batch so DiffViewer renders immediately
-              setFirstBatchReceived(true);
-              setResult((prev) => ({
-                ...mergeBatchIntoResult(prev, batch),
-                file_a: prev?.file_a || fileA.name,
-                file_b: prev?.file_b || fileB.name,
-              }));
+              // Merge using the ref (always latest) instead of React's prev state,
+              // which may be stale if multiple batches arrive before React re-renders.
               const merged = {
                 ...mergeBatchIntoResult(latestResultRef.current, batch),
                 file_a: latestResultRef.current?.file_a || fileA.name,
                 file_b: latestResultRef.current?.file_b || fileB.name,
               };
               latestResultRef.current = merged;
+              // Batch merges can be heavy (1000s of chunks). Mark them as a
+              // transition so React keeps the UI responsive to user input
+              // (sidebar clicks, scrolling) while merge re-renders complete.
+              startTransition(() => {
+                setResult(merged);
+              });
               try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
-              // Also persist to localStorage so result survives tab close
-              try { localStorage.setItem("diff_batch_result", JSON.stringify(merged)); } catch { /* ok */ }
             } catch (batchErr) {
               // Batch merge errors are non-fatal — log and continue streaming
               console.error("[compare] batch merge error:", batchErr);
@@ -532,9 +583,18 @@ function useDiffState() {
       }
       if (xmlSections.length > 0 || finalSections.length > 0) setShowModal(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
+      // Aborted runs are user-initiated — don't surface as errors.
+      const isAbort = e instanceof DOMException && e.name === "AbortError";
+      if (!isAbort) {
+        setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
+      }
     } finally {
-      setLoading(false);
+      // Only clear loading state if this is still the active controller.
+      // If the user reset or started a new run, the new run owns the state.
+      if (abortControllerRef.current === ac) {
+        setLoading(false);
+        abortControllerRef.current = null;
+      }
     }
   }
 
@@ -543,7 +603,9 @@ function useDiffState() {
     result, loading, loadMsg, loadPct, progress, error,
     firstBatchReceived,
     xmlSections, setXmlSections, allSections, setAllSections,
-    showModal, setShowModal, selectedSec, setSelectedSec,
+    showModal, setShowModal,
+    showDetection, setShowDetection,
+    selectedSec, setSelectedSec,
     reset, run,
   };
 }
@@ -556,8 +618,8 @@ export default function ComparePage() {
   const { user } = useAuth();
   const features     = user?.effectiveFeatures ?? [];
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
-  const canWf2       = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
-  const canWf3       = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canBrowse    = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
+  const canEdit      = isSuperAdmin || features.includes("compare-pdf-xml-only");
 
   const [active, setActive] = useState<ActiveWorkflow>("selector");
   const d = useDiffState();
@@ -614,21 +676,33 @@ export default function ComparePage() {
 
   function selectWorkflow(w: ActiveWorkflow) {
     setActive(w);
-    if (w === "wf2") trackCompareUsage("wf2", user?.userId ?? "anonymous");
-    if (w === "wf3") trackCompareUsage("wf3", user?.userId ?? "anonymous");
+    if (w === "browse") trackCompareUsage("browse", user?.userId ?? "anonymous");
+    if (w === "edit")   trackCompareUsage("edit",   user?.userId ?? "anonymous");
   }
 
-  const workflowMode: WorkflowMode = active === "wf3" ? "wf3" : "wf2";
+  const workflowMode: WorkflowMode = active === "edit" ? "edit" : "browse";
 
   // ── Render ─────────────────────────────────────────────────────────────────
+  //
+  // The gating condition was previously:
+  //   d.result && d.firstBatchReceived && !d.showModal
+  // where firstBatchReceived was set only in the streaming onBatch handler.
+  // For small docs that use the synchronous apiDiff path, onBatch never fires,
+  // so firstBatchReceived stayed false, and clicking "View All" dropped to
+  // DiffUpload instead of DiffViewer.
+  //
+  // Fix: drop firstBatchReceived. `d.result` being non-null is already a
+  // complete signal — it's set both in onBatch (streaming) and at the end of
+  // run() (small-doc path). `isStreaming={d.loading}` keeps the streaming
+  // progress bar visible inside DiffViewer.
   return (
     <div className="relative flex flex-col h-full min-h-0">
 
       {active === "selector" && (
-        <WorkflowSelector canWf2={canWf2} canWf3={canWf3} onSelect={selectWorkflow} />
+        <WorkflowSelector canBrowse={canBrowse} canEdit={canEdit} onSelect={selectWorkflow} />
       )}
 
-      {(active === "wf2" || active === "wf3") && (
+      {(active === "browse" || active === "edit") && (
         <div className="flex-1 overflow-hidden min-h-0">
           {/* FIX Issue 1: show DiffViewer as soon as the first batch arrives.
               Pass isStreaming so it can display a progress bar while remaining
@@ -646,6 +720,13 @@ export default function ComparePage() {
               initialSection={d.selectedSec}
               sectionMapper={sectionMapper}
             />
+          ) : d.result && d.showModal && d.showDetection && !d.loading ? (
+            <ChunkDetectionModal
+              result={d.result}
+              xmlSections={d.xmlSections}
+              sectionMapper={sectionMapper}
+              onClose={() => d.setShowDetection(false)}
+            />
           ) : d.result && d.showModal && !d.loading ? (
             <ChangeSummaryModal
               result={d.result}
@@ -653,6 +734,7 @@ export default function ComparePage() {
               sectionMapper={sectionMapper}
               onViewAll={() => { d.setSelectedSec(null); d.setShowModal(false); }}
               onSelectSection={(label) => { d.setSelectedSec(label); d.setShowModal(false); }}
+              onViewDetection={() => d.setShowDetection(true)}
             />
           ) : (
             <DiffUpload
@@ -672,9 +754,9 @@ export default function ComparePage() {
               onSectionsLoaded={d.setXmlSections}
               onAllSectionsLoaded={d.setAllSections}
               onBack={() => { d.reset(); setActive("selector"); }}
-              title={active === "wf3" ? "Compare & Apply" : "Chunk & Compare"}
+              title={active === "edit" ? "Compare & Apply" : "Chunk & Compare"}
               subtitle={
-                active === "wf3"
+                active === "edit"
                   ? "Upload Old PDF, New PDF, and XML — detect and apply changes"
                   : "Upload Old PDF, New PDF, and XML — browse changes by section"
               }

@@ -85,6 +85,7 @@ export const ROUTE_FEATURE_GATES: Array<{
   { path: "/dashboard/history",              features: "user-logs" },
   { path: "/dashboard/brd",                  features: ["brd-process", "brd-view-generate"] },
   { path: "/dashboard/compare",              features: ["compare-basic", "compare-pdf-xml-only"] },
+  { path: "/dashboard/webscrape",            features: "webscrape" },
 ];
 
 // ─── DYNAMIC ROLE DISPLAY ─────────────────────────────────

@@ -1,4 +1,4 @@
-export type CompareType = "wf2" | "wf3" | "direct" | "chunk";
+export type CompareType = "wf2" | "wf3" | "direct" | "chunk" | "browse" | "edit";
 export type CanonicalCompareType = "wf2" | "wf3";
 
 export interface CompareEvent {
@@ -10,9 +10,9 @@ export interface CompareEvent {
 const STORAGE_KEY = "structo_compare_analytics";
 
 function normalizeCompareType(type: CompareType): CanonicalCompareType {
-  if (type === "chunk") return "wf2";
-  if (type === "direct") return "wf3";
-  return type;
+  if (type === "chunk" || type === "browse") return "wf2";
+  if (type === "direct" || type === "edit")  return "wf3";
+  return type as CanonicalCompareType;
 }
 
 export function trackCompareUsage(type: CompareType, userId: string): void {
