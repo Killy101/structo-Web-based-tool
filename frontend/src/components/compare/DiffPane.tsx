@@ -207,9 +207,10 @@ export function tagToStyle(
     kind === "mod" && !cfg.background ? undefined :
     kind;
 
-  if (cfg.font) {
-    if (cfg.font.style.includes("bold"))   s.fontWeight = "bold";
-    if (cfg.font.style.includes("italic")) s.fontStyle  = "italic";
+  if (cfg.font && !Array.isArray(cfg.font)) {
+    const fontStyle = cfg.font.style ?? "";
+    if (fontStyle.includes("bold"))   s.fontWeight = "bold";
+    if (fontStyle.includes("italic")) s.fontStyle  = "italic";
   }
 
   const isStrikeContent =

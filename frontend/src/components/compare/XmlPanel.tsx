@@ -1,5 +1,5 @@
 "use client";
-import React, { forwardRef, useRef, useState } from "react";
+import React, { forwardRef, useMemo, useRef, useState } from "react";
 import XmlEditor from "./XmlEditor";
 import type { Chunk, WorkflowMode, XmlScrollTarget } from "./types";
 
@@ -238,6 +238,19 @@ function _renderTokensWithHighlight(
   });
 }
 
+// Defined outside any component so React Compiler does not track the
+// `state` mutation as a render-scoped variable reassignment.
+// Takes the raw visible-text string and splits it internally so the caller
+// can list it as the sole honest dependency of useMemo.
+function _tokenizeAllLines(visibleText: string): XmlToken[][] {
+  let state: TokenizeState = "text";
+  return visibleText.split("\n").map((lineText) => {
+    const { tokens, outState } = _tokenizeLine(lineText, state);
+    state = outState;
+    return tokens;
+  });
+}
+
 function XmlBody({
   text,
   navSpan,
@@ -275,13 +288,10 @@ function XmlBody({
     return offset;
   });
 
-  // Tokenize all visible lines with carry-over state for multi-line constructs
-  let tokenizerState: TokenizeState = "text";
-  const tokenizedLines = lines.map((lineText) => {
-    const { tokens, outState } = _tokenizeLine(lineText, tokenizerState);
-    tokenizerState = outState;
-    return tokens;
-  });
+  // Tokenize all visible lines with carry-over state for multi-line constructs.
+  // _tokenizeAllLines is a plain function (outside component scope) so React
+  // Compiler does not flag the internal state mutation.
+  const tokenizedLines = useMemo(() => _tokenizeAllLines(visibleText), [visibleText]);
 
   return (
     <div className="space-y-0">

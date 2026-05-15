@@ -7146,7 +7146,7 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
     char_pos        = [0]
     seq             = [0]
 
-    _F = (BASE_FONT_FAMILY, BASE_FONT_SIZE)
+    _F = {"family": BASE_FONT_FAMILY, "size": BASE_FONT_SIZE, "style": ""}
     diff_styles = {
         "add":  {"background": ADD_BG, "foreground": ADD_FG,  "font": _F},
         "del":  {"background": DEL_BG, "foreground": DEL_FG,  "font": _F},
@@ -7178,8 +7178,13 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             fg = _span_fg(span)
         else:
             fg = COL_NORMAL
-        font = _span_font(span)
-        kw   = {"foreground": fg, "font": font}
+        font_tuple = _span_font(span)
+        font_dict  = {
+            "family": font_tuple[0],
+            "size":   font_tuple[1],
+            "style":  font_tuple[2] if len(font_tuple) > 2 else "",
+        }
+        kw   = {"foreground": fg, "font": font_dict}
         # Show underline only on diff-marked spans (bg_tag set); unchanged underlines
         # are suppressed because they are almost always hyperlinks in legal PDFs.
         if span.underline and bg_tag:  kw["underline"]  = True
@@ -7193,10 +7198,10 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
         if bg_tag:
             bg = diff_styles[bg_tag]["background"]
             kw["background"] = bg
-            pool_key = ("_pool_", fg, font, span.underline, span.strikeout, bg)
+            pool_key = ("_pool_", fg, font_tuple, span.underline, span.strikeout, bg)
         else:
             # Unchanged text: all spans collapse to same plain-text tag per font/strikeout
-            pool_key = ("_pool_", COL_NORMAL, font, False, span.strikeout, None)
+            pool_key = ("_pool_", COL_NORMAL, font_tuple, False, span.strikeout, None)
 
         existing = tag_cfgs.get(pool_key)
         if existing is None:
@@ -7367,7 +7372,12 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
 
                     def _fe(buf, hi, fg, font, span, empinfo=None):
                         if not buf: return
-                        kw = {"foreground": (EMP_FG if hi else fg), "font": font}
+                        font_dict = {
+                            "family": font[0],
+                            "size":   font[1],
+                            "style":  font[2] if len(font) > 2 else "",
+                        }
+                        kw = {"foreground": (EMP_FG if hi else fg), "font": font_dict}
                         if hi:
                             # Only apply the span's decorations (underline/overstrike)
                             # to highlighted (changed) words.  Applying them to
@@ -7386,7 +7396,7 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                                 lost   = any(o and not s for s, o in zip(self_e, other_e))
                                 if gained:
                                     # This side HAS the emphasis — show it clearly
-                                    kw["font"] = (font[0], font[1], "bold italic") if len(font) >= 2 else font
+                                    kw["font"] = {"family": font[0], "size": font[1], "style": "bold italic"}
                                 elif lost:
                                     # This side LOST the emphasis — show strikethrough hint
                                     kw["overstrike"] = True
@@ -7520,7 +7530,9 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                     def _flush_mod_buf(bw, bk):
                         if not bw: return
                         text = " ".join(bw) + " "
-                        sk = (bk.get("foreground"), bk.get("font"),
+                        _fd = bk.get("font") or {}
+                        sk = (bk.get("foreground"),
+                              (_fd.get("family"), _fd.get("size"), _fd.get("style")),
                               bk.get("underline"), bk.get("overstrike"),
                               bk.get("background"))
                         ex = tag_cfgs.get(("_pool_", sk))
@@ -7537,7 +7549,11 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                             continue
                         fg2    = _span_fg(sp2)
                         font2  = _span_font(sp2)
-                        kw2: dict = {"foreground": fg2, "font": font2}
+                        kw2: dict = {"foreground": fg2, "font": {
+                            "family": font2[0],
+                            "size":   font2[1],
+                            "style":  font2[2] if len(font2) > 2 else "",
+                        }}
                         if sp2.underline:  kw2["underline"]  = True
                         if sp2.strikeout:  kw2["overstrike"] = True
                         if is_c:
