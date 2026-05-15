@@ -491,6 +491,7 @@ async def diff_pdfs_stream(
     page_start_b: Optional[int]    = Form(None),
     page_end_b:   Optional[int]    = Form(None),
 ):
+    global _active_diffs
     with _active_diffs_lock:
         if _active_diffs >= _MAX_CONCURRENT_DIFFS:
             raise HTTPException(
@@ -498,7 +499,6 @@ async def diff_pdfs_stream(
                 detail=f"Server busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons running.",
                 headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
             )
-        global _active_diffs
         _active_diffs += 1
     try:
         _check_file_size(old_file)
@@ -624,6 +624,7 @@ async def diff_pdfs_stream(
                     except OSError: pass
 
     async def _generate():
+        global _active_diffs
         loop     = asyncio.get_running_loop()
         fut      = loop.run_in_executor(None, _run)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
@@ -648,7 +649,6 @@ async def diff_pdfs_stream(
                         break
                     await asyncio.sleep(0.05)
         finally:
-            global _active_diffs
             with _active_diffs_lock:
                 _active_diffs -= 1
 
@@ -668,6 +668,7 @@ async def diff_pdfs_stream_large(
     xml_file_a: Optional[UploadFile] = File(None),
     xml_file_b: Optional[UploadFile] = File(None),
 ):
+    global _active_diffs
     if _extractor is None:
         raise HTTPException(status_code=501, detail="load_pdf_batched not available.")
 
@@ -678,7 +679,6 @@ async def diff_pdfs_stream_large(
                 detail=f"Server busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons running.",
                 headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
             )
-        global _active_diffs
         _active_diffs += 1
     try:
         _check_file_size(old_file)
@@ -1017,6 +1017,7 @@ async def diff_pdfs_stream_large(
                     except OSError: pass
 
     async def _generate_large():
+        global _active_diffs
         loop     = asyncio.get_running_loop()
         fut      = loop.run_in_executor(None, _run_large)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
@@ -1041,7 +1042,6 @@ async def diff_pdfs_stream_large(
                         break
                     await asyncio.sleep(0.05)
         finally:
-            global _active_diffs
             with _active_diffs_lock:
                 _active_diffs -= 1
 
