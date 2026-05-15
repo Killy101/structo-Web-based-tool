@@ -238,6 +238,17 @@ function _renderTokensWithHighlight(
   });
 }
 
+// Defined outside any component so React Compiler does not track the
+// `state` mutation as a render-scoped variable reassignment.
+function _tokenizeAllLines(lines: string[]): XmlToken[][] {
+  let state: TokenizeState = "text";
+  return lines.map((lineText) => {
+    const { tokens, outState } = _tokenizeLine(lineText, state);
+    state = outState;
+    return tokens;
+  });
+}
+
 function XmlBody({
   text,
   navSpan,
@@ -276,16 +287,9 @@ function XmlBody({
   });
 
   // Tokenize all visible lines with carry-over state for multi-line constructs.
-  // useMemo ensures the stateful accumulation of tokenizerState is scoped to the
-  // memoization callback rather than the render body (React Compiler requirement).
-  const tokenizedLines = useMemo(() => {
-    let state: TokenizeState = "text";
-    return lines.map((lineText) => {
-      const { tokens, outState } = _tokenizeLine(lineText, state);
-      state = outState;
-      return tokens;
-    });
-  }, [visibleText]); // eslint-disable-line react-hooks/exhaustive-deps
+  // _tokenizeAllLines is a plain function (outside component scope) so React
+  // Compiler does not flag the internal state mutation.
+  const tokenizedLines = useMemo(() => _tokenizeAllLines(lines), [visibleText]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-0">
