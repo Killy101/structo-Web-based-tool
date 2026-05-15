@@ -177,63 +177,9 @@ export default function DiffViewer({
   const alignmentChunks = useMemo(() => [...result.chunks], [result.chunks]);
 
   // Build raw aligned lines from pane data + chunk positions.
-  // This is the pure alignment computation; it knows nothing about UI state.
-  const { linesA: rawLinesA, linesB: rawLinesB } = useMemo(
-    () => buildAlignedLines(result.pane_a, result.pane_b, alignmentChunks),
-    [result.pane_a, result.pane_b, alignmentChunks],
-  );
-
-  // Apply optional folding.
-  // When showAllContext=true (default) no lines are hidden.
-  // foldMap is returned by foldUnchangedLines so expansion uses exact raw slices.
-  const { linesA, linesB } = useMemo(() => {
-    if (showAllContext || wrapLines) {
-      return { linesA: rawLinesA, linesB: rawLinesB };
-    }
-
-    const { linesA: fA, linesB: fB, foldMap } = foldUnchangedLines(rawLinesA, rawLinesB);
-
-    const outA: AlignedLine[] = [];
-    const outB: AlignedLine[] = [];
-
-    for (let i = 0; i < fA.length; i++) {
-      const a = fA[i];
-      const b = fB[i];
-
-      if (a && !Array.isArray(a) && typeof a === "object" && a.type === "fold") {
-        if (expandedFoldKeys.has(a.key)) {
-          const meta: FoldMapEntry | undefined = foldMap.get(a.key);
-          if (meta) {
-            outA.push(...rawLinesA.slice(meta.rawStart, meta.rawStart + meta.count));
-            outB.push(...rawLinesB.slice(meta.rawStart, meta.rawStart + meta.count));
-          }
-        } else {
-          outA.push(a);
-          outB.push(b);
-        }
-        continue;
-      }
-
-      outA.push(a);
-      outB.push(b);
-    }
-
-    return { linesA: outA, linesB: outB };
-  }, [showAllContext, wrapLines, rawLinesA, rawLinesB, expandedFoldKeys]);
+  // This is the pure alignment computation; it knows nothing about UI state
 
   // Reset fold/review state when result changes
-  useEffect(() => {
-    setExpandedFoldKeys(new Set());
-    setReviewedIds(new Set());
-  }, [result.chunks]);
-
-  const handleUnfoldRow = useCallback((foldKey: number) => {
-    setExpandedFoldKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(foldKey)) next.delete(foldKey); else next.add(foldKey);
-      return next;
-    });
-  }, []);
 
   // ── Auto-scroll to first chunk on load ───────────────────────────────────
   const didAutoScrollRef = useRef(false);

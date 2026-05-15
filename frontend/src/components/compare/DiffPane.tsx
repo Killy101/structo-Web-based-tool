@@ -558,7 +558,6 @@ interface InnerProps {
   activeChunkId:  number | null;
   activeChunkCSS: string;
   scrollRef:      React.RefObject<HTMLDivElement>;
-  wrapLines:      boolean;
   dark:           boolean;
   onChunkClick?:  (chunkId: number) => void;
   onScroll:       () => void;
@@ -674,7 +673,7 @@ function DiffPaneInner({
                   position:       "absolute",
                   top: 0, left: 0, right: 0,
                   transform:      `translateY(${vRow.start}px)`,
-                  height:         FOLD_HEIGHT_PX,
+                  height:         ROW_HEIGHT_PX,
                   cursor:         "pointer",
                   userSelect:     "none",
                   display:        "flex",
