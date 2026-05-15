@@ -39,7 +39,6 @@ interface Props {
   syncScrollLeft?:   number | null;
   headerStats?:      HeaderStat[];
   onJumpToFirst?:    () => void;
-  wrapLines?:        boolean;
   alignedLines?:     AlignedLine[];
   contextLines?:     number;
   onUnfoldRow?:      (foldKey: number) => void;
@@ -54,7 +53,6 @@ interface InnerProps {
   activeChunkId:  number | null;
   activeChunkCSS: string;
   scrollRef:      React.RefObject<HTMLDivElement>;
-  wrapLines:      boolean;
   dark:           boolean;
   onChunkClick?:  (chunkId: number) => void;
   onScroll:       () => void;
@@ -595,7 +593,6 @@ function DiffPaneInner({
   activeChunkId,
   activeChunkCSS,
   scrollRef,
-  wrapLines,
   dark,
   onChunkClick,
   onScroll,
@@ -612,11 +609,11 @@ function DiffPaneInner({
       if (i >= lines.length) return ROW_HEIGHT_PX;
       const l = lines[i];
       if (l && !Array.isArray(l) && "type" in l && l.type === "fold") return 20;
-      return wrapLines ? 48 : ROW_HEIGHT_PX;
+      return ROW_HEIGHT_PX;
     },
     measureElement: (el) => el?.getBoundingClientRect().height ?? ROW_HEIGHT_PX,
     getItemKey:     (index) => index,
-    overscan:       wrapLines ? 4 : 8,
+    overscan:       8,
   });
 
   // Stable deps so this doesn't re-fire on every render.
@@ -625,7 +622,7 @@ function DiffPaneInner({
   useEffect(() => {
     const id = requestAnimationFrame(() => { virtualizer.measure(); });
     return () => cancelAnimationFrame(id);
-  }, [lines.length, wrapLines]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lines.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stable measureElement callback — prevents double-measurement in React 18 strict mode.
   const measureRef = useCallback(
@@ -658,8 +655,8 @@ function DiffPaneInner({
         style={{
           height:       virtualizer.getTotalSize(),
           lineHeight:   "1.6",
-          overflowWrap: wrapLines ? "break-word" : "normal",
-          wordBreak:    wrapLines ? "break-word" : "normal",
+          overflowWrap: "normal",
+          wordBreak:    "normal",
         }}
       >
         {virtualizer.getVirtualItems().map((vRow) => {
@@ -848,7 +845,7 @@ function DiffPaneInner({
                 <span className="sticky left-0 z-[1] select-none border-r border-slate-200 bg-white pr-2 text-right text-[10px] font-medium tabular-nums text-slate-400 dark:border-white/10 dark:bg-[#0a1020] dark:text-slate-500">
                   {vRow.index + 1}
                 </span>
-                <span className={wrapLines ? "whitespace-pre-wrap break-words" : "whitespace-pre"}>
+                <span className="whitespace-pre">
                   {lineNodes.length > 0 ? lineNodes : " "}
                 </span>
               </div>
@@ -876,7 +873,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       syncScrollLeft,
       headerStats,
       onJumpToFirst,
-      wrapLines = false,
       alignedLines,
       onUnfoldRow,
       isScrollSource = false,
@@ -1035,7 +1031,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         onScrollLeft(container.scrollLeft);
       }
 
-      if (syncingRef.current || wrapLines) return;
+      if (syncingRef.current) return;
       if (!onScrollFraction) return;
       if (scrollFrameRef.current !== null) return;
 
@@ -1048,7 +1044,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
 
         const emitFraction = container.scrollTop / maxScroll;
         const ROW_TOL =
-          (wrapLines ? 48 : ROW_HEIGHT_PX) /
+          ROW_HEIGHT_PX /
           Math.max(1, container.scrollHeight);
         if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= ROW_TOL) {
           lastReceivedFractionRef.current = -1;
@@ -1057,7 +1053,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         lastReceivedFractionRef.current = -1;
         onScrollFraction(emitFraction);
       });
-    }, [onScrollFraction, onScrollLeft, wrapLines]);
+    }, [onScrollFraction, onScrollLeft]);
 
     useEffect(() => {
       return () => {
@@ -1128,7 +1124,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           activeChunkId={activeChunkId}
           activeChunkCSS={activeChunkCSS}
           scrollRef={scrollRef}
-          wrapLines={wrapLines}
           dark={dark}
           onChunkClick={onChunkClick}
           onScroll={handleScroll}

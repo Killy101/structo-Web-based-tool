@@ -124,9 +124,7 @@ export default function DiffViewer({
   const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
   const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
-  const [wrapLines,     setWrapLines]     = useState(false);
   const [syncScrollLeft, setSyncScrollLeft] = useState<{side:"a"|"b"; left:number} | null>(null);
-  const [sidebarOpen,   setSidebarOpen]   = useState(true);
   const [wordPanelOpen, setWordPanelOpen] = useState(true);
   const [applyHistory, setApplyHistory]   = useState<{ xmlText: string; appliedId: number }[]>([]);
   const [expandedFoldKeys, setExpandedFoldKeys] = useState<Set<number>>(() => new Set());
@@ -136,7 +134,6 @@ export default function DiffViewer({
   // Users can toggle folding with the "Collapse" button or press C.
   const [showAllContext, setShowAllContext] = useState(true);
 
-  const [reviewedIds,  setReviewedIds]    = useState<Set<number>>(new Set());
   const [pulseSide,    setPulseSide]      = useState<"old" | "new" | null>(null);
 
   const containerRef   = useRef<HTMLDivElement>(null);
@@ -272,7 +269,7 @@ export default function DiffViewer({
   // When the user explicitly toggles folding, foldUnchangedLines runs and
   // the foldMap returned is used for O(1) safe fold expansion.
   const { linesA, linesB } = useMemo(() => {
-    if (showAllContext || wrapLines) {
+    if (showAllContext) {
       // No folding — return aligned lines unchanged.
       return { linesA: rawLinesA, linesB: rawLinesB };
     }
@@ -308,12 +305,11 @@ export default function DiffViewer({
     }
 
     return { linesA: outA, linesB: outB };
-  }, [showAllContext, wrapLines, rawLinesA, rawLinesB, expandedFoldKeys]);
+  }, [showAllContext, rawLinesA, rawLinesB, expandedFoldKeys]);
 
 
   useEffect(() => {
     setExpandedFoldKeys(new Set());
-    setReviewedIds(new Set());
   }, [result.chunks]);
 
   const handleUnfoldRow = useCallback((foldKey: number) => {
@@ -371,7 +367,6 @@ export default function DiffViewer({
     if (navSyncLockSafetyTimerRef.current) clearTimeout(navSyncLockSafetyTimerRef.current);
     navSyncLockSafetyTimerRef.current = setTimeout(() => { navSyncLockRef.current = false; }, 500);
     if (autoAdvanceTimerRef.current) { clearTimeout(autoAdvanceTimerRef.current); autoAdvanceTimerRef.current = null; }
-    setReviewedIds((prev) => { const next = new Set(prev); next.add(id); return next; });
 
     try {
       const chunk = result.chunks.find((c) => c.id === id);
@@ -434,7 +429,6 @@ export default function DiffViewer({
       if (target?.closest?.(".monaco-editor")) return;
       if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); goTo(1);  }
       if (e.key === "ArrowLeft"  || e.key === "ArrowUp"   || e.key === "k") { e.preventDefault(); goTo(-1); }
-      if (e.key === "w" || e.key === "W") setWrapLines((v) => !v);
       if (e.key === "x" || e.key === "X") setXmlOpen((v) => !v);
       if (e.key === "c" || e.key === "C") setShowAllContext((v) => !v);
     };
@@ -573,17 +567,6 @@ export default function DiffViewer({
       applyLockRef.current = false;
     }
   }, [mode, xmlText, filteredChunks]);
-
-  // FIX: was finding the next chunk but never calling selectChunk(next.id).
-  const goToNextUnreviewed = useCallback(() => {
-    const startIdx = activeFilteredIndex >= 0 ? activeFilteredIndex + 1 : 0;
-    const candidates = [
-      ...filteredChunks.slice(startIdx),
-      ...filteredChunks.slice(0, startIdx),
-    ];
-    const next = candidates.find((c) => !reviewedIds.has(c.id));
-    if (next) void selectChunk(next.id);
-  }, [filteredChunks, activeFilteredIndex, reviewedIds, selectChunk]);
 
   const downloadXml = useCallback(() => {
     if (mode !== "edit") return;
@@ -815,35 +798,7 @@ export default function DiffViewer({
           </button>
         </div>
 
-        {filteredChunks.length > 0 && reviewedIds.size > 0 && filteredChunks.some((c) => !reviewedIds.has(c.id)) && (
-          <button onClick={goToNextUnreviewed} title="Jump to next unreviewed change"
-            className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold
-              bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 border border-teal-500/20 transition-all">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-            </svg>
-            <span className="hidden sm:inline">Unreviewed ({filteredChunks.filter((c) => !reviewedIds.has(c.id)).length})</span>
-          </button>
-        )}
-
-        <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
-
         <div className="flex items-center gap-1 flex-shrink-0">
-          <IconBtn title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} active={sidebarOpen} onClick={() => setSidebarOpen((v) => !v)}>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-            <span className="hidden sm:inline">List</span>
-          </IconBtn>
-
-          <IconBtn title={wrapLines ? "Aligned lines (W)" : "Wrap lines (W)"} active={wrapLines} onClick={() => setWrapLines((v) => !v)}>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h8m-4 6l4-4-4-4" />
-            </svg>
-            <span className="hidden sm:inline">Wrap</span>
-          </IconBtn>
-
           {/* Show All Lines toggle — default ON so nothing is hidden */}
           <IconBtn
             title={showAllContext ? "Collapse unchanged lines (C)" : "Show all lines (C)"}
@@ -905,8 +860,6 @@ export default function DiffViewer({
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">← →</kbd>
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">J K</kbd>
           navigate
-          <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">W</kbd>
-          wrap
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">C</kbd>
           context
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">X</kbd>
@@ -961,55 +914,33 @@ export default function DiffViewer({
       {/* Main content area */}
       <div className="flex-1 overflow-hidden min-h-0 flex">
 
-        {sidebarOpen && (
-          <div className="flex-shrink-0 w-[240px] min-w-[240px] flex flex-col
-            border-r border-slate-200 dark:border-white/8">
-            <ChunkList
-              chunks={filteredChunks}
-              stats={filteredStats}
-              activeId={activeId}
-              appliedIds={appliedIds}
-              reviewedIds={reviewedIds}
-              onSelect={selectChunk}
-              collapsed={false}
-              onToggle={() => setSidebarOpen(false)}
-              headerActions={mode === "edit" && filteredChunks.some((c) => !appliedIds.has(c.id)) ? (
-                <button
-                  onClick={() => void applyAllVisible()}
-                  disabled={applyStatus === "applying"}
-                  className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg
-                    text-[10px] font-semibold bg-violet-500/15 text-violet-400
-                    hover:bg-violet-500/25 border border-violet-500/30 transition-all
-                    disabled:opacity-40 disabled:cursor-not-allowed"
-                  title="Apply all currently-visible unapplied changes to the XML"
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Apply All Visible ({filteredChunks.filter((c) => !appliedIds.has(c.id)).length})
-                </button>
-              ) : undefined}
-            />
-          </div>
-        )}
-
-        {!sidebarOpen && (
-          <div className="flex-shrink-0 flex flex-col items-center py-3 gap-2 bg-slate-50 dark:bg-[#0d1424]
-            border-r border-slate-200 dark:border-white/8">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-white/8 text-slate-400 transition-colors"
-              title="Expand sidebar"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-              </svg>
-            </button>
-            <span className="text-[9px] font-bold text-slate-400 [writing-mode:vertical-lr] tracking-wider">
-              {filteredStats.total} CHANGES
-            </span>
-          </div>
-        )}
+        <div className="flex-shrink-0 w-[240px] min-w-[240px] flex flex-col
+          border-r border-slate-200 dark:border-white/8">
+          <ChunkList
+            chunks={filteredChunks}
+            stats={filteredStats}
+            activeId={activeId}
+            appliedIds={appliedIds}
+            onSelect={selectChunk}
+            collapsed={false}
+            headerActions={mode === "edit" && filteredChunks.some((c) => !appliedIds.has(c.id)) ? (
+              <button
+                onClick={() => void applyAllVisible()}
+                disabled={applyStatus === "applying"}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg
+                  text-[10px] font-semibold bg-violet-500/15 text-violet-400
+                  hover:bg-violet-500/25 border border-violet-500/30 transition-all
+                  disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Apply all currently-visible unapplied changes to the XML"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                Apply All Visible ({filteredChunks.filter((c) => !appliedIds.has(c.id)).length})
+              </button>
+            ) : undefined}
+          />
+        </div>
 
         <div ref={containerRef} className="flex-1 min-w-0 flex flex-col overflow-hidden">
 
@@ -1024,13 +955,12 @@ export default function DiffViewer({
                 activeChunk={activeChunk}
                 filename={result.file_a}
                 side="a"
-                wrapLines={wrapLines}
                 alignedLines={linesA}
                 headerStats={paneAHeaderStats}
                 onJumpToFirst={firstPaneAChunk ? () => selectChunk(firstPaneAChunk.id) : undefined}
                 onChunkClick={selectChunk}
                 onScrollFraction={(f) => schedulePanelSync("old", f)}
-                onScrollLeft={(left) => !wrapLines && setSyncScrollLeft({ side: "a", left })}
+                onScrollLeft={(left) => setSyncScrollLeft({ side: "a", left })}
                 syncScrollLeft={syncScrollLeft?.side === "b" ? syncScrollLeft.left : null}
                 onUnfoldRow={handleUnfoldRow}
                 isScrollSource={pulseSide === "old"}
@@ -1061,13 +991,12 @@ export default function DiffViewer({
                 activeChunk={activeChunk}
                 filename={result.file_b}
                 side="b"
-                wrapLines={wrapLines}
                 alignedLines={linesB}
                 headerStats={paneBHeaderStats}
                 onJumpToFirst={firstPaneBChunk ? () => selectChunk(firstPaneBChunk.id) : undefined}
                 onChunkClick={selectChunk}
                 onScrollFraction={(f) => schedulePanelSync("new", f)}
-                onScrollLeft={(left) => !wrapLines && setSyncScrollLeft({ side: "b", left })}
+                onScrollLeft={(left) => setSyncScrollLeft({ side: "b", left })}
                 syncScrollLeft={syncScrollLeft?.side === "a" ? syncScrollLeft.left : null}
                 onUnfoldRow={handleUnfoldRow}
                 isScrollSource={pulseSide === "new"}
@@ -1161,10 +1090,6 @@ export default function DiffViewer({
         <span className="text-slate-400 dark:text-slate-600">
           {posLabel} changes
         </span>
-
-        {wrapLines && (
-          <span className="text-teal-500/70">wrap</span>
-        )}
 
         {!showAllContext && (
           <span className="text-amber-500/70">folded</span>

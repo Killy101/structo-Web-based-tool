@@ -12,14 +12,9 @@ interface Props {
   collapsed?: boolean;
   onToggle?: () => void;
   headerActions?: React.ReactNode;
-  /** Set of chunk IDs the user has already visited (reviewed). Used to show
-   *  a subtle indicator and power the "Next unreviewed" navigation. */
-  reviewedIds?: Set<number>;
 }
 
 type FilterKind = "all" | ChunkKind;  // includes "strike"
-
-const CONFIDENCE_THRESHOLD = 0.80;
 
 interface SectionGroup {
   label: string;
@@ -49,13 +44,11 @@ const ChunkRow = React.memo(function ChunkRow({
   ch,
   isActive,
   isApplied,
-  isReviewed,
   onSelect,
 }: {
   ch: Chunk;
   isActive: boolean;
   isApplied: boolean;
-  isReviewed: boolean;
   onSelect: (id: number) => void;
 }) {
   const m = KIND_META[ch.kind];
@@ -84,10 +77,6 @@ const ChunkRow = React.memo(function ChunkRow({
       <span className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed font-mono break-words min-w-0">
         {isApplied && (
           <span className="text-emerald-500 font-bold mr-1">✓</span>
-        )}
-        {/* Reviewed indicator: dim dot for chunks the user has visited but not applied */}
-        {isReviewed && !isApplied && !isActive && (
-          <span className="text-slate-400/50 mr-1" title="Reviewed">&#x25CF;</span>
         )}
         {preview}
         {preview.length === 55 ? "…" : ""}
@@ -153,13 +142,11 @@ function SectionHeader({
   group,
   activeId,
   appliedIds,
-  reviewedIds,
   onSelect,
 }: {
   group: SectionGroup;
   activeId: number | null;
   appliedIds: Set<number>;
-  reviewedIds?: Set<number>;
   onSelect: (id: number) => void;
 }) {
   const appliedCount = group.chunks.filter((c) => appliedIds.has(c.id)).length;
@@ -204,7 +191,6 @@ function SectionHeader({
             ch={ch}
             isActive={ch.id === activeId}
             isApplied={appliedIds.has(ch.id)}
-            isReviewed={reviewedIds?.has(ch.id) ?? false}
             onSelect={onSelect}
           />
         ))}
@@ -214,18 +200,13 @@ function SectionHeader({
 }
 
 export default function ChunkList({
-  chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions, reviewedIds,
+  chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions,
 }: Props) {
   const [filter, setFilter] = useState<FilterKind>("all");
-  const [hideLoConfidence, setHideLoConfidence] = useState(false);
 
   const filtered = useMemo(() => {
-    let result = filter === "all" ? chunks : chunks.filter((c) => c.kind === filter);
-    if (hideLoConfidence) {
-      result = result.filter((c) => c.kind !== "mod" || c.confidence >= CONFIDENCE_THRESHOLD);
-    }
-    return result;
-  }, [chunks, filter, hideLoConfidence]);
+    return filter === "all" ? chunks : chunks.filter((c) => c.kind === filter);
+  }, [chunks, filter]);
 
   const hasSections = chunks.some((c) => c.section);
   const groups = useMemo(
@@ -307,23 +288,6 @@ export default function ChunkList({
           {filterBtn("emp", "○", stats.emphasis, "bg-violet-600")}
           {(stats.strike ?? 0) > 0 && filterBtn("strike", "~̶", stats.strike ?? 0, "bg-rose-800")}
         </div>
-        {/* Confidence filter toggle — hides low-confidence MOD chunks */}
-        {stats.modifications > 0 && (
-          <button
-            onClick={() => setHideLoConfidence((v) => !v)}
-            className={`mt-1.5 w-full flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-semibold transition-all
-              ${hideLoConfidence
-                ? "bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30"
-                : "text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 border border-transparent"
-              }`}
-            title="Hide modifications flagged as low-confidence (likely formatting differences)"
-          >
-            <span className="w-2.5 h-2.5 rounded-full border border-current flex-shrink-0 flex items-center justify-center">
-              {hideLoConfidence && <span className="w-1 h-1 rounded-full bg-current" />}
-            </span>
-            Hide low-confidence changes
-          </button>
-        )}
       </div>
 
       {/* List */}
@@ -334,7 +298,6 @@ export default function ChunkList({
             group={group}
             activeId={activeId}
             appliedIds={appliedIds}
-            reviewedIds={reviewedIds}
             onSelect={onSelect}
           />
         )) : filtered.map((ch) => (
@@ -343,7 +306,6 @@ export default function ChunkList({
             ch={ch}
             isActive={ch.id === activeId}
             isApplied={appliedIds.has(ch.id)}
-            isReviewed={reviewedIds?.has(ch.id) ?? false}
             onSelect={onSelect}
           />
         ))}
