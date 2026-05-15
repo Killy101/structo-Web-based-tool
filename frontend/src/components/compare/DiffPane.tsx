@@ -14,11 +14,51 @@ import type { Chunk, ChunkKind, DiffPaneHandle, PaneData, TagConfig } from "./ty
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const ROW_HEIGHT_PX  = 24;
-const FOLD_HEIGHT_PX = 20;
-const CONTEXT_LINES  = 10;
-/** Fraction of scrollHeight to treat as "same position" during sync. */
-const SYNC_TOL_FRAC  = 2 / window.screen.height; // ~2px in fraction space
+const ROW_HEIGHT_PX = 24;
+const CONTEXT_LINES = 10;
+
+// ── Interfaces ────────────────────────────────────────────────────────────────
+
+interface HeaderStat {
+  label:      string;
+  count:      number;
+  colorClass: string;
+  title:      string;
+}
+
+interface Props {
+  pane:              PaneData;
+  chunks:            Chunk[];
+  activeChunkId:     number | null;
+  activeChunk?:      Chunk | null;
+  filename:          string;
+  side:              "a" | "b";
+  onChunkClick?:     (chunkId: number) => void;
+  onScrollFraction?: (scrollFraction: number) => void;
+  onScrollLeft?:     (scrollLeft: number) => void;
+  syncScrollLeft?:   number | null;
+  headerStats?:      HeaderStat[];
+  onJumpToFirst?:    () => void;
+  alignedLines?:     AlignedLine[];
+  contextLines?:     number;
+  onUnfoldRow?:      (foldKey: number) => void;
+  isScrollSource?:   boolean;
+}
+
+interface InnerProps {
+  lines:          AlignedLine[];
+  allChunkTokens: Map<number, WordToken[]>;
+  pane:           PaneData;
+  kindMap:        Map<number, ChunkKind>;
+  activeChunkId:  number | null;
+  activeChunkCSS: string;
+  scrollRef:      React.RefObject<HTMLDivElement>;
+  dark:           boolean;
+  onChunkClick?:  (chunkId: number) => void;
+  onScroll:       () => void;
+  onVirtualizerReady: (v: ReturnType<typeof useVirtualizer<HTMLDivElement, Element>>) => void;
+  onUnfold:       (key: number) => void;
+}
 
 // ── Active highlight colours per kind ─────────────────────────────────────────
 
@@ -534,7 +574,6 @@ function DiffPaneInner({
   activeChunkId,
   activeChunkCSS,
   scrollRef,
-  wrapLines,
   dark,
   onChunkClick,
   onScroll,
@@ -549,12 +588,12 @@ function DiffPaneInner({
     estimateSize: (i) => {
       if (i >= lines.length) return ROW_HEIGHT_PX;
       const l = lines[i];
-      if (l && !Array.isArray(l) && "type" in l && l.type === "fold") return FOLD_HEIGHT_PX;
-      return wrapLines ? 48 : ROW_HEIGHT_PX;
+      if (l && !Array.isArray(l) && "type" in l && l.type === "fold") return 20;
+      return ROW_HEIGHT_PX;
     },
-    measureElement:  (el) => el?.getBoundingClientRect().height ?? ROW_HEIGHT_PX,
-    getItemKey:      (index) => index,
-    overscan:        wrapLines ? 4 : 10,
+    measureElement: (el) => el?.getBoundingClientRect().height ?? ROW_HEIGHT_PX,
+    getItemKey:     (index) => index,
+    overscan:       8,
   });
 
   useEffect(() => { onVirtualizerReady(virtualizer); }, [virtualizer, onVirtualizerReady]);
@@ -563,7 +602,7 @@ function DiffPaneInner({
   useEffect(() => {
     const id = requestAnimationFrame(() => { virtualizer.measure(); });
     return () => cancelAnimationFrame(id);
-  }, [lines.length, wrapLines]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lines.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const measureRef = useCallback(
     (el: Element | null) => { if (el) virtualizer.measureElement(el); },
@@ -595,8 +634,8 @@ function DiffPaneInner({
         style={{
           height:       virtualizer.getTotalSize(),
           lineHeight:   "1.6",
-          overflowWrap: wrapLines ? "break-word" : "normal",
-          wordBreak:    wrapLines ? "break-word" : "normal",
+          overflowWrap: "normal",
+          wordBreak:    "normal",
         }}
       >
         {virtualizer.getVirtualItems().map((vRow) => {
@@ -784,8 +823,8 @@ function DiffPaneInner({
                 <span className="sticky left-0 z-[1] select-none border-r border-slate-200 bg-white pr-2 text-right text-[10px] font-medium tabular-nums text-slate-400 dark:border-white/10 dark:bg-[#0a1020] dark:text-slate-500">
                   {vRow.index + 1}
                 </span>
-                <span className={wrapLines ? "whitespace-pre-wrap break-words" : "whitespace-pre"}>
-                  {lineNodes.length > 0 ? lineNodes : "\u00a0"}
+                <span className="whitespace-pre">
+                  {lineNodes.length > 0 ? lineNodes : " "}
                 </span>
               </div>
             </div>
@@ -841,7 +880,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       syncScrollLeft,
       headerStats,
       onJumpToFirst,
-      wrapLines    = false,
       alignedLines,
       onUnfoldRow,
       isScrollSource = false,
@@ -1001,7 +1039,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         onScrollLeft(container.scrollLeft);
       }
 
-      if (syncingRef.current || wrapLines) return;
+      if (syncingRef.current) return;
       if (!onScrollFraction) return;
       if (scrollFrameRef.current !== null) return;
 
@@ -1013,20 +1051,17 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         if (maxScroll <= 0) return;
 
         const emitFraction = container.scrollTop / maxScroll;
-
-        // Tolerance: skip if the received fraction is close enough to the emitted one
-        const tol = Math.max(
-          SYNC_TOL_FRAC,
-          (wrapLines ? 48 : ROW_HEIGHT_PX) / Math.max(1, container.scrollHeight),
-        );
-        if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= tol) {
+        const ROW_TOL =
+          ROW_HEIGHT_PX /
+          Math.max(1, container.scrollHeight);
+        if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= ROW_TOL) {
           lastReceivedFractionRef.current = -1;
           return;
         }
         lastReceivedFractionRef.current = -1;
         onScrollFraction(emitFraction);
       });
-    }, [onScrollFraction, onScrollLeft, wrapLines]);
+    }, [onScrollFraction, onScrollLeft]);
 
     useEffect(() => {
       return () => {
@@ -1098,7 +1133,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           activeChunkId={activeChunkId}
           activeChunkCSS={activeChunkCSS}
           scrollRef={scrollRef}
-          wrapLines={wrapLines}
           dark={dark}
           onChunkClick={onChunkClick}
           onScroll={handleScroll}
