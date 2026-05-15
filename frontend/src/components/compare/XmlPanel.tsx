@@ -1,5 +1,5 @@
 "use client";
-import React, { forwardRef, useRef, useState } from "react";
+import React, { forwardRef, useMemo, useRef, useState } from "react";
 import XmlEditor from "./XmlEditor";
 import type { Chunk, WorkflowMode, XmlScrollTarget } from "./types";
 
@@ -275,13 +275,17 @@ function XmlBody({
     return offset;
   });
 
-  // Tokenize all visible lines with carry-over state for multi-line constructs
-  let tokenizerState: TokenizeState = "text";
-  const tokenizedLines = lines.map((lineText) => {
-    const { tokens, outState } = _tokenizeLine(lineText, tokenizerState);
-    tokenizerState = outState;
-    return tokens;
-  });
+  // Tokenize all visible lines with carry-over state for multi-line constructs.
+  // useMemo ensures the stateful accumulation of tokenizerState is scoped to the
+  // memoization callback rather than the render body (React Compiler requirement).
+  const tokenizedLines = useMemo(() => {
+    let state: TokenizeState = "text";
+    return lines.map((lineText) => {
+      const { tokens, outState } = _tokenizeLine(lineText, state);
+      state = outState;
+      return tokens;
+    });
+  }, [visibleText]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-0">
