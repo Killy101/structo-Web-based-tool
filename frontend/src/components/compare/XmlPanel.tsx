@@ -84,86 +84,111 @@ const TOKEN_CLASS: Record<XmlTokenKind, string> = {
   text:     "text-slate-800 dark:text-[#d4d4d4]",        // near-black / near-white
 };
 
-function _tokenizeLine(line: string): XmlToken[] {
+type TokenizeState = "text" | "tag" | "comment" | "cdata" | "pi" | "doctype";
+
+function _tokenizeLine(line: string, inState: TokenizeState = "text"): { tokens: XmlToken[]; outState: TokenizeState } {
   const tokens: XmlToken[] = [];
   let i = 0;
+  let state = inState;
 
   function push(kind: XmlTokenKind, text: string) {
     if (text) tokens.push({ kind, text });
   }
 
+  // If we're resuming inside a multi-line construct, consume until its closer
+  if (state === "comment") {
+    const end = line.indexOf("-->", i);
+    if (end === -1) { push("comment", line); return { tokens, outState: "comment" }; }
+    push("comment", line.slice(i, end + 3)); i = end + 3; state = "text";
+  } else if (state === "cdata") {
+    const end = line.indexOf("]]>", i);
+    if (end === -1) { push("cdata", line); return { tokens, outState: "cdata" }; }
+    push("cdata", line.slice(i, end + 3)); i = end + 3; state = "text";
+  } else if (state === "pi") {
+    const end = line.indexOf("?>", i);
+    if (end === -1) { push("pi", line); return { tokens, outState: "pi" }; }
+    push("pi", line.slice(i, end + 2)); i = end + 2; state = "text";
+  } else if (state === "doctype") {
+    const end = line.indexOf(">", i);
+    if (end === -1) { push("doctype", line); return { tokens, outState: "doctype" }; }
+    push("doctype", line.slice(i, end + 1)); i = end + 1; state = "text";
+  } else if (state === "tag") {
+    // Inside a multi-line tag — consume attributes until >
+    while (i < line.length && line[i] !== ">") {
+      if (line[i] === "/" && line[i + 1] === ">") { push("bracket", "/>"); i += 2; state = "text"; break; }
+      if (line[i] === "=") { push("bracket", "="); i += 1; continue; }
+      if (line[i] === '"' || line[i] === "'") {
+        const q = line[i]; let j = i + 1;
+        while (j < line.length && line[j] !== q) j += 1;
+        push("value", line.slice(i, j + 1)); i = j + 1; continue;
+      }
+      if (/\s/.test(line[i])) {
+        let ws = "";
+        while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i += 1; }
+        push("text", ws); continue;
+      }
+      const attrStart = i;
+      while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
+      push("attr", line.slice(attrStart, i));
+    }
+    if (i < line.length && line[i] === ">") { push("bracket", ">"); i += 1; state = "text"; }
+    else if (i >= line.length) { return { tokens, outState: "tag" }; }
+  }
+
   while (i < line.length) {
-    // Comment
     if (line.startsWith("<!--", i)) {
       const end = line.indexOf("-->", i + 4);
-      if (end === -1) { push("comment", line.slice(i)); i = line.length; }
-      else            { push("comment", line.slice(i, end + 3)); i = end + 3; }
-      continue;
+      if (end === -1) { push("comment", line.slice(i)); return { tokens, outState: "comment" }; }
+      push("comment", line.slice(i, end + 3)); i = end + 3; continue;
     }
-    // CDATA
     if (line.startsWith("<![CDATA[", i)) {
       const end = line.indexOf("]]>", i + 9);
-      if (end === -1) { push("cdata", line.slice(i)); i = line.length; }
-      else            { push("cdata", line.slice(i, end + 3)); i = end + 3; }
-      continue;
+      if (end === -1) { push("cdata", line.slice(i)); return { tokens, outState: "cdata" }; }
+      push("cdata", line.slice(i, end + 3)); i = end + 3; continue;
     }
-    // DOCTYPE
     if (line.startsWith("<!", i) && !line.startsWith("<!--", i)) {
       const end = line.indexOf(">", i);
-      if (end === -1) { push("doctype", line.slice(i)); i = line.length; }
-      else            { push("doctype", line.slice(i, end + 1)); i = end + 1; }
-      continue;
+      if (end === -1) { push("doctype", line.slice(i)); return { tokens, outState: "doctype" }; }
+      push("doctype", line.slice(i, end + 1)); i = end + 1; continue;
     }
-    // PI <?…?>
     if (line.startsWith("<?", i)) {
       const end = line.indexOf("?>", i + 2);
-      if (end === -1) { push("pi", line.slice(i)); i = line.length; }
-      else            { push("pi", line.slice(i, end + 2)); i = end + 2; }
-      continue;
+      if (end === -1) { push("pi", line.slice(i)); return { tokens, outState: "pi" }; }
+      push("pi", line.slice(i, end + 2)); i = end + 2; continue;
     }
-    // Tag <…>
     if (line[i] === "<") {
-      push("bracket", "<");
-      i += 1;
-      // optional /
+      push("bracket", "<"); i += 1;
       if (line[i] === "/") { push("bracket", "/"); i += 1; }
-      // tag name
       const nameStart = i;
       while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
       push("tag", line.slice(nameStart, i));
-      // attributes until >
       while (i < line.length && line[i] !== ">") {
-        if (line[i] === "/" && line[i + 1] === ">") {
-          push("bracket", "/>"); i += 2; break;
-        }
+        if (line[i] === "/" && line[i + 1] === ">") { push("bracket", "/>"); i += 2; break; }
         if (line[i] === "=") { push("bracket", "="); i += 1; continue; }
-        // quoted value
         if (line[i] === '"' || line[i] === "'") {
           const q = line[i]; let j = i + 1;
           while (j < line.length && line[j] !== q) j += 1;
           push("value", line.slice(i, j + 1)); i = j + 1; continue;
         }
-        // whitespace
         if (/\s/.test(line[i])) {
           let ws = "";
           while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i += 1; }
           push("text", ws); continue;
         }
-        // attr name
         const attrStart = i;
         while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
         push("attr", line.slice(attrStart, i));
       }
       if (i < line.length && line[i] === ">") { push("bracket", ">"); i += 1; }
+      else if (i >= line.length) { return { tokens, outState: "tag" }; }
       continue;
     }
-    // Plain text
     const txtStart = i;
     while (i < line.length && line[i] !== "<") i += 1;
     push("text", line.slice(txtStart, i));
   }
 
-  return tokens;
+  return { tokens, outState: "text" };
 }
 
 function _renderTokensWithHighlight(
@@ -222,7 +247,9 @@ function XmlBody({
   navSpan:       { start: number; end: number } | null;
   onLineClick?:  (lineStart: number, lineEnd: number) => void;
 }) {
-  const center = navSpan?.start ?? 0;
+  const center = navSpan
+    ? Math.floor((navSpan.start + navSpan.end) / 2)
+    : 0;
   let winStart = 0;
   let winEnd = text.length;
 
@@ -248,12 +275,20 @@ function XmlBody({
     return offset;
   });
 
+  // Tokenize all visible lines with carry-over state for multi-line constructs
+  let tokenizerState: TokenizeState = "text";
+  const tokenizedLines = lines.map((lineText) => {
+    const { tokens, outState } = _tokenizeLine(lineText, tokenizerState);
+    tokenizerState = outState;
+    return tokens;
+  });
+
   return (
     <div className="space-y-0">
       {prefixHidden > 0 && <Ellipsis chars={prefixHidden} />}
       {lines.map((lineText, idx) => {
         const lineStart = lineStarts[idx];
-        const tokens    = _tokenizeLine(lineText);
+        const tokens    = tokenizedLines[idx];
         const lineNum   = startLineNumber + idx;
         const isHL = navSpan && lineStart < navSpan.end && lineStart + lineText.length > navSpan.start;
 

@@ -276,7 +276,7 @@ export function buildLines(pane: PaneData): Line[] {
     .map(([cid, start]) => ({
       id:  Number(cid),
       start,
-      end: offset_ends?.[cid] ?? start + 1_000_000,
+      end: offset_ends?.[cid] ?? start + 1,
     }))
     .sort((a, b) => a.start - b.start);
 
@@ -897,6 +897,22 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       [alignedLines, pane],
     );
 
+    // O(1) chunk-id → first line-index lookup built once per lines change
+    const chunkLineMap = useMemo(() => {
+      const m = new Map<number, number>();
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
+        if (Array.isArray(line)) {
+          for (const s of line) {
+            if (s.chunkId != null && !m.has(s.chunkId)) {
+              m.set(s.chunkId, li);
+            }
+          }
+        }
+      }
+      return m;
+    }, [lines]);
+
     const kindMap = useMemo(() => {
       const m = new Map<number, ChunkKind>();
       for (const c of chunks) m.set(c.id, c.kind);
@@ -955,14 +971,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         const clearSync = () => { syncingRef.current = false; };
 
         if (virtualizer) {
-          let targetLine = -1;
-          for (let li = 0; li < lines.length; li++) {
-            const line = lines[li];
-            if (Array.isArray(line) && line.some((s) => s.chunkId === chunkId)) {
-              targetLine = li;
-              break;
-            }
-          }
+          const targetLine = chunkLineMap.get(chunkId) ?? -1;
           if (targetLine >= 0) {
             try {
               const r = virtualizer.scrollToIndex(targetLine, { align: "start", behavior: "auto" }) as unknown;
