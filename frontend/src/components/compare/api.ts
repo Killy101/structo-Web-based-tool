@@ -1,39 +1,96 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // api.ts — HTTP client for the FastAPI compare service
-//
-// LARGE-DOCUMENT CHANGES
-// ────────────────────────
-//  apiDiffLarge()   — calls /diff/stream/large, yields batch results as they
-//                     arrive.  Each batch covers 50 pages.  The frontend
-//                     renders chunks immediately as batches stream in.
-//
-//  apiDiffAuto()    — chooses /diff/stream or /diff/stream/large based on
-//                     page count.  Use this as the single entry point.
-//
-//  apiGetSegments() — fetches pane segments for a page window from the
-//                     server-side result cache.  Call this as the user
-//                     scrolls instead of holding 500k segments in the browser.
-//
-//  LARGE_DOC_THRESHOLD — docs with more pages than this are sent to the large
-//                         endpoint.  Must match the server value.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type {
   ApplyResult,
   Chunk,
+  ChunkLocateResult,
   DiffResult,
   LocateResult,
   PaneData,
   XmlSection,
 } from "./types";
+import type { LoadingStage } from "./DiffUpload";
 
 const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
   ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
   : "http://localhost:8000/compare";
 
-// Documents with more pages than this use the batched large-doc endpoint.
-// Keep in sync with LARGE_DOC_THRESHOLD in compare.py.
 export const LARGE_DOC_THRESHOLD = 100;
+
+// ── Chunked upload ────────────────────────────────────────────────────────────
+const CHUNK_SIZE   = 2 * 1024 * 1024;
+const MAX_PARALLEL = 4;
+
+interface UploadResult { fileId: string; sha256: string; path: string; }
+
+interface PageCountResult {
+  old_pages: number;
+  new_pages: number;
+  max_pages: number;
+}
+
+async function _uploadChunked(
+  file:       File,
+  onProgress: (pct: number) => void,
+): Promise<UploadResult | null> {
+  const probe = await fetch(`${BASE.replace("/compare", "")}/upload/chunk`, {
+    method: "HEAD",
+  }).catch(() => null);
+  if (!probe || !probe.ok) return null;
+
+  const BASE_UPLOAD = BASE.replace("/compare", "");
+  const fileId      = crypto.randomUUID();
+  const totalParts  = Math.ceil(file.size / CHUNK_SIZE);
+
+  for (let i = 0; i < totalParts; i += MAX_PARALLEL) {
+    const batchSize = Math.min(MAX_PARALLEL, totalParts - i);
+    await Promise.all(
+      Array.from({ length: batchSize }, (_, k) => {
+        const idx   = i + k;
+        const start = idx * CHUNK_SIZE;
+        const form  = new FormData();
+        form.append("file_id",     fileId);
+        form.append("part_index",  String(idx));
+        form.append("total_parts", String(totalParts));
+        form.append("chunk",       file.slice(start, start + CHUNK_SIZE), file.name);
+        return fetch(`${BASE_UPLOAD}/upload/chunk`, { method: "POST", body: form });
+      }),
+    );
+    onProgress(Math.round(((i + batchSize) / totalParts) * 85));
+  }
+
+  const fin = new FormData();
+  fin.append("file_id",  fileId);
+  fin.append("filename", file.name);
+  const res  = await fetch(`${BASE_UPLOAD}/upload/finalise`, { method: "POST", body: fin });
+  if (!res.ok) return null;
+  const data = await res.json() as { file_id: string; sha256: string; path: string };
+  onProgress(100);
+  return { fileId: data.file_id, sha256: data.sha256, path: data.path };
+}
+
+async function _probePageCount(oldFile: File, newFile: File): Promise<PageCountResult | null> {
+  try {
+    const form = new FormData();
+    form.append("old_file", oldFile);
+    form.append("new_file", newFile);
+    const res = await fetch(`${BASE}/pdf/page-count`, { method: "POST", body: form });
+    if (!res.ok) return null;
+    return await res.json() as PageCountResult;
+  } catch {
+    return null;
+  }
+}
+
+// ── SHA-256 deduplication cache ───────────────────────────────────────────────
+function _getCachedJobId(sha_a: string, sha_b: string): string | null {
+  try {
+    const key = `diff_cache_${sha_a.slice(0, 16)}_${sha_b.slice(0, 16)}`;
+    return sessionStorage.getItem(key);
+  } catch { return null; }
+}
 
 // ── Progress reporting ────────────────────────────────────────────────────────
 
@@ -42,12 +99,53 @@ export interface DiffProgress {
   page?:       number;
   totalPages?: number;
   chunks?:     number;
-  pct:         number;    // 0–100
+  pct:         number;
   message:     string;
-  // Large-doc extras
   batch?:      number;
   totalBatches?: number;
   pageRange?:  [number, number];
+}
+
+// ── Stage-based progress builder ──────────────────────────────────────────────
+export function buildLoadingStages(progress: DiffProgress | null): LoadingStage[] {
+  const STAGE_DEFS: { id: DiffProgress["stage"] | "upload"; label: string }[] = [
+    { id: "upload",  label: "Uploading files" },
+    { id: "old",     label: "Extracting original PDF" },
+    { id: "new",     label: "Extracting revised PDF" },
+    { id: "diff",    label: "Computing differences" },
+    { id: "render",  label: "Preparing viewer" },
+    { id: "batch",   label: "Processing batches" },
+  ];
+
+  if (!progress) {
+    return STAGE_DEFS.map((s) => ({ id: s.id, label: s.label, status: "pending" as const }));
+  }
+
+  const ORDER = ["upload", "old", "new", "diff", "render", "batch", "done"] as const;
+  const currentIdx = ORDER.indexOf(progress.stage as typeof ORDER[number]);
+
+  return STAGE_DEFS.map((def) => {
+    const stageOrder = ORDER.indexOf(def.id as typeof ORDER[number]);
+    if (progress.stage === "done") {
+      return { id: def.id, label: def.label, status: "done" as const };
+    }
+    if (stageOrder < currentIdx) {
+      return { id: def.id, label: def.label, status: "done" as const };
+    }
+    if (stageOrder === currentIdx) {
+      return {
+        id: def.id,
+        label: def.label,
+        status: "active" as const,
+        pct: progress.pct,
+        detail: progress.message,
+        batch: progress.batch,
+        totalBatches: progress.totalBatches,
+        pageRange: progress.pageRange,
+      };
+    }
+    return { id: def.id, label: def.label, status: "pending" as const };
+  });
 }
 
 // Batch result streamed from /diff/stream/large
@@ -62,10 +160,9 @@ export interface BatchResult {
 }
 
 // ── Retry config ──────────────────────────────────────────────────────────────
-
-const _DIFF_MAX_RETRIES    = 4;
-const _DIFF_BASE_DELAY_MS  = 8_000;
-const _DIFF_MAX_DELAY_MS   = 60_000;
+const _DIFF_MAX_RETRIES   = 4;
+const _DIFF_BASE_DELAY_MS = 8_000;
+const _DIFF_MAX_DELAY_MS  = 60_000;
 
 async function _retryDelay(
   attempt: number,
@@ -87,24 +184,34 @@ async function _retryDelay(
 }
 
 // ── NDJSON stream reader ──────────────────────────────────────────────────────
-
-async function* _readNDJSON(res: Response): AsyncGenerator<unknown> {
+async function* _readNDJSON(res: Response, signal?: AbortSignal): AsyncGenerator<unknown> {
   const reader  = res.body!.getReader();
+
+  // Cancel the stream if the AbortSignal fires
+  signal?.addEventListener("abort", () => {
+    reader.cancel().catch(() => {});
+  }, { once: true });
+
   const decoder = new TextDecoder();
   let   buffer  = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop()!;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try { yield JSON.parse(line); } catch { /* ignore malformed */ }
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { yield JSON.parse(line); } catch { /* ignore malformed */ }
+      }
     }
+  } finally {
+    reader.cancel().catch(() => {});
   }
 
   if (buffer.trim()) {
@@ -113,12 +220,12 @@ async function* _readNDJSON(res: Response): AsyncGenerator<unknown> {
 }
 
 // ── Standard diff (≤ LARGE_DOC_THRESHOLD pages) ───────────────────────────────
-
 export async function apiDiff(
   oldFile:     File,
   newFile:     File,
   onProgress?: (p: DiffProgress) => void,
   xmlFile?:    File | null,
+  signal?:     AbortSignal,
 ): Promise<DiffResult> {
   const form = new FormData();
   form.append("old_file", oldFile);
@@ -126,7 +233,9 @@ export async function apiDiff(
   if (xmlFile) form.append("xml_file_b", xmlFile);
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
-    const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form });
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form, signal });
 
     if (res.status === 429) {
       if (attempt >= _DIFF_MAX_RETRIES) {
@@ -138,16 +247,16 @@ export async function apiDiff(
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(typeof err.detail === "object" ? err.detail.error : (err.detail ?? "Diff failed"));
+      throw new Error(_extractErrMsg(err, "Diff failed"));
     }
 
     let result: DiffResult | null = null;
 
-    for await (const msg of _readNDJSON(res)) {
+    for await (const msg of _readNDJSON(res, signal)) {
       const m = msg as Record<string, unknown>;
       if      (m.t === "p" && onProgress) onProgress(_parseProgress(m));
       else if (m.t === "r")               result = m.d as DiffResult;
-      else if (m.t === "e")               throw new Error((m.msg as string) || "Diff failed");
+      else if (m.t === "e")               throw new Error(_msgToStr(m.msg) || "Diff failed");
     }
 
     if (!result) throw new Error("No result received from server");
@@ -158,10 +267,10 @@ export async function apiDiff(
 }
 
 // ── Large diff (> LARGE_DOC_THRESHOLD pages) — batched streaming ──────────────
-
 export interface LargeDiffCallbacks {
   onProgress?:    (p: DiffProgress) => void;
-  onBatch?:       (b: BatchResult) => void;   // called as each 50-page batch arrives
+  onBatch?:       (b: BatchResult) => void;
+  signal?:        AbortSignal;
 }
 
 export interface LargeDiffResult {
@@ -180,7 +289,7 @@ export async function apiDiffLarge(
   callbacks: LargeDiffCallbacks = {},
   xmlFile?:  File | null,
 ): Promise<LargeDiffResult> {
-  const { onProgress, onBatch } = callbacks;
+  const { onProgress, onBatch, signal } = callbacks;
 
   const form = new FormData();
   form.append("old_file", oldFile);
@@ -188,7 +297,9 @@ export async function apiDiffLarge(
   if (xmlFile) form.append("xml_file_b", xmlFile);
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
-    const res = await fetch(`${BASE}/diff/stream/large`, { method: "POST", body: form });
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const res = await fetch(`${BASE}/diff/stream/large`, { method: "POST", body: form, signal });
 
     if (res.status === 429) {
       if (attempt >= _DIFF_MAX_RETRIES) {
@@ -200,20 +311,18 @@ export async function apiDiffLarge(
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(typeof err.detail === "object" ? err.detail.error : (err.detail ?? "Diff failed"));
+      throw new Error(_extractErrMsg(err, "Diff failed"));
     }
 
     let doneMsg: LargeDiffResult | null = null;
 
-    for await (const msg of _readNDJSON(res)) {
+    for await (const msg of _readNDJSON(res, signal)) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       const m = msg as Record<string, unknown>;
 
       if (m.t === "p") {
-        // Progress message
         onProgress?.(_parseLargeProgress(m));
-
       } else if (m.t === "batch") {
-        // A 50-page batch result — notify the UI immediately
         onBatch?.({
           batch:     m.batch as number,
           of:        m.of    as number,
@@ -223,7 +332,6 @@ export async function apiDiffLarge(
           pane_b:    m.pane_b    as PaneData,
           stats:     m.stats     as DiffResult["stats"],
         });
-
       } else if (m.t === "done") {
         doneMsg = {
           jobId:       m.job_id     as string,
@@ -238,9 +346,8 @@ export async function apiDiffLarge(
           stage: "done", pct: 100,
           message: `Done — ${doneMsg.stats.total} changes across ${doneMsg.totalPages} pages`,
         });
-
       } else if (m.t === "e") {
-        throw new Error((m.msg as string) || "Large diff failed");
+        throw new Error(_msgToStr(m.msg) || "Large diff failed");
       }
     }
 
@@ -252,36 +359,58 @@ export async function apiDiffLarge(
 }
 
 // ── Auto-routing: pick standard or large endpoint based on page count ─────────
-
 export async function apiDiffAuto(
   oldFile:   File,
   newFile:   File,
   callbacks: {
     onProgress?:   (p: DiffProgress) => void;
     onBatch?:      (b: BatchResult) => void;
+    signal?:       AbortSignal;
   } = {},
   xmlFile?: File | null,
 ): Promise<DiffResult | LargeDiffResult> {
-  const { onProgress, onBatch } = callbacks;
+  const { onProgress, onBatch, signal } = callbacks;
 
-  // Probe page count without uploading (read from File object locally)
-  // We can't do this without uploading, so we send a HEAD-like request
-  // to /health and use heuristic: size > 5 MB is likely large.
-  // Alternatively: always use the large endpoint (it handles small docs too).
-  // For now, use file-size heuristic: > 8 MB → large endpoint.
-  const LARGE_SIZE_BYTES = 8 * 1024 * 1024; // 8 MB
-  const useLarge = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+  const pageCount = await _probePageCount(oldFile, newFile);
+  const useLargeByPages = (pageCount?.max_pages ?? 0) > LARGE_DOC_THRESHOLD;
+
+  try {
+    let oldPct = 0, newPct = 0;
+    const notifyUpload = () =>
+      onProgress?.({ stage: "old", pct: Math.round((oldPct + newPct) / 2),
+                     message: `Uploading files… ${Math.round((oldPct + newPct) / 2)}%` });
+
+    const [oldUp, newUp] = await Promise.all([
+      _uploadChunked(oldFile, (p) => { oldPct = p; notifyUpload(); }),
+      _uploadChunked(newFile, (p) => { newPct = p; notifyUpload(); }),
+    ]);
+
+    if (oldUp && newUp) {
+      const cachedJobId = _getCachedJobId(oldUp.sha256, newUp.sha256);
+      if (cachedJobId) {
+        onProgress?.({ stage: "batch", pct: 5, message: "Previous result found — reloading…" });
+      }
+    }
+  } catch { /* chunked upload not available — fall through to legacy */ }
+
+  const LARGE_SIZE_BYTES = 4 * 1024 * 1024;
+  const useLargeBySize = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
+  const useLarge = useLargeByPages || useLargeBySize;
 
   if (useLarge) {
-    onProgress?.({ stage: "batch", pct: 0, message: "Large document detected — using batched mode…" });
-    return apiDiffLarge(oldFile, newFile, { onProgress, onBatch }, xmlFile);
+    const reason = useLargeByPages && pageCount
+      ? `Large document detected (${pageCount.max_pages} pages) — using batched mode…`
+      : "Large document detected — using batched mode…";
+    onProgress?.({ stage: "batch", pct: 0, message: reason });
+    return apiDiffLarge(oldFile, newFile, { onProgress, onBatch, signal }, xmlFile);
   }
 
-  return apiDiff(oldFile, newFile, onProgress, xmlFile);
+  return apiDiff(oldFile, newFile, onProgress, xmlFile, signal);
 }
 
 // ── Lazy segment fetch (large docs only) ──────────────────────────────────────
-
 export interface SegmentWindow {
   jobId:      string;
   pageRange:  [number, number];
@@ -308,35 +437,197 @@ export async function apiGetSegments(
 
 // ── XML operations ────────────────────────────────────────────────────────────
 
-export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
-  const res = await fetch(`${BASE}/xml/apply`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ xml_text: xmlText, chunk }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? "Apply failed");
-  }
-  return res.json() as Promise<ApplyResult>;
+// ── XML session management ────────────────────────────────────────────────────
+interface _XmlSession {
+  sessionId: string;
+  textHash:  number;
 }
 
-export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateResult | null> {
+let _activeXmlSession: _XmlSession | null = null;
+let _sessionCreationPromise: Promise<string | null> | null = null;
+
+const _SESSION_STORE_KEY = "structo_xml_session";
+
+function _persistSession(): void {
+  if (typeof window === "undefined") return;
+  if (!_activeXmlSession) {
+    try { sessionStorage.removeItem(_SESSION_STORE_KEY); } catch { /* ok */ }
+    return;
+  }
   try {
-    const res = await fetch(`${BASE}/xml/locate`, {
+    sessionStorage.setItem(_SESSION_STORE_KEY, JSON.stringify(_activeXmlSession));
+  } catch { /* quota exceeded or private browsing — silently skip */ }
+}
+
+;(function _restoreSession() {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = sessionStorage.getItem(_SESSION_STORE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { sessionId?: string; textHash?: number };
+    if (parsed.sessionId && typeof parsed.textHash === "number") {
+      _activeXmlSession = { sessionId: parsed.sessionId, textHash: parsed.textHash };
+    }
+  } catch { /* malformed entry — ignore */ }
+})();
+
+function _fnv32(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+  return h;
+}
+
+export function invalidateXmlSession(): void {
+  _activeXmlSession = null;
+  _sessionCreationPromise = null;
+  _persistSession();
+}
+
+async function _createXmlSession(xmlText: string, hash: number): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE}/xml/session`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ xml_text: xmlText }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { session_id?: string };
+    if (!data.session_id) return null;
+    _activeXmlSession = { sessionId: data.session_id, textHash: hash };
+    _persistSession();
+    return data.session_id;
+  } catch {
+    return null;
+  } finally {
+    _sessionCreationPromise = null;
+  }
+}
+
+async function _ensureXmlSession(xmlText: string): Promise<string | null> {
+  const hash = _fnv32(xmlText);
+  if (_activeXmlSession && _activeXmlSession.textHash === hash) {
+    return _activeXmlSession.sessionId;
+  }
+  if (_sessionCreationPromise) {
+    return _sessionCreationPromise;
+  }
+  _sessionCreationPromise = _createXmlSession(xmlText, hash);
+  return _sessionCreationPromise;
+}
+
+export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
+  const sessionId = await _ensureXmlSession(xmlText);
+
+  const body = sessionId
+    ? { session_id: sessionId, chunk }
+    : { xml_text: xmlText, chunk };
+
+  let res = await fetch(`${BASE}/xml/apply`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(body),
+  });
+
+  if (res.status === 404 && sessionId) {
+    _activeXmlSession = null;
+    res = await fetch(`${BASE}/xml/apply`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ xml_text: xmlText, chunk }),
     });
+  }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error((err as { detail?: string }).detail ?? "Apply failed");
+  }
+
+  const result = await res.json() as ApplyResult;
+
+  if (result.changed && _activeXmlSession) {
+    _activeXmlSession = {
+      sessionId: _activeXmlSession.sessionId,
+      textHash:  _fnv32(result.xml_text),
+    };
+  }
+
+  return result;
+}
+
+export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateResult | null> {
+  try {
+    const sessionId = await _ensureXmlSession(xmlText);
+
+    const body = sessionId
+      ? { session_id: sessionId, chunk }
+      : { xml_text: xmlText, chunk };
+
+    let res = await fetch(`${BASE}/xml/locate`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(body),
+    });
+
+    if (res.status === 404 && sessionId) {
+      _activeXmlSession = null;
+      res = await fetch(`${BASE}/xml/locate`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ xml_text: xmlText, chunk }),
+      });
+    }
+
     if (!res.ok) return null;
     return res.json() as Promise<LocateResult>;
+  } catch { return null; }
+}
+
+// ── XML chunk-locate (XML offset → nearest diff chunk) ───────────────────────
+/**
+ * Given a character offset inside the XML text, ask the server to find the
+ * best-matching diff chunk. This is the server-side replacement for the
+ * n-gram heuristic in handleXmlLineClick — the server has the full chunk
+ * list and uses the same text-normalisation as compute_diff, so matches
+ * are far more reliable for Innodata tag-dense XML.
+ *
+ * Falls back to null on network error so the caller can degrade gracefully.
+ */
+export async function apiChunkLocate(
+  xmlText:   string,
+  xmlOffset: number,
+  chunks:    Chunk[],
+): Promise<ChunkLocateResult | null> {
+  try {
+    const sessionId = await _ensureXmlSession(xmlText);
+
+    const body = sessionId
+      ? { session_id: sessionId, xml_offset: xmlOffset }
+      : { xml_text: xmlText,    xml_offset: xmlOffset };
+
+    let res = await fetch(`${BASE}/xml/chunk-locate`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(body),
+    });
+
+    if (res.status === 404 && sessionId) {
+      // Session expired — retry with full text
+      _activeXmlSession = null;
+      res = await fetch(`${BASE}/xml/chunk-locate`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ xml_text: xmlText, xml_offset: xmlOffset }),
+      });
+    }
+
+    if (!res.ok) return null;
+    return res.json() as Promise<ChunkLocateResult>;
   } catch {
     return null;
   }
 }
 
 // ── XML section parsing (client-side, no network) ─────────────────────────────
-
 export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
   if (!xmlText) return [];
   try {
@@ -399,6 +690,30 @@ export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
   }
 }
 
+// ── Error message helpers ─────────────────────────────────────────────────────
+
+function _msgToStr(msg: unknown): string {
+  if (typeof msg === "string") return msg;
+  if (msg == null) return "";
+  if (typeof msg === "object") return JSON.stringify(msg);
+  return String(msg);
+}
+
+function _extractErrMsg(err: { detail?: unknown }, fallback: string): string {
+  const d = err?.detail;
+  if (d == null) return fallback;
+  if (typeof d === "string") return d || fallback;
+  if (Array.isArray(d)) {
+    const first = (d[0] as { msg?: string })?.msg;
+    return typeof first === "string" ? first : JSON.stringify(d);
+  }
+  if (typeof d === "object") {
+    const e = (d as { error?: string }).error;
+    return typeof e === "string" ? e : JSON.stringify(d);
+  }
+  return String(d) || fallback;
+}
+
 // ── Progress parsers ──────────────────────────────────────────────────────────
 
 function _parseProgress(msg: Record<string, unknown>): DiffProgress {
@@ -412,7 +727,7 @@ function _parseProgress(msg: Record<string, unknown>): DiffProgress {
       pct:     Math.min(40, Math.round(10 + (p / n) * 30)),
       message: p === 0 ? `Extracting old PDF… (${n} pages)`
              : p >= n  ? "Old PDF extracted"
-             :           `Extracting old PDF… page ${p}/${n}`,
+             :           `page ${p}/${n}`,
     };
   }
 
@@ -423,7 +738,7 @@ function _parseProgress(msg: Record<string, unknown>): DiffProgress {
       stage: "new", page: p, totalPages: n,
       pct:     Math.min(55, Math.round(40 + (p / n) * 15)),
       message: p >= n ? "Both PDFs extracted — starting diff…"
-             :          `Extracting new PDF… page ${p}/${n}`,
+             :          `page ${p}/${n}`,
     };
   }
 
@@ -441,13 +756,13 @@ function _parseProgress(msg: Record<string, unknown>): DiffProgress {
     return {
       stage:   "diff",
       pct:     sub ? Math.round(65 + sp * 0.25) : 65,
-      message: sub ? (SUB_LABELS[sub] ?? `Diff: ${sub}…`) : "Computing diff…",
+      message: sub ? (SUB_LABELS[sub] ?? `${sub}…`) : "Computing diff…",
     };
   }
 
   if (s === "render") {
     return { stage: "render", chunks: msg.chunks as number, pct: 92,
-             message: `Rendering ${msg.chunks} changes…` };
+             message: `${msg.chunks} changes` };
   }
 
   return { stage: "diff", pct: 50, message: "Processing…" };
@@ -461,7 +776,7 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
     const batches = msg.batches as number;
     return {
       stage: "batch", pct: 0, batch: 0, totalBatches: batches,
-      message: `${pages} pages — processing in ${batches} batches of 50…`,
+      message: `${pages} pages — ${batches} batches`,
     };
   }
 
@@ -473,7 +788,7 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
       stage: "batch", pct: msg.pct as number ?? Math.round((batch / of) * 90),
       batch, totalBatches: of,
       pageRange: pages,
-      message: msg.msg as string ?? `Processing batch ${batch}/${of}…`,
+      message: msg.msg != null ? String(msg.msg) : `Batch ${batch}/${of}`,
     };
   }
 

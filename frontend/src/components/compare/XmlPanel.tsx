@@ -1,17 +1,7 @@
 "use client";
-// ─────────────────────────────────────────────────────────────────────────────
-// XmlPanel.tsx — Panel D
-// Shown below the PDF panes in both Workflow 1 and Workflow 2.
-//
-// Workflow 1 (mode="wf2"):  Read-only.  Scrolls & highlights on chunk click.
-//                           No Apply / Download buttons.
-// Workflow 2 (mode="wf3"):  Editable.   Same nav behaviour PLUS Apply button
-//                           patches the selected XML node in-place, and
-//                           Download saves the updated file.
-// ─────────────────────────────────────────────────────────────────────────────
-
-import React, { forwardRef, useRef } from "react";
-import type { Chunk, WorkflowMode } from "./types";
+import React, { forwardRef, useRef, useState } from "react";
+import XmlEditor from "./XmlEditor";
+import type { Chunk, WorkflowMode, XmlScrollTarget } from "./types";
 
 interface Props {
   mode:        WorkflowMode;
@@ -24,13 +14,22 @@ interface Props {
   onLoad:      (f: File) => void;
   onApply:     () => void;     // no-op in wf2
   onDownload:  () => void;     // no-op in wf2
+  onXmlChange?: (text: string) => void;  // wf3 only: user edits XML directly
   onScrollFraction?: (scrollFraction: number) => void;
+  /** Whether there is an apply to undo (history stack non-empty). */
+  canUndo?:    boolean;
+  /** Revert the last apply operation. */
+  onUndo?:     () => void;
+  /**
+   * Called when the user clicks a line in the XML viewer/editor.
+   * Receives the character offsets [lineStart, lineEnd] in the full xmlText.
+   * DiffViewer uses this to locate the matching diff chunk and scroll both PDF panes.
+   */
+  onXmlLineClick?: (lineStart: number, lineEnd: number) => void;
 }
 
 /** Max chars to render at once — keeps DOM small for large XML files */
 const RENDER_WINDOW = 50_000;
-
-// ── XML body with windowed rendering + yellow highlight + line numbers ───────
 
 const Mark = ({ children }: { children: string }) => (
   <mark className="bg-yellow-200/40 dark:bg-yellow-400/20 outline outline-2 outline-yellow-400 rounded-sm text-inherit">
@@ -50,35 +49,178 @@ function _countNewlinesBefore(text: string, pos: number): number {
   return count;
 }
 
-function _renderHighlightedLine(
+// ─────────────────────────────────────────────────────────────────────────────
+// VS Code–style XML tokenizer
+// Tokens: tag-bracket < >, tag-name, attr-name, = , attr-value " ", text,
+//         comment <!-- -->, cdata <![CDATA[...]]>, pi <?...?>, doctype <!...>
+// ─────────────────────────────────────────────────────────────────────────────
+
+type XmlTokenKind =
+  | "bracket"    // < > / = ?
+  | "tag"        // element name
+  | "attr"       // attribute name
+  | "value"      // "…" attribute value
+  | "comment"    // <!-- … -->
+  | "cdata"      // <![CDATA[…]]>
+  | "pi"         // <?…?>
+  | "doctype"    // <!DOCTYPE…>
+  | "text";      // bare text content
+
+interface XmlToken {
+  kind: XmlTokenKind;
+  text: string;
+}
+
+// VS Code token colours — light values match VS Light theme, dark match VS Dark theme.
+const TOKEN_CLASS: Record<XmlTokenKind, string> = {
+  bracket:  "text-slate-500 dark:text-slate-400",
+  tag:      "text-[#800000] dark:text-[#4ec9b0]",        // maroon / teal
+  attr:     "text-[#ff0000] dark:text-[#9cdcfe]",        // red / light-blue
+  value:    "text-[#0000ff] dark:text-[#ce9178]",        // blue / orange-brown
+  comment:  "text-[#008000] dark:text-[#6a9955] italic", // green (both)
+  cdata:    "text-slate-700 dark:text-[#d4d4d4]",        // dark-grey / near-white
+  pi:       "text-[#800080] dark:text-[#c586c0]",        // purple (both)
+  doctype:  "text-[#0000ff] dark:text-[#569cd6]",        // blue (both)
+  text:     "text-slate-800 dark:text-[#d4d4d4]",        // near-black / near-white
+};
+
+function _tokenizeLine(line: string): XmlToken[] {
+  const tokens: XmlToken[] = [];
+  let i = 0;
+
+  function push(kind: XmlTokenKind, text: string) {
+    if (text) tokens.push({ kind, text });
+  }
+
+  while (i < line.length) {
+    // Comment
+    if (line.startsWith("<!--", i)) {
+      const end = line.indexOf("-->", i + 4);
+      if (end === -1) { push("comment", line.slice(i)); i = line.length; }
+      else            { push("comment", line.slice(i, end + 3)); i = end + 3; }
+      continue;
+    }
+    // CDATA
+    if (line.startsWith("<![CDATA[", i)) {
+      const end = line.indexOf("]]>", i + 9);
+      if (end === -1) { push("cdata", line.slice(i)); i = line.length; }
+      else            { push("cdata", line.slice(i, end + 3)); i = end + 3; }
+      continue;
+    }
+    // DOCTYPE
+    if (line.startsWith("<!", i) && !line.startsWith("<!--", i)) {
+      const end = line.indexOf(">", i);
+      if (end === -1) { push("doctype", line.slice(i)); i = line.length; }
+      else            { push("doctype", line.slice(i, end + 1)); i = end + 1; }
+      continue;
+    }
+    // PI <?…?>
+    if (line.startsWith("<?", i)) {
+      const end = line.indexOf("?>", i + 2);
+      if (end === -1) { push("pi", line.slice(i)); i = line.length; }
+      else            { push("pi", line.slice(i, end + 2)); i = end + 2; }
+      continue;
+    }
+    // Tag <…>
+    if (line[i] === "<") {
+      push("bracket", "<");
+      i += 1;
+      // optional /
+      if (line[i] === "/") { push("bracket", "/"); i += 1; }
+      // tag name
+      const nameStart = i;
+      while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
+      push("tag", line.slice(nameStart, i));
+      // attributes until >
+      while (i < line.length && line[i] !== ">") {
+        if (line[i] === "/" && line[i + 1] === ">") {
+          push("bracket", "/>"); i += 2; break;
+        }
+        if (line[i] === "=") { push("bracket", "="); i += 1; continue; }
+        // quoted value
+        if (line[i] === '"' || line[i] === "'") {
+          const q = line[i]; let j = i + 1;
+          while (j < line.length && line[j] !== q) j += 1;
+          push("value", line.slice(i, j + 1)); i = j + 1; continue;
+        }
+        // whitespace
+        if (/\s/.test(line[i])) {
+          let ws = "";
+          while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i += 1; }
+          push("text", ws); continue;
+        }
+        // attr name
+        const attrStart = i;
+        while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
+        push("attr", line.slice(attrStart, i));
+      }
+      if (i < line.length && line[i] === ">") { push("bracket", ">"); i += 1; }
+      continue;
+    }
+    // Plain text
+    const txtStart = i;
+    while (i < line.length && line[i] !== "<") i += 1;
+    push("text", line.slice(txtStart, i));
+  }
+
+  return tokens;
+}
+
+function _renderTokensWithHighlight(
+  tokens: XmlToken[],
   lineText: string,
   lineStart: number,
   navSpan: { start: number; end: number } | null,
-) {
-  if (!navSpan) return lineText || " ";
+): React.ReactNode {
+  // If no navSpan highlight needed, fast path
+  if (!navSpan) {
+    return tokens.map((t, k) => (
+      <span key={k} className={TOKEN_CLASS[t.kind]}>{t.text}</span>
+    ));
+  }
 
+  // Build char offset per token, then slice mark overlay
   const lineEnd = lineStart + lineText.length;
   const hlStart = Math.max(lineStart, navSpan.start);
-  const hlEnd = Math.min(lineEnd, navSpan.end);
-  if (hlStart >= hlEnd) return lineText || " ";
+  const hlEnd   = Math.min(lineEnd,   navSpan.end);
+  const hasHL   = hlStart < hlEnd;
 
-  const startOffset = hlStart - lineStart;
-  const endOffset = hlEnd - lineStart;
-  return (
-    <>
-      {lineText.slice(0, startOffset)}
-      <Mark>{lineText.slice(startOffset, endOffset)}</Mark>
-      {lineText.slice(endOffset) || ""}
-    </>
-  );
+  if (!hasHL) {
+    return tokens.map((t, k) => (
+      <span key={k} className={TOKEN_CLASS[t.kind]}>{t.text}</span>
+    ));
+  }
+
+  let cursor = lineStart;
+  return tokens.map((t, k) => {
+    const tStart = cursor;
+    const tEnd   = cursor + t.text.length;
+    cursor = tEnd;
+
+    const oStart = Math.max(tStart, hlStart) - tStart;
+    const oEnd   = Math.min(tEnd,   hlEnd)   - tStart;
+
+    if (oStart >= oEnd) {
+      return <span key={k} className={TOKEN_CLASS[t.kind]}>{t.text}</span>;
+    }
+    return (
+      <span key={k} className={TOKEN_CLASS[t.kind]}>
+        {t.text.slice(0, oStart)}
+        <Mark>{t.text.slice(oStart, oEnd)}</Mark>
+        {t.text.slice(oEnd)}
+      </span>
+    );
+  });
 }
 
 function XmlBody({
   text,
   navSpan,
+  onLineClick,
 }: {
-  text:    string;
-  navSpan: { start: number; end: number } | null;
+  text:          string;
+  navSpan:       { start: number; end: number } | null;
+  onLineClick?:  (lineStart: number, lineEnd: number) => void;
 }) {
   const center = navSpan?.start ?? 0;
   let winStart = 0;
@@ -107,14 +249,46 @@ function XmlBody({
   });
 
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-0">
       {prefixHidden > 0 && <Ellipsis chars={prefixHidden} />}
       {lines.map((lineText, idx) => {
         const lineStart = lineStarts[idx];
+        const tokens    = _tokenizeLine(lineText);
+        const lineNum   = startLineNumber + idx;
+        const isHL = navSpan && lineStart < navSpan.end && lineStart + lineText.length > navSpan.start;
+
+        // FIX Issue 2: detect tag-only lines — after stripping all XML tags and
+        // whitespace, if fewer than 4 meaningful characters remain the line carries
+        // no navigable content and should not register as a clickable target.
+        // This prevents the silent early-return in handleXmlLineClick that was
+        // triggered by Innodata's tag-dense structure (innodReplace, innodIdentifier…).
+        const plainLineText = lineText
+          .replace(/<[^>]*>/g, "")
+          .replace(/&[a-z]+;/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const isNavigable = onLineClick && plainLineText.length >= 4;
+
         return (
-          <div key={`${startLineNumber + idx}-${lineStart}`} className="grid grid-cols-[56px_minmax(0,1fr)] gap-2">
-            <span className="select-none border-r border-slate-200 pr-2 text-right text-[10px] font-medium tabular-nums text-slate-500 dark:border-white/10 dark:text-slate-500">{startLineNumber + idx}</span>
-            <span className="whitespace-pre-wrap break-words">{_renderHighlightedLine(lineText, lineStart, navSpan)}</span>
+          <div
+            key={`${lineNum}-${lineStart}`}
+            role={isNavigable ? "button" : undefined}
+            tabIndex={isNavigable ? 0 : undefined}
+            onClick={isNavigable ? () => onLineClick(lineStart, lineStart + lineText.length) : undefined}
+            onKeyDown={isNavigable ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onLineClick(lineStart, lineStart + lineText.length);
+            } : undefined}
+            className={`grid grid-cols-[48px_minmax(0,1fr)] gap-0 leading-[1.75]
+              ${isHL ? "bg-yellow-300/10 dark:bg-yellow-400/8" : ""}
+              ${isNavigable ? "cursor-pointer hover:bg-teal-400/8 dark:hover:bg-teal-400/10 focus:outline-none focus:bg-teal-400/8" : "hover:bg-white/3"}`}
+          >
+            <span className="select-none border-r border-slate-200 dark:border-white/8 pr-2 text-right
+              text-[10px] font-medium tabular-nums text-slate-400 dark:text-slate-600 self-start pt-px">
+              {lineNum}
+            </span>
+            <span className="pl-3 whitespace-pre-wrap break-words text-[11px]">
+              {_renderTokensWithHighlight(tokens, lineText, lineStart, navSpan)}
+            </span>
           </div>
         );
       })}
@@ -123,20 +297,30 @@ function XmlBody({
   );
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
 
-const XmlPanel = forwardRef<HTMLDivElement, Props>(
-  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onScrollFraction }, ref) => {
+const XmlPanel = forwardRef<XmlScrollTarget, Props>(
+  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const isWf3    = mode === "wf3";
-    const canApply = isWf3 && !!xmlText && !!activeChunk &&
-                     activeChunk.kind !== "emp" && !appliedIds.has(activeChunk.id);
+    // XML validation error surfaced up from XmlEditor's DOMParser check
+    const [xmlError, setXmlError] = useState<string | null>(null);
 
-    const applyTitle = !isWf3                              ? "Read-only in Workflow 1"
-      : activeChunk?.kind === "emp"                         ? "Emphasis — not applicable"
-      : appliedIds.has(activeChunk?.id ?? -1)               ? "Already applied"
-      :                                                       "Apply selected change to XML";
+    const isWf3    = mode === "edit";
+    // EMP chunks are now supported for apply (see backend _apply_emp_chunk_to_xml)
+    const canApply = isWf3 && !!xmlText && !!activeChunk &&
+                     !appliedIds.has(activeChunk.id) &&
+                     // Block apply on invalid XML to prevent sending malformed content
+                     !xmlError;
+
+    const applyTitle = !isWf3
+      ? "Read-only in Workflow 1"
+      : !!xmlError
+        ? `Cannot apply — XML is invalid: ${xmlError.slice(0, 80)}`
+      : appliedIds.has(activeChunk?.id ?? -1)
+        ? "Already applied"
+        : activeChunk?.kind === "emp"
+          ? "Apply emphasis change to XML"
+          : "Apply selected change to XML";
 
     const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
       if (!onScrollFraction) return;
@@ -149,10 +333,8 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
     return (
       <div className="flex flex-col h-full min-w-0 border-t border-slate-200 dark:border-white/8">
 
-        {/* ── Toolbar ──────────────────────────────────────────────────────── */}
         <div className="flex-shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
           <div className="flex items-center gap-2">
-            {/* Icon */}
             <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
             </svg>
@@ -161,7 +343,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               XML {isWf3 ? "Editor" : "Viewer"}
             </span>
 
-            {/* Mode badge */}
             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
               isWf3
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
@@ -170,7 +351,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
 
-            {/* Load XML (always available, shows only when no XML loaded) */}
             {!xmlText && (
               <>
                 <button
@@ -186,7 +366,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
               </>
             )}
 
-            {/* Apply + Download — wf3 only */}
             {xmlText && isWf3 && (
               <>
                 <button
@@ -198,8 +377,22 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Apply
+                  {activeChunk?.kind === "emp" ? "Apply Formatting" : "Apply"}
                 </button>
+
+                {/* Undo last apply — only shown when history is non-empty */}
+                {canUndo && (
+                  <button
+                    onClick={onUndo}
+                    title="Undo last apply"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-[11px] font-semibold transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                    </svg>
+                    Undo
+                  </button>
+                )}
 
                 <button
                   onClick={onDownload}
@@ -214,7 +407,6 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
             )}
           </div>
 
-          {/* Right: filename + status */}
           <div className="flex items-center gap-3 min-w-0">
             {xmlFilename && (
               <span className="text-[10px] text-slate-500 font-mono truncate max-w-[200px]">
@@ -229,20 +421,57 @@ const XmlPanel = forwardRef<HTMLDivElement, Props>(
           </div>
         </div>
 
-        {/* ── XML body ─────────────────────────────────────────────────────── */}
         {xmlText ? (
-          <div
-            ref={ref}
-            data-testid="xml-panel-scroll"
-            className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10"
-            onScroll={handleScroll}
-          >
-            <pre className="text-[11px] leading-[1.75] font-mono text-blue-700 dark:text-[#7aadca]">
-              <XmlBody text={xmlText} navSpan={navSpan} />
-            </pre>
-          </div>
+          isWf3 ? (
+            /*
+             * WF2 editable mode: forward the panel ref to XmlEditor which
+             * exposes XmlScrollTarget via useImperativeHandle on the Monaco
+             * editor instance.  The outer div clips the layout; Monaco's own
+             * virtualised renderer is the scroll container.
+             */
+            <div
+              data-testid="xml-panel-scroll"
+              className="flex-1 overflow-hidden flex flex-col"
+            >
+              <XmlEditor
+                ref={ref as React.Ref<XmlScrollTarget>}
+                value={xmlText}
+                onChange={onXmlChange}
+                navSpan={navSpan}
+                onScrollFraction={onScrollFraction}
+                onValidationChange={setXmlError}
+                onCursorOffset={onXmlLineClick ? (offset) => {
+                  // Convert Monaco cursor character offset → line char range → chunk lookup
+                  const lineStart  = xmlText.lastIndexOf("\n", offset - 1) + 1;
+                  const lineEndIdx = xmlText.indexOf("\n", offset);
+                  onXmlLineClick(lineStart, lineEndIdx === -1 ? xmlText.length : lineEndIdx);
+                } : undefined}
+              />
+              {/* Inline validation error bar — shown below editor when XML is malformed */}
+              {xmlError && (
+                <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1
+                  bg-rose-500/10 border-t border-rose-500/30 text-rose-400 text-[10px] font-mono">
+                  <svg className="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  <span className="truncate">XML error: {xmlError}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div
+              ref={ref as React.Ref<HTMLDivElement>}
+              data-testid="xml-panel-scroll"
+              className="flex-1 overflow-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300 dark:scrollbar-thumb-white/10
+                bg-white dark:bg-[#1e1e1e]"
+              onScroll={handleScroll}
+            >
+              <pre className="text-[11px] leading-[1.75] font-mono">
+                <XmlBody text={xmlText} navSpan={navSpan} onLineClick={onXmlLineClick} />
+              </pre>
+            </div>
+          )
         ) : (
-          /* Empty state */
           <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-6">
             <svg className="w-10 h-10 text-slate-300 dark:text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />

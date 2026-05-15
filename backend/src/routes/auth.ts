@@ -43,10 +43,10 @@ function applyTeamRoleFeatureGuards(teamSlug: string | null, role: string, featu
   let next = Array.from(new Set(features))
 
   if (slug === 'pre-production' || slug === 'production') {
-    next = next.filter((f) => f !== 'compare-merge' && f !== 'compare-pdf-xml-only')
+    next = next.filter((f) => f !== 'compare-pdf-xml-only')
   }
 
-  if (slug === 'updating' && (next.includes('compare-basic') || next.includes('compare-merge'))) {
+  if (slug === 'updating' && next.includes('compare-basic')) {
     next = Array.from(new Set([...next, 'compare-pdf-xml-only']))
   }
 

@@ -26,7 +26,7 @@ function normalizeUserRole<T extends User | null>(user: T): T {
   if (!user) return user;
   return {
     ...user,
-    role: user.role === "SADMIN" ? "SUPER_ADMIN" : user.role,
+    role: (user.role as string) === "SADMIN" ? "SUPER_ADMIN" : user.role,
   } as T;
 }
 

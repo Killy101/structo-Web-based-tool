@@ -59,6 +59,11 @@ const RESTRICTED_ROUTES: Record<string, Role[]> = {
     "ADMIN",
     "USER",
   ],
+  "/dashboard/webscrape": [
+    "SUPER_ADMIN",
+    "ADMIN",
+    "USER",
+  ],
 };
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -101,6 +106,10 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/dashboard/settings": {
     title: "Settings",
     subtitle: "Manage teams and system configuration",
+  },
+  "/dashboard/webscrape": {
+    title: "WebScrape",
+    subtitle: "Recursively scrape websites and export structured content",
   },
 };
 

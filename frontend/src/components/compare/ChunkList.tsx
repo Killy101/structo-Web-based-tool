@@ -12,13 +12,15 @@ interface Props {
   collapsed?: boolean;
   onToggle?: () => void;
   headerActions?: React.ReactNode;
+  /** Set of chunk IDs the user has already visited (reviewed). Used to show
+   *  a subtle indicator and power the "Next unreviewed" navigation. */
+  reviewedIds?: Set<number>;
 }
 
-type FilterKind = "all" | ChunkKind;
+type FilterKind = "all" | ChunkKind;  // includes "strike"
 
-const CONFIDENCE_THRESHOLD = 0.80; // hide MOD chunks with confidence below this
+const CONFIDENCE_THRESHOLD = 0.80;
 
-// ── Section group type ────────────────────────────────────────────────────────
 interface SectionGroup {
   label: string;
   chunks: Chunk[];
@@ -43,16 +45,17 @@ function buildSectionGroups(chunks: Chunk[]): SectionGroup[] {
   }));
 }
 
-// ── Chunk row component ───────────────────────────────────────────────────────
 const ChunkRow = React.memo(function ChunkRow({
   ch,
   isActive,
   isApplied,
+  isReviewed,
   onSelect,
 }: {
   ch: Chunk;
   isActive: boolean;
   isApplied: boolean;
+  isReviewed: boolean;
   onSelect: (id: number) => void;
 }) {
   const m = KIND_META[ch.kind];
@@ -82,6 +85,10 @@ const ChunkRow = React.memo(function ChunkRow({
         {isApplied && (
           <span className="text-emerald-500 font-bold mr-1">✓</span>
         )}
+        {/* Reviewed indicator: dim dot for chunks the user has visited but not applied */}
+        {isReviewed && !isApplied && !isActive && (
+          <span className="text-slate-400/50 mr-1" title="Reviewed">&#x25CF;</span>
+        )}
         {preview}
         {preview.length === 55 ? "…" : ""}
         {ch.kind === "mod" && ch.words_removed && (
@@ -92,17 +99,40 @@ const ChunkRow = React.memo(function ChunkRow({
           </span>
         )}
         {ch.kind === "emp" && ch.emp_detail && (
-          <span className="block mt-1 text-[9px] leading-snug">
+          <span className="block mt-1 text-[9px] leading-snug space-y-0.5">
             {ch.emp_detail.split("|").map((part, i) => {
               const t = part.trim();
-              if (t.startsWith("xml_suggest:")) {
-                return <span key={i} className="block text-amber-400 italic">{t}</span>;
-              }
-              const isRemoved = t.includes("removed");
-              const isAdded = t.includes("added");
+              if (!t) return null;
+
+              const lower = t.toLowerCase();
+              const isXmlSuggest = lower.startsWith("xml_suggest:");
+
+              const colorClass =
+                isXmlSuggest                                     ? "text-orange-400 italic" :
+                lower.includes("removed") || lower.includes("deleted") ? "text-red-400" :
+                lower.includes("added")                            ? "text-green-500" :
+                "text-orange-400";   // bold, italic, bold+italic, underline, strikeout, monospace → orange
+
+              const previewText = (ch.text_b || ch.text_a).slice(0, 28);
+              const previewStyle: React.CSSProperties =
+                lower.includes("bold") && lower.includes("italic") ? { fontWeight: 700, fontStyle: "italic" } :
+                lower.includes("bold")   ? { fontWeight: 700 } :
+                lower.includes("italic") ? { fontStyle: "italic" } :
+                lower.includes("underline") || lower.includes("under") ? { textDecoration: "underline" } :
+                lower.includes("strike") ? { textDecoration: "line-through" } :
+                {};
+
               return (
-                <span key={i} className={`${isRemoved ? "text-rose-400" : isAdded ? "text-emerald-400" : "text-violet-400"}`}>
-                  {t}{i < ch.emp_detail!.split("|").length - 1 ? " · " : ""}
+                <span key={i} className={`flex items-center gap-1 ${colorClass}`}>
+                  <span>{t}</span>
+                  {!isXmlSuggest && previewText && Object.keys(previewStyle).length > 0 && (
+                    <span
+                      className="opacity-60 text-slate-300 font-mono"
+                      style={previewStyle}
+                    >
+                      &ldquo;{previewText}{previewText.length < (ch.text_b || ch.text_a).length ? "…" : ""}&rdquo;
+                    </span>
+                  )}
                 </span>
               );
             })}
@@ -119,27 +149,29 @@ const ChunkRow = React.memo(function ChunkRow({
   );
 });
 
-// ── Section header (always expanded) ──────────────────────────────────────────
 function SectionHeader({
   group,
   activeId,
   appliedIds,
+  reviewedIds,
   onSelect,
 }: {
   group: SectionGroup;
   activeId: number | null;
   appliedIds: Set<number>;
+  reviewedIds?: Set<number>;
   onSelect: (id: number) => void;
 }) {
   const appliedCount = group.chunks.filter((c) => appliedIds.has(c.id)).length;
   const kinds = group.chunks.reduce(
     (acc, c) => {
-      if (c.kind === "add") acc.add++;
+        if (c.kind === "add") acc.add++;
       else if (c.kind === "del") acc.del++;
       else if (c.kind === "mod") acc.mod++;
+      else if (c.kind === "strike") acc.strike = (acc.strike ?? 0) + 1;
       return acc;
     },
-    { add: 0, del: 0, mod: 0 },
+    { add: 0, del: 0, mod: 0, strike: 0 },
   );
 
   return (
@@ -152,6 +184,11 @@ function SectionHeader({
           {kinds.add > 0 && <span className="text-[8px] font-bold text-emerald-500">+{kinds.add}</span>}
           {kinds.del > 0 && <span className="text-[8px] font-bold text-rose-500">-{kinds.del}</span>}
           {kinds.mod > 0 && <span className="text-[8px] font-bold text-amber-500">~{kinds.mod}</span>}
+          {(kinds.strike ?? 0) > 0 && (
+            <span className="text-[8px] font-bold text-rose-300" title="Strikethrough changes">
+              <span style={{ textDecoration: "line-through" }}>~</span>{kinds.strike}
+            </span>
+          )}
           {appliedCount > 0 && (
             <span className="text-[8px] text-emerald-500/60">✓{appliedCount}</span>
           )}
@@ -167,6 +204,7 @@ function SectionHeader({
             ch={ch}
             isActive={ch.id === activeId}
             isApplied={appliedIds.has(ch.id)}
+            isReviewed={reviewedIds?.has(ch.id) ?? false}
             onSelect={onSelect}
           />
         ))}
@@ -175,9 +213,8 @@ function SectionHeader({
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
 export default function ChunkList({
-  chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions,
+  chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions, reviewedIds,
 }: Props) {
   const [filter, setFilter] = useState<FilterKind>("all");
   const [hideLoConfidence, setHideLoConfidence] = useState(false);
@@ -268,6 +305,7 @@ export default function ChunkList({
           {filterBtn("del", "−", stats.deletions, "bg-rose-600")}
           {filterBtn("mod", "~", stats.modifications, "bg-amber-600")}
           {filterBtn("emp", "○", stats.emphasis, "bg-violet-600")}
+          {(stats.strike ?? 0) > 0 && filterBtn("strike", "~̶", stats.strike ?? 0, "bg-rose-800")}
         </div>
         {/* Confidence filter toggle — hides low-confidence MOD chunks */}
         {stats.modifications > 0 && (
@@ -296,6 +334,7 @@ export default function ChunkList({
             group={group}
             activeId={activeId}
             appliedIds={appliedIds}
+            reviewedIds={reviewedIds}
             onSelect={onSelect}
           />
         )) : filtered.map((ch) => (
@@ -304,6 +343,7 @@ export default function ChunkList({
             ch={ch}
             isActive={ch.id === activeId}
             isApplied={appliedIds.has(ch.id)}
+            isReviewed={reviewedIds?.has(ch.id) ?? false}
             onSelect={onSelect}
           />
         ))}

@@ -29,6 +29,15 @@ except Exception as e:
     _PDFMINER_OK = False
     logger.warning(f"pdfminer import failed: {e}")
 
+try:
+    from pypdf import PdfReader, PdfWriter  # type: ignore[import-not-found]
+    _PYPDF_OK = True
+except Exception as e:
+    PdfReader = None
+    PdfWriter = None
+    _PYPDF_OK = False
+    logger.warning(f"pypdf import failed: {e}")
+
 
 # ── Normalisation ──────────────────────────────────────────────────────────────
 
@@ -60,6 +69,25 @@ def _norm(text: str) -> str:
     """Normalise text for comparison: NFKC + ligatures + whitespace + lower."""
     text = unicodedata.normalize("NFKC", text).translate(_LIGATURE)
     return " ".join(text.split()).lower()
+
+
+def extract_pdf_page_range(pdf_bytes: bytes, start: int, end: int) -> bytes:
+    """Extract a page range from a PDF and return as bytes."""
+    if not _PYPDF_OK:
+        raise RuntimeError("pypdf is required: pip install pypdf")
+    assert PdfReader is not None and PdfWriter is not None
+    
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    
+    start = max(1, start)
+    end = min(len(reader.pages), end)
+    for i in range(start - 1, end):
+        writer.add_page(reader.pages[i])
+    
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 # ── Data structures ────────────────────────────────────────────────────────────
@@ -586,47 +614,65 @@ def _diff_blocks(
         elif op == "replace":
             old_block_lines = old_lines[i1:i2]
             new_block_lines = new_lines[j1:j2]
-            paired = min(len(old_block_lines), len(new_block_lines))
-
-            for k in range(paired):
-                ol = old_block_lines[k]
-                nl = new_block_lines[k]
-
-                # Punctuation-stripped equality check
-                ol_core = ol.norm.translate(_PUNCT)
-                nl_core = nl.norm.translate(_PUNCT)
-
-                if ol_core == nl_core:
-                    # Text identical — check formatting
-                    if ol.bold != nl.bold or ol.italic != nl.italic:
-                        changes.append(_make("emphasis", nl.text.strip(), ol, nl))
-                        summary["emphasis"] += 1
-                    continue
-
-                ratio = difflib.SequenceMatcher(None, ol.norm, nl.norm).ratio()
-
-                # Stricter modification threshold: 0.65 (was 0.5).
-                # Blocks below this are too dissimilar to be "the same sentence
-                # with edits" — they're different content that happens to share
-                # some common words, which produces noisy false-positive mods.
-                ctype = "modification" if ratio >= 0.65 else "addition"
-
-                if ctype == "modification":
-                    changes.append(_make("modification", nl.text.strip(), ol, nl))
-                    summary["modification"] += 1
-                else:
-                    changes.append(_make("removal", ol.text.strip(), ol, None))
-                    summary["removal"] += 1
-                    changes.append(_make("addition", nl.text.strip(), None, nl))
-                    summary["addition"] += 1
-
-            for ol in old_block_lines[paired:]:
-                changes.append(_make("removal", ol.text.strip(), ol, None))
-                summary["removal"] += 1
-
-            for nl in new_block_lines[paired:]:
-                changes.append(_make("addition", nl.text.strip(), None, nl))
-                summary["addition"] += 1
+            old_seq = [l.norm for l in old_block_lines]
+            new_seq = [l.norm for l in new_block_lines]
+            inner = difflib.SequenceMatcher(
+                _isjunk,
+                old_seq,
+                new_seq,
+                autojunk=False,
+            )
+            for iop, ii1, ii2, jj1, jj2 in inner.get_opcodes():
+                if iop == "equal":
+                    for k in range(ii2 - ii1):
+                        ol = old_block_lines[ii1 + k]
+                        nl = new_block_lines[jj1 + k]
+                        if ol.bold != nl.bold or ol.italic != nl.italic:
+                            changes.append(_make("emphasis", nl.text.strip(), ol, nl))
+                            summary["emphasis"] += 1
+                elif iop == "delete":
+                    for k in range(ii1, ii2):
+                        ol = old_block_lines[k]
+                        changes.append(_make("removal", ol.text.strip(), ol, None))
+                        summary["removal"] += 1
+                elif iop == "insert":
+                    for k in range(jj1, jj2):
+                        nl = new_block_lines[k]
+                        changes.append(_make("addition", nl.text.strip(), None, nl))
+                        summary["addition"] += 1
+                elif iop == "replace":
+                    sub_old = old_block_lines[ii1:ii2]
+                    sub_new = new_block_lines[jj1:jj2]
+                    pair_count = min(len(sub_old), len(sub_new))
+                    for k in range(pair_count):
+                        ol = sub_old[k]
+                        nl = sub_new[k]
+                        ol_core = ol.norm.translate(_PUNCT)
+                        nl_core = nl.norm.translate(_PUNCT)
+                        if ol_core == nl_core:
+                            if ol.bold != nl.bold or ol.italic != nl.italic:
+                                changes.append(_make("emphasis", nl.text.strip(), ol, nl))
+                                summary["emphasis"] += 1
+                            continue
+                        ratio = difflib.SequenceMatcher(
+                            None,
+                            ol.norm,
+                            nl.norm,
+                        ).ratio()
+                        if ratio >= 0.65:
+                            changes.append(_make("modification", nl.text.strip(), ol, nl))
+                            summary["modification"] += 1
+                        else:
+                            changes.append(_make("removal", ol.text.strip(), ol, None))
+                            summary["removal"] += 1
+                            changes.append(_make("addition", nl.text.strip(), None, nl))
+                            summary["addition"] += 1
+                    for ol in sub_old[pair_count:]:
+                        changes.append(_make("removal", ol.text.strip(), ol, None))
+                        summary["removal"] += 1
+                    for nl in sub_new[pair_count:]:
+                        changes.append(_make("addition", nl.text.strip(), None, nl))
+                        summary["addition"] += 1
 
     return changes, summary
 
@@ -665,12 +711,24 @@ def compare_pdfs_layout(
     # 1. Extract lines — scoped to page range when provided
     logger.info("compare_pdfs_layout: extracting OLD PDF pp.%s-%s",
                 old_page_start, old_page_end)
-    old_lines = _extract_lines(old_pdf_bytes,
-                               page_start=old_page_start, page_end=old_page_end)
+    scoped_old = old_pdf_bytes
+    if old_page_start is not None and old_page_end is not None:
+        scoped_old = extract_pdf_page_range(
+            old_pdf_bytes,
+            old_page_start,
+            old_page_end,
+        )
+    old_lines = _extract_lines(scoped_old)
     logger.info("compare_pdfs_layout: extracting NEW PDF pp.%s-%s",
                 new_page_start, new_page_end)
-    new_lines = _extract_lines(new_pdf_bytes,
-                               page_start=new_page_start, page_end=new_page_end)
+    scoped_new = new_pdf_bytes
+    if new_page_start is not None and new_page_end is not None:
+        scoped_new = extract_pdf_page_range(
+            new_pdf_bytes,
+            new_page_start,
+            new_page_end,
+        )
+    new_lines = _extract_lines(scoped_new)
 
     # 2. Build semantic blocks
     old_blocks = _build_blocks(old_lines)

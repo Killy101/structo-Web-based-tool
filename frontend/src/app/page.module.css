@@ -11,6 +11,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: clamp(8px, 1vw, 16px);
   padding: clamp(14px, 1.4vh, 22px) clamp(24px, 5vw, 96px);
   background: rgba(6, 13, 26, 0.85);
   backdrop-filter: blur(16px);
@@ -192,7 +193,7 @@
 
 .hero {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1.06fr) minmax(0, 0.94fr);
   align-items: center;
   gap: clamp(32px, 4vw, 80px);
   width: 100%;
@@ -946,8 +947,11 @@
   transform: translateY(-1px);
 }
 
-@media (max-width: 768px) {
+@media (max-width: 980px) {
   .hamburger { display: flex; }
+  .navLinks { display: none; }
+  .loginBtn { display: none; }
+  .themeToggle { margin-left: auto; }
 }
 
 /* ── LIGHT MODE OVERRIDES ── */
@@ -1115,10 +1119,10 @@
 /* ── HERO BRAND SPAN (gradient "Structo" name) ── */
 .heroBrandSpan {
   display: block;
-  font-size: clamp(52px, 6.5vw, 96px);
+  font-size: clamp(46px, 5.8vw, 88px);
   font-weight: 800;
   line-height: 1;
-  letter-spacing: -3px;
+  letter-spacing: -2.2px;
   background: linear-gradient(135deg, #ffffff 10%, #42b4f5 55%, #1a8fd1 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -1226,6 +1230,29 @@
   .heroVisual { max-width: 480px; width: 100%; margin: 0 auto; }
   .featureGrid { grid-template-columns: repeat(2, 1fr); }
   .aboutLayout { grid-template-columns: 1fr; gap: 44px; }
+}
+
+@media (max-width: 1280px) {
+  .hero {
+    gap: clamp(20px, 2.5vw, 40px);
+  }
+
+  .heroCard {
+    max-width: clamp(300px, 42vw, 500px);
+  }
+
+  .floatingChip {
+    padding: 7px 12px;
+    font-size: 11px;
+  }
+
+  .chipTop {
+    right: 0;
+  }
+
+  .chipBottom {
+    left: 0;
+  }
 }
 
 @media (max-width: 768px) {

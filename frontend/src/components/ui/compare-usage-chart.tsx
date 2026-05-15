@@ -82,15 +82,15 @@ const UsersIcon: React.FC<{ className?: string }> = ({ className }) => (
 );
 
 function buildChartData(days: number): ChartNestedDataShape[] {
-  const { dates, directCounts, chunkCounts } = getCompareUsageByDay(days);
+  const { dates, workflow1Counts, workflow2Counts } = getCompareUsageByDay(days);
   return [
     {
-      key: 'Direct',
-      data: dates.map((d, i) => ({ key: d, data: directCounts[i] } as ChartShallowDataShape)),
+      key: 'Workflow 1',
+      data: dates.map((d, i) => ({ key: d, data: workflow1Counts[i] } as ChartShallowDataShape)),
     },
     {
-      key: 'Chunk-based',
-      data: dates.map((d, i) => ({ key: d, data: chunkCounts[i] } as ChartShallowDataShape)),
+      key: 'Workflow 2',
+      data: dates.map((d, i) => ({ key: d, data: workflow2Counts[i] } as ChartShallowDataShape)),
     },
   ];
 }
@@ -104,11 +104,11 @@ const CompareUsageChart: React.FC = () => {
   const chartData = useMemo(() => buildChartData(selectedOption.days), [selectedOption.days]);
   const totals = getCompareUsageTotals();
 
-  const directPct = totals.total > 0 ? Math.round((totals.direct / totals.total) * 100) : 0;
-  const chunkPct  = totals.total > 0 ? Math.round((totals.chunk  / totals.total) * 100) : 0;
+  const workflow1Pct = totals.total > 0 ? Math.round((totals.workflow1 / totals.total) * 100) : 0;
+  const workflow2Pct = totals.total > 0 ? Math.round((totals.workflow2 / totals.total) * 100) : 0;
 
-  const directTrend = directPct >= chunkPct ? 'up' : 'down';
-  const chunkTrend  = chunkPct  >= directPct ? 'up' : 'down';
+  const workflow1Trend = workflow1Pct >= workflow2Pct ? 'up' : 'down';
+  const workflow2Trend = workflow2Pct >= workflow1Pct ? 'up' : 'down';
 
   return (
     <>
@@ -149,8 +149,8 @@ const CompareUsageChart: React.FC = () => {
         {/* Legend */}
         <div className="flex gap-5 px-5 mb-3">
           {[
-            { name: 'Direct',     color: '#1a6bff' },
-            { name: 'Chunk-based', color: '#7c3aed' },
+            { name: 'Workflow 1', color: '#1a6bff' },
+            { name: 'Workflow 2', color: '#7c3aed' },
           ].map(item => (
             <div key={item.name} className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded-sm flex-shrink-0" style={{ background: item.color }} />
@@ -211,58 +211,58 @@ const CompareUsageChart: React.FC = () => {
 
         {/* Summary stats */}
         <div className="flex gap-4 px-5 pt-4 pb-4">
-          {/* Direct */}
+          {/* Workflow 1 */}
           <div className="flex-1 flex flex-col gap-1">
-            <span className="text-[11px] text-gray-600 dark:text-gray-400">Direct Comparisons</span>
+            <span className="text-[11px] text-gray-600 dark:text-gray-400">Workflow 1 Sessions</span>
             <div className="flex items-center gap-2">
               <CountUp
                 className="font-mono text-[26px] font-bold text-gray-900 dark:text-white leading-none"
                 start={0}
-                end={totals.direct}
+                end={totals.workflow1}
                 duration={2}
               />
               <div className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
-                directTrend === 'up'
+                workflow1Trend === 'up'
                   ? 'bg-blue-500/15 text-blue-400'
                   : 'bg-slate-500/15 text-slate-400'
               }`}>
-                {directTrend === 'up'
+                {workflow1Trend === 'up'
                   ? <UpArrowIcon strokeColor="#60a5fa" />
                   : <DownArrowIcon strokeColor="#94a3b8" />}
-                {directPct}%
+                {workflow1Pct}%
               </div>
             </div>
             <span className="text-[10px] text-gray-400 dark:text-gray-500">
-              {totals.directUnique} unique user{totals.directUnique !== 1 ? 's' : ''}
+              {totals.workflow1Unique} unique user{totals.workflow1Unique !== 1 ? 's' : ''}
             </span>
           </div>
 
           {/* Divider */}
           <div className="w-px self-stretch bg-gray-200 dark:bg-[#17253f]" />
 
-          {/* Chunk */}
+          {/* Workflow 2 */}
           <div className="flex-1 flex flex-col gap-1">
-            <span className="text-[11px] text-gray-600 dark:text-gray-400">Chunk-based Comparisons</span>
+            <span className="text-[11px] text-gray-600 dark:text-gray-400">Workflow 2 Sessions</span>
             <div className="flex items-center gap-2">
               <CountUp
                 className="font-mono text-[26px] font-bold text-gray-900 dark:text-white leading-none"
                 start={0}
-                end={totals.chunk}
+                end={totals.workflow2}
                 duration={2}
               />
               <div className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
-                chunkTrend === 'up'
+                workflow2Trend === 'up'
                   ? 'bg-violet-500/15 text-violet-400'
                   : 'bg-slate-500/15 text-slate-400'
               }`}>
-                {chunkTrend === 'up'
+                {workflow2Trend === 'up'
                   ? <UpArrowIcon strokeColor="#a78bfa" />
                   : <DownArrowIcon strokeColor="#94a3b8" />}
-                {chunkPct}%
+                {workflow2Pct}%
               </div>
             </div>
             <span className="text-[10px] text-gray-400 dark:text-gray-500">
-              {totals.chunkUnique} unique user{totals.chunkUnique !== 1 ? 's' : ''}
+              {totals.workflow2Unique} unique user{totals.workflow2Unique !== 1 ? 's' : ''}
             </span>
           </div>
         </div>
@@ -274,33 +274,33 @@ const CompareUsageChart: React.FC = () => {
         <div className="flex flex-col px-5 divide-y divide-gray-100 dark:divide-[#17253f]">
           {[
             {
-              id: 'direct-detail',
+              id: 'workflow1-detail',
               Icon: ArrowsIcon,
-              label: 'Direct Comparison',
-              tooltip: 'Workflow 1 — upload & detect all changes instantly',
-              value: `${totals.direct} uses`,
-              TrendIcon: directTrend === 'up' ? TrendUpIcon : TrendDownIcon,
-              trendBase:   directTrend === 'up' ? '#1a6bff' : '#374d6a',
-              trendStroke: directTrend === 'up' ? '#60a5fa' : '#94a3b8',
+              label: 'Workflow 1',
+              tooltip: 'Chunk & Compare sessions',
+              value: `${totals.workflow1} uses`,
+              TrendIcon: workflow1Trend === 'up' ? TrendUpIcon : TrendDownIcon,
+              trendBase:   workflow1Trend === 'up' ? '#1a6bff' : '#374d6a',
+              trendStroke: workflow1Trend === 'up' ? '#60a5fa' : '#94a3b8',
               delay: 0,
             },
             {
-              id: 'chunk-detail',
+              id: 'workflow2-detail',
               Icon: ChunksIcon,
-              label: 'Chunk-based Comparison',
-              tooltip: 'Workflow 2 — review per-section changes',
-              value: `${totals.chunk} uses`,
-              TrendIcon: chunkTrend === 'up' ? TrendUpIcon : TrendDownIcon,
-              trendBase:   chunkTrend === 'up' ? '#7c3aed' : '#374d6a',
-              trendStroke: chunkTrend === 'up' ? '#a78bfa' : '#94a3b8',
+              label: 'Workflow 2',
+              tooltip: 'Compare & Apply sessions',
+              value: `${totals.workflow2} uses`,
+              TrendIcon: workflow2Trend === 'up' ? TrendUpIcon : TrendDownIcon,
+              trendBase:   workflow2Trend === 'up' ? '#7c3aed' : '#374d6a',
+              trendStroke: workflow2Trend === 'up' ? '#a78bfa' : '#94a3b8',
               delay: 0.05,
             },
             {
               id: 'unique-users',
               Icon: UsersIcon,
               label: 'Unique Users',
-              tooltip: 'Total distinct users who ran any comparison',
-              value: `${new Set([...Array(totals.directUnique), ...Array(totals.chunkUnique)]).size || Math.max(totals.directUnique, totals.chunkUnique)} users`,
+              tooltip: 'Total distinct users who ran any compare workflow',
+              value: `${totals.totalUnique} users`,
               TrendIcon: totals.total > 0 ? TrendUpIcon : TrendDownIcon,
               trendBase:   '#16a34a',
               trendStroke: '#4ade80',

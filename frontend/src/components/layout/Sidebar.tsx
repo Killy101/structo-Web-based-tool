@@ -67,7 +67,6 @@ const NAV_ITEMS: NavItem[] = [
     roles: ["SUPER_ADMIN", "ADMIN", "USER"],
     feature: [
       "compare-basic",
-      "compare-merge",
       "compare-pdf-xml-only",
     ],
     icon: (
@@ -166,6 +165,27 @@ const NAV_ITEMS: NavItem[] = [
           strokeLinejoin="round"
           strokeWidth={1.8}
           d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+        />
+      </svg>
+    ),
+  },
+  {
+    href: "/dashboard/webscrape",
+    label: "WebScrape",
+    roles: ["SUPER_ADMIN", "ADMIN", "USER"],
+    feature: "webscrape",
+    icon: (
+      <svg
+        className="w-5 h-5"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={1.8}
+          d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"
         />
       </svg>
     ),

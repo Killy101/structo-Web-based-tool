@@ -3,7 +3,6 @@ import cors from 'cors'
 import helmet from 'helmet'
 import dotenv from 'dotenv'
 import pool from './lib/db'
-import { seedDevUserIfNeeded } from './lib/seed-dev-user'
 import authRoutes from './routes/auth'
 import usersRoutes from './routes/users'
 import dashboardRoutes from './routes/dashboard'
@@ -15,6 +14,7 @@ import userLogsRoutes from './routes/user-logs'
 import brdRouter from './routes/brd'
 import notificationsRoutes from './routes/notifications'
 import inboundEmailsRoutes from './routes/inbound-emails'
+import webScrapeRoutes from './routes/webscrape'
 import { governanceControlsMiddleware } from './middleware/governanceControls'
 import {
   generalLimiter,
@@ -95,6 +95,7 @@ app.use('/user-logs',     userLogsRoutes)
 app.use('/brd',           brdRouter)
 app.use('/notifications', notificationsRoutes)
 app.use('/emails',        inboundEmailsRoutes)
+app.use('/webscrape',     webScrapeRoutes)
 
 app.get('/health', async (_req, res) => {
   try {
@@ -156,10 +157,6 @@ async function runStartupMigrations() {
 }
 
 runStartupMigrations().then(async () => {
-  if (process.env.NODE_ENV !== 'production') {
-    await seedDevUserIfNeeded()
-  }
-
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
   })
