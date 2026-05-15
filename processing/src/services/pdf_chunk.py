@@ -28,7 +28,7 @@ The XML chunking still relies on src.services.xml_compare.
 """
 
 from __future__ import annotations
-
+import copy
 import io
 import os
 import tempfile
@@ -72,6 +72,56 @@ _extractor_load_pdf   = None
 _extractor_line_text  = None
 _extractor_norm_cmp   = None
 _EXTRACTOR_AVAILABLE  = False
+_legislation_pdf_cache: dict[str, bool] = {}
+
+def stable_chunk_id(text: str) -> str:
+    return hashlib.md5(
+        text.strip().encode("utf-8")
+    ).hexdigest()[:12]
+    
+def safe_changes_payload() -> dict:
+    return {
+        "changes": [],
+        "summary": {},
+        "inline_diff": [],
+        "alignment": [],
+        "changes_loaded": True, 
+    }
+    
+    
+def safe_align_sentences(
+    old_text: str,
+    new_text: str,
+    min_score: float = 0.45,
+) -> list[tuple[str, str, float]]:
+
+    pairs = align_sentences(old_text, new_text)
+
+    cleaned: list[tuple[str, str, float]] = []
+
+    for left, right, score in pairs:
+
+        left = (left or "").strip()
+        right = (right or "").strip()
+
+        if not left and not right:
+            continue
+
+        if score < min_score:
+
+            if left and not right:
+                cleaned.append((left, "", score))
+
+            elif right and not left:
+                cleaned.append(("", right, score))
+
+            else:
+                cleaned.append((left, right, score))
+
+        else:
+            cleaned.append((left, right, score))
+
+    return cleaned
 
 def _try_load_extractor_core() -> bool:
     global _extractor_load_pdf, _extractor_line_text, _extractor_norm_cmp, _EXTRACTOR_AVAILABLE
@@ -575,7 +625,11 @@ _HEADING_PATTERNS: dict[str, re.Pattern] = {
 }
 
 _GENERIC_HEADING = re.compile(
-    r'^(?:[A-Z][A-Z\s\-\d\.]{3,60}|[A-Z][a-z]+(?:\s[A-Z][a-z]+){0,6})\s*$',
+    r'^(?:'
+    r'(?:PART|CHAPTER|SECTION|ARTICLE)\s+[\w\dIVX]+'
+    r'|'
+    r'[A-Z][A-Z\s\-]{4,80}'
+    r')$',
     re.MULTILINE,
 )
 
@@ -2356,7 +2410,7 @@ def _diff_xml_aligned(
     make_fn,        # callable(_make signature) → dict
     summary: dict,
     cid_ref: list,  # [int] — mutable reference to current change id counter
-    align_sentences_fn,
+    safe_align_sentences_fn,
     chunk_has_real_changes_fn,
 ) -> list[dict]:
     """
@@ -2427,7 +2481,7 @@ def _diff_xml_aligned(
                 old_text_block = " ".join(l["text"] for l in old_block)
                 new_text_block = " ".join(l["text"] for l in new_block)
 
-                aligned = align_sentences_fn(old_text_block, new_text_block)
+                aligned = safe_align_sentences_fn(old_text_block, new_text_block)
                 for old_sent, new_sent, score in aligned:
                     old_sent = (old_sent or "").strip()
                     new_sent = (new_sent or "").strip()
@@ -2777,7 +2831,7 @@ def detect_pdf_changes(
                 make_fn          = _make_for_hybrid,
                 summary          = summary,
                 cid_ref          = cid_ref,
-                align_sentences_fn         = align_sentences,
+                safe_align_sentences_fn         = safe_align_sentences,
                 chunk_has_real_changes_fn  = chunk_has_real_changes,
             )
             logger.info("detect_pdf_changes: hybrid produced %d changes", len(changes))
@@ -2836,7 +2890,7 @@ def detect_pdf_changes(
                 old_text_block = " ".join([l["text"] for l in old_block])
                 new_text_block = " ".join([l["text"] for l in new_block])
 
-                aligned = align_sentences(old_text_block, new_text_block)
+                aligned = safe_align_sentences(old_text_block, new_text_block)
 
                 _PUNCT = str.maketrans("", "", ".,;: \t")
 

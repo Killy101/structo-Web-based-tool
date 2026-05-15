@@ -42,11 +42,14 @@ from src.services.pdf_chunk import (
 try:
     from src.services.word_compare import build_git_inline_diff as _build_git_inline_diff
     from src.services.word_compare import compare_words as _compare_words
+    from src.services.pdf_chunk import stable_chunk_id
 except ImportError:
     def _build_git_inline_diff(old_text: str, new_text: str) -> list:  # type: ignore[misc]
         return []
     def _compare_words(old_text: str, new_text: str) -> dict:  # type: ignore[misc]
         return {"has_changes": True, "change_ratio": 1.0, "summary": {}, "old_word_count": 0, "new_word_count": 0}
+    def stable_chunk_id(text: str) -> str:  # type: ignore[misc]
+        return "000000000000"
 
 
 def _make_word_diff(old_text: str, new_text: str) -> dict | None:
@@ -1303,7 +1306,7 @@ async def get_compare_chunk_endpoint(chunk_id: str, job_id: str):
     return {
         "success":     True,
         "job_id":      job_id,
-        "chunk_id":    chunk_id,
+        "chunk_id":   stable_chunk_id(chunk),
         "source_name": job["source_name"],
         "chunk":       chunk,
     }

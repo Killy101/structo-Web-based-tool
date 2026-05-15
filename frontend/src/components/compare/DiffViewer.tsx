@@ -21,19 +21,23 @@ import type { AlignedLine, FoldMapEntry } from "./DiffPane";
 import XmlPanel  from "./XmlPanel";
 import WordDiffPanel from "./WordDiffPanel";
 
+// ── Props ─────────────────────────────────────────────────────────────────────
+
 interface Props {
-  mode:              WorkflowMode;
-  result:            DiffResult;
-  onReset:           () => void;
-  initialXmlFile?:   File | null;
-  xmlSections?:      XmlSection[];
-  initialSection?:   string | null;
-  sectionMapper?:    (chunkSection: string) => string | null;
-  isStreaming?:      boolean;
+  mode:               WorkflowMode;
+  result:             DiffResult;
+  onReset:            () => void;
+  initialXmlFile?:    File | null;
+  xmlSections?:       XmlSection[];
+  initialSection?:    string | null;
+  sectionMapper?:     (chunkSection: string) => string | null;
+  isStreaming?:       boolean;
   streamingProgress?: DiffProgress | null;
 }
 
 type ApplyStatus = "idle" | "applying" | "done" | "error";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function useDragSplitter(
   containerRef: React.RefObject<HTMLDivElement>,
@@ -103,6 +107,7 @@ function IconBtn({
   );
 }
 
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function DiffViewer({
   mode,
@@ -112,46 +117,44 @@ export default function DiffViewer({
   xmlSections,
   initialSection,
   sectionMapper,
-  isStreaming = false,
+  isStreaming       = false,
   streamingProgress = null,
 }: Props) {
-  const [activeId,      setActiveId]      = useState<number | null>(result.chunks[0]?.id ?? null);
-  const [appliedIds,    setAppliedIds]    = useState<Set<number>>(new Set());
-  const [applyStatus,   setApplyStatus]   = useState<ApplyStatus>("idle");
-  const [xmlText,       setXmlText]       = useState("");
-  const [xmlFilename,   setXmlFilename]   = useState<string | null>(null);
-  const [xmlStatus,     setXmlStatus]     = useState("");
-  const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
-  const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
-  const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
-  const [wrapLines,     setWrapLines]     = useState(false);
-  const [syncScrollLeft, setSyncScrollLeft] = useState<{side:"a"|"b"; left:number} | null>(null);
-  const [sidebarOpen,   setSidebarOpen]   = useState(true);
-  const [wordPanelOpen, setWordPanelOpen] = useState(true);
-  const [applyHistory, setApplyHistory]   = useState<{ xmlText: string; appliedId: number }[]>([]);
+  const [activeId,        setActiveId]        = useState<number | null>(result.chunks[0]?.id ?? null);
+  const [appliedIds,      setAppliedIds]      = useState<Set<number>>(new Set());
+  const [applyStatus,     setApplyStatus]     = useState<ApplyStatus>("idle");
+  const [xmlText,         setXmlText]         = useState("");
+  const [xmlFilename,     setXmlFilename]     = useState<string | null>(null);
+  const [xmlStatus,       setXmlStatus]       = useState("");
+  const [navSpan,         setNavSpan]         = useState<{ start: number; end: number } | null>(null);
+  const [xmlOpen,         setXmlOpen]         = useState(mode === "edit" || !!initialXmlFile);
+  const [filterSection,   setFilterSection]   = useState<string | null>(initialSection ?? null);
+  const [wrapLines,       setWrapLines]       = useState(false);
+  const [syncScrollLeft,  setSyncScrollLeft]  = useState<{ side: "a" | "b"; left: number } | null>(null);
+  const [sidebarOpen,     setSidebarOpen]     = useState(true);
+  const [wordPanelOpen,   setWordPanelOpen]   = useState(true);
+  const [applyHistory,    setApplyHistory]    = useState<{ xmlText: string; appliedId: number }[]>([]);
   const [expandedFoldKeys, setExpandedFoldKeys] = useState<Set<number>>(() => new Set());
-
-  // showAllContext = true means ALL lines are visible (no folding).
-  // This is the correct default — matches Beyond Compare / VSCode behaviour.
-  // Users can toggle folding with the "Collapse" button or press C.
-  const [showAllContext, setShowAllContext] = useState(true);
-
-  const [reviewedIds,  setReviewedIds]    = useState<Set<number>>(new Set());
-  const [pulseSide,    setPulseSide]      = useState<"old" | "new" | null>(null);
+  // showAllContext=true means no folding (default — matches Beyond Compare / VSCode).
+  const [showAllContext,  setShowAllContext]  = useState(true);
+  const [reviewedIds,     setReviewedIds]     = useState<Set<number>>(new Set());
+  const [pulseSide,       setPulseSide]       = useState<"old" | "new" | null>(null);
 
   const containerRef   = useRef<HTMLDivElement>(null);
   const paneARef       = useRef<DiffPaneHandle>(null);
   const paneBRef       = useRef<DiffPaneHandle>(null);
   const xmlRef         = useRef<XmlScrollTarget>(null);
   const locateSeqRef   = useRef(0);
+  // navSyncLock prevents scroll-sync echo immediately after chunk navigation
   const navSyncLockRef = useRef(false);
   const navSyncLockSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pulseTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20,  80);
+  const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20, 80);
   const [xmlHeight, startDragH] = useDragSplitter(containerRef, 260, "y", 120, 560);
 
+  // ── Load initial XML file ─────────────────────────────────────────────────
   useEffect(() => {
     if (!initialXmlFile || xmlText) return;
     const reader = new FileReader();
@@ -166,11 +169,70 @@ export default function DiffViewer({
     reader.readAsText(initialXmlFile);
   }, [initialXmlFile, xmlText, mode]);
 
-  const alignmentChunks = useMemo(
-    () => [...result.chunks],
-    [result.chunks],
+  // ── Alignment — separate from chunks (visual layer only) ──────────────────
+  // alignmentChunks is stable: changes only when result.chunks identity changes.
+  const alignmentChunks = useMemo(() => [...result.chunks], [result.chunks]);
+
+  // Build raw aligned lines from pane data + chunk positions.
+  // This is the pure alignment computation; it knows nothing about UI state.
+  const { linesA: rawLinesA, linesB: rawLinesB } = useMemo(
+    () => buildAlignedLines(result.pane_a, result.pane_b, alignmentChunks),
+    [result.pane_a, result.pane_b, alignmentChunks],
   );
 
+  // Apply optional folding.
+  // When showAllContext=true (default) no lines are hidden.
+  // foldMap is returned by foldUnchangedLines so expansion uses exact raw slices.
+  const { linesA, linesB } = useMemo(() => {
+    if (showAllContext || wrapLines) {
+      return { linesA: rawLinesA, linesB: rawLinesB };
+    }
+
+    const { linesA: fA, linesB: fB, foldMap } = foldUnchangedLines(rawLinesA, rawLinesB);
+
+    const outA: AlignedLine[] = [];
+    const outB: AlignedLine[] = [];
+
+    for (let i = 0; i < fA.length; i++) {
+      const a = fA[i];
+      const b = fB[i];
+
+      if (a && !Array.isArray(a) && typeof a === "object" && a.type === "fold") {
+        if (expandedFoldKeys.has(a.key)) {
+          const meta: FoldMapEntry | undefined = foldMap.get(a.key);
+          if (meta) {
+            outA.push(...rawLinesA.slice(meta.rawStart, meta.rawStart + meta.count));
+            outB.push(...rawLinesB.slice(meta.rawStart, meta.rawStart + meta.count));
+          }
+        } else {
+          outA.push(a);
+          outB.push(b);
+        }
+        continue;
+      }
+
+      outA.push(a);
+      outB.push(b);
+    }
+
+    return { linesA: outA, linesB: outB };
+  }, [showAllContext, wrapLines, rawLinesA, rawLinesB, expandedFoldKeys]);
+
+  // Reset fold/review state when result changes
+  useEffect(() => {
+    setExpandedFoldKeys(new Set());
+    setReviewedIds(new Set());
+  }, [result.chunks]);
+
+  const handleUnfoldRow = useCallback((foldKey: number) => {
+    setExpandedFoldKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(foldKey)) next.delete(foldKey); else next.add(foldKey);
+      return next;
+    });
+  }, []);
+
+  // ── Auto-scroll to first chunk on load ───────────────────────────────────
   const didAutoScrollRef = useRef(false);
   useEffect(() => {
     if (didAutoScrollRef.current) return;
@@ -185,6 +247,7 @@ export default function DiffViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result.pane_a, result.pane_b, alignmentChunks]);
 
+  // ── Section / filter helpers ──────────────────────────────────────────────
   const mapSection = useCallback(
     (s: string) => sectionMapper ? sectionMapper(s) : s,
     [sectionMapper],
@@ -193,10 +256,7 @@ export default function DiffViewer({
   const filteredChunks = useMemo(() => {
     const base = result.chunks;
     if (!filterSection) return base;
-    return base.filter((c) => {
-      const section = mapSection(c.section ?? "");
-      return section === filterSection;
-    });
+    return base.filter((c) => mapSection(c.section ?? "") === filterSection);
   }, [result.chunks, filterSection, mapSection]);
 
   const filteredStats = useMemo(() => {
@@ -259,68 +319,7 @@ export default function DiffViewer({
     [filteredChunks],
   );
 
-  // ── Build aligned lines (visual layer only) ───────────────────────────────
-  const { linesA: rawLinesA, linesB: rawLinesB } = useMemo(() => {
-    return buildAlignedLines(result.pane_a, result.pane_b, alignmentChunks);
-  }, [result.pane_a, result.pane_b, alignmentChunks]);
-
-  // ── Apply optional folding ────────────────────────────────────────────────
-  // When showAllContext is true (default) NO lines are hidden — every line
-  // from both PDFs is visible, matching professional diff tool behaviour.
-  // When the user explicitly toggles folding, foldUnchangedLines runs and
-  // the foldMap returned is used for O(1) safe fold expansion.
-  const { linesA, linesB } = useMemo(() => {
-    if (showAllContext || wrapLines) {
-      // No folding — return aligned lines unchanged.
-      return { linesA: rawLinesA, linesB: rawLinesB };
-    }
-
-    // Folding is opt-in. foldUnchangedLines now returns foldMap so we can
-    // expand folds using the exact raw-array slice (no fragile rawIdx loop).
-    const { linesA: fA, linesB: fB, foldMap } = foldUnchangedLines(rawLinesA, rawLinesB);
-
-    const outA: AlignedLine[] = [];
-    const outB: AlignedLine[] = [];
-
-    for (let i = 0; i < fA.length; i++) {
-      const a = fA[i];
-      const b = fB[i];
-
-      if (a && !Array.isArray(a) && typeof a === "object" && a.type === "fold") {
-        if (expandedFoldKeys.has(a.key)) {
-          // Use foldMap for the exact raw slice — avoids wrong-lines bug.
-          const meta: FoldMapEntry | undefined = foldMap.get(a.key);
-          if (meta) {
-            outA.push(...rawLinesA.slice(meta.rawStart, meta.rawStart + meta.count));
-            outB.push(...rawLinesB.slice(meta.rawStart, meta.rawStart + meta.count));
-          }
-        } else {
-          outA.push(a);
-          outB.push(b);
-        }
-        continue;
-      }
-
-      outA.push(a);
-      outB.push(b);
-    }
-
-    return { linesA: outA, linesB: outB };
-  }, [showAllContext, wrapLines, rawLinesA, rawLinesB, expandedFoldKeys]);
-
-
-  useEffect(() => {
-    setExpandedFoldKeys(new Set());
-    setReviewedIds(new Set());
-  }, [result.chunks]);
-
-  const handleUnfoldRow = useCallback((foldKey: number) => {
-    setExpandedFoldKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(foldKey)) next.delete(foldKey); else next.add(foldKey);
-      return next;
-    });
-  }, []);
+  // ── Scroll sync ───────────────────────────────────────────────────────────
 
   function scrollXmlToMark() {
     const el = xmlRef.current;
@@ -345,6 +344,11 @@ export default function DiffViewer({
     xmlEl.scrollTop = Math.max(0, Math.min(1, fraction)) * max;
   }, []);
 
+  /**
+   * Central scroll-sync dispatcher.
+   * Receives a scroll fraction from one panel and propagates to all others.
+   * navSyncLock suppresses echo when navigating by chunk.
+   */
   const schedulePanelSync = useCallback(
     (source: "old" | "new" | "xml", fraction: number) => {
       if (navSyncLockRef.current) return;
@@ -361,14 +365,22 @@ export default function DiffViewer({
     [syncXmlScroll],
   );
 
+  // ── Chunk selection ───────────────────────────────────────────────────────
+
   const selectChunk = useCallback(async (id: number) => {
     const seq = ++locateSeqRef.current;
     setActiveId(id);
     setApplyStatus("idle");
+
+    // Lock scroll-sync during navigation to prevent echo
     navSyncLockRef.current = true;
     if (navSyncLockSafetyTimerRef.current) clearTimeout(navSyncLockSafetyTimerRef.current);
     navSyncLockSafetyTimerRef.current = setTimeout(() => { navSyncLockRef.current = false; }, 500);
-    if (autoAdvanceTimerRef.current) { clearTimeout(autoAdvanceTimerRef.current); autoAdvanceTimerRef.current = null; }
+
+    if (autoAdvanceTimerRef.current) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
     setReviewedIds((prev) => { const next = new Set(prev); next.add(id); return next; });
 
     try {
@@ -419,6 +431,7 @@ export default function DiffViewer({
     if (tgt) void selectChunk(tgt.id);
   }, [filteredChunks, activeFilteredIndex, selectChunk]);
 
+  // ── Keyboard navigation ───────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -441,6 +454,8 @@ export default function DiffViewer({
       if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
     };
   }, []);
+
+  // ── Apply logic ───────────────────────────────────────────────────────────
 
   const applyChunk = useCallback(async () => {
     if (mode !== "edit" || !xmlText || activeId === null) return;
@@ -470,7 +485,6 @@ export default function DiffViewer({
           setNavSpan({ start: res.span_start, end: res.span_end! });
           requestAnimationFrame(scrollXmlToMark);
         }
-        // Capture snapshot to avoid stale-closure bug in the 800ms timer.
         const snapshotFiltered = filteredChunks;
         const snapshotApplied  = new Set(appliedIds);
         snapshotApplied.add(activeId);
@@ -530,7 +544,7 @@ export default function DiffViewer({
     if (toApply.length === 0) return;
     setXmlStatus(`Applying ${toApply.length} change${toApply.length !== 1 ? "s" : ""}…`);
     setApplyStatus("applying");
-    let currentXml = xmlText;
+    let currentXml   = xmlText;
     let appliedCount = 0;
     for (const chunk of toApply) {
       try {
@@ -555,7 +569,6 @@ export default function DiffViewer({
     if (appliedCount > 0) setTimeout(() => setApplyStatus((s) => s === "done" ? "idle" : s), 3000);
   }, [mode, xmlText, filteredChunks, appliedIds]);
 
-  // FIX: was finding the next chunk but never calling selectChunk(next.id).
   const goToNextUnreviewed = useCallback(() => {
     const startIdx = activeFilteredIndex >= 0 ? activeFilteredIndex + 1 : 0;
     const candidates = [
@@ -590,6 +603,9 @@ export default function DiffViewer({
     URL.revokeObjectURL(url);
   }, [result.chunks]);
 
+  // ── XML → PDF navigation (chunk locate from cursor position) ─────────────
+
+  // Pre-build n-gram cache for fast client-side chunk matching
   const chunkNgramCache = useMemo(() => {
     const BASE = 31;
     const MOD  = 0x1_0000_0000;
@@ -598,8 +614,7 @@ export default function DiffViewer({
       const n = s.length;
       if (n < 6) return new Set();
       const set = new Set<number>();
-      let h = 0;
-      let pow = 1;
+      let h = 0, pow = 1;
       for (let j = 0; j < 5; j++) pow = (pow * BASE) % MOD;
       for (let i = 0; i < 6; i++) h = (h * BASE + s.charCodeAt(i)) % MOD;
       set.add(h >>> 0);
@@ -641,10 +656,9 @@ export default function DiffViewer({
       if (plainCtx.length >= 6) {
         const BASE = 31;
         const MOD  = 0x1_0000_0000;
-        const ctxLower = plainCtx.toLowerCase();
+        const ctxLower  = plainCtx.toLowerCase();
         const ctxHashes = new Set<number>();
-        let h = 0;
-        let pow = 1;
+        let h = 0, pow = 1;
         for (let j = 0; j < 5; j++) pow = (pow * BASE) % MOD;
         for (let i = 0; i < 6; i++) h = (h * BASE + ctxLower.charCodeAt(i)) % MOD;
         ctxHashes.add(h >>> 0);
@@ -664,7 +678,7 @@ export default function DiffViewer({
           const score = cached.total > 0 ? hits / cached.total : 0;
           if (score > fastBestScore) {
             fastBestScore = score;
-            fastBestId = chunk.id;
+            fastBestId    = chunk.id;
           }
         }
       }
@@ -676,8 +690,8 @@ export default function DiffViewer({
       }
 
       if (plainCtx.length >= 10) {
-        const probe     = plainCtx.slice(0, 160).replace(/\s+/g, " ").trim();
-        const locChunk  = fastBestId !== null ? result.chunks.find((c) => c.id === fastBestId) ?? null : null;
+        const probe    = plainCtx.slice(0, 160).replace(/\s+/g, " ").trim();
+        const locChunk = fastBestId !== null ? result.chunks.find((c) => c.id === fastBestId) ?? null : null;
         const synthetic = locChunk ?? {
           id: -1, kind: "mod" as const, block_a: -1, block_b: -1,
           text_a: probe, text_b: probe, confidence: 1.0, reason: "",
@@ -705,6 +719,8 @@ export default function DiffViewer({
     } catch { /* best-effort; must not throw */ }
   }, [xmlText, result.chunks, result.pane_a.offsets, result.pane_b.offsets, chunkNgramCache, selectChunk]);
 
+  // ── Derived UI values ─────────────────────────────────────────────────────
+
   const posLabel = activeFilteredIndex >= 0
     ? `${activeFilteredIndex + 1} / ${filteredChunks.length}`
     : `— / ${filteredChunks.length}`;
@@ -714,9 +730,12 @@ export default function DiffViewer({
     ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
     : "bg-slate-500/10 text-slate-400 border-slate-500/20";
 
+  // ── Render ────────────────────────────────────────────────────────────────
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-white dark:bg-[#0a1020] overflow-hidden">
 
+      {/* Streaming progress bar */}
       {isStreaming && (
         <div className="flex-shrink-0 relative h-0.5 bg-slate-200 dark:bg-white/8 overflow-hidden">
           <div
@@ -756,6 +775,7 @@ export default function DiffViewer({
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
 
+        {/* Stats */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <StatPill label="+" count={result.stats.additions}     cls="text-emerald-500" />
           <StatPill label="-" count={result.stats.deletions}     cls="text-rose-500" />
@@ -810,6 +830,7 @@ export default function DiffViewer({
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
 
+        {/* View toggles */}
         <div className="flex items-center gap-1 flex-shrink-0">
           <IconBtn title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"} active={sidebarOpen} onClick={() => setSidebarOpen((v) => !v)}>
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -825,7 +846,6 @@ export default function DiffViewer({
             <span className="hidden sm:inline">Wrap</span>
           </IconBtn>
 
-          {/* Show All Lines toggle — default ON so nothing is hidden */}
           <IconBtn
             title={showAllContext ? "Collapse unchanged lines (C)" : "Show all lines (C)"}
             active={showAllContext}
@@ -857,6 +877,7 @@ export default function DiffViewer({
 
         <div className="flex-1" />
 
+        {/* Apply status */}
         {mode === "edit" && applyStatus !== "idle" && (
           <div className={`flex-shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-semibold ${
             applyStatus === "applying" ? "bg-amber-500/15 text-amber-400" :
@@ -942,6 +963,7 @@ export default function DiffViewer({
       {/* Main content area */}
       <div className="flex-1 overflow-hidden min-h-0 flex">
 
+        {/* Sidebar */}
         {sidebarOpen && (
           <div className="flex-shrink-0 w-[240px] min-w-[240px] flex flex-col
             border-r border-slate-200 dark:border-white/8">
@@ -974,6 +996,7 @@ export default function DiffViewer({
           </div>
         )}
 
+        {/* Collapsed sidebar strip */}
         {!sidebarOpen && (
           <div className="flex-shrink-0 flex flex-col items-center py-3 gap-2 bg-slate-50 dark:bg-[#0d1424]
             border-r border-slate-200 dark:border-white/8">
@@ -992,10 +1015,13 @@ export default function DiffViewer({
           </div>
         )}
 
+        {/* Diff panes container */}
         <div ref={containerRef} className="flex-1 min-w-0 flex flex-col overflow-hidden">
 
+          {/* Side-by-side panes */}
           <div className="flex-1 min-h-0 flex relative overflow-hidden">
 
+            {/* Left pane (old / A) */}
             <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
               <DiffPane
                 ref={paneARef}
@@ -1018,6 +1044,7 @@ export default function DiffViewer({
               />
             </div>
 
+            {/* Vertical splitter */}
             <div
               className="flex-shrink-0 w-1 cursor-col-resize hover:bg-teal-400/40
                 active:bg-teal-500/50 transition-colors relative z-10
@@ -1033,6 +1060,7 @@ export default function DiffViewer({
               </div>
             </div>
 
+            {/* Right pane (new / B) */}
             <div className="min-w-0 flex-1 overflow-hidden">
               <DiffPane
                 ref={paneBRef}
@@ -1056,6 +1084,7 @@ export default function DiffViewer({
             </div>
           </div>
 
+          {/* XML panel */}
           {xmlOpen && (
             <>
               <div
@@ -1095,6 +1124,7 @@ export default function DiffViewer({
             </>
           )}
 
+          {/* Word diff panel */}
           <WordDiffPanel
             chunk={activeChunk}
             open={wordPanelOpen}
