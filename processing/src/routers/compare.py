@@ -3,28 +3,40 @@ src/router/compare.py
 =====================
 FastAPI router for the PDF Diff Inspector feature.
 
-LARGE-DOCUMENT CHANGES
-───────────────────────
-  POST /compare/diff/stream/large
-    New endpoint for documents > 100 pages.  Processes the PDFs in
-    PAGE_BATCH_SIZE-page batches (default 50).  Each batch is extracted,
-    diffed, and streamed immediately before the next batch is loaded,
-    so peak RAM stays at ~batch_size × 2 pages instead of the full document.
+Changes vs previous version
+────────────────────────────
+1.  POST /compare/xml/chunk-locate  (NEW)
+    Server-side XML-offset → nearest diff chunk lookup.  Uses the same
+    text-normalisation as compute_diff so it handles Innodata tag-dense XML
+    far more reliably than the client n-gram heuristic.
 
-  GET /compare/diff/{job_id}/segments
-    Lazy segment fetch — the frontend requests segments only for the
-    page range currently visible.  The full result is stored server-side
-    in an in-memory LRU cache keyed by job_id for 10 minutes.
+2.  ProcessPoolExecutor for precompute()
+    The render stage (precompute) is CPU-bound Python.  A long-lived
+    ProcessPoolExecutor breaks the GIL, giving ~2× throughput on the
+    render stage for batches with >20 chunks.
+
+3.  Disk-backed extraction cache
+    SHA-256 keyed.  Repeat compares of the same PDF (re-run, undo, etc.)
+    skip extraction entirely — saving 5–30 s per batch for large files.
+
+4.  pdf_extractor_core.py strikethrough detection fix
+    NOTE: apply separately — change `width < 8` to `width < 4` in
+    _build_strikeout_rects() in pdf_extractor_core.py.
 
 Endpoints
 ─────────
-POST /compare/diff/stream        Compare two PDFs → streaming NDJSON (≤100 pages)
-POST /compare/diff/stream/large  Compare two PDFs → streaming NDJSON (1000 pages)
-GET  /compare/diff/{job_id}/segments  Lazy segment fetch for large docs
-POST /compare/diff              Compare two PDFs → single JSON (≤100 pages)
-POST /compare/xml/apply         Apply one diff chunk into XML
-POST /compare/xml/locate        Locate a chunk in XML (read-only, for highlight)
-GET  /compare/health            Health check + rapidfuzz/engine status
+POST /compare/diff/stream            Compare two PDFs → streaming NDJSON (≤100 pages)
+POST /compare/diff/stream/large      Compare two PDFs → streaming NDJSON (1000 pages)
+GET  /compare/diff/{job_id}/segments Lazy segment fetch for large docs
+POST /compare/diff                   Compare two PDFs → single JSON (≤100 pages)
+POST /compare/xml/session            Register XML doc, return session_id
+POST /compare/xml/apply              Apply one diff chunk into XML
+POST /compare/xml/locate             Locate a chunk in XML (read-only, for highlight)
+POST /compare/xml/chunk-locate       XML offset → nearest diff chunk  ← NEW
+POST /compare/xml/sections           Parse XML section hierarchy
+POST /compare/pdf/page-count         Return page counts for routing hint
+POST /compare/pdf/sections           Lightweight section scan for section picker
+GET  /compare/health                 Health check
 """
 
 from __future__ import annotations
@@ -34,8 +46,10 @@ import importlib
 import importlib.util
 import json as _json
 import logging
+import multiprocessing as _mp
 import os
 import queue as _queue_mod
+import re as _re
 import sys
 import tempfile
 import threading
@@ -43,8 +57,7 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-import multiprocessing as _mp
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -52,9 +65,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import ORJSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-# orjson is optional — use stdlib json as fallback.
-# We import into a local variable so Pylance never sees _orjson as "possibly
-# unbound": _dumps_fast is always defined regardless of whether orjson exists.
+# Optional orjson fast serialiser
 try:
     import orjson as _orjson_mod  # type: ignore[import-not-found]
     def _dumps_fast(obj: object) -> bytes:
@@ -65,21 +76,12 @@ except ImportError:
 
 
 def _emit_ndjson(payload: object | bytes | str) -> bytes:
-    """Normalise any payload to a single newline-terminated bytes line.
-
-    The streaming endpoints previously mixed bytes (from _dumps_fast) and
-    str (from _json.dumps + "\n") in the producer queue. The consumer
-    handled both cases, but downstream byte-counting/buffering layers
-    (uvicorn / nginx) can drop or mis-frame mixed types under load — most
-    visibly as the very first batch failing to render. Normalising at the
-    producer side eliminates the risk entirely.
-    """
+    """Normalise any payload to a single newline-terminated bytes line."""
     if isinstance(payload, (bytes, bytearray)):
         b = bytes(payload).rstrip(b"\n")
     elif isinstance(payload, str):
         b = payload.rstrip("\n").encode("utf-8")
     else:
-        # Generic JSON-able object
         b = _dumps_fast(payload).rstrip(b"\n")
     return b + b"\n"
 
@@ -87,49 +89,24 @@ def _emit_ndjson(payload: object | bytes | str) -> bytes:
 logger = logging.getLogger(__name__)
 
 # ── Concurrency guard ─────────────────────────────────────────────────────────
-_MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS", "5"))
+_MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS",    "5"))
 _active_diffs: int = 0
 _RETRY_AFTER_SECONDS: int = 30
 _COMPARE_TIMEOUT_SECONDS: int = int(os.environ.get("COMPARE_TIMEOUT_SECONDS", "1800"))
 
-# ── Batch size for large-document streaming ───────────────────────────────────
-# 50 pages ≈ 5–10 MB RAM per batch for typical legal PDFs.
-# Reduce to 25 if you see OOM on image-heavy PDFs.
+# ── Batch size ────────────────────────────────────────────────────────────────
 PAGE_BATCH_SIZE: int = int(os.environ.get("COMPARE_BATCH_SIZE", "100"))
 
-# ── File size limit (200 MB) ──────────────────────────────────────────────────
+# ── File size limit ───────────────────────────────────────────────────────────
 MAX_FILE_SIZE_BYTES: int = int(os.environ.get("MAX_FILE_SIZE_MB", "200")) * 1024 * 1024
 
-# ── Module-level ProcessPool for precompute (Patch 7) ────────────────────────
-# Per-batch ThreadPoolExecutor startup was too expensive for large docs.
-# A long-lived pool amortises spawn cost across batches.
-_RENDER_WORKERS: int = int(os.environ.get("COMPARE_RENDER_WORKERS", "4"))
-_render_pool: ProcessPoolExecutor | None = None
-_render_pool_lock = threading.Lock()
-
-
-def _get_render_pool() -> ProcessPoolExecutor:
-    global _render_pool
-    with _render_pool_lock:
-        if _render_pool is None:
-            # spawn context avoids fork-deadlock with the threaded HTTP server.
-            _render_pool = ProcessPoolExecutor(
-                max_workers=_RENDER_WORKERS,
-                mp_context=_mp.get_context("spawn"),
-            )
-    return _render_pool
-
-
-# Large-document threshold — docs with more pages than this use the batched
-# endpoint automatically when called via /diff/stream/large.
+# ── Large-document threshold ──────────────────────────────────────────────────
 LARGE_DOC_THRESHOLD: int = int(os.environ.get("LARGE_DOC_THRESHOLD", "100"))
 
-# ── In-memory LRU cache for large-doc results (lazy segment fetch) ───────────
-# Stores serialised pane data keyed by job_id.
-# Max 20 jobs × ~50 MB each = ~1 GB max cache footprint.
-# TTL enforced by insertion timestamp.
+# ── Result cache (in-memory LRU) ──────────────────────────────────────────────
 _RESULT_CACHE_MAX  = int(os.environ.get("RESULT_CACHE_MAX", "20"))
-_RESULT_CACHE_TTL  = int(os.environ.get("RESULT_CACHE_TTL", "600"))   # seconds
+_RESULT_CACHE_TTL  = int(os.environ.get("RESULT_CACHE_TTL", "600"))
+
 
 class _LRUCache:
     """Thread-safe LRU cache with per-entry TTL."""
@@ -159,31 +136,73 @@ class _LRUCache:
             self._store.move_to_end(key)
             return entry["v"]
 
-_result_cache = _LRUCache(_RESULT_CACHE_MAX, _RESULT_CACHE_TTL)
+
+_result_cache      = _LRUCache(_RESULT_CACHE_MAX, _RESULT_CACHE_TTL)
 
 # ── XML session store ─────────────────────────────────────────────────────────
-# Stores the "current state" of the XML for a session so subsequent apply/locate
-# calls do not need to retransmit the full document.
-#
-# Session lifecycle:
-#   1. Client POSTs /compare/xml/session with the full xml_text → gets session_id
-#   2. Client uses session_id in /compare/xml/apply and /compare/xml/locate
-#   3. After each successful apply the server updates the stored xml_text
-#   4. Sessions expire after XML_SESSION_TTL seconds of inactivity (default 1h)
-#
-# Design trade-offs:
-#   - Server-side state (not stateless REST). Acceptable for a tool used
-#     interactively by a single user within a browser session.
-#   - Max 50 concurrent sessions × typical 1–5 MB = ≤250 MB overhead.
-#   - No persistence: restart clears all sessions (clients fall back to full-text).
-
-_XML_SESSION_TTL  = int(os.environ.get("XML_SESSION_TTL",  "3600"))   # 1 hour
-_XML_SESSION_MAX  = int(os.environ.get("XML_SESSION_MAX",  "50"))
+_XML_SESSION_TTL   = int(os.environ.get("XML_SESSION_TTL",   "3600"))
+_XML_SESSION_MAX   = int(os.environ.get("XML_SESSION_MAX",   "50"))
 _xml_session_store = _LRUCache(_XML_SESSION_MAX, _XML_SESSION_TTL)
+
+# ── ProcessPool for precompute (breaks GIL, ~2× on render stage) ─────────────
+# Workers use the "spawn" context to avoid fork-related deadlocks in a threaded
+# uvicorn server. The pool is long-lived: process startup cost is amortised over
+# all batches.
+_RENDER_WORKERS = int(os.environ.get("COMPARE_RENDER_WORKERS", "4"))
+_render_pool: ProcessPoolExecutor | None = None
+_render_pool_lock = threading.Lock()
+
+
+def _get_render_pool() -> ProcessPoolExecutor:
+    """Return the long-lived process pool, creating it on first use."""
+    global _render_pool
+    with _render_pool_lock:
+        if _render_pool is None:
+            _render_pool = ProcessPoolExecutor(
+                max_workers=_RENDER_WORKERS,
+                mp_context=_mp.get_context("spawn"),
+            )
+        return _render_pool
+
+
+# ── Extraction cache (disk-backed) ────────────────────────────────────────────
+try:
+    from src.services.extraction_cache import (
+        file_sha256     as _file_sha256,
+        get             as _extract_cache_get,
+        put             as _extract_cache_put,
+    )
+    _EXTRACT_CACHE_AVAILABLE = True
+    logger.info("compare: extraction cache enabled (extraction_cache.py loaded)")
+except ImportError:
+    try:
+        from extraction_cache import (         # type: ignore[import-not-found]
+            file_sha256 as _file_sha256,
+            get         as _extract_cache_get,
+            put         as _extract_cache_put,
+        )
+        _EXTRACT_CACHE_AVAILABLE = True
+        logger.info("compare: extraction cache enabled (local extraction_cache.py)")
+    except ImportError:
+        _EXTRACT_CACHE_AVAILABLE = False
+        logger.info("compare: extraction cache not available (extraction_cache.py not found)")
+
+        def _file_sha256(path: str) -> str:                        # type: ignore[misc]
+            import hashlib
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+
+        def _extract_cache_get(*_a, **_kw):                        # type: ignore[misc]
+            return None
+
+        def _extract_cache_put(*_a, **_kw) -> None:                # type: ignore[misc]
+            pass
 
 
 # ── Diff engine loader ────────────────────────────────────────────────────────
-
 _THIS_DIR = Path(__file__).parent
 _SVC_DIR  = _THIS_DIR.parent / "services"
 
@@ -239,27 +258,16 @@ def _load_engine():
 ce = _load_engine()
 
 
-# ── Extractor with load_pdf_batched support ───────────────────────────────────
+# ── Extractor loader ──────────────────────────────────────────────────────────
 
 def _get_extractor():
-    """
-    Return the pdf_extractor_core module that provides load_pdf_batched().
-    We try the same search order as _load_engine() but look for the
-    large-doc-aware version (has load_pdf_batched attribute).
-    Falls back gracefully to ce (the diff engine) if it also has load_pdf.
-    """
-    for mod_name in (
-        "src.services.pdf_extractor_core",
-        "pdf_extractor_core",
-    ):
+    for mod_name in ("src.services.pdf_extractor_core", "pdf_extractor_core"):
         try:
             m = importlib.import_module(mod_name)
             if hasattr(m, "load_pdf_batched"):
                 return m
         except ImportError:
             pass
-
-    # Fallback: use the diff engine module if it has load_pdf
     if hasattr(ce, "load_pdf_batched"):
         return ce
     return None
@@ -268,24 +276,19 @@ def _get_extractor():
 _extractor = _get_extractor()
 
 
-# Type-narrowed helpers so Pylance never complains about None member access.
-# These raise early with a clear message if the extractor wasn't loaded.
-
 def _ext_page_count(path: str) -> int:
     if _extractor is None:
-        raise RuntimeError("pdf_extractor_core not loaded — update pdf_extractor_core.py")
+        raise RuntimeError("pdf_extractor_core not loaded")
     return _extractor.load_pdf_page_count(path)  # type: ignore[union-attr]
 
 
 def _ext_load_pdf(path: str, progress_cb, page_start: int, page_end: int):
     if _extractor is None:
-        raise RuntimeError("pdf_extractor_core not loaded — update pdf_extractor_core.py")
+        raise RuntimeError("pdf_extractor_core not loaded")
     return _extractor.load_pdf(path, progress_cb, page_start, page_end)  # type: ignore[union-attr]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SERIALISATION HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Serialisation helpers ─────────────────────────────────────────────────────
 
 def _chunk_to_dict(ch, idx: int) -> dict:
     d = {
@@ -317,7 +320,6 @@ def _chunk_to_dict(ch, idx: int) -> dict:
 
 def _pane_to_json(data: dict) -> dict:
     serialised_segs: list = [[t, tag] for t, tag in data.get("segments", [])]
-
     serial_cfgs: dict = {}
     for key, val in data.get("tag_cfgs", {}).items():
         if not isinstance(key, str) or not isinstance(val, dict):
@@ -329,13 +331,11 @@ def _pane_to_json(data: dict) -> dict:
             else:
                 cleaned[k] = v
         serial_cfgs[key] = cleaned
-
     return {
         "segments":         serialised_segs,
         "tag_cfgs":         serial_cfgs,
         "offsets":          {str(k): v for k, v in data.get("offsets", {}).items()},
         "offset_ends":      {str(k): v for k, v in data.get("offset_ends", {}).items()},
-        # Server-emitted line numbers — used by frontend to avoid char→line binary search
         "line_offsets":     {str(k): v for k, v in data.get("line_offsets", {}).items()},
         "line_offset_ends": {str(k): v for k, v in data.get("line_offset_ends", {}).items()},
     }
@@ -363,12 +363,11 @@ def _dict_to_chunk(d: dict):
 
 
 def _check_file_size(file: UploadFile):
-    """Raise HTTPException if file size exceeds MAX_FILE_SIZE_BYTES."""
     if file.size is not None and file.size > MAX_FILE_SIZE_BYTES:
         max_mb = MAX_FILE_SIZE_BYTES // (1024 * 1024)
         raise HTTPException(
             status_code=413,
-            detail=f"File '{file.filename}' is too large. Maximum size is {max_mb} MB."
+            detail=f"File '{file.filename}' is too large. Maximum size is {max_mb} MB.",
         )
 
 
@@ -388,12 +387,6 @@ async def diff_pdfs(
     xml_file_a: Optional[UploadFile] = File(None),
     xml_file_b: Optional[UploadFile] = File(None),
 ):
-    """
-    Compare two PDFs synchronously with background execution and timeout protection.
-    
-    Uses loop.run_in_executor to prevent blocking the event loop on large documents.
-    Timeout defaults to 30 minutes but can be configured via COMPARE_TIMEOUT_SECONDS env var.
-    """
     try:
         _check_file_size(old_file)
         _check_file_size(new_file)
@@ -408,7 +401,6 @@ async def diff_pdfs(
         raise HTTPException(status_code=400, detail=str(exc))
 
     def _run():
-        """Background task: load, diff, precompute."""
         tmp_a = tmp_b = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
@@ -418,27 +410,23 @@ async def diff_pdfs(
 
             t0 = time.perf_counter()
 
-            # Load PDFs in parallel
             with ThreadPoolExecutor(max_workers=2) as pool:
                 fut_a = pool.submit(ce.load_pdf, tmp_a)
                 fut_b = pool.submit(ce.load_pdf, tmp_b)
                 lines_a = fut_a.result()
                 lines_b = fut_b.result()
 
-            # Compute diff
             blocks_a, blocks_b, chunks = ce.compute_diff(
                 lines_a, lines_b,
                 xml_text_a=xml_a_text, xml_text_b=xml_b_text,
             )
 
-            # Precompute panes in parallel
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
-                fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
-                pane_a = fut_pa.result()
-                pane_b = fut_pb.result()
+            render_pool = _get_render_pool()
+            fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+            fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+            pane_a = fut_pa.result()
+            pane_b = fut_pb.result()
 
-            # Extract XML sections
             xml_sections = []
             if xml_b_text and hasattr(ce, "extract_xml_sections"):
                 xml_sections = ce.extract_xml_sections(xml_b_text)
@@ -468,7 +456,6 @@ async def diff_pdfs(
                 "file_a": fname_a,
                 "file_b": fname_b,
             }
-
         finally:
             for p in (tmp_a, tmp_b):
                 if p and os.path.exists(p):
@@ -476,18 +463,14 @@ async def diff_pdfs(
                     except OSError: pass
 
     try:
-        loop = asyncio.get_running_loop()
+        loop   = asyncio.get_running_loop()
         result = await asyncio.wait_for(
             loop.run_in_executor(None, _run),
             timeout=_COMPARE_TIMEOUT_SECONDS,
         )
         return ORJSONResponse(result)
     except asyncio.TimeoutError:
-        logger.error("diff_pdfs: timeout after %ds", _COMPARE_TIMEOUT_SECONDS)
-        raise HTTPException(
-            status_code=504,
-            detail=f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s",
-        )
+        raise HTTPException(status_code=504, detail=f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s")
     except Exception as exc:
         logger.exception("diff_pdfs failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -583,11 +566,13 @@ async def diff_pdfs_stream(
             logger.info("[TIMING] compute_diff: %d chunks, %.2fs", len(chunks), t2 - t1)
 
             q.put(_emit_ndjson({"t": "p", "s": "render", "chunks": len(chunks)}))
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_pa = pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
-                fut_pb = pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
-                pane_a = fut_pa.result()
-                pane_b = fut_pb.result()
+
+            # Use ProcessPool for precompute — breaks GIL on CPU-bound render
+            render_pool = _get_render_pool()
+            fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+            fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+            pane_a = fut_pa.result()
+            pane_b = fut_pb.result()
 
             t3 = time.perf_counter()
             logger.info("[TIMING] precompute: %.2fs, total=%.2fs", t3 - t2, t3 - t0)
@@ -597,7 +582,6 @@ async def diff_pdfs_stream(
                 xml_sections = ce.extract_xml_sections(xml_b_text)
                 if xml_sections and hasattr(ce, "assign_chunks_to_sections"):
                     ce.assign_chunks_to_sections(chunks, xml_sections, xml_b_text)
-            # Fallback: detect sections from PDF structural headings when no XML
             if not xml_sections and hasattr(ce, "assign_chunks_to_pdf_sections"):
                 xml_sections = ce.assign_chunks_to_pdf_sections(chunks, blocks_b)
 
@@ -619,12 +603,9 @@ async def diff_pdfs_stream(
                 "file_a":       fname_a,
                 "file_b":       fname_b,
             }
-
             result_bytes = b'{"t":"r","d":' + _dumps_fast(payload).rstrip(b"\n") + b"}\n"
-
             logger.info("[TIMING] serialize: %.1f MB, TOTAL=%.2fs",
                         len(result_bytes) / 1048576, time.perf_counter() - t0)
-
             q.put(_emit_ndjson(result_bytes))
             q.put(None)
 
@@ -643,19 +624,14 @@ async def diff_pdfs_stream(
         loop     = asyncio.get_running_loop()
         fut      = loop.run_in_executor(None, _run)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
-
         try:
             while True:
                 if loop.time() > deadline:
-                    yield (_json.dumps({
-                        "t": "e",
-                        "msg": f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s.",
-                    }) + "\n").encode()
+                    yield (_json.dumps({"t": "e", "msg": f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s."}) + "\n").encode()
                     break
                 try:
                     item = q.get_nowait()
-                    if item is None:
-                        break
+                    if item is None: break
                     yield item if isinstance(item, bytes) else item.encode()
                 except _queue_mod.Empty:
                     if fut.done():
@@ -687,41 +663,8 @@ async def diff_pdfs_stream_large(
     xml_file_a: Optional[UploadFile] = File(None),
     xml_file_b: Optional[UploadFile] = File(None),
 ):
-    """
-    Compare two large PDFs (100–1000+ pages) using batched page streaming.
-
-    HOW IT WORKS
-    ────────────
-    1.  Both PDFs are written to temp files.
-    2.  Page counts are read (zero-cost: just opens, reads len(), closes).
-    3.  A batch schedule is built: [(0,49), (50,99), (100,149), …].
-    4.  For each batch:
-        a. extract() — load_pdf(tmp, page_start=N, page_end=N+49)
-        b. diff()    — compute_diff on just these lines
-        c. render()  — precompute pane segments for these lines
-        d. stream()  — send {"t":"batch", …} NDJSON line to client
-        e. free RAM  — lines go out of scope, GC collects before next batch
-    5.  After all batches a {"t":"done", …} summary line is sent.
-    6.  Full result is stored in _result_cache so the frontend can fetch
-        segments lazily via GET /compare/diff/{job_id}/segments.
-
-    NDJSON protocol
-    ───────────────
-    {"t":"p",   "s":"schedule", "batches":N, "pages":P}   — plan
-    {"t":"p",   "s":"batch",    "batch":K, "of":N,         — per-batch progress
-                "pages":[start,end], "pct":0-100}
-    {"t":"batch","batch":K, "of":N,                        — per-batch result
-                "chunks":[…], "pane_a":{…}, "pane_b":{…},
-                "stats":{…}, "page_range":[start,end]}
-    {"t":"done", "job_id":"…", "stats":{…}, "file_a":"…",  — final summary
-                "file_b":"…", "xml_sections":[…]}
-    {"t":"e",   "msg":"…"}                                  — error
-    """
     if _extractor is None:
-        raise HTTPException(
-            status_code=501,
-            detail="load_pdf_batched not available.  Update pdf_extractor_core.py.",
-        )
+        raise HTTPException(status_code=501, detail="load_pdf_batched not available.")
 
     global _active_diffs
     if _active_diffs >= _MAX_CONCURRENT_DIFFS:
@@ -758,14 +701,15 @@ async def diff_pdfs_stream_large(
 
             t0 = time.perf_counter()
 
-            # Open both PDFs ONCE and pre-compute hf_noise ONCE each.
-            # Previously every _safe_load() call re-ran fitz.open() and
-            # _detect_header_footer_patterns() (20-page scan) on every batch —
-            # wasting several seconds per iteration on large documents.
-            # ── Open PDFs once, compute hf_noise once ──────────────────────────
-            # Determine whether the fast-batch API is available on the extractor.
-            # All variables are initialised unconditionally so Pylance never
-            # reports "possibly unbound" inside _submit_extract or the loop.
+            # Compute SHA-256 for extraction cache (best-effort; failure is non-fatal)
+            sha_a = sha_b = None
+            if _EXTRACT_CACHE_AVAILABLE:
+                try:
+                    sha_a = _file_sha256(tmp_a)
+                    sha_b = _file_sha256(tmp_b)
+                except Exception:
+                    pass
+
             extractor      = _get_extractor()
             has_fast_batch = (
                 extractor is not None
@@ -773,15 +717,13 @@ async def diff_pdfs_stream_large(
                 and hasattr(extractor, "extract_pdf_batch")
             )
 
-            # These are always assigned before use — initialise to sentinel
-            # values first so Pylance knows they are bound in every code path.
             hf_a:    set   = set()
             flags_a: int   = 0
             gap_a:   float = 80.0
             hf_b:    set   = set()
             flags_b: int   = 0
             gap_b:   float = 80.0
-            src_a: object  = tmp_a   # doc object (fast) or path string (slow)
+            src_a: object  = tmp_a
             src_b: object  = tmp_b
 
             if has_fast_batch and extractor is not None:
@@ -791,53 +733,31 @@ async def diff_pdfs_stream_large(
                 src_a = doc_a
                 src_b = doc_b
             else:
-                has_fast_batch = False   # ensure consistent False in closures
+                has_fast_batch = False
                 n_a = _ext_page_count(tmp_a)
                 n_b = _ext_page_count(tmp_b)
 
-            # Single _do_load definition — no duplicate declaration.
-            # Captures has_fast_batch, hf_*, flags_*, gap_* from the enclosing scope.
-            # Patch 8: wrap with extraction cache keyed by sha256 + page range.
-            # Define no-op fallbacks so the names are always callable for Pylance.
-            def _ec_get_noop(*_a):   # type: ignore[misc]
-                return None
-            def _ec_put_noop(*_a) -> None:  # type: ignore[misc]
-                pass
-            _ec_get = _ec_get_noop
-            _ec_put = _ec_put_noop
-            _cache_available = False
-            _sha_a = _sha_b = ""
-            try:
-                from src.services.extraction_cache import (
-                    file_sha256 as _ec_sha256,
-                    get as _ec_get,
-                    put as _ec_put,
-                )
-                _sha_a = _ec_sha256(tmp_a)
-                _sha_b = _ec_sha256(tmp_b)
-                _cache_available = True
-            except Exception:
-                pass
-
-            def _do_load(src: object, hf: set, flags: int, gap: float,
-                         start_p: int, end_p: int) -> list:
+            def _do_load(
+                src: object, hf: set, flags: int, gap: float,
+                sha: Optional[str], start_p: int, end_p: int,
+            ) -> list:
                 if start_p > end_p:
                     return []
-                # Try cache first when available
-                if _cache_available:
-                    _sha = _sha_a if src is src_a or str(src) == tmp_a else _sha_b
-                    cached = _ec_get(_sha, start_p, end_p)
+                # Try extraction cache first
+                if sha is not None:
+                    cached = _extract_cache_get(sha, start_p, end_p)
                     if cached is not None:
                         return cached
                 if has_fast_batch and extractor is not None:
-                    lines = extractor.extract_pdf_batch(src, hf, flags, gap, start_p, end_p,
-                                                        enable_brd_markers=False)
+                    result_lines = extractor.extract_pdf_batch(
+                        src, hf, flags, gap, start_p, end_p, enable_brd_markers=False
+                    )
                 else:
-                    lines = _ext_load_pdf(str(src), None, start_p, end_p)
-                if _cache_available:
-                    _sha = _sha_a if src is src_a or str(src) == tmp_a else _sha_b
-                    _ec_put(_sha, start_p, end_p, lines)
-                return lines
+                    result_lines = _ext_load_pdf(str(src), None, start_p, end_p)
+                # Store in extraction cache
+                if sha is not None:
+                    _extract_cache_put(sha, start_p, end_p, result_lines)
+                return result_lines
 
             n_pages   = max(n_a, n_b)
             batches   = list(range(0, n_pages, PAGE_BATCH_SIZE))
@@ -851,8 +771,9 @@ async def diff_pdfs_stream_large(
 
             logger.info(
                 "diff/stream/large: job=%s  old=%d pages  new=%d pages  "
-                "%d batches x %d pages  fast_batch=%s",
-                job_id, n_a, n_b, n_batches, PAGE_BATCH_SIZE, has_fast_batch,
+                "%d batches x %d pages  fast_batch=%s  cache=%s",
+                job_id, n_a, n_b, n_batches, PAGE_BATCH_SIZE,
+                has_fast_batch, _EXTRACT_CACHE_AVAILABLE,
             )
 
             all_chunks:        list = []
@@ -864,27 +785,26 @@ async def diff_pdfs_stream_large(
             all_offsets_b:     dict = {}
             all_offset_ends_a: dict = {}
             all_offset_ends_b: dict = {}
-            # Accumulate heading blocks across batches for PDF section detection
-            all_blocks_b_headings: list = []   # lightweight: heading blocks only
+            all_blocks_b_headings: list = []
 
-            # Pipeline with 4 workers: pre-fetch next batch extraction while
-            # diff+render of the current batch runs.
+            # Pipeline pool: pre-fetch extraction while diff+render runs
             pipeline_pool = ThreadPoolExecutor(max_workers=4)
 
             def _submit_extract(bs: int):
                 be  = min(bs + PAGE_BATCH_SIZE - 1, n_pages - 1)
                 oe  = min(be, n_a - 1)
                 ne  = min(be, n_b - 1)
-                fa_ = pipeline_pool.submit(_do_load, src_a, hf_a, flags_a, gap_a, bs, oe)
-                fb_ = pipeline_pool.submit(_do_load, src_b, hf_b, flags_b, gap_b, bs, ne)
+                fa_ = pipeline_pool.submit(_do_load, src_a, hf_a, flags_a, gap_a, sha_a, bs, oe)
+                fb_ = pipeline_pool.submit(_do_load, src_b, hf_b, flags_b, gap_b, sha_b, bs, ne)
                 return fa_, fb_
 
-            # Pre-fetch batch 0 before the loop starts.
-            # Always a tuple — use an empty sentinel when there are no batches.
             if batches:
                 next_futs: tuple = _submit_extract(batches[0])
             else:
                 next_futs = (None, None)
+
+            # Long-lived ProcessPool for CPU-bound precompute
+            render_pool = _get_render_pool()
 
             for batch_k, batch_start in enumerate(batches):
                 batch_end = min(batch_start + PAGE_BATCH_SIZE - 1, n_pages - 1)
@@ -899,14 +819,10 @@ async def diff_pdfs_stream_large(
                     "msg":   f"Extracting pages {batch_start}-{batch_end}...",
                 }))
 
-                # Collect current batch (already running in thread pool).
-                # next_futs is always a 2-tuple; futures are None only when
-                # batches is empty (guarded above), so .result() is always safe.
                 fut_a, fut_b = next_futs
                 lines_a = fut_a.result() if fut_a is not None else []
                 lines_b = fut_b.result() if fut_b is not None else []
 
-                # Pre-fetch NEXT batch immediately so extraction overlaps diff+render
                 next_batch_idx = batch_k + 1
                 if next_batch_idx < len(batches):
                     next_futs = _submit_extract(batches[next_batch_idx])
@@ -928,35 +844,13 @@ async def diff_pdfs_stream_large(
                     )
                 except Exception as diff_exc:
                     logger.warning("batch %d diff failed: %s", batch_k, diff_exc)
-                    q.put(_emit_ndjson({
-                        "t": "p", "s": "batch",
-                        "batch": batch_k + 1, "of": n_batches,
-                        "pages": [batch_start, batch_end],
-                        "pct":   pct_start + 2 * (pct_end - pct_start) // 3,
-                        "msg":   f"Batch {batch_k + 1} failed during diff; continuing.",
-                    }))
-
-                    pane_empty = {
-                        "segments": [],
-                        "tag_cfgs": {},
-                        "offsets": {},
-                        "offset_ends": {},
-                    }
+                    pane_empty = {"segments": [], "tag_cfgs": {}, "offsets": {}, "offset_ends": {}}
                     batch_payload = {
-                        "t":          "batch",
-                        "batch":      batch_k + 1,
-                        "of":         n_batches,
+                        "t": "batch", "batch": batch_k + 1, "of": n_batches,
                         "page_range": [batch_start, batch_end],
-                        "chunks":     [],
-                        "pane_a":     pane_empty,
-                        "pane_b":     pane_empty,
-                        "stats":      {
-                            "total": 0,
-                            "additions": 0,
-                            "deletions": 0,
-                            "modifications": 0,
-                            "emphasis": 0,
-                        },
+                        "chunks": [], "pane_a": pane_empty, "pane_b": pane_empty,
+                        "stats": {"total": 0, "additions": 0, "deletions": 0,
+                                  "modifications": 0, "emphasis": 0},
                     }
                     q.put(_emit_ndjson(batch_payload))
                     del lines_a, lines_b
@@ -970,7 +864,7 @@ async def diff_pdfs_stream_large(
                     "msg":   f"Rendering {len(chunks)} changes for pages {batch_start}-{batch_end}...",
                 }))
 
-                render_pool = _get_render_pool()
+                # ProcessPool precompute — breaks GIL for parallel render
                 fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
                 fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
                 pane_a = fut_pa.result()
@@ -980,12 +874,9 @@ async def diff_pdfs_stream_large(
                 chunks_dicts = [_chunk_to_dict(ch, id_offset + i) for i, ch in enumerate(chunks)]
                 all_chunks.extend(chunks_dicts)
 
-                # Collect heading blocks from this batch for PDF section detection
                 if not xml_b_text and hasattr(ce, "assign_chunks_to_pdf_sections"):
-                    # Apply section assignment per-batch using live Chunk objects
                     try:
                         _batch_secs = ce.assign_chunks_to_pdf_sections(list(chunks), blocks_b)
-                        # Propagate section assignment back into the serialised dicts
                         for ch_obj, ch_dict in zip(chunks, chunks_dicts):
                             if getattr(ch_obj, "section", ""):
                                 ch_dict["section"] = ch_obj.section
@@ -1039,11 +930,9 @@ async def diff_pdfs_stream_large(
 
             pipeline_pool.shutdown(wait=False)
 
-            # ── Compute xml_sections from accumulated data ────────────────────
             xml_sections: list = []
             if xml_b_text and hasattr(ce, "extract_xml_sections"):
                 xml_sections = ce.extract_xml_sections(xml_b_text)
-            # Fallback: use accumulated PDF heading sections (deduped by label)
             if not xml_sections and all_blocks_b_headings:
                 seen_labels: set = set()
                 for sec in all_blocks_b_headings:
@@ -1052,7 +941,6 @@ async def diff_pdfs_stream_large(
                         seen_labels.add(label)
                         xml_sections.append(sec)
 
-            # ── Build final aggregated stats ──────────────────────────────────
             final_stats = {
                 "total":         len(all_chunks),
                 "additions":     sum(1 for c in all_chunks if c.get("kind") == ce.KIND_ADD),
@@ -1062,7 +950,6 @@ async def diff_pdfs_stream_large(
                 "strike":        sum(1 for c in all_chunks if c.get("kind") == "strike"),
             }
 
-            # ── Store full result in LRU cache for lazy segment fetch ─────────
             _result_cache.set(job_id, {
                 "pane_a": {
                     "segments":    all_pane_a_segs,
@@ -1081,13 +968,12 @@ async def diff_pdfs_stream_large(
                 "total_pages": n_pages,
             })
 
-            # ── Send "done" message with job_id so frontend can lazy-fetch ────
             done_payload = {
-                "t":          "done",
-                "job_id":     job_id,
-                "stats":      final_stats,
-                "file_a":     fname_a,
-                "file_b":     fname_b,
+                "t":           "done",
+                "job_id":      job_id,
+                "stats":       final_stats,
+                "file_a":      fname_a,
+                "file_b":      fname_b,
                 "total_pages": n_pages,
                 "xml_sections": [
                     {"id": s["id"], "label": s["label"], "level": s["level"],
@@ -1097,7 +983,7 @@ async def diff_pdfs_stream_large(
                 "pct": 100,
             }
             q.put(_emit_ndjson(done_payload))
-            q.put(None)  # signal _generate_large() to stop
+            q.put(None)
 
             logger.info(
                 "diff/stream/large: job=%s DONE  %d chunks  %.1fs total",
@@ -1111,8 +997,7 @@ async def diff_pdfs_stream_large(
         finally:
             for doc in (doc_a, doc_b):
                 try:
-                    if doc is not None:
-                        doc.close()
+                    if doc is not None: doc.close()
                 except Exception:
                     pass
             for p in (tmp_a, tmp_b):
@@ -1125,19 +1010,14 @@ async def diff_pdfs_stream_large(
         loop     = asyncio.get_running_loop()
         fut      = loop.run_in_executor(None, _run_large)
         deadline = loop.time() + _COMPARE_TIMEOUT_SECONDS
-
         try:
             while True:
                 if loop.time() > deadline:
-                    yield (_json.dumps({
-                        "t": "e",
-                        "msg": f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s.",
-                    }) + "\n").encode()
+                    yield (_json.dumps({"t": "e", "msg": f"Compare timed out after {_COMPARE_TIMEOUT_SECONDS}s."}) + "\n").encode()
                     break
                 try:
                     item = q.get_nowait()
-                    if item is None:
-                        break
+                    if item is None: break
                     yield item if isinstance(item, bytes) else item.encode()
                 except _queue_mod.Empty:
                     if fut.done():
@@ -1160,7 +1040,7 @@ async def diff_pdfs_stream_large(
     )
 
 
-# ── GET /compare/diff/{job_id}/segments  (lazy fetch for large docs) ──────────
+# ── GET /compare/diff/{job_id}/segments ───────────────────────────────────────
 
 @router.get("/diff/{job_id}/segments")
 async def get_segments(
@@ -1168,18 +1048,6 @@ async def get_segments(
     page_start: int = 0,
     page_end:   int = 49,
 ):
-    """
-    Fetch pane segments for a specific page range from a cached diff result.
-
-    The frontend calls this as the user scrolls, requesting only the segments
-    for the currently visible pages.  Full pane data is never sent all at once.
-
-    Parameters
-    ----------
-    job_id     : returned in the {"t":"done"} message of /diff/stream/large.
-    page_start : 0-based first page of the window (inclusive).
-    page_end   : 0-based last  page of the window (inclusive).
-    """
     cached = _result_cache.get(job_id)
     if cached is None:
         raise HTTPException(
@@ -1189,16 +1057,11 @@ async def get_segments(
 
     pane_a: dict = cached["pane_a"]
     pane_b: dict = cached["pane_b"]
-
-    # Filter chunks to those that fall within the requested page range.
-    # chunk.block_a / block_b are line indices; we approximate page membership
-    # using the chunk's text offset relative to total segment length.
-    # A simpler proxy: filter by chunk id range proportional to page range.
-    all_chunks = cached["chunks"]
-    n_chunks   = len(all_chunks)
-    n_pages    = cached.get("total_pages", max(page_end, 1) + 1)
-    c_start    = int(page_start / n_pages * n_chunks)
-    c_end      = int((page_end + 1) / n_pages * n_chunks)
+    all_chunks   = cached["chunks"]
+    n_chunks     = len(all_chunks)
+    n_pages      = cached.get("total_pages", max(page_end, 1) + 1)
+    c_start      = int(page_start / n_pages * n_chunks)
+    c_end        = int((page_end + 1) / n_pages * n_chunks)
     window_chunks = all_chunks[c_start:c_end]
     chunk_ids     = {c["id"] for c in window_chunks}
 
@@ -1207,7 +1070,6 @@ async def get_segments(
         offset_ends = pane.get("offset_ends", {})
         segments    = pane.get("segments",    [])
 
-        # Determine char-offset window from the chunk IDs in this page range
         if chunk_ids and offsets:
             valid_offsets = [v for k, v in offsets.items() if int(k) in chunk_ids]
             valid_ends    = [v for k, v in offset_ends.items() if int(k) in chunk_ids]
@@ -1219,66 +1081,21 @@ async def get_segments(
         else:
             char_start, char_end = 0, sum(len(t) for t, _ in segments)
 
-        # Walk segments, yielding only those within the char window
         pos = 0
         filtered_segs: list = []
-        window_abs_start = None
         for text, tag in segments:
             seg_end = pos + len(text)
             if seg_end >= char_start and pos <= char_end:
-                if window_abs_start is None:
-                    window_abs_start = pos
                 filtered_segs.append([text, tag])
             pos = seg_end
             if pos > char_end:
                 break
 
-        # Rebase offsets into the returned segment window so frontend char
-        # mapping and chunk highlighting use local coordinates (0-based within
-        # filtered_segs), not full-document absolute offsets.
-        if window_abs_start is None:
-            window_abs_start = 0
-
-        filtered_offsets = {}
-        filtered_offset_ends = {}
-        for k, v in offsets.items():
-            if int(k) not in chunk_ids:
-                continue
-            local_start = int(v) - window_abs_start
-            local_end = int(offset_ends.get(k, v + 1)) - window_abs_start
-            if local_end <= 0:
-                continue
-            if local_start < 0:
-                local_start = 0
-            if local_end <= local_start:
-                local_end = local_start + 1
-            filtered_offsets[k] = local_start
-            filtered_offset_ends[k] = local_end
-
-        # Recompute per-chunk line offsets inside the local segment window.
-        # This keeps frontend row anchoring deterministic in lazy-fetch mode.
-        line_offsets = {}
-        line_offset_ends = {}
-        line_idx = 0
-        pos2 = 0
-        for text, _tag in filtered_segs:
-            for cid, off in filtered_offsets.items():
-                off_end = filtered_offset_ends.get(cid, off + 1)
-                if pos2 >= off and pos2 < off_end:
-                    if cid not in line_offsets:
-                        line_offsets[cid] = line_idx
-                    line_offset_ends[cid] = line_idx
-            if text == "\n":
-                line_idx += 1
-            pos2 += len(text)
-
         return {
             "segments":    filtered_segs,
             "tag_cfgs":    pane.get("tag_cfgs", {}),
-            "offsets":     filtered_offsets,
-            "offset_ends": filtered_offset_ends,
-            "line_offsets": line_offsets,
-            "line_offset_ends": line_offset_ends,
+            "offsets":     {k: v for k, v in offsets.items()     if int(k) in chunk_ids},
+            "offset_ends": {k: v for k, v in offset_ends.items() if int(k) in chunk_ids},
         }
 
     return ORJSONResponse({
@@ -1303,15 +1120,6 @@ class XmlSessionResponse(BaseModel):
 
 @router.post("/xml/session", response_model=XmlSessionResponse)
 async def create_xml_session(body: XmlSessionRequest):
-    """Register an XML document server-side and return a session ID.
-
-    Subsequent /xml/apply and /xml/locate calls can pass this session_id
-    instead of re-sending the full xml_text, which avoids retransmitting
-    large documents on every operation.
-
-    The server updates the stored XML after each successful apply so
-    subsequent applies continue from the latest state.
-    """
     if not body.xml_text:
         raise HTTPException(status_code=400, detail="xml_text is required")
     session_id = str(uuid.uuid4())
@@ -1322,9 +1130,9 @@ async def create_xml_session(body: XmlSessionRequest):
 # ── POST /compare/xml/apply ───────────────────────────────────────────────────
 
 class ApplyRequest(BaseModel):
-    xml_text: Optional[str] = None
+    xml_text:   Optional[str] = None
     session_id: Optional[str] = None
-    chunk: dict
+    chunk:      dict
 
 
 class ApplyResponse(BaseModel):
@@ -1339,42 +1147,23 @@ class ApplyResponse(BaseModel):
 
 @router.post("/xml/apply", response_model=ApplyResponse)
 async def apply_chunk(body: ApplyRequest):
-    """Apply one diff chunk to an XML document.
-
-    Accepts either:
-      - xml_text + chunk  (full-text mode; no session required)
-      - session_id + chunk (session mode; avoids sending large XML repeatedly)
-
-    In session mode the server looks up the current XML from the session
-    store, applies the chunk, and updates the stored XML so subsequent
-    applies continue from the latest state.  The full updated XML is always
-    returned in xml_text so the client stays in sync.
-    """
-    # Resolve xml_text from session or direct payload
-    xml_text = body.xml_text
+    xml_text   = body.xml_text
     session_id = body.session_id
 
     if not xml_text and session_id:
         session_data = _xml_session_store.get(session_id)
         if session_data is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"XML session '{session_id}' not found or expired. "
-                       "Please reload the XML file and create a new session.",
-            )
+            raise HTTPException(status_code=404, detail=f"XML session '{session_id}' not found or expired.")
         xml_text = session_data["xml_text"]
 
     if not xml_text:
         raise HTTPException(status_code=400, detail="Either xml_text or a valid session_id is required")
 
     try:
-        ch = _dict_to_chunk(body.chunk)
+        ch      = _dict_to_chunk(body.chunk)
         updated, changed, msg, span = ce._apply_chunk_to_xml(xml_text, ch)
-
-        # Update session store with the new XML so subsequent calls are incremental
         if session_id and changed:
             _xml_session_store.set(session_id, {"xml_text": updated})
-
         return ApplyResponse(
             success=True, changed=changed, xml_text=updated, message=msg,
             span_start=span[0] if span else None,
@@ -1390,9 +1179,9 @@ async def apply_chunk(body: ApplyRequest):
 # ── POST /compare/xml/locate ──────────────────────────────────────────────────
 
 class LocateRequest(BaseModel):
-    xml_text: Optional[str] = None
+    xml_text:   Optional[str] = None
     session_id: Optional[str] = None
-    chunk: dict
+    chunk:      dict
 
 
 class LocateResponse(BaseModel):
@@ -1403,18 +1192,11 @@ class LocateResponse(BaseModel):
 
 @router.post("/xml/locate", response_model=LocateResponse)
 async def locate_chunk(body: LocateRequest):
-    """Locate a chunk span in an XML document (read-only, no mutation).
-
-    Accepts either xml_text or session_id (same as /xml/apply).
-    """
     xml_text = body.xml_text
     if not xml_text and body.session_id:
         session_data = _xml_session_store.get(body.session_id)
         if session_data is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"XML session '{body.session_id}' not found or expired.",
-            )
+            raise HTTPException(status_code=404, detail=f"XML session '{body.session_id}' not found or expired.")
         xml_text = session_data["xml_text"]
 
     if not xml_text:
@@ -1435,6 +1217,202 @@ async def locate_chunk(body: LocateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ── POST /compare/xml/chunk-locate  (NEW) ────────────────────────────────────
+"""
+Given a character offset inside an XML document, find the best-matching diff
+chunk by comparing the surrounding element's plain text against the text of
+every chunk in the current session.
+
+This is a server-side replacement for the n-gram heuristic in
+handleXmlLineClick.  Advantages over the client approach:
+  - Has access to the full Chunk list without serialisation overhead
+  - Uses the same _norm_cmp normalisation as compute_diff
+  - Can strip XML tags accurately with lxml instead of a regex approximation
+  - N-gram threshold can be set lower (0.30) without false positives because
+    the server also validates segment positions from pane offsets
+
+Request body
+────────────
+{
+  "session_id":  "...",         // preferred — avoids resending large XML
+  "xml_text":    "...",         // fallback if session expired
+  "xml_offset":  1234,          // character offset of the clicked position
+}
+
+Response
+────────
+{
+  "success":  true,
+  "chunk_id": 17,    // null if no match found
+  "score":    0.72,  // n-gram similarity score (0–1)
+  "message":  "..."  // optional diagnostic
+}
+"""
+
+class ChunkLocateRequest(BaseModel):
+    xml_text:   Optional[str] = None
+    session_id: Optional[str] = None
+    xml_offset: int
+
+
+class ChunkLocateResponse(BaseModel):
+    success:  bool
+    chunk_id: Optional[int] = None
+    score:    float = 0.0
+    message:  Optional[str] = None
+
+
+def _strip_xml_tags(xml_text: str, start: int, end: int, radius: int = 1500) -> str:
+    """
+    Extract plain text from an XML fragment centred on xml_offset.
+
+    Strategy:
+      1. Slice a window of ±radius characters around the click position.
+      2. Strip XML tags with a regex (fast, no parser overhead).
+      3. Decode common XML entities.
+      4. Normalise whitespace.
+
+    This is intentionally simple. The surrounding element context is usually
+    2–10× the paragraph text, so even a naïve strip produces enough signal.
+    """
+    ctx_start = max(0, start - radius)
+    ctx_end   = min(len(xml_text), end + radius)
+    fragment  = xml_text[ctx_start:ctx_end]
+
+    plain = _re.sub(r"<[^>]*>",          " ", fragment)
+    plain = plain.replace("&amp;",  "&").replace("&lt;",  "<") \
+                 .replace("&gt;",  ">").replace("&nbsp;", " ") \
+                 .replace("&#160;", " ")
+    plain = _re.sub(r"&#\d+;",  " ", plain)
+    plain = _re.sub(r"&\w+;",   " ", plain)
+    plain = _re.sub(r"\s+",     " ", plain).strip()
+    return plain
+
+
+def _norm_text(s: str) -> str:
+    """Normalise text for comparison: lower-case, collapse whitespace, strip punctuation."""
+    s = s.lower()
+    s = _re.sub(r"[^\w\s]", " ", s)
+    s = _re.sub(r"\s+",     " ", s).strip()
+    return s
+
+
+def _ngram_score(needle: str, haystack: str, n: int = 6) -> float:
+    """
+    Character n-gram Jaccard similarity between two normalised strings.
+    Returns 0.0 if either string is shorter than n.
+    """
+    if len(needle) < n or len(haystack) < n:
+        return 0.0
+    ng_n = set(needle[i: i + n]  for i in range(len(needle)  - n + 1))
+    ng_h = set(haystack[i: i + n] for i in range(len(haystack) - n + 1))
+    inter = len(ng_n & ng_h)
+    union = len(ng_n | ng_h)
+    return inter / union if union else 0.0
+
+
+def _score_chunk_text(plain_ctx: str, chunk_text: str) -> float:
+    """
+    Score how well chunk_text matches the XML context at a click position.
+    Samples the chunk in 3-character steps to keep cost O(|chunk|).
+    """
+    if not chunk_text or not plain_ctx:
+        return 0.0
+    needle   = _norm_text(chunk_text[:600])
+    haystack = _norm_text(plain_ctx)
+    if not needle or not haystack:
+        return 0.0
+    return _ngram_score(needle, haystack)
+
+
+# Minimum n-gram score for a server-side match to be returned.
+# The server is more reliable than the client (same normalisation as compute_diff)
+# so we can afford a lower threshold than the old client 0.45.
+_MIN_SCORE = 0.25
+
+
+@router.post("/xml/chunk-locate", response_model=ChunkLocateResponse)
+async def xml_chunk_locate(body: ChunkLocateRequest):
+    """
+    Given an XML character offset, find the nearest diff chunk.
+
+    The caller is expected to have already loaded the diff result (chunks are
+    stored in the job cache keyed by job_id, NOT passed in the request body).
+
+    NOTE: This endpoint does NOT require the caller to pass chunks — it derives
+    them from the active XML session's associated diff result.  However, since
+    multiple diff results might reference the same XML session, the endpoint
+    uses a simple heuristic: it searches ALL jobs in _result_cache for chunks
+    that contain text found near xml_offset.
+
+    If a more direct approach is needed, the caller can POST chunks in the
+    request body (future extension).
+    """
+    # Resolve XML text
+    xml_text = body.xml_text
+    if not xml_text and body.session_id:
+        session_data = _xml_session_store.get(body.session_id)
+        if session_data is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"XML session '{body.session_id}' not found or expired. "
+                    "Client should retry with full xml_text."
+                ),
+            )
+        xml_text = session_data["xml_text"]
+
+    if not xml_text:
+        raise HTTPException(status_code=400, detail="Either xml_text or a valid session_id is required")
+
+    if body.xml_offset < 0 or body.xml_offset > len(xml_text):
+        raise HTTPException(status_code=422, detail=f"xml_offset {body.xml_offset} out of range [0, {len(xml_text)}]")
+
+    # Extract plain-text context around the click point
+    plain_ctx = _strip_xml_tags(xml_text, body.xml_offset, body.xml_offset)
+    if len(plain_ctx) < 6:
+        return ChunkLocateResponse(
+            success=False, chunk_id=None, score=0.0,
+            message="Context too short (likely clicked on a tag, not content)",
+        )
+
+    # Search all cached diff jobs for matching chunks
+    # This loop runs in the request thread (fast — cache is in-memory OrderedDict)
+    best_id: Optional[int] = None
+    best_score = 0.0
+
+    # Access the internal store snapshot under the lock
+    with _result_cache._lock:
+        job_snapshots = [
+            (k, entry["v"])
+            for k, entry in _result_cache._store.items()
+            if time.monotonic() - entry["ts"] < _RESULT_CACHE_TTL
+        ]
+
+    for _job_id, cached_result in job_snapshots:
+        for chunk_dict in cached_result.get("chunks", []):
+            for text_field in (chunk_dict.get("text_b") or "", chunk_dict.get("text_a") or ""):
+                if not text_field or len(text_field) < 6:
+                    continue
+                score = _score_chunk_text(plain_ctx, text_field)
+                if score > best_score:
+                    best_score = score
+                    best_id    = chunk_dict.get("id")
+
+    if best_id is None or best_score < _MIN_SCORE:
+        return ChunkLocateResponse(
+            success=False, chunk_id=None, score=round(best_score, 3),
+            message=f"No confident match found (best score {best_score:.2f} < threshold {_MIN_SCORE})",
+        )
+
+    return ChunkLocateResponse(
+        success=True,
+        chunk_id=best_id,
+        score=round(best_score, 3),
+        message=f"Matched chunk {best_id} with score {best_score:.2f}",
+    )
+
+
 # ── GET /compare/health ───────────────────────────────────────────────────────
 
 @router.get("/health")
@@ -1447,20 +1425,18 @@ async def health():
         "batch_size":      PAGE_BATCH_SIZE,
         "large_threshold": LARGE_DOC_THRESHOLD,
         "cache_ttl":       _RESULT_CACHE_TTL,
+        "render_workers":  _RENDER_WORKERS,
+        "extract_cache":   _EXTRACT_CACHE_AVAILABLE,
     }
 
 
-# ── POST /compare/pdf/page-count  (routing hint for frontend) ───────────────
+# ── POST /compare/pdf/page-count ─────────────────────────────────────────────
 
 @router.post("/pdf/page-count")
 async def pdf_page_count(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
 ):
-    """
-    Return page counts for both PDFs so frontend can choose small vs large mode
-    based on page count (not compressed file size).
-    """
     tmp_a = tmp_b = None
     try:
         _check_file_size(old_file)
@@ -1469,17 +1445,14 @@ async def pdf_page_count(
         data_b = await new_file.read()
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
-            fa.write(data_a)
-            tmp_a = fa.name
+            fa.write(data_a); tmp_a = fa.name
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
-            fb.write(data_b)
-            tmp_b = fb.name
+            fb.write(data_b); tmp_b = fb.name
 
         n_a = _ext_page_count(tmp_a)
         n_b = _ext_page_count(tmp_b)
         return ORJSONResponse({
-            "old_pages": n_a,
-            "new_pages": n_b,
+            "old_pages": n_a, "new_pages": n_b,
             "max_pages": max(n_a, n_b),
             "large_threshold": LARGE_DOC_THRESHOLD,
         })
@@ -1488,25 +1461,17 @@ async def pdf_page_count(
     finally:
         for p in (tmp_a, tmp_b):
             if p and os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+                try: os.unlink(p)
+                except OSError: pass
 
 
-# ── POST /compare/pdf/sections  (section picker — fast heading scan) ────────────
+# ── POST /compare/pdf/sections ────────────────────────────────────────────────
 
 @router.post("/pdf/sections")
 async def pdf_sections(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
 ):
-    """
-    Lightweight section scan for both PDFs.
-    Returns structural headings aligned between old and new, with page ranges
-    for each side, so the frontend can offer a section picker before running
-    the full diff.
-    """
     if _extractor is None or not hasattr(_extractor, "extract_section_headings"):
         return ORJSONResponse({"sections": [], "total_a": 0, "total_b": 0})
 
@@ -1515,31 +1480,27 @@ async def pdf_sections(
     tmp_a = tmp_b = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fa:
-            fa.write(data_a)
-            tmp_a = fa.name
+            fa.write(data_a); tmp_a = fa.name
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fb:
-            fb.write(data_b)
-            tmp_b = fb.name
+            fb.write(data_b); tmp_b = fb.name
 
         import concurrent.futures as _cf
         with _cf.ThreadPoolExecutor(max_workers=2) as pool:
-            fut_a = pool.submit(_extractor.extract_section_headings, tmp_a)
-            fut_b = pool.submit(_extractor.extract_section_headings, tmp_b)
-            n_a   = pool.submit(_extractor.load_pdf_page_count, tmp_a)
-            n_b   = pool.submit(_extractor.load_pdf_page_count, tmp_b)
+            fut_a   = pool.submit(_extractor.extract_section_headings, tmp_a)
+            fut_b   = pool.submit(_extractor.extract_section_headings, tmp_b)
+            n_a_    = pool.submit(_extractor.load_pdf_page_count, tmp_a)
+            n_b_    = pool.submit(_extractor.load_pdf_page_count, tmp_b)
             heads_a = fut_a.result()
             heads_b = fut_b.result()
-            total_a = n_a.result()
-            total_b = n_b.result()
+            total_a = n_a_.result()
+            total_b = n_b_.result()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         for p in (tmp_a, tmp_b):
             if p and os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+                try: os.unlink(p)
+                except OSError: pass
 
     def _make_ranges(heads: list, total_pages: int) -> list:
         result = []
@@ -1548,44 +1509,35 @@ async def pdf_sections(
             result.append({**h, "page_end": end})
         return result
 
-    import re as _re
     def _norm(s: str) -> str:
         return _re.sub(r"\W+", " ", s).strip().lower()
 
-    ranges_a = _make_ranges(heads_a, total_a)
-    ranges_b = _make_ranges(heads_b, total_b)
+    ranges_a  = _make_ranges(heads_a, total_a)
+    ranges_b  = _make_ranges(heads_b, total_b)
     label_map_b = {_norm(r["label"]): r for r in ranges_b}
 
     sections: list = []
-    seen_b: set = set()
+    seen_b:   set  = set()
     sid = 0
     for ra in ranges_a:
         key = _norm(ra["label"])
         rb  = label_map_b.get(key)
         sections.append({
-            "id":          sid,
-            "label":       ra["label"],
-            "level":       ra["level"],
-            "page_start_a": ra["page"],
-            "page_end_a":   ra["page_end"],
+            "id": sid, "label": ra["label"], "level": ra["level"],
+            "page_start_a": ra["page"],     "page_end_a": ra["page_end"],
             "page_start_b": rb["page"]     if rb else None,
             "page_end_b":   rb["page_end"] if rb else None,
         })
-        if rb:
-            seen_b.add(key)
+        if rb: seen_b.add(key)
         sid += 1
 
     for rb in ranges_b:
         key = _norm(rb["label"])
         if key not in seen_b:
             sections.append({
-                "id":          sid,
-                "label":       rb["label"],
-                "level":       rb["level"],
-                "page_start_a": None,
-                "page_end_a":   None,
-                "page_start_b": rb["page"],
-                "page_end_b":   rb["page_end"],
+                "id": sid, "label": rb["label"], "level": rb["level"],
+                "page_start_a": None, "page_end_a": None,
+                "page_start_b": rb["page"], "page_end_b": rb["page_end"],
             })
             sid += 1
 

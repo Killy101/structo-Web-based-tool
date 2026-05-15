@@ -92,7 +92,7 @@ def _try_load_extractor_core() -> bool:
             return True
         except ImportError:
             pass  # expected when path not on sys.path
-        except Exception as _e:
+        except Exception as _e:         
             _lg.warning("pdf_chunk: import '%s' failed: %s", _mod_path, _e)
 
     # Attempt 3: direct file path — always works once the file is deployed

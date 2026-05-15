@@ -5,25 +5,32 @@
 // Two workflows remain and are shown to users as Workflow 1 and Workflow 2:
 //
 //  Workflow 1 (internal "browse") "Chunk & Compare"  — Old PDF + New PDF + XML
-//                                                  4-panel view, XML panel is read-only
-//                                                  Browse changes by section
+//                                                       4-panel, XML read-only
+//                                                       Browse changes by section
 //
 //  Workflow 2 (internal "edit")   "Compare & Apply"  — Old PDF + New PDF + XML
-//                                                  4-panel view, XML panel is editable
-//                                                  Accept / Reject / Edit changes → save updated XML
+//                                                       4-panel, XML editable
+//                                                       Accept/Reject → save XML
 //
 // Both workflows share the same DiffViewer — only the `mode` prop differs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useRef, useState, useEffect, startTransition } from "react";
+import React, { startTransition, useRef, useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useAuth } from "../../../context/AuthContext";
 import { trackCompareUsage } from "../../../utils/compareAnalytics";
 import type { DiffResult, WorkflowMode, XmlSection } from "../../../components/compare/types";
-import { apiDiffAuto, apiGetSegments, buildLoadingStages, type BatchResult, type DiffProgress, type LargeDiffResult } from "../../../components/compare/api";
+import {
+  apiDiffAuto, apiGetSegments, buildLoadingStages,
+  type BatchResult, type DiffProgress, type LargeDiffResult,
+} from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
 
-function emptyPane() {
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function emptyPane(): DiffResult["pane_a"] {
   return { segments: [], tag_cfgs: {}, offsets: {}, offset_ends: {} };
 }
 
@@ -31,8 +38,20 @@ function paneCharLength(pane: DiffResult["pane_a"]): number {
   return (pane?.segments ?? []).reduce((sum, [text]) => sum + (text?.length ?? 0), 0);
 }
 
+/**
+ * Merge one streaming batch into the accumulated DiffResult.
+ *
+ * Key changes vs original:
+ *  1. Cross-batch newline sentinel — if the previous batch's last segment is
+ *     not a "\n", we inject one before appending the new batch's segments.
+ *     This keeps buildAlignedLines' line-counting consistent: without it the
+ *     last text of batch N fuses with the first text of batch N+1 on the same
+ *     display line, offsetting every subsequent line number.
+ *  2. charBase and lineBase both account for the sentinel when present.
+ *  3. Stats are recomputed incrementally (running filter) instead of scanning
+ *     the full accumulated chunk array on every batch.
+ */
 function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): DiffResult {
-  // Defensive guards — a malformed batch must never crash the state updater
   if (!batch || !Array.isArray(batch.chunks)) {
     return prev ?? {
       success: true,
@@ -60,28 +79,26 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
   const safePaneBatch = (p: DiffResult["pane_a"] | undefined): DiffResult["pane_a"] =>
     p && Array.isArray(p.segments) ? p : emptyPane();
 
-  const mergePane = (paneBase: DiffResult["pane_a"], paneBatchRaw: DiffResult["pane_a"] | undefined): DiffResult["pane_a"] => {
+  const mergePane = (
+    paneBase: DiffResult["pane_a"],
+    paneBatchRaw: DiffResult["pane_a"] | undefined,
+  ): DiffResult["pane_a"] => {
     const paneBatch = safePaneBatch(paneBatchRaw);
 
-    // ── Cross-batch sentinel ─────────────────────────────────────────────────
-    // The server's compute_diff/precompute runs per-batch with a fresh
-    // char_pos = 0 and line_idx = 0. If the previous batch ended mid-paragraph
-    // (no trailing "\n") and we concatenate raw segments, the first text of
-    // batch N+1 fuses onto the last line of batch N, shifting every subsequent
-    // line number by 1.
-    //
-    // Fix: inject a "\n" sentinel between batches when the previous batch's
-    // last segment is not a newline. charBase and lineBase are adjusted to
-    // account for this sentinel so chunk offsets land on the correct line.
-    const baseSegs = paneBase.segments ?? [];
-    const lastSeg  = baseSegs[baseSegs.length - 1];
-    const needsSentinel = baseSegs.length > 0 && lastSeg?.[0] !== "\n";
-    const sentinelChars = needsSentinel ? 1 : 0;
+    // ── Cross-batch newline sentinel ─────────────────────────────────────────
+    // If the previous batch ended mid-paragraph (last segment ≠ "\n"), inject
+    // one to prevent the last text of batch N fusing with the first text of N+1
+    // on the same display line, which shifts every subsequent line number.
+    const baseSegs   = paneBase.segments ?? [];
+    const lastSeg    = baseSegs[baseSegs.length - 1];
+    const needsNL    = baseSegs.length > 0 && lastSeg?.[0] !== "\n";
+    const sentinelCh = needsNL ? 1 : 0;
 
-    const charBase = paneCharLength(paneBase) + sentinelChars;
+    const charBase = paneCharLength(paneBase) + sentinelCh;
+
     const mapChunkKey = (rawKey: string) => {
       const localIdx = Number(rawKey);
-      const chunkId = batch.chunks[localIdx]?.id;
+      const chunkId  = batch.chunks[localIdx]?.id;
       return chunkId == null ? null : String(chunkId);
     };
 
@@ -97,14 +114,9 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
       if (mapped !== null) offsetEnds[mapped] = Number(off) + charBase;
     }
 
-    // lineBase counts newlines already present in the base, plus the sentinel
-    // newline we're about to inject. precompute increments line_idx AFTER each
-    // "\n" emission, so N newlines means lines 0…N-1 were used and the next
-    // batch's local lines map to global lines starting at N.
+    // lineBase: number of "\n" segments already in base, plus 1 for sentinel
     const baseNewlines = baseSegs.filter(([t]) => t === "\n").length;
-    const lineBase     = baseSegs.length === 0
-      ? 0
-      : baseNewlines + (needsSentinel ? 1 : 0);
+    const lineBase     = baseSegs.length === 0 ? 0 : baseNewlines + (needsNL ? 1 : 0);
 
     const lineOffsets: Record<string, number> = { ...(paneBase.line_offsets ?? {}) };
     for (const [rawKey, lo] of Object.entries(paneBatch.line_offsets ?? {})) {
@@ -117,9 +129,9 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
       if (mapped !== null) lineOffsetEnds[mapped] = Number(lo) + lineBase;
     }
 
-    // Build the new segments array, injecting the sentinel "\n" if needed.
+    // Build segments: inject sentinel "\n" between batches when needed
     const newSegs: typeof baseSegs = [...baseSegs];
-    if (needsSentinel) newSegs.push(["\n", "nl"]);
+    if (needsNL) newSegs.push(["\n", "nl"]);
     newSegs.push(...(paneBatch.segments ?? []));
 
     return {
@@ -133,6 +145,15 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
   };
 
   const chunks = [...(base.chunks ?? []), ...batch.chunks];
+
+  // Incremental stats — avoid re-scanning the full chunk array on every batch
+  const prevStats = base.stats;
+  const batchAdd  = batch.chunks.filter((c) => c.kind === "add").length;
+  const batchDel  = batch.chunks.filter((c) => c.kind === "del").length;
+  const batchMod  = batch.chunks.filter((c) => c.kind === "mod").length;
+  const batchEmp  = batch.chunks.filter((c) => c.kind === "emp").length;
+  const batchStk  = batch.chunks.filter((c) => c.kind === "strike").length;
+
   return {
     ...base,
     success: true,
@@ -140,22 +161,23 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     pane_a: mergePane(base.pane_a, batch.pane_a),
     pane_b: mergePane(base.pane_b, batch.pane_b),
     stats: {
-      total: chunks.length,
-      additions: chunks.filter((c) => c.kind === "add").length,
-      deletions: chunks.filter((c) => c.kind === "del").length,
-      modifications: chunks.filter((c) => c.kind === "mod").length,
-      emphasis: chunks.filter((c) => c.kind === "emp").length,
+      total:         chunks.length,
+      additions:     (prevStats.additions     ?? 0) + batchAdd,
+      deletions:     (prevStats.deletions     ?? 0) + batchDel,
+      modifications: (prevStats.modifications ?? 0) + batchMod,
+      emphasis:      (prevStats.emphasis      ?? 0) + batchEmp,
+      strike:        (prevStats.strike        ?? 0) + batchStk,
     },
   };
 }
 
 // ── Dynamic imports (no SSR — these use browser APIs) ────────────────────────
-const DiffViewer = dynamic(() => import("../../../components/compare/DiffViewer"), { ssr: false });
-const DiffUpload = dynamic(() => import("../../../components/compare/DiffUpload"), { ssr: false });
+const DiffViewer          = dynamic(() => import("../../../components/compare/DiffViewer"),          { ssr: false });
+const DiffUpload          = dynamic(() => import("../../../components/compare/DiffUpload"),          { ssr: false });
 const ChunkDetectionModal = dynamic(() => import("../../../components/compare/ChunkDetectionModal"), { ssr: false });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Workflow selector
+// Workflow selector UI
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ActiveWorkflow = "selector" | "browse" | "edit";
@@ -239,9 +261,9 @@ function WorkflowCard({
 }
 
 function WorkflowSelector({
-  canBrowse, canEdit, onSelect,
+  canWf1, canWf2, onSelect,
 }: {
-  canBrowse: boolean; canEdit: boolean;
+  canWf1: boolean; canWf2: boolean;
   onSelect: (w: ActiveWorkflow) => void;
 }) {
   return (
@@ -273,7 +295,7 @@ function WorkflowSelector({
             "Browse changes — XML panel shows structure alongside diff",
           ]}
           color="teal"
-          locked={!canBrowse}
+          locked={!canWf1}
           onClick={() => onSelect("browse")}
           icon={
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -292,7 +314,7 @@ function WorkflowSelector({
             "Accept / reject / edit changes → download updated XML",
           ]}
           color="violet"
-          locked={!canEdit}
+          locked={!canWf2}
           onClick={() => onSelect("edit")}
           icon={
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -303,7 +325,7 @@ function WorkflowSelector({
         />
       </div>
 
-      {!canBrowse && !canEdit && (
+      {!canWf1 && !canWf2 && (
         <div className="max-w-3xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
           <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -319,7 +341,7 @@ function WorkflowSelector({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Changes summary modal
+// Changes summary modal (shown after diff completes, before opening viewer)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ChangeSummaryModal({
@@ -368,9 +390,9 @@ function ChangeSummaryModal({
           <div className="flex items-center gap-2">
             <button
               onClick={onViewDetection}
-              className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-slate-300 dark:border-white/15 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors"
+              className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-slate-200 dark:border-white/12 bg-white dark:bg-white/4 hover:bg-slate-50 dark:hover:bg-white/8 text-slate-600 dark:text-slate-300 transition-colors"
             >
-              View Detection
+              Detection Report
             </button>
             <button
               onClick={onViewAll}
@@ -419,49 +441,47 @@ function ChangeSummaryModal({
 function useDiffState() {
   const latestResultRef    = useRef<DiffResult | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const [fileA,         setFileA]         = useState<File | null>(null);
-  const [fileB,         setFileB]         = useState<File | null>(null);
-  const [xmlFile,       setXmlFile]       = useState<File | null>(null);
-  const [result,        setResult]        = useState<DiffResult | null>(null);
-  const [loading,       setLoading]       = useState(false);
-  const [loadMsg,       setLoadMsg]       = useState("Uploading files…");
-  const [loadPct,       setLoadPct]       = useState(0);
-  const [progress,      setProgress]      = useState<DiffProgress | null>(null);
-  const [error,         setError]         = useState<string | null>(null);
-  const [xmlSections,   setXmlSections]   = useState<XmlSection[]>([]);
-  const [allSections,   setAllSections]   = useState<XmlSection[]>([]);
-  const [showModal,     setShowModal]     = useState(false);
+
+  const [fileA,       setFileA]       = useState<File | null>(null);
+  const [fileB,       setFileB]       = useState<File | null>(null);
+  const [xmlFile,     setXmlFile]     = useState<File | null>(null);
+  const [result,      setResult]      = useState<DiffResult | null>(null);
+  const [loading,     setLoading]     = useState(false);
+  const [loadMsg,     setLoadMsg]     = useState("Uploading files…");
+  const [loadPct,     setLoadPct]     = useState(0);
+  const [progress,    setProgress]    = useState<DiffProgress | null>(null);
+  const [error,       setError]       = useState<string | null>(null);
+  const [xmlSections, setXmlSections] = useState<XmlSection[]>([]);
+  const [allSections, setAllSections] = useState<XmlSection[]>([]);
+  const [showModal,   setShowModal]   = useState(false);
   const [showDetection, setShowDetection] = useState(false);
-  const [selectedSec,   setSelectedSec]   = useState<string | null>(null);
+  const [selectedSec, setSelectedSec] = useState<string | null>(null);
 
   function reset() {
-    // Cancel any in-flight diff request (Issue 11.3 / 11.4).
+    // Abort any in-flight streaming request
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
 
     setFileA(null); setFileB(null); setXmlFile(null);
     latestResultRef.current = null;
     setResult(null); setError(null); setProgress(null);
-    setFirstBatchReceived(false);
     setXmlSections([]); setAllSections([]);
     setShowModal(false); setShowDetection(false); setSelectedSec(null);
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
   }
 
-  // ── Session restore — reload previous result from sessionStorage on mount ──
-  // sessionStorage survives page refresh but not tab close.  IndexedDB would
-  // survive tab close but requires an async setup — sessionStorage is enough
-  // for the "accidental refresh" UX win with zero extra dependencies.
-  //
-  // Also drops any stale localStorage entry from older builds and migrates
-  // away from the wf2/wf3 internal naming.
+  // ── Session restore — reload previous result on mount ─────────────────────
+  // Clears stale keys from the old wf2/wf3 naming scheme.
   useEffect(() => {
-    try { localStorage.removeItem("diff_batch_result"); } catch { /* ok */ }
+    try {
+      // Clean up old localStorage key written by previous code versions
+      localStorage.removeItem("diff_batch_result");
+    } catch { /* ok */ }
+
     try {
       const saved = sessionStorage.getItem("diff_last_result");
       if (!saved) return;
-      // Stale entries from the wf2/wf3 era contain those identifiers and may
-      // carry incompatible shapes — drop them rather than guess.
+      // If the saved value references old workflow names, discard it
       if (saved.includes('"wf2"') || saved.includes('"wf3"')) {
         sessionStorage.removeItem("diff_last_result");
         return;
@@ -469,8 +489,7 @@ function useDiffState() {
       const parsed = JSON.parse(saved) as DiffResult;
       if (parsed?.success && parsed?.chunks !== undefined) {
         latestResultRef.current = parsed;
-        setResult(parsed);
-        setFirstBatchReceived(true); // restore flag so DiffViewer renders after session reload
+        startTransition(() => setResult(parsed));
         if (parsed.xml_sections?.length) setAllSections(parsed.xml_sections);
       }
     } catch { /* corrupted cache — ignore */ }
@@ -479,7 +498,7 @@ function useDiffState() {
   async function run() {
     if (!fileA || !fileB) return;
 
-    // Cancel any prior in-flight run before starting a new one.
+    // Cancel any prior in-flight request
     abortControllerRef.current?.abort();
     const ac = new AbortController();
     abortControllerRef.current = ac;
@@ -487,35 +506,28 @@ function useDiffState() {
     latestResultRef.current = null;
     setLoading(true); setError(null); setResult(null); setProgress(null);
     setLoadMsg("Uploading files…"); setLoadPct(0);
+
     try {
       const raw = await apiDiffAuto(
         fileA, fileB,
         {
           signal: ac.signal,
           onProgress: (p: DiffProgress) => {
-            // Keep progress updates synchronous so the progress bar stays
-            // responsive — they're cheap (a few small setStates).
             setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p);
           },
           onBatch: (batch: BatchResult) => {
             try {
-              // Merge using the ref (always latest) instead of React's prev state,
-              // which may be stale if multiple batches arrive before React re-renders.
+              if (ac.signal.aborted) return;
               const merged = {
                 ...mergeBatchIntoResult(latestResultRef.current, batch),
                 file_a: latestResultRef.current?.file_a || fileA.name,
                 file_b: latestResultRef.current?.file_b || fileB.name,
               };
               latestResultRef.current = merged;
-              // Batch merges can be heavy (1000s of chunks). Mark them as a
-              // transition so React keeps the UI responsive to user input
-              // (sidebar clicks, scrolling) while merge re-renders complete.
-              startTransition(() => {
-                setResult(merged);
-              });
+              // Use startTransition so heavy re-renders don't block scroll/sidebar
+              startTransition(() => setResult(merged));
               try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
             } catch (batchErr) {
-              // Batch merge errors are non-fatal — log and continue streaming
               console.error("[compare] batch merge error:", batchErr);
             }
           },
@@ -523,14 +535,13 @@ function useDiffState() {
         xmlFile,
       );
 
-      // apiDiffAuto returns DiffResult (small) or LargeDiffResult (large).
-      // For large docs the batch viewer handles rendering; we only need stats/sections here.
+      if (ac.signal.aborted) return;
+
       const data = "chunks" in raw ? (raw as DiffResult) : null;
 
       if (data) {
         latestResultRef.current = data;
-        setResult(data);
-        setFirstBatchReceived(true); // small-doc path: onBatch never fires, set here
+        startTransition(() => setResult(data));
         try { sessionStorage.setItem("diff_last_result", JSON.stringify(data)); } catch { /* ok */ }
       } else {
         const largePart  = raw as LargeDiffResult;
@@ -570,38 +581,29 @@ function useDiffState() {
         }
 
         latestResultRef.current = next;
-        setResult(next);
-        setFirstBatchReceived(true); // guarantee flag is set even if onBatch was never called
+        startTransition(() => setResult(next));
         try { sessionStorage.setItem("diff_last_result", JSON.stringify(next)); } catch { /* ok */ }
       }
+
       userLogsApi.logCompare(fileA.name, fileB.name).catch(() => { /* fire-and-forget */ });
+
       const finalSections = data?.xml_sections ?? (raw as LargeDiffResult).xmlSections ?? [];
       if (finalSections.length > 0) {
         if (allSections.length === 0) setAllSections(finalSections);
-        // Populate xmlSections from diff result when user didn't pre-select a level
         if (xmlSections.length === 0) setXmlSections(finalSections);
       }
       if (xmlSections.length > 0 || finalSections.length > 0) setShowModal(true);
     } catch (e) {
-      // Aborted runs are user-initiated — don't surface as errors.
-      const isAbort = e instanceof DOMException && e.name === "AbortError";
-      if (!isAbort) {
-        setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
-      }
+      if (e instanceof DOMException && e.name === "AbortError") return; // user reset
+      setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
     } finally {
-      // Only clear loading state if this is still the active controller.
-      // If the user reset or started a new run, the new run owns the state.
-      if (abortControllerRef.current === ac) {
-        setLoading(false);
-        abortControllerRef.current = null;
-      }
+      setLoading(false);
     }
   }
 
   return {
     fileA, setFileA, fileB, setFileB, xmlFile, setXmlFile,
     result, loading, loadMsg, loadPct, progress, error,
-    firstBatchReceived,
     xmlSections, setXmlSections, allSections, setAllSections,
     showModal, setShowModal,
     showDetection, setShowDetection,
@@ -618,8 +620,8 @@ export default function ComparePage() {
   const { user } = useAuth();
   const features     = user?.effectiveFeatures ?? [];
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
-  const canBrowse    = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
-  const canEdit      = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canWf1       = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
+  const canWf2       = isSuperAdmin || features.includes("compare-pdf-xml-only");
 
   const [active, setActive] = useState<ActiveWorkflow>("selector");
   const d = useDiffState();
@@ -683,32 +685,35 @@ export default function ComparePage() {
   const workflowMode: WorkflowMode = active === "edit" ? "edit" : "browse";
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  //
-  // The gating condition was previously:
-  //   d.result && d.firstBatchReceived && !d.showModal
-  // where firstBatchReceived was set only in the streaming onBatch handler.
-  // For small docs that use the synchronous apiDiff path, onBatch never fires,
-  // so firstBatchReceived stayed false, and clicking "View All" dropped to
-  // DiffUpload instead of DiffViewer.
-  //
-  // Fix: drop firstBatchReceived. `d.result` being non-null is already a
-  // complete signal — it's set both in onBatch (streaming) and at the end of
-  // run() (small-doc path). `isStreaming={d.loading}` keeps the streaming
-  // progress bar visible inside DiffViewer.
   return (
     <div className="relative flex flex-col h-full min-h-0">
 
       {active === "selector" && (
-        <WorkflowSelector canBrowse={canBrowse} canEdit={canEdit} onSelect={selectWorkflow} />
+        <WorkflowSelector canWf1={canWf1} canWf2={canWf2} onSelect={selectWorkflow} />
       )}
 
       {(active === "browse" || active === "edit") && (
         <div className="flex-1 overflow-hidden min-h-0">
-          {/* FIX Issue 1: show DiffViewer as soon as the first batch arrives.
-              Pass isStreaming so it can display a progress bar while remaining
-              batches continue loading in the background.
-              The ChangeSummaryModal is only shown after all batches finish. */}
-          {d.result && d.firstBatchReceived && !d.showModal ? (
+          {/* Detection report modal — shown when user clicks "Detection Report" */}
+          {d.result && d.showDetection ? (
+            <ChunkDetectionModal
+              result={d.result}
+              xmlSections={d.xmlSections}
+              sectionMapper={sectionMapper}
+              onClose={() => d.setShowDetection(false)}
+            />
+          ) : d.result && d.showModal && !d.loading ? (
+            /* Changes summary modal — shown after diff completes */
+            <ChangeSummaryModal
+              result={d.result}
+              xmlSections={d.xmlSections}
+              sectionMapper={sectionMapper}
+              onViewAll={() => { d.setSelectedSec(null); d.setShowModal(false); }}
+              onSelectSection={(label) => { d.setSelectedSec(label); d.setShowModal(false); }}
+              onViewDetection={() => d.setShowDetection(true)}
+            />
+          ) : d.result && !d.showModal ? (
+            /* DiffViewer — shown as soon as result arrives (may still be streaming) */
             <DiffViewer
               mode={workflowMode}
               result={d.result}
@@ -720,23 +725,8 @@ export default function ComparePage() {
               initialSection={d.selectedSec}
               sectionMapper={sectionMapper}
             />
-          ) : d.result && d.showModal && d.showDetection && !d.loading ? (
-            <ChunkDetectionModal
-              result={d.result}
-              xmlSections={d.xmlSections}
-              sectionMapper={sectionMapper}
-              onClose={() => d.setShowDetection(false)}
-            />
-          ) : d.result && d.showModal && !d.loading ? (
-            <ChangeSummaryModal
-              result={d.result}
-              xmlSections={d.xmlSections}
-              sectionMapper={sectionMapper}
-              onViewAll={() => { d.setSelectedSec(null); d.setShowModal(false); }}
-              onSelectSection={(label) => { d.setSelectedSec(label); d.setShowModal(false); }}
-              onViewDetection={() => d.setShowDetection(true)}
-            />
           ) : (
+            /* Upload form — shown before run, during loading, or on error */
             <DiffUpload
               fileA={d.fileA}
               fileB={d.fileB}

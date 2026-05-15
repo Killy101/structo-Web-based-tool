@@ -8,9 +8,9 @@
  * browse = Workflow 1 · Chunk & Compare  (4-panel, XML read-only, no Apply/Save)
  * edit   = Workflow 2 · Compare & Apply  (4-panel, XML editable, Apply/Save enabled)
  *
- * Renamed from wf2/wf3 to align internal names with user-facing labels.
- * Old code may still reference "wf2"/"wf3" in persisted state — see the
- * migration logic in useDiffState's session-restore effect.
+ * NOTE: internal identifiers were previously "wf2" / "wf3". They are now
+ * "browse" / "edit" to match the user-facing workflow names. All sessionStorage
+ * keys that used the old names are cleared on mount to avoid stale data.
  */
 export type WorkflowMode = "browse" | "edit";
 
@@ -105,21 +105,13 @@ export interface DiffResult {
 // ── XML scroll-sync abstraction ───────────────────────────────────────────────
 /**
  * Common interface for the XML panel scroll target.  Implemented by:
- *   - HTMLDivElement      (browse mode read-only viewer — structurally compatible)
- *   - XmlEditorHandle     (edit mode Monaco editor — exposed via useImperativeHandle)
- *
- * DiffViewer.syncXmlScroll reads/writes these properties directly so it can
- * drive the XML panel position from the diff-pane scroll events without knowing
- * whether it's talking to a plain div or a Monaco editor instance.
+ *   - HTMLDivElement      (WF1 read-only viewer — structurally compatible)
+ *   - XmlEditorHandle     (WF2 Monaco editor — exposed via useImperativeHandle)
  */
 export interface XmlScrollTarget {
-  /** Total scrollable height in px (like HTMLElement.scrollHeight). */
   readonly scrollHeight: number;
-  /** Visible viewport height in px (like HTMLElement.clientHeight). */
   readonly clientHeight: number;
-  /** Current scroll offset in px — readable and settable. */
   scrollTop: number;
-  /** Allows callers to branch on element type ("DIV" | "TEXTAREA" | "MONACO"). */
   readonly tagName: string;
 }
 
@@ -130,7 +122,6 @@ export interface ApplyResult {
   message:    string;
   span_start: number | null;
   span_end:   number | null;
-  /** Session ID echoed back from the server after a session-based apply. */
   session_id?: string | null;
 }
 
@@ -140,31 +131,18 @@ export interface LocateResult {
   span_end:   number | null;
 }
 
-/** Server response for /compare/xml/chunk-locate — server-side XML→chunk lookup. */
+// ── Chunk-locate result (XML → PDF navigation) ────────────────────────────────
 export interface ChunkLocateResult {
-  success:    boolean;
-  /** Resolved chunk id, or null if no chunk matched the given XML offset. */
-  chunk_id:   number | null;
-  /** Confidence score 0..1 — exposed so client can decide whether to act on weak matches. */
-  score:      number;
+  success:   boolean;
+  chunk_id:  number | null;
+  score:     number;
+  message?:  string;
 }
 
 // ── Emphasis types ────────────────────────────────────────────────────────────
 
 /**
  * All 6 emphasis variants detected from XML tags.
- *
- *  <b>       → bold            (all 5 documents)
- *  <i>       → italic          (UK, French AMF, Colombian SFC)
- *  <u>       → underline       (UK, OSFI, Colombian SFC)
- *  <s>       → strikethrough   (future-proof; not in any current document)
- *  <b><i>    → bold-italic     (Colombian SFC: 80 cases)
- *  <b><u>    → bold-underline  (UK: 1, OSFI: 2, Colombian SFC: 40)
- *
- * Detection rules:
- *  - Walk the full child tree recursively (any nesting depth)
- *  - <u><b>  → treat as bold-underline (reverse nesting)
- *  - <b><b>  → treat as plain bold  (UK: 6 edge cases)
  */
 export type EmphasisType =
   | "bold"
@@ -185,21 +163,14 @@ export interface EmphasisSpan {
 
 export interface KindMeta {
   label:           string;
-  pillClass:       string;   // Tailwind classes for the kind pill
-  ringClass:       string;   // Tailwind border/ring for the active list item
-  bgClass:         string;   // Subtle bg for the active list item
-  textClass:       string;   // Text colour
-  /** HTML explanation-file colours: greenyellow / hotpink / yellow */
-  highlightBg:     string;   // CSS colour for inline text highlight
-  highlightBorder: string;   // CSS colour for paragraph border/outline
+  pillClass:       string;
+  ringClass:       string;
+  bgClass:         string;
+  textClass:       string;
+  highlightBg:     string;
+  highlightBorder: string;
 }
 
-// Diff palette per product spec:
-//   ADD    = green     (added text in new version)
-//   DEL    = hot pink  (removed text in old version)
-//   MOD    = orange    (modified text)
-//   EMP    = light blue (emphasis change — bold/italic/underline toggle)
-//   STRIKE = rose-dark  (intentional legislative strikethrough)
 export const KIND_META: Record<ChunkKind, KindMeta> = {
   add: {
     label:           "ADD",

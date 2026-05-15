@@ -305,7 +305,7 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
     // XML validation error surfaced up from XmlEditor's DOMParser check
     const [xmlError, setXmlError] = useState<string | null>(null);
 
-    const isWf3    = mode === "wf3";
+    const isWf3    = mode === "edit";
     // EMP chunks are now supported for apply (see backend _apply_emp_chunk_to_xml)
     const canApply = isWf3 && !!xmlText && !!activeChunk &&
                      !appliedIds.has(activeChunk.id) &&
@@ -348,7 +348,7 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
                 ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
                 : "bg-slate-500/10 text-slate-400 border-slate-500/20"
             }`}>
-              {isWf3 ? "WF3 · editable" : "WF1 · read-only"}
+              {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
 
             {!xmlText && (
@@ -424,7 +424,7 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
         {xmlText ? (
           isWf3 ? (
             /*
-             * WF3 editable mode: forward the panel ref to XmlEditor which
+             * WF2 editable mode: forward the panel ref to XmlEditor which
              * exposes XmlScrollTarget via useImperativeHandle on the Monaco
              * editor instance.  The outer div clips the layout; Monaco's own
              * virtualised renderer is the scroll container.

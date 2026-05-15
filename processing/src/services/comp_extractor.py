@@ -201,6 +201,7 @@ COL_MONO      = "#1d4ed8"
 COL_SUPER     = "#1d4ed8"
 COL_UNDERLINE = "#1d4ed8"
 COL_STRIKE    = "#be185d"   # struck-out spans pick up DEL-pink semantically
+COL_CITATION  = "#a0c4e8"   # BACEN amendment-citation blue (#3298d5 spans)
 COL_SMALL     = "#777777"
 COL_NORMAL    = "#111111"
 
@@ -307,6 +308,7 @@ class Span:
     superscript: bool
     underline:   bool
     strikeout:   bool
+    citation:    bool   # BACEN amendment-citation text (#3298d5 spans)
     size:        float
     font:        str
     color:       str
@@ -331,6 +333,21 @@ def _parse_span(raw: dict) -> Span:
     bold_from_font = bool(re.search(r'(^|[-_ ,])(bold|black|demi|semibold|heavy)([-_ ,]|$)', fn))
     italic_from_font = bool(re.search(r'(^|[-_ ,])(italic|oblique|slanted)([-_ ,]|$)', fn))
 
+    # ── Strikeout detection ──────────────────────────────────────────────────
+    # Priority 1: explicit font flags / font name
+    _flag_strike = bool(f & FLAG_STRIKEOUT) or bool(
+        re.search(r'(^|[-_ ,])(strikeout|strikethrough|struck)([-_ ,]|$)', fn)
+    )
+    # Priority 2: publisher color-semantic encoding.
+    # BACEN (Banco Central do Brasil) normativo viewer:
+    #   #ff0000 = superseded / old version of an article  → treat as strikeout
+    #   #606060 = active current text
+    #   #3298d5 = amendment citation (Redação dada..., Revogada...) → citation
+    _raw_color         = raw.get("color", 0)
+    _color_hex         = f"#{_raw_color:06x}" if isinstance(_raw_color, int) else str(_raw_color).lower()
+    _is_color_strike   = _color_hex.lower() == "#ff0000"
+    _is_citation_color = _color_hex.lower() in ("#3298d5", "#3399d5", "#3297d5")
+
     return Span(
         text        = raw["text"],
         bold        = bool(f & FLAG_BOLD) or bold_from_font,
@@ -351,9 +368,8 @@ def _parse_span(raw: dict) -> Span:
         # producing false-positive strikethrough detection.  Keep font-flag
         # detection as a last-resort signal but add a font-name heuristic
         # as a more reliable guard for explicitly-named strikethrough fonts.
-        strikeout   = bool(f & FLAG_STRIKEOUT) or bool(
-            re.search(r'(^|[-_ ,])(strikeout|strikethrough|struck)([-_ ,]|$)', fn)
-        ),
+        strikeout   = _flag_strike or _is_color_strike,
+        citation    = _is_citation_color,
         size        = round(raw["size"], 2),
         font        = font_name,
         color       = f"#{raw['color']:06x}",
@@ -372,6 +388,7 @@ def _plain_span(text: str, x: float, y: float) -> Span:
         superscript=False,
         underline=False,
         strikeout=False,
+        citation=False,
         size=10.0,
         font="TableExtract",
         color="#000000",
@@ -1178,25 +1195,71 @@ def load_pdf(
             _merge_two_column_amendment_markers(merged)
             _merge_amendment_section_blocks(merged)
 
-            # Detect drawn strikethrough lines (vector paths that font flags miss).
-            # Three guards mirror pdf_extractor_core fixes:
-            #   1. Exclude y-positions matching PDF Link/Underline annotations
-            #   2. Reject lines at relative position > 0.75 (underlines at 0.85-0.95)
-            #   3. Use local page coords: subtract page_y_offset from span coords
+            # ── Strikethrough detection (two complementary methods) ──────────
+            #
+            # Method A: PDF StrikeOut annotations (standard PDF annotation type).
+            #   Used by Colombian law PDFs (CO.Congreso), Brazilian BACEN normativo
+            #   viewer, and many other legal document publishers.  This is the PRIMARY
+            #   detection path — annotation rects are exact and have no positional
+            #   ambiguity.  PyMuPDF annotation type name is "StrikeOut".
+            #
+            # Method B: Drawn vector paths (horizontal lines over text).
+            #   Fallback for PDFs that draw strikethrough as vector graphics rather
+            #   than using PDF annotations.  Requires position heuristics to
+            #   distinguish from underlines.
             try:
-                # Guard 1: pre-collect y-midpoints of Link/Underline annotations
-                _annot_ys: set = set()
+                # ── Method A: PDF StrikeOut annotations ──────────────────────
+                # Walk all annotations on this page.  For StrikeOut annotations,
+                # mark every span whose x-range overlaps the annotation rect.
+                # The annotation rect in PDF spec covers exactly the struck text.
+                # We convert the absolute annotation y to local page coords the
+                # same way span coords are tracked (subtract page_y_offset) so
+                # the overlap test is in the same coordinate space.
+                #
+                # Also collect Underline/Link y-positions for Method B exclusion.
+                _annot_ys: set = set()  # y-midpoints of underline/link annots
                 for _an in (fz.annots() or []):
                     _atype = _an.type[1] if _an.type else ""
-                    if _atype in ("Underline", "Link"):
-                        _ar = getattr(_an, "rect", None)
-                        if _ar is not None:
-                            _annot_ys.add(round((_ar.y0 + _ar.y1) / 2 / 2) * 2)
+                    _ar = getattr(_an, "rect", None)
+                    if _ar is None:
+                        continue
+
+                    if _atype == "StrikeOut":
+                        # Direct annotation match — mark all spans it covers.
+                        # Convert annotation absolute coords to local page space.
+                        _ann_x0 = _ar.x0
+                        _ann_x1 = _ar.x1
+                        _ann_y0 = _ar.y0 - page_y_offset
+                        _ann_y1 = _ar.y1 - page_y_offset
+                        _ann_mid_y = (_ann_y0 + _ann_y1) / 2
+                        for _pl in merged:
+                            for _sp in _pl.spans:
+                                # x-overlap: annotation covers this span
+                                if _sp.x2 <= _ann_x0 or _sp.x >= _ann_x1:
+                                    continue
+                                # y-proximity: annotation midpoint within ±8pt of span midpoint
+                                _sp_top = _sp.y  - page_y_offset
+                                _sp_bot = _sp.y2 - page_y_offset
+                                _sp_mid = (_sp_top + _sp_bot) / 2
+                                if abs(_ann_mid_y - _sp_mid) <= 8:
+                                    _sp.strikeout = True
+
+                    elif _atype in ("Underline", "Link"):
+                        # Collect for Method B exclusion guard
+                        _annot_ys.add(round((_ar.y0 + _ar.y1) / 2 / 2) * 2)
+
                 for _lk in (fz.get_links() or []):
                     _lr = _lk.get("from")
                     if _lr is not None:
                         _annot_ys.add(round((_lr.y0 + _lr.y1) / 2 / 2) * 2)
 
+                # ── Method B: Drawn vector paths ──────────────────────────────
+                # Fallback for PDFs that use drawn lines instead of annotations.
+                # Three guards prevent false positives:
+                #   1. Exclude y-positions matching Link/Underline annotations
+                #   2. Reject lines at relative position > 0.75 (underlines are
+                #      at 0.85-0.95 of span height; strikethroughs at 0.40-0.65)
+                #   3. Use local page coords (subtract page_y_offset) throughout
                 _sr: list = []
                 for _path in fz.get_drawings():
                     _rect = _path.get("rect")
@@ -1206,10 +1269,8 @@ def load_pdf(
                     if _x1 <= _x0:
                         continue
                     _w, _h = _x1 - _x0, abs(_y1 - _y0)
-                    # Min width 8pt (was 15pt) — matches pdf_extractor_core's
-                    # canonical detector. Short struck-out words like "if",
-                    # "or", "by" have line widths of ~10–14pt and would
-                    # otherwise be missed.
+                    # Min width 8pt — short struck words like "if", "or", "by"
+                    # have line widths of ~10-14pt and must not be missed.
                     if _w < 8 or _h > 3:
                         continue
                     _ph = fz.rect.height or 1.0
@@ -1224,6 +1285,8 @@ def load_pdf(
                 if _sr:
                     for _pl in merged:
                         for _sp in _pl.spans:
+                            if _sp.strikeout:
+                                continue  # already marked by Method A
                             # Guard 3: convert absolute span coords to local page space
                             _sp_top = _sp.y  - page_y_offset
                             _sp_bot = _sp.y2 - page_y_offset
@@ -1352,8 +1415,8 @@ def normalize_text(text: str) -> str:
 
 
 def _line_text(line: PdfLine) -> str:
-    """Raw display text of a PdfLine."""
-    raw = ' '.join(' '.join(s.text for s in line.spans).split())
+    """Raw display text of a PdfLine — excludes citation-annotation spans."""
+    raw = ' '.join(' '.join(s.text for s in line.spans if not getattr(s, 'citation', False)).split())
     return _compact_amendment_markers(raw)
 
 
@@ -7035,6 +7098,7 @@ BASE_FONT_FAMILY = "Courier New"
 
 def _span_fg(span: Span) -> str:
     """Return foreground colour. PDF colour is ignored — only emphasis flags matter."""
+    if getattr(span, 'citation', False): return COL_CITATION
     if span.bold and span.italic: return COL_BOLD_IT
     if span.bold:                 return COL_BOLD
     if span.italic:               return COL_ITALIC

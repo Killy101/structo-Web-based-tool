@@ -34,11 +34,9 @@ interface PageCountResult {
 async function _uploadChunked(
   file:       File,
   onProgress: (pct: number) => void,
-  signal?:    AbortSignal,
 ): Promise<UploadResult | null> {
   const probe = await fetch(`${BASE.replace("/compare", "")}/upload/chunk`, {
     method: "HEAD",
-    signal,
   }).catch(() => null);
   if (!probe || !probe.ok) return null;
 
@@ -47,7 +45,6 @@ async function _uploadChunked(
   const totalParts  = Math.ceil(file.size / CHUNK_SIZE);
 
   for (let i = 0; i < totalParts; i += MAX_PARALLEL) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const batchSize = Math.min(MAX_PARALLEL, totalParts - i);
     await Promise.all(
       Array.from({ length: batchSize }, (_, k) => {
@@ -58,7 +55,7 @@ async function _uploadChunked(
         form.append("part_index",  String(idx));
         form.append("total_parts", String(totalParts));
         form.append("chunk",       file.slice(start, start + CHUNK_SIZE), file.name);
-        return fetch(`${BASE_UPLOAD}/upload/chunk`, { method: "POST", body: form, signal });
+        return fetch(`${BASE_UPLOAD}/upload/chunk`, { method: "POST", body: form });
       }),
     );
     onProgress(Math.round(((i + batchSize) / totalParts) * 85));
@@ -67,23 +64,19 @@ async function _uploadChunked(
   const fin = new FormData();
   fin.append("file_id",  fileId);
   fin.append("filename", file.name);
-  const res  = await fetch(`${BASE_UPLOAD}/upload/finalise`, { method: "POST", body: fin, signal });
+  const res  = await fetch(`${BASE_UPLOAD}/upload/finalise`, { method: "POST", body: fin });
   if (!res.ok) return null;
   const data = await res.json() as { file_id: string; sha256: string; path: string };
   onProgress(100);
   return { fileId: data.file_id, sha256: data.sha256, path: data.path };
 }
 
-async function _probePageCount(
-  oldFile: File,
-  newFile: File,
-  signal?: AbortSignal,
-): Promise<PageCountResult | null> {
+async function _probePageCount(oldFile: File, newFile: File): Promise<PageCountResult | null> {
   try {
     const form = new FormData();
     form.append("old_file", oldFile);
     form.append("new_file", newFile);
-    const res = await fetch(`${BASE}/pdf/page-count`, { method: "POST", body: form, signal });
+    const res = await fetch(`${BASE}/pdf/page-count`, { method: "POST", body: form });
     if (!res.ok) return null;
     return await res.json() as PageCountResult;
   } catch {
@@ -114,9 +107,6 @@ export interface DiffProgress {
 }
 
 // ── Stage-based progress builder ──────────────────────────────────────────────
-// Call this in your component to convert a DiffProgress into LoadingStage[].
-// The stage list reflects: Uploading → Extracting → Computing → Rendering
-
 export function buildLoadingStages(progress: DiffProgress | null): LoadingStage[] {
   const STAGE_DEFS: { id: DiffProgress["stage"] | "upload"; label: string }[] = [
     { id: "upload",  label: "Uploading files" },
@@ -178,7 +168,6 @@ async function _retryDelay(
   attempt: number,
   retryAfterHeader: string | null,
   onProgress?: (p: DiffProgress) => void,
-  signal?:     AbortSignal,
 ): Promise<void> {
   const base  = retryAfterHeader
     ? parseInt(retryAfterHeader, 10) * 1000
@@ -191,37 +180,24 @@ async function _retryDelay(
     stage: "diff", pct: 0,
     message: `Server busy — retrying in ${secs}s… (attempt ${attempt + 1}/${_DIFF_MAX_RETRIES})`,
   });
-  await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delay);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+  await new Promise<void>((resolve) => setTimeout(resolve, delay));
 }
 
 // ── NDJSON stream reader ──────────────────────────────────────────────────────
 async function* _readNDJSON(res: Response, signal?: AbortSignal): AsyncGenerator<unknown> {
-  const reader = res.body!.getReader();
-  // If the controller aborts mid-stream, cancel the reader so the fetch
-  // releases its underlying connection promptly.
-  const onAbort = () => { reader.cancel().catch(() => {}); };
-  if (signal) {
-    if (signal.aborted) { reader.cancel().catch(() => {}); }
-    else signal.addEventListener("abort", onAbort, { once: true });
-  }
+  const reader  = res.body!.getReader();
+
+  // Cancel the stream if the AbortSignal fires
+  signal?.addEventListener("abort", () => {
+    reader.cancel().catch(() => {});
+  }, { once: true });
 
   const decoder = new TextDecoder();
   let   buffer  = "";
 
   try {
     while (true) {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (signal?.aborted) break;
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -234,12 +210,12 @@ async function* _readNDJSON(res: Response, signal?: AbortSignal): AsyncGenerator
         try { yield JSON.parse(line); } catch { /* ignore malformed */ }
       }
     }
-
-    if (buffer.trim()) {
-      try { yield JSON.parse(buffer); } catch { /* ignore */ }
-    }
   } finally {
-    signal?.removeEventListener("abort", onAbort);
+    reader.cancel().catch(() => {});
+  }
+
+  if (buffer.trim()) {
+    try { yield JSON.parse(buffer); } catch { /* ignore */ }
   }
 }
 
@@ -258,13 +234,14 @@ export async function apiDiff(
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
     const res = await fetch(`${BASE}/diff/stream`, { method: "POST", body: form, signal });
 
     if (res.status === 429) {
       if (attempt >= _DIFF_MAX_RETRIES) {
         throw new Error("Server is handling too many comparisons. Please try again later.");
       }
-      await _retryDelay(attempt, res.headers.get("Retry-After"), onProgress, signal);
+      await _retryDelay(attempt, res.headers.get("Retry-After"), onProgress);
       continue;
     }
 
@@ -321,13 +298,14 @@ export async function apiDiffLarge(
 
   for (let attempt = 0; attempt <= _DIFF_MAX_RETRIES; attempt++) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
     const res = await fetch(`${BASE}/diff/stream/large`, { method: "POST", body: form, signal });
 
     if (res.status === 429) {
       if (attempt >= _DIFF_MAX_RETRIES) {
         throw new Error("Server is handling too many comparisons. Please try again later.");
       }
-      await _retryDelay(attempt, res.headers.get("Retry-After"), onProgress, signal);
+      await _retryDelay(attempt, res.headers.get("Retry-After"), onProgress);
       continue;
     }
 
@@ -338,59 +316,39 @@ export async function apiDiffLarge(
 
     let doneMsg: LargeDiffResult | null = null;
 
-    // First-batch SLA: if no batch arrives within 30s, surface a friendly
-    // error so the user knows the server is stuck rather than waiting forever.
-    let firstBatchSeen = false;
-    const firstBatchTimer = setTimeout(() => {
-      if (!firstBatchSeen) {
-        // We can't cancel the iterator from here cleanly; instead emit a
-        // progress notification so the UI shows something is wrong. The
-        // user can manually reset, which aborts the controller and cancels
-        // the underlying fetch.
-        onProgress?.({
-          stage: "batch", pct: 0,
-          message: "Still working… (no batch received after 30s)",
+    for await (const msg of _readNDJSON(res, signal)) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const m = msg as Record<string, unknown>;
+
+      if (m.t === "p") {
+        onProgress?.(_parseLargeProgress(m));
+      } else if (m.t === "batch") {
+        onBatch?.({
+          batch:     m.batch as number,
+          of:        m.of    as number,
+          pageRange: m.page_range as [number, number],
+          chunks:    m.chunks    as Chunk[],
+          pane_a:    m.pane_a    as PaneData,
+          pane_b:    m.pane_b    as PaneData,
+          stats:     m.stats     as DiffResult["stats"],
         });
+      } else if (m.t === "done") {
+        doneMsg = {
+          jobId:       m.job_id     as string,
+          stats:       m.stats      as DiffResult["stats"],
+          xmlSections: (m.xml_sections ?? []) as XmlSection[],
+          file_a:      m.file_a     as string,
+          file_b:      m.file_b     as string,
+          totalPages:  m.total_pages as number,
+          elapsedS:    m.elapsed_s  as number,
+        };
+        onProgress?.({
+          stage: "done", pct: 100,
+          message: `Done — ${doneMsg.stats.total} changes across ${doneMsg.totalPages} pages`,
+        });
+      } else if (m.t === "e") {
+        throw new Error(_msgToStr(m.msg) || "Large diff failed");
       }
-    }, 30_000);
-
-    try {
-      for await (const msg of _readNDJSON(res, signal)) {
-        const m = msg as Record<string, unknown>;
-
-        if (m.t === "p") {
-          onProgress?.(_parseLargeProgress(m));
-        } else if (m.t === "batch") {
-          firstBatchSeen = true;
-          onBatch?.({
-            batch:     m.batch as number,
-            of:        m.of    as number,
-            pageRange: m.page_range as [number, number],
-            chunks:    m.chunks    as Chunk[],
-            pane_a:    m.pane_a    as PaneData,
-            pane_b:    m.pane_b    as PaneData,
-            stats:     m.stats     as DiffResult["stats"],
-          });
-        } else if (m.t === "done") {
-          doneMsg = {
-            jobId:       m.job_id     as string,
-            stats:       m.stats      as DiffResult["stats"],
-            xmlSections: (m.xml_sections ?? []) as XmlSection[],
-            file_a:      m.file_a     as string,
-            file_b:      m.file_b     as string,
-            totalPages:  m.total_pages as number,
-            elapsedS:    m.elapsed_s  as number,
-          };
-          onProgress?.({
-            stage: "done", pct: 100,
-            message: `Done — ${doneMsg.stats.total} changes across ${doneMsg.totalPages} pages`,
-          });
-        } else if (m.t === "e") {
-          throw new Error(_msgToStr(m.msg) || "Large diff failed");
-        }
-      }
-    } finally {
-      clearTimeout(firstBatchTimer);
     }
 
     if (!doneMsg) throw new Error("No final result received from server");
@@ -415,7 +373,7 @@ export async function apiDiffAuto(
 
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
-  const pageCount = await _probePageCount(oldFile, newFile, signal);
+  const pageCount = await _probePageCount(oldFile, newFile);
   const useLargeByPages = (pageCount?.max_pages ?? 0) > LARGE_DOC_THRESHOLD;
 
   try {
@@ -425,8 +383,8 @@ export async function apiDiffAuto(
                      message: `Uploading files… ${Math.round((oldPct + newPct) / 2)}%` });
 
     const [oldUp, newUp] = await Promise.all([
-      _uploadChunked(oldFile, (p) => { oldPct = p; notifyUpload(); }, signal),
-      _uploadChunked(newFile, (p) => { newPct = p; notifyUpload(); }, signal),
+      _uploadChunked(oldFile, (p) => { oldPct = p; notifyUpload(); }),
+      _uploadChunked(newFile, (p) => { newPct = p; notifyUpload(); }),
     ]);
 
     if (oldUp && newUp) {
@@ -435,10 +393,7 @@ export async function apiDiffAuto(
         onProgress?.({ stage: "batch", pct: 5, message: "Previous result found — reloading…" });
       }
     }
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "AbortError") throw e;
-    /* chunked upload not available — fall through to legacy */
-  }
+  } catch { /* chunked upload not available — fall through to legacy */ }
 
   const LARGE_SIZE_BYTES = 4 * 1024 * 1024;
   const useLargeBySize = oldFile.size > LARGE_SIZE_BYTES || newFile.size > LARGE_SIZE_BYTES;
@@ -469,11 +424,10 @@ export async function apiGetSegments(
   jobId:     string,
   pageStart: number,
   pageEnd:   number,
-  signal?:   AbortSignal,
 ): Promise<SegmentWindow> {
   const url = `${BASE}/diff/${encodeURIComponent(jobId)}/segments`
     + `?page_start=${pageStart}&page_end=${pageEnd}`;
-  const res = await fetch(url, { signal });
+  const res = await fetch(url);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Segment fetch failed");
@@ -484,38 +438,16 @@ export async function apiGetSegments(
 // ── XML operations ────────────────────────────────────────────────────────────
 
 // ── XML session management ────────────────────────────────────────────────────
-// Keeps a client-side reference to the server-side session ID for the current
-// XML document.  When a session exists, apply and locate calls send only the
-// session_id + chunk (not the full xml_text) which avoids re-transmitting
-// large legal documents (1 MB+) on every operation.
-//
-// Session lifecycle:
-//   1. First call to apiApply or apiLocate triggers session creation via
-//      _ensureXmlSession().
-//   2. Session ID is stored in _activeXmlSession.
-//   3. When a new XML file is loaded, call invalidateXmlSession() to reset.
-//   4. If the server returns 404 (session expired), we fall back to full-text
-//      and create a new session automatically.
-
 interface _XmlSession {
   sessionId: string;
-  /** FNV-32 hash of the xml_text when the session was created — used to
-   *  detect stale sessions when the client-side text drifts from the server. */
   textHash:  number;
 }
 
 let _activeXmlSession: _XmlSession | null = null;
-/**
- * In-flight session creation promise — deduplicates concurrent calls
- * (e.g. apiApply + apiLocate both triggered within the same user action).
- */
 let _sessionCreationPromise: Promise<string | null> | null = null;
 
-// Persist/restore the session ID across page reloads using sessionStorage.
-// Key scoped to this module; value is JSON { sessionId, textHash }.
 const _SESSION_STORE_KEY = "structo_xml_session";
 
-/** Write the current session to sessionStorage (best-effort, no throws). */
 function _persistSession(): void {
   if (typeof window === "undefined") return;
   if (!_activeXmlSession) {
@@ -527,9 +459,6 @@ function _persistSession(): void {
   } catch { /* quota exceeded or private browsing — silently skip */ }
 }
 
-/** On module load: restore a previously-created session from sessionStorage.
- *  The server may have expired the session (1h TTL), but that’s fine —
- *  apiApply/apiLocate already have automatic 404→full-text retry logic. */
 ;(function _restoreSession() {
   if (typeof window === "undefined") return;
   try {
@@ -551,7 +480,7 @@ function _fnv32(s: string): number {
 export function invalidateXmlSession(): void {
   _activeXmlSession = null;
   _sessionCreationPromise = null;
-  _persistSession();   // clear the sessionStorage entry
+  _persistSession();
 }
 
 async function _createXmlSession(xmlText: string, hash: number): Promise<string | null> {
@@ -565,7 +494,7 @@ async function _createXmlSession(xmlText: string, hash: number): Promise<string 
     const data = await res.json() as { session_id?: string };
     if (!data.session_id) return null;
     _activeXmlSession = { sessionId: data.session_id, textHash: hash };
-    _persistSession();   // save to sessionStorage so reloads can reuse the session
+    _persistSession();
     return data.session_id;
   } catch {
     return null;
@@ -579,8 +508,6 @@ async function _ensureXmlSession(xmlText: string): Promise<string | null> {
   if (_activeXmlSession && _activeXmlSession.textHash === hash) {
     return _activeXmlSession.sessionId;
   }
-  // Dedup concurrent calls — reuse the in-flight promise instead of
-  // making two simultaneous POST /xml/session requests.
   if (_sessionCreationPromise) {
     return _sessionCreationPromise;
   }
@@ -589,8 +516,6 @@ async function _ensureXmlSession(xmlText: string): Promise<string | null> {
 }
 
 export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResult> {
-  // Try session-based apply first (avoids sending full XML on every call).
-  // Falls back to full-text if session creation fails or session expired.
   const sessionId = await _ensureXmlSession(xmlText);
 
   const body = sessionId
@@ -603,7 +528,6 @@ export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResu
     body:    JSON.stringify(body),
   });
 
-  // Session expired server-side — retry with full text and create new session
   if (res.status === 404 && sessionId) {
     _activeXmlSession = null;
     res = await fetch(`${BASE}/xml/apply`, {
@@ -620,9 +544,6 @@ export async function apiApply(xmlText: string, chunk: Chunk): Promise<ApplyResu
 
   const result = await res.json() as ApplyResult;
 
-  // After a successful apply the server has the new xml_text stored.
-  // Update our local session hash so the next call reuses the session
-  // (the session_id is unchanged; only the stored text changed server-side).
   if (result.changed && _activeXmlSession) {
     _activeXmlSession = {
       sessionId: _activeXmlSession.sessionId,
@@ -647,7 +568,6 @@ export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateRe
       body:    JSON.stringify(body),
     });
 
-    // Session expired — retry with full text
     if (res.status === 404 && sessionId) {
       _activeXmlSession = null;
       res = await fetch(`${BASE}/xml/locate`, {
@@ -662,29 +582,27 @@ export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateRe
   } catch { return null; }
 }
 
+// ── XML chunk-locate (XML offset → nearest diff chunk) ───────────────────────
 /**
- * apiChunkLocate — server-side XML offset → chunk id lookup.
+ * Given a character offset inside the XML text, ask the server to find the
+ * best-matching diff chunk. This is the server-side replacement for the
+ * n-gram heuristic in handleXmlLineClick — the server has the full chunk
+ * list and uses the same text-normalisation as compute_diff, so matches
+ * are far more reliable for Innodata tag-dense XML.
  *
- * Used by DiffViewer.handleXmlLineClick to find the diff chunk closest to a
- * clicked XML line, with the server's full knowledge of the diff job's
- * chunk inventory (the client-side n-gram heuristic is unreliable on
- * tag-dense legal XML).
- *
- * Returns null on transport error so callers can fall back to client-side
- * heuristics.
+ * Falls back to null on network error so the caller can degrade gracefully.
  */
 export async function apiChunkLocate(
-  xmlText:    string,
-  xmlOffset:  number,
-  jobId:      string | null,
+  xmlText:   string,
+  xmlOffset: number,
+  chunks:    Chunk[],
 ): Promise<ChunkLocateResult | null> {
   try {
     const sessionId = await _ensureXmlSession(xmlText);
 
-    const body: Record<string, unknown> = { xml_offset: xmlOffset };
-    if (jobId)    body.job_id    = jobId;
-    if (sessionId) body.session_id = sessionId;
-    else           body.xml_text   = xmlText;
+    const body = sessionId
+      ? { session_id: sessionId, xml_offset: xmlOffset }
+      : { xml_text: xmlText,    xml_offset: xmlOffset };
 
     let res = await fetch(`${BASE}/xml/chunk-locate`, {
       method:  "POST",
@@ -693,19 +611,20 @@ export async function apiChunkLocate(
     });
 
     if (res.status === 404 && sessionId) {
+      // Session expired — retry with full text
       _activeXmlSession = null;
-      const fallback: Record<string, unknown> = { xml_offset: xmlOffset, xml_text: xmlText };
-      if (jobId) fallback.job_id = jobId;
       res = await fetch(`${BASE}/xml/chunk-locate`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(fallback),
+        body:    JSON.stringify({ xml_text: xmlText, xml_offset: xmlOffset }),
       });
     }
 
     if (!res.ok) return null;
     return res.json() as Promise<ChunkLocateResult>;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 // ── XML section parsing (client-side, no network) ─────────────────────────────
@@ -771,9 +690,8 @@ export function parseXmlSectionsLocal(xmlText: string): XmlSection[] {
   }
 }
 
-// ── Error message helpers ────────────────────────────────────────────────────
+// ── Error message helpers ─────────────────────────────────────────────────────
 
-/** Convert any server error value to a plain string safely. */
 function _msgToStr(msg: unknown): string {
   if (typeof msg === "string") return msg;
   if (msg == null) return "";
@@ -781,7 +699,6 @@ function _msgToStr(msg: unknown): string {
   return String(msg);
 }
 
-/** Extract a human-readable message from a JSON error body (FastAPI format). */
 function _extractErrMsg(err: { detail?: unknown }, fallback: string): string {
   const d = err?.detail;
   if (d == null) return fallback;
