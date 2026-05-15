@@ -240,9 +240,11 @@ function _renderTokensWithHighlight(
 
 // Defined outside any component so React Compiler does not track the
 // `state` mutation as a render-scoped variable reassignment.
-function _tokenizeAllLines(lines: string[]): XmlToken[][] {
+// Takes the raw visible-text string and splits it internally so the caller
+// can list it as the sole honest dependency of useMemo.
+function _tokenizeAllLines(visibleText: string): XmlToken[][] {
   let state: TokenizeState = "text";
-  return lines.map((lineText) => {
+  return visibleText.split("\n").map((lineText) => {
     const { tokens, outState } = _tokenizeLine(lineText, state);
     state = outState;
     return tokens;
@@ -289,7 +291,7 @@ function XmlBody({
   // Tokenize all visible lines with carry-over state for multi-line constructs.
   // _tokenizeAllLines is a plain function (outside component scope) so React
   // Compiler does not flag the internal state mutation.
-  const tokenizedLines = useMemo(() => _tokenizeAllLines(lines), [visibleText]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tokenizedLines = useMemo(() => _tokenizeAllLines(visibleText), [visibleText]);
 
   return (
     <div className="space-y-0">
