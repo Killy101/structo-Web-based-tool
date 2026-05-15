@@ -46,7 +46,7 @@ async function _uploadChunked(
 
   for (let i = 0; i < totalParts; i += MAX_PARALLEL) {
     const batchSize = Math.min(MAX_PARALLEL, totalParts - i);
-    await Promise.all(
+    const results = await Promise.all(
       Array.from({ length: batchSize }, (_, k) => {
         const idx   = i + k;
         const start = idx * CHUNK_SIZE;
@@ -58,6 +58,8 @@ async function _uploadChunked(
         return fetch(`${BASE_UPLOAD}/upload/chunk`, { method: "POST", body: form });
       }),
     );
+    const failed = results.find(r => !r.ok);
+    if (failed) throw new Error(`Chunk upload failed: HTTP ${failed.status}`);
     onProgress(Math.round(((i + batchSize) / totalParts) * 85));
   }
 
@@ -280,7 +282,7 @@ export interface LargeDiffResult {
   file_a:      string;
   file_b:      string;
   totalPages:  number;
-  elapsedS:    number;
+  elapsedS?:   number;
 }
 
 export async function apiDiffLarge(
@@ -595,7 +597,6 @@ export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateRe
 export async function apiChunkLocate(
   xmlText:   string,
   xmlOffset: number,
-  chunks:    Chunk[],
 ): Promise<ChunkLocateResult | null> {
   try {
     const sessionId = await _ensureXmlSession(xmlText);

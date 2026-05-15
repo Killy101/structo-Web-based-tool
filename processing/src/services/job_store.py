@@ -177,11 +177,21 @@ class _JobStore:
         Create a new job.
         Writes file bytes to disk, stores metadata in SQLite, and adds the
         full job dict (including bytes) to the in-memory cache.
+        Raises on disk write failure and cleans up any partial writes.
         """
-        self._write_bytes(job_id, "old", old_bytes)
-        self._write_bytes(job_id, "new", new_bytes)
-        if xml_bytes is not None:
-            self._write_bytes(job_id, "xml", xml_bytes)
+        written: list[str] = []
+        try:
+            self._write_bytes(job_id, "old", old_bytes)
+            written.append("old")
+            self._write_bytes(job_id, "new", new_bytes)
+            written.append("new")
+            if xml_bytes is not None:
+                self._write_bytes(job_id, "xml", xml_bytes)
+                written.append("xml")
+        except Exception:
+            for name in written:
+                self._delete_bytes(job_id, name)
+            raise
 
         entry: dict = {
             **meta,

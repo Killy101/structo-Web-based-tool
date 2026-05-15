@@ -487,7 +487,13 @@ function useDiffState() {
         return;
       }
       const parsed = JSON.parse(saved) as DiffResult;
-      if (parsed?.success && parsed?.chunks !== undefined) {
+      if (
+        parsed?.success &&
+        Array.isArray(parsed?.chunks) &&
+        Array.isArray(parsed?.pane_a?.segments) &&
+        Array.isArray(parsed?.pane_b?.segments) &&
+        parsed?.stats != null
+      ) {
         latestResultRef.current = parsed;
         startTransition(() => setResult(parsed));
         if (parsed.xml_sections?.length) setAllSections(parsed.xml_sections);

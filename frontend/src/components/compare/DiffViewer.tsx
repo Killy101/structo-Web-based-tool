@@ -150,6 +150,8 @@ export default function DiffViewer({
   const navSyncLockSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pulseTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const applyLockRef   = useRef(false);
+  const appliedIdsRef  = useRef<Set<number>>(new Set());
 
   const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20, 80);
   const [xmlHeight, startDragH] = useDragSplitter(containerRef, 260, "y", 120, 560);
@@ -396,7 +398,13 @@ export default function DiffViewer({
           ? (chunk.text_b || chunk.text_a || "")
           : (chunk.text_a || "");
         if (probe.length >= 6) {
-          const idx = xmlText.indexOf(probe.slice(0, Math.min(60, probe.length)));
+          // Escape XML entities in the probe so it matches the serialized XML text
+          const escaped = probe.slice(0, Math.min(60, probe.length))
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+          const idx = xmlText.indexOf(escaped);
           if (idx !== -1) {
             setNavSpan({ start: idx, end: idx + probe.length });
             requestAnimationFrame(scrollXmlToMark);
@@ -459,9 +467,11 @@ export default function DiffViewer({
 
   const applyChunk = useCallback(async () => {
     if (mode !== "edit" || !xmlText || activeId === null) return;
+    if (applyLockRef.current) return;
     const chunk = result.chunks.find((c) => c.id === activeId);
     if (!chunk) return;
 
+    applyLockRef.current = true;
     setApplyHistory((prev) => {
       const entry = { xmlText, appliedId: activeId };
       return prev.length >= 50 ? [...prev.slice(1), entry] : [...prev, entry];
@@ -476,18 +486,18 @@ export default function DiffViewer({
       if (res.changed) {
         setApplyStatus("done");
         setXmlStatus(`✓ ${res.message}`);
+        appliedIdsRef.current = new Set([...appliedIdsRef.current, activeId]);
         setAppliedIds((prev) => {
           const next = new Set(prev);
           if (activeId !== null) next.add(activeId);
           return next;
         });
-        if (res.span_start != null) {
-          setNavSpan({ start: res.span_start, end: res.span_end! });
+        if (res.span_start != null && res.span_end != null) {
+          setNavSpan({ start: res.span_start, end: res.span_end });
           requestAnimationFrame(scrollXmlToMark);
         }
         const snapshotFiltered = filteredChunks;
-        const snapshotApplied  = new Set(appliedIds);
-        snapshotApplied.add(activeId);
+        const snapshotApplied  = new Set(appliedIdsRef.current);
         autoAdvanceTimerRef.current = setTimeout(() => {
           autoAdvanceTimerRef.current = null;
           const nextChunk = snapshotFiltered.find(
@@ -504,8 +514,10 @@ export default function DiffViewer({
       setApplyStatus("error");
       setXmlStatus(`Error: ${(e as Error).message}`);
       setTimeout(() => setApplyStatus("idle"), 3000);
+    } finally {
+      applyLockRef.current = false;
     }
-  }, [mode, xmlText, activeId, result, filteredChunks, appliedIds, selectChunk]);
+  }, [mode, xmlText, activeId, result, filteredChunks, selectChunk]);
 
   const loadXml = useCallback((f: File) => {
     setXmlFilename(f.name);
@@ -539,35 +551,42 @@ export default function DiffViewer({
 
   const applyAllVisible = useCallback(async () => {
     if (mode !== "edit" || !xmlText) return;
+    if (applyLockRef.current) return;
     if (autoAdvanceTimerRef.current) { clearTimeout(autoAdvanceTimerRef.current); autoAdvanceTimerRef.current = null; }
-    const toApply = filteredChunks.filter((c) => !appliedIds.has(c.id));
+    const toApply = filteredChunks.filter((c) => !appliedIdsRef.current.has(c.id));
     if (toApply.length === 0) return;
+    applyLockRef.current = true;
     setXmlStatus(`Applying ${toApply.length} change${toApply.length !== 1 ? "s" : ""}…`);
     setApplyStatus("applying");
     let currentXml   = xmlText;
     let appliedCount = 0;
-    for (const chunk of toApply) {
-      try {
-        const res = await apiApply(currentXml, chunk);
-        if (res.changed) {
-          const prevXml = currentXml;
-          currentXml = res.xml_text;
-          appliedCount++;
-          setApplyHistory((prev) => {
-            const entry = { xmlText: prevXml, appliedId: chunk.id };
-            return prev.length >= 50 ? [...prev.slice(1), entry] : [...prev, entry];
-          });
-          setAppliedIds((prev) => new Set([...prev, chunk.id]));
+    try {
+      for (const chunk of toApply) {
+        try {
+          const res = await apiApply(currentXml, chunk);
+          if (res.changed) {
+            const prevXml = currentXml;
+            currentXml = res.xml_text;
+            appliedCount++;
+            appliedIdsRef.current = new Set([...appliedIdsRef.current, chunk.id]);
+            setApplyHistory((prev) => {
+              const entry = { xmlText: prevXml, appliedId: chunk.id };
+              return prev.length >= 50 ? [...prev.slice(1), entry] : [...prev, entry];
+            });
+            setAppliedIds((prev) => new Set([...prev, chunk.id]));
+          }
+        } catch {
+          // Non-fatal: continue applying remaining chunks
         }
-      } catch {
-        // Non-fatal: continue applying remaining chunks
       }
+      setXmlText(currentXml);
+      setXmlStatus(`✓ Applied ${appliedCount} of ${toApply.length} change${toApply.length !== 1 ? "s" : ""}`);
+      setApplyStatus(appliedCount > 0 ? "done" : "idle");
+      if (appliedCount > 0) setTimeout(() => setApplyStatus((s) => s === "done" ? "idle" : s), 3000);
+    } finally {
+      applyLockRef.current = false;
     }
-    setXmlText(currentXml);
-    setXmlStatus(`✓ Applied ${appliedCount} of ${toApply.length} change${toApply.length !== 1 ? "s" : ""}`);
-    setApplyStatus(appliedCount > 0 ? "done" : "idle");
-    if (appliedCount > 0) setTimeout(() => setApplyStatus((s) => s === "done" ? "idle" : s), 3000);
-  }, [mode, xmlText, filteredChunks, appliedIds]);
+  }, [mode, xmlText, filteredChunks]);
 
   const goToNextUnreviewed = useCallback(() => {
     const startIdx = activeFilteredIndex >= 0 ? activeFilteredIndex + 1 : 0;
@@ -642,7 +661,7 @@ export default function DiffViewer({
       const ctxStart = Math.max(0, lineStart - CONTEXT_RADIUS);
       const ctxEnd   = Math.min(xmlText.length, lineEnd + CONTEXT_RADIUS);
 
-      const serverLocatePromise = apiChunkLocate(xmlText, lineStart, result.chunks);
+      const serverLocatePromise = apiChunkLocate(xmlText, lineStart);
 
       const plainCtx = xmlText.slice(ctxStart, ctxEnd)
         .replace(/<[^>]*>/g, " ")
