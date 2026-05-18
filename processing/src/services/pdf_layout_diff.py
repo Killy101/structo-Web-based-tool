@@ -266,7 +266,7 @@ def _extract_lines(
                         spans.append(Span(
                             cur_text, cur_bold, cur_italic, cur_size,
                             page_num,
-                            (cur_x0, cur_y0, (cur_x0, cur_y0, last_x1, tline.y1), tline.y1),
+                            (cur_x0, cur_y0, cur_x0 + len(cur_text)*cur_size*0.5, tline.y1),
                         ))
 
                     if not spans:

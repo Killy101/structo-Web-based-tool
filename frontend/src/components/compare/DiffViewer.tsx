@@ -36,6 +36,12 @@ interface Props {
 }
 
 type ApplyStatus = "idle" | "applying" | "done" | "error";
+type LocateSignal = {
+  source: "server" | "heuristic";
+  score: number;
+  chunkId: number;
+};
+const FAST_XML_LOCATE_MIN_SCORE = 0.30;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -126,6 +132,7 @@ export default function DiffViewer({
   const [xmlText,       setXmlText]       = useState("");
   const [xmlFilename,   setXmlFilename]   = useState<string | null>(null);
   const [xmlStatus,     setXmlStatus]     = useState("");
+  const [locateSignal,  setLocateSignal]  = useState<LocateSignal | null>(null);
   const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
   const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
@@ -146,6 +153,7 @@ export default function DiffViewer({
   const paneBRef       = useRef<DiffPaneHandle>(null);
   const xmlRef         = useRef<XmlScrollTarget>(null);
   const locateSeqRef   = useRef(0);
+  const xmlLocateSeqRef = useRef(0);
   // navSyncLock prevents scroll-sync echo immediately after chunk navigation
   const navSyncLockRef = useRef(false);
   const navSyncLockSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -183,6 +191,16 @@ export default function DiffViewer({
 
   // ── Auto-scroll to first chunk on load ───────────────────────────────────
   const didAutoScrollRef = useRef(false);
+  useEffect(() => {
+    // New compare payload should start from first chunk and clear stale review state.
+    setActiveId(result.chunks[0]?.id ?? null);
+    setNavSpan(null);
+    setLocateSignal(null);
+    setAppliedIds(new Set());
+    appliedIdsRef.current = new Set();
+    didAutoScrollRef.current = false;
+  }, [result.chunks, result.file_a, result.file_b]);
+
   useEffect(() => {
     if (didAutoScrollRef.current) return;
     const firstId = result.chunks[0]?.id;
@@ -376,8 +394,9 @@ export default function DiffViewer({
 
   // ── Chunk selection ───────────────────────────────────────────────────────
 
-  const selectChunk = useCallback(async (id: number) => {
+  const selectChunk = useCallback(async (id: number, signal?: LocateSignal) => {
     const seq = ++locateSeqRef.current;
+    setLocateSignal(signal ?? null);
     setActiveId(id);
     setApplyStatus("idle");
 
@@ -408,7 +427,7 @@ export default function DiffViewer({
             .replace(/"/g, "&quot;");
           const idx = xmlText.indexOf(escaped);
           if (idx !== -1) {
-            setNavSpan({ start: idx, end: idx + probe.length });
+            setNavSpan({ start: idx, end: idx + escaped.length });
             requestAnimationFrame(scrollXmlToMark);
           }
         }
@@ -647,6 +666,7 @@ export default function DiffViewer({
 
   const handleXmlLineClick = useCallback(async (lineStart: number, lineEnd: number) => {
     if (!xmlText || result.chunks.length === 0) return;
+    const reqId = ++xmlLocateSeqRef.current;
     try {
       const CONTEXT_RADIUS = 1500;
       const ctxStart = Math.max(0, lineStart - CONTEXT_RADIUS);
@@ -694,8 +714,26 @@ export default function DiffViewer({
       }
 
       const serverResult = await serverLocatePromise;
+      if (reqId !== xmlLocateSeqRef.current) return;
       if (serverResult?.success && serverResult.chunk_id != null) {
-        void selectChunk(serverResult.chunk_id);
+        const serverScoreRaw = Number(serverResult.score);
+        const serverScore = Number.isFinite(serverScoreRaw)
+          ? Math.max(0, Math.min(1, serverScoreRaw))
+          : 1;
+        void selectChunk(serverResult.chunk_id, {
+          source: "server",
+          score: serverScore,
+          chunkId: serverResult.chunk_id,
+        });
+        return;
+      }
+
+      if (fastBestId !== null && fastBestScore >= FAST_XML_LOCATE_MIN_SCORE) {
+        void selectChunk(fastBestId, {
+          source: "heuristic",
+          score: fastBestScore,
+          chunkId: fastBestId,
+        });
         return;
       }
 
@@ -709,25 +747,14 @@ export default function DiffViewer({
           words_added: "", words_before: "", words_after: "", section: "", emp_detail: "",
         };
         const loc = await apiLocate(xmlText, synthetic);
-        if (loc?.span_start != null) {
-          const spanMid = (loc.span_start + (loc.span_end ?? loc.span_start)) / 2;
-          let closestId: number | null = null;
-          let closestDist = Infinity;
-          for (const [k, off] of Object.entries(result.pane_a.offsets ?? {}) as Array<[string, number]>) {
-            const d = Math.abs(Number(off) - spanMid);
-            if (d < closestDist) { closestDist = d; closestId = Number(k); }
-          }
-          for (const [k, off] of Object.entries(result.pane_b.offsets ?? {}) as Array<[string, number]>) {
-            const d = Math.abs(Number(off) - spanMid);
-            if (d < closestDist) { closestDist = d; closestId = Number(k); }
-          }
-          if (closestId !== null) void selectChunk(closestId);
-        } else if (fastBestId !== null && fastBestScore < 0.30) {
-          void selectChunk(fastBestId);
+        if (reqId !== xmlLocateSeqRef.current) return;
+        if (loc?.span_start != null && loc.span_end != null) {
+          setNavSpan({ start: loc.span_start, end: loc.span_end });
+          requestAnimationFrame(scrollXmlToMark);
         }
       }
     } catch { /* best-effort; must not throw */ }
-  }, [xmlText, result.chunks, result.pane_a.offsets, result.pane_b.offsets, chunkNgramCache, selectChunk]);
+  }, [xmlText, result.chunks, chunkNgramCache, selectChunk]);
 
   // ── Derived UI values ─────────────────────────────────────────────────────
 
@@ -739,6 +766,19 @@ export default function DiffViewer({
   const modeBadgeColor = mode === "edit"
     ? "bg-violet-500/15 text-violet-400 border-violet-500/30"
     : "bg-slate-500/10 text-slate-400 border-slate-500/20";
+
+  const locateBadgeClass = useMemo(() => {
+    if (!locateSignal) return "";
+    if (locateSignal.score >= 0.8) {
+      return locateSignal.source === "server"
+        ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+        : "bg-teal-500/15 text-teal-400 border-teal-500/30";
+    }
+    if (locateSignal.score >= FAST_XML_LOCATE_MIN_SCORE) {
+      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+    }
+    return "bg-rose-500/15 text-rose-400 border-rose-500/30";
+  }, [locateSignal]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -879,6 +919,15 @@ export default function DiffViewer({
             )}
             {applyStatus === "applying" ? "Applying…" : applyStatus === "done" ? "Applied" : "Error"}
           </div>
+        )}
+
+        {locateSignal && (
+          <span
+            className={`flex-shrink-0 text-[9px] font-bold px-2 py-0.5 rounded-full border ${locateBadgeClass}`}
+            title={`XML locate via ${locateSignal.source} for chunk #${locateSignal.chunkId}`}
+          >
+            {locateSignal.source === "server" ? "Locate" : "Heuristic"} {Math.round(locateSignal.score * 100)}%
+          </span>
         )}
 
         <span className={`flex-shrink-0 text-[9px] font-bold px-2 py-0.5 rounded-full border ${modeBadgeColor}`}>

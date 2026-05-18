@@ -72,6 +72,9 @@ _extractor_load_pdf   = None
 _extractor_line_text  = None
 _extractor_norm_cmp   = None
 _EXTRACTOR_AVAILABLE  = False
+
+
+
 _legislation_pdf_cache: dict[str, bool] = {}
 
 def stable_chunk_id(text: str) -> str:

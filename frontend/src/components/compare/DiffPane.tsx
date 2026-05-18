@@ -94,6 +94,15 @@ const DARK_FG_MAP: Record<string, string> = {
   "#3d007a": "#93c5fd",
 };
 
+const EMP_TEXT_COLORS = {
+  bold:       { light: "#9a3412", dark: "#fdba74" },
+  italic:     { light: "#0f766e", dark: "#99f6e4" },
+  underline:  { light: "#1d4ed8", dark: "#bfdbfe" },
+  strike:     { light: "#be123c", dark: "#fda4af" },
+  boldItalic: { light: "#6d28d9", dark: "#ddd6fe" },
+  defaultEmp: { light: "#334155", dark: "#cbd5e1" },
+} as const;
+
 // ── Server palette helpers ────────────────────────────────────────────────────
 
 const SERVER_DEL_BG = new Set(["#fecdd3", "#ffd7d5"]);
@@ -213,9 +222,8 @@ export function tagToStyle(
     if (fontStyle.includes("italic")) s.fontStyle  = "italic";
   }
 
-  const isStrikeContent =
-    effectiveKind === "strike" ||
-    (effectiveKind === "emp" && (cfg.overstrike || forceStrike));
+  const isStrikeContent = effectiveKind === "strike";
+  const isEmpStrike = effectiveKind === "emp" && (cfg.overstrike || forceStrike);
 
   const isModStrike = effectiveKind === "mod" && cfg.overstrike;
 
@@ -223,6 +231,10 @@ export function tagToStyle(
     s.backgroundColor = dark ? "rgba(244,63,94,0.22)" : "#fecdd3";
     s.color           = dark ? "#fda4af"               : "#881337";
     s.textDecoration  = "line-through";
+  } else if (isEmpStrike) {
+    // EMP is text-only: no background fill, only emphasis-colour text.
+    s.color          = dark ? EMP_TEXT_COLORS.strike.dark : EMP_TEXT_COLORS.strike.light;
+    s.textDecoration = "line-through";
   } else if (effectiveKind === "add") {
     s.backgroundColor = dark ? "rgba(34,197,94,0.22)"  : "#ccffd8";
     s.color           = dark ? "#86efac"                : "#14532d";
@@ -234,8 +246,29 @@ export function tagToStyle(
     s.backgroundColor = dark ? "rgba(249,115,22,0.22)" : "#fed7aa";
     s.color           = dark ? "#fdba74"                : "#7c2d12";
   } else if (effectiveKind === "emp") {
-    s.backgroundColor = dark ? "rgba(96,165,250,0.22)" : "#bfdbfe";
-    s.color           = dark ? "#93c5fd"                : "#1e3a8a";
+    // EMP is text-only: prefer backend axis-specific token colours.
+    // This keeps highlight scoped to exact changed fragments, including
+    // "removed emphasis" cases where local font flags may be absent.
+    if (cfg.foreground) {
+      s.color = dark
+        ? (DARK_FG_MAP[cfg.foreground.toLowerCase()] ?? cfg.foreground)
+        : cfg.foreground;
+    } else {
+      const fontStyle = cfg.font?.style ?? "";
+      const hasBold = fontStyle.includes("bold");
+      const hasItalic = fontStyle.includes("italic");
+      if (cfg.underline) {
+        s.color = dark ? EMP_TEXT_COLORS.underline.dark : EMP_TEXT_COLORS.underline.light;
+      } else if (hasBold && hasItalic) {
+        s.color = dark ? EMP_TEXT_COLORS.boldItalic.dark : EMP_TEXT_COLORS.boldItalic.light;
+      } else if (hasBold) {
+        s.color = dark ? EMP_TEXT_COLORS.bold.dark : EMP_TEXT_COLORS.bold.light;
+      } else if (hasItalic) {
+        s.color = dark ? EMP_TEXT_COLORS.italic.dark : EMP_TEXT_COLORS.italic.light;
+      } else {
+        s.color = dark ? EMP_TEXT_COLORS.defaultEmp.dark : EMP_TEXT_COLORS.defaultEmp.light;
+      }
+    }
   } else {
     if (cfg.background) {
       s.backgroundColor = dark
@@ -250,11 +283,22 @@ export function tagToStyle(
   }
 
   const decorations: string[] = [];
-  if (cfg.underline && effectiveKind !== undefined) decorations.push("underline");
-  if (cfg.overstrike && !isStrikeContent && !isModStrike && !isInlineWordDiff) {
+  // Show underline as an emphasis cue only for EMP chunks.
+  if (cfg.underline && effectiveKind === "emp") {
+    decorations.push("underline");
+  }
+  // Preserve line-through decoration for explicit overstrike wherever it
+  // appears, except branches that already set line-through above.
+  if (
+    cfg.overstrike &&
+    !isStrikeContent &&
+    !isModStrike &&
+    !isInlineWordDiff &&
+    !isEmpStrike
+  ) {
     decorations.push("line-through");
   }
-  if (decorations.length > 0 && !isStrikeContent && !isModStrike && !isInlineWordDiff) {
+  if (decorations.length > 0 && !isStrikeContent && !isModStrike && !isInlineWordDiff && !isEmpStrike) {
     s.textDecoration = decorations.join(" ");
   }
 
@@ -745,7 +789,8 @@ function DiffPaneInner({
 
           const lineHasRichText = segs.some((s) => {
             const cfg = pane.tag_cfgs[s.tagName] ?? {};
-            return cfg.underline || cfg.overstrike;
+            const style = cfg.font && !Array.isArray(cfg.font) ? (cfg.font.style ?? "") : "";
+            return cfg.underline || cfg.overstrike || style.includes("bold") || style.includes("italic");
           });
 
           const lineHasInlineWordDiff = segs.some((s) => {
@@ -790,7 +835,9 @@ function DiffPaneInner({
           const lineHasPaintedSegment = lineChunkId != null && segs.some((s) => {
             if (s.chunkId == null) return false;
             const cfg = pane.tag_cfgs[s.tagName] ?? {};
-            return !!cfg.background;
+            const style = cfg.font && !Array.isArray(cfg.font) ? (cfg.font.style ?? "") : "";
+            return !!cfg.background || !!cfg.underline || !!cfg.overstrike ||
+              style.includes("bold") || style.includes("italic");
           });
 
           const isActiveRow =
@@ -1028,7 +1075,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           syncClearTimerRef.current = null;
         }, 160);
       },
-    }), [lines]);
+    }));
 
     // RAF-throttled scroll handler — emits fraction and prevents sync echo
     const handleScroll = useCallback(() => {

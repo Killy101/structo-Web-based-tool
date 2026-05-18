@@ -31,8 +31,7 @@ import React, {
   useMemo,
   useRef,
 } from "react";
-import Editor, { useMonaco } from "@monaco-editor/react";
-import type * as MonacoNS from "monaco-editor";
+import Editor, { useMonaco, type OnMount } from "@monaco-editor/react";
 import { useTheme } from "@/context/ThemContext";
 import type { XmlScrollTarget } from "./types";
 
@@ -71,7 +70,7 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
     const monaco = useMonaco();
 
     /** Stable ref to the Monaco editor instance (set in onMount). */
-    const editorRef = useRef<MonacoNS.editor.IStandaloneCodeEditor | null>(null);
+    const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
     /**
      * Validation timer ref — cleared/reset on each keystroke so we only
@@ -113,12 +112,12 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
     );
 
     // ── Monaco editor mount handler ───────────────────────────────────────────
-    const handleMount = useCallback(
-      (editor: MonacoNS.editor.IStandaloneCodeEditor) => {
+    const handleMount: OnMount = useCallback(
+      (editor) => {
         editorRef.current = editor;
 
         // Report scroll fraction when user scrolls the editor.
-        editor.onDidScrollChange((e) => {
+        editor.onDidScrollChange((e: { scrollHeight: number; scrollTop: number }) => {
           if (!onScrollFraction) return;
           const visibleHeight = editor.getLayoutInfo().height;
           const max = e.scrollHeight - visibleHeight;
@@ -127,7 +126,7 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
 
         // Report cursor character offset for XML → PDF navigation (WF3).
         // Reads from the stable ref so no Monaco listener is recreated on re-renders.
-        editor.onDidChangeCursorPosition((e) => {
+        editor.onDidChangeCursorPosition((e: { position: { lineNumber: number; column: number } }) => {
           const cb = onCursorOffsetRef.current;
           if (!cb) return;
           const model = editor.getModel();
@@ -265,7 +264,7 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
     // Memoised so Monaco does not re-apply options on every parent render.
     // `theme` is set via the <Editor theme={}> prop instead so Monaco's own
     // theme manager handles switching; `language` is set via `defaultLanguage`.
-    const editorOptions = useMemo<MonacoNS.editor.IStandaloneEditorConstructionOptions>(
+    const editorOptions = useMemo(
       () => ({
         automaticLayout:   true,   // re-measure on container resize
         fontSize:          11,

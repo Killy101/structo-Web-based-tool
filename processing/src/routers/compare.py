@@ -259,6 +259,19 @@ def _load_engine():
 
 ce = _load_engine()
 
+try:
+    from src.services.word_compare import align_sentences as _align_sentences  # type: ignore[import]
+except ImportError:
+    try:
+        from word_compare import align_sentences as _align_sentences  # type: ignore[import]
+    except ImportError:
+        def _align_sentences(old_text: str, new_text: str) -> list[tuple[str, str, float]]:  # type: ignore[misc]
+            old_text = (old_text or "").strip()
+            new_text = (new_text or "").strip()
+            if not old_text and not new_text:
+                return []
+            return [(old_text, new_text, 0.0)]
+
 
 # ── Extractor loader ──────────────────────────────────────────────────────────
 
@@ -292,6 +305,54 @@ def _ext_load_pdf(path: str, progress_cb, page_start: int, page_end: int):
 
 # ── Serialisation helpers ─────────────────────────────────────────────────────
 
+_MAX_SENT_ALIGN_CHARS: int = int(os.environ.get("COMPARE_SENT_ALIGN_MAX_CHARS", "4000"))
+_MAX_SENT_ALIGN_ROWS: int = int(os.environ.get("COMPARE_SENT_ALIGN_MAX_ROWS", "120"))
+
+
+def _serialise_sentence_alignment(ch) -> list[dict]:
+    """Return sentence-level alignment rows for MOD chunks."""
+    if getattr(ch, "kind", "") != getattr(ce, "KIND_MOD", "mod"):
+        return []
+
+    existing = getattr(ch, "sentence_alignment", None)
+    if isinstance(existing, list):
+        rows: list[dict] = []
+        for row in existing[:_MAX_SENT_ALIGN_ROWS]:
+            if not isinstance(row, dict):
+                continue
+            old_s = str(row.get("old", "") or "")[:_MAX_SENT_ALIGN_CHARS]
+            new_s = str(row.get("new", "") or "")[:_MAX_SENT_ALIGN_CHARS]
+            try:
+                score = float(row.get("similarity", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            rows.append({
+                "old": old_s,
+                "new": new_s,
+                "similarity": round(max(0.0, min(1.0, score)), 3),
+            })
+        if rows:
+            return rows
+
+    old_text = (getattr(ch, "text_a", "") or "").strip()[:_MAX_SENT_ALIGN_CHARS]
+    new_text = (getattr(ch, "text_b", "") or "").strip()[:_MAX_SENT_ALIGN_CHARS]
+    if not old_text and not new_text:
+        return []
+
+    try:
+        aligned = _align_sentences(old_text, new_text)
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for old_s, new_s, score in aligned[:_MAX_SENT_ALIGN_ROWS]:
+        rows.append({
+            "old": old_s,
+            "new": new_s,
+            "similarity": round(float(score), 3),
+        })
+    return rows
+
 def _chunk_to_dict(ch, idx: int) -> dict:
     d = {
         "id":          idx,
@@ -317,6 +378,7 @@ def _chunk_to_dict(ch, idx: int) -> dict:
     emp = getattr(ch, "emp_detail", "") or ""
     if emp:
         d["emp_detail"] = emp
+    d["sentence_alignment"] = _serialise_sentence_alignment(ch)
     return d
 
 
@@ -795,6 +857,10 @@ async def diff_pdfs_stream_large(
             all_offsets_b:     dict = {}
             all_offset_ends_a: dict = {}
             all_offset_ends_b: dict = {}
+            all_line_offsets_a: dict = {}
+            all_line_offsets_b: dict = {}
+            all_line_offset_ends_a: dict = {}
+            all_line_offset_ends_b: dict = {}
             all_blocks_b_headings: list = []
 
             # Pipeline pool: pre-fetch extraction while diff+render runs
@@ -882,6 +948,9 @@ async def diff_pdfs_stream_large(
 
                 id_offset    = len(all_chunks)
                 chunks_dicts = [_chunk_to_dict(ch, id_offset + i) for i, ch in enumerate(chunks)]
+                for ch_dict in chunks_dicts:
+                    ch_dict["page_start"] = batch_start
+                    ch_dict["page_end"] = batch_end
                 all_chunks.extend(chunks_dicts)
 
                 if not xml_b_text and hasattr(ce, "assign_chunks_to_pdf_sections"):
@@ -907,6 +976,14 @@ async def diff_pdfs_stream_large(
                     all_offsets_b[str(int(cid) + id_offset)] = off
                 for cid, off in pane_b_json["offset_ends"].items():
                     all_offset_ends_b[str(int(cid) + id_offset)] = off
+                for cid, off in pane_a_json.get("line_offsets", {}).items():
+                    all_line_offsets_a[str(int(cid) + id_offset)] = off
+                for cid, off in pane_a_json.get("line_offset_ends", {}).items():
+                    all_line_offset_ends_a[str(int(cid) + id_offset)] = off
+                for cid, off in pane_b_json.get("line_offsets", {}).items():
+                    all_line_offsets_b[str(int(cid) + id_offset)] = off
+                for cid, off in pane_b_json.get("line_offset_ends", {}).items():
+                    all_line_offset_ends_b[str(int(cid) + id_offset)] = off
                 last_tag_cfgs_a = {**last_tag_cfgs_a, **pane_a_json["tag_cfgs"]}
                 last_tag_cfgs_b = {**last_tag_cfgs_b, **pane_b_json["tag_cfgs"]}
 
@@ -966,12 +1043,16 @@ async def diff_pdfs_stream_large(
                     "tag_cfgs":    last_tag_cfgs_a,
                     "offsets":     all_offsets_a,
                     "offset_ends": all_offset_ends_a,
+                    "line_offsets": all_line_offsets_a,
+                    "line_offset_ends": all_line_offset_ends_a,
                 },
                 "pane_b": {
                     "segments":    all_pane_b_segs,
                     "tag_cfgs":    last_tag_cfgs_b,
                     "offsets":     all_offsets_b,
                     "offset_ends": all_offset_ends_b,
+                    "line_offsets": all_line_offsets_b,
+                    "line_offset_ends": all_line_offset_ends_b,
                 },
                 "chunks":      all_chunks,
                 "stats":       final_stats,
@@ -1070,16 +1151,25 @@ async def get_segments(
     pane_a: dict = cached["pane_a"]
     pane_b: dict = cached["pane_b"]
     all_chunks   = cached["chunks"]
-    n_chunks     = len(all_chunks)
-    n_pages      = cached.get("total_pages", max(page_end, 1) + 1)
-    c_start      = int(page_start / n_pages * n_chunks)
-    c_end        = int((page_end + 1) / n_pages * n_chunks)
-    window_chunks = all_chunks[c_start:c_end]
+    window_chunks = [
+        c for c in all_chunks
+        if int(c.get("page_start", page_start)) <= page_end
+        and int(c.get("page_end", page_end)) >= page_start
+    ]
+    if not window_chunks:
+        # Backward compatibility for cache entries that predate page bounds.
+        n_chunks = len(all_chunks)
+        n_pages = cached.get("total_pages", max(page_end, 1) + 1)
+        c_start = int(page_start / n_pages * n_chunks)
+        c_end = int((page_end + 1) / n_pages * n_chunks)
+        window_chunks = all_chunks[c_start:c_end]
     chunk_ids     = {c["id"] for c in window_chunks}
 
     def _filter_pane(pane: dict) -> dict:
         offsets     = pane.get("offsets",     {})
         offset_ends = pane.get("offset_ends", {})
+        line_offsets = pane.get("line_offsets", {})
+        line_offset_ends = pane.get("line_offset_ends", {})
         segments    = pane.get("segments",    [])
 
         if chunk_ids and offsets:
@@ -1108,6 +1198,8 @@ async def get_segments(
             "tag_cfgs":    pane.get("tag_cfgs", {}),
             "offsets":     {k: v for k, v in offsets.items()     if int(k) in chunk_ids},
             "offset_ends": {k: v for k, v in offset_ends.items() if int(k) in chunk_ids},
+            "line_offsets": {k: v for k, v in line_offsets.items() if int(k) in chunk_ids},
+            "line_offset_ends": {k: v for k, v in line_offset_ends.items() if int(k) in chunk_ids},
         }
 
     return ORJSONResponse({

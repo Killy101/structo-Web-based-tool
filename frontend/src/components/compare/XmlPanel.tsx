@@ -1,5 +1,5 @@
 "use client";
-import React, { forwardRef, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useEffect, useRef, useState } from "react";
 import XmlEditor from "./XmlEditor";
 import type { Chunk, WorkflowMode, XmlScrollTarget } from "./types";
 
@@ -289,9 +289,9 @@ function XmlBody({
   });
 
   // Tokenize all visible lines with carry-over state for multi-line constructs.
-  // _tokenizeAllLines is a plain function (outside component scope) so React
-  // Compiler does not flag the internal state mutation.
-  const tokenizedLines = useMemo(() => _tokenizeAllLines(visibleText), [visibleText]);
+  // Keep this as a plain calculation to avoid React Compiler preserving a
+  // fragile manual memoization boundary around visibleText.
+  const tokenizedLines = _tokenizeAllLines(visibleText);
 
   return (
     <div className="space-y-0">
@@ -312,7 +312,8 @@ function XmlBody({
           .replace(/&[a-z]+;/g, " ")
           .replace(/\s+/g, " ")
           .trim();
-        const isNavigable = onLineClick && plainLineText.length >= 4;
+        const hasAlphaNum = /[a-z0-9]/i.test(plainLineText);
+        const isNavigable = onLineClick && hasAlphaNum && plainLineText.length >= 2;
 
         return (
           <div
@@ -346,6 +347,8 @@ function XmlBody({
 const XmlPanel = forwardRef<XmlScrollTarget, Props>(
   ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const cursorLocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const lastCursorLineRef = useRef<{ start: number; end: number } | null>(null);
 
     // XML validation error surfaced up from XmlEditor's DOMParser check
     const [xmlError, setXmlError] = useState<string | null>(null);
@@ -374,6 +377,12 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
       if (max <= 0) return;
       onScrollFraction(el.scrollTop / max);
     };
+
+    useEffect(() => {
+      return () => {
+        if (cursorLocateTimerRef.current) clearTimeout(cursorLocateTimerRef.current);
+      };
+    }, []);
 
     return (
       <div className="flex flex-col h-full min-w-0 border-t border-slate-200 dark:border-white/8">
@@ -489,7 +498,14 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
                   // Convert Monaco cursor character offset → line char range → chunk lookup
                   const lineStart  = xmlText.lastIndexOf("\n", offset - 1) + 1;
                   const lineEndIdx = xmlText.indexOf("\n", offset);
-                  onXmlLineClick(lineStart, lineEndIdx === -1 ? xmlText.length : lineEndIdx);
+                  const lineEnd = lineEndIdx === -1 ? xmlText.length : lineEndIdx;
+                  const prev = lastCursorLineRef.current;
+                  if (prev && prev.start === lineStart && prev.end === lineEnd) return;
+                  lastCursorLineRef.current = { start: lineStart, end: lineEnd };
+                  if (cursorLocateTimerRef.current) clearTimeout(cursorLocateTimerRef.current);
+                  cursorLocateTimerRef.current = setTimeout(() => {
+                    onXmlLineClick(lineStart, lineEnd);
+                  }, 120);
                 } : undefined}
               />
               {/* Inline validation error bar — shown below editor when XML is malformed */}

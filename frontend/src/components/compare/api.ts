@@ -13,15 +13,28 @@ import type {
 } from "./types";
 import type { LoadingStage } from "./DiffUpload";
 
-const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
-  ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
-  : "http://localhost:8000/compare";
+const _rawProcessingBase = process.env.NEXT_PUBLIC_PROCESSING_URL || "http://localhost:8000";
+const _processingBase = _rawProcessingBase.replace(/\/+$/, "").replace(/\/compare$/i, "");
+const BASE = `${_processingBase}/compare`;
 
 export const LARGE_DOC_THRESHOLD = 100;
 
 // ── Chunked upload ────────────────────────────────────────────────────────────
 const CHUNK_SIZE   = 2 * 1024 * 1024;
 const MAX_PARALLEL = 4;
+
+let _chunkUploadAvailable: boolean | null = null;
+
+async function _hasChunkUploadEndpoint(): Promise<boolean> {
+  if (_chunkUploadAvailable !== null) return _chunkUploadAvailable;
+  try {
+    const probe = await fetch(`${_processingBase}/upload/chunk`, { method: "HEAD" });
+    _chunkUploadAvailable = probe.ok;
+  } catch {
+    _chunkUploadAvailable = false;
+  }
+  return _chunkUploadAvailable;
+}
 
 interface UploadResult { fileId: string; sha256: string; path: string; }
 
@@ -35,12 +48,9 @@ async function _uploadChunked(
   file:       File,
   onProgress: (pct: number) => void,
 ): Promise<UploadResult | null> {
-  const probe = await fetch(`${BASE.replace("/compare", "")}/upload/chunk`, {
-    method: "HEAD",
-  }).catch(() => null);
-  if (!probe || !probe.ok) return null;
+  if (!(await _hasChunkUploadEndpoint())) return null;
 
-  const BASE_UPLOAD = BASE.replace("/compare", "");
+  const BASE_UPLOAD = _processingBase;
   const fileId      = crypto.randomUUID();
   const totalParts  = Math.ceil(file.size / CHUNK_SIZE);
 
@@ -59,7 +69,15 @@ async function _uploadChunked(
       }),
     );
     const failed = results.find(r => !r.ok);
-    if (failed) throw new Error(`Chunk upload failed: HTTP ${failed.status}`);
+    if (failed) {
+      // If the deployment does not expose chunk-upload routes, disable this
+      // path for the session and fall back to legacy direct upload flow.
+      if (failed.status === 404 || failed.status === 405) {
+        _chunkUploadAvailable = false;
+        return null;
+      }
+      throw new Error(`Chunk upload failed: HTTP ${failed.status}`);
+    }
     onProgress(Math.round(((i + batchSize) / totalParts) * 85));
   }
 
@@ -67,7 +85,13 @@ async function _uploadChunked(
   fin.append("file_id",  fileId);
   fin.append("filename", file.name);
   const res  = await fetch(`${BASE_UPLOAD}/upload/finalise`, { method: "POST", body: fin });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    if (res.status === 404 || res.status === 405) {
+      _chunkUploadAvailable = false;
+      return null;
+    }
+    return null;
+  }
   const data = await res.json() as { file_id: string; sha256: string; path: string };
   onProgress(100);
   return { fileId: data.file_id, sha256: data.sha256, path: data.path };

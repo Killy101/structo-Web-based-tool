@@ -38,6 +38,23 @@ function paneCharLength(pane: DiffResult["pane_a"]): number {
   return (pane?.segments ?? []).reduce((sum, [text]) => sum + (text?.length ?? 0), 0);
 }
 
+function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const rec = err as Record<string, unknown>;
+    const detail = rec.detail;
+    if (typeof detail === "string") return detail;
+    if (typeof rec.message === "string") return rec.message;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return "Unexpected error";
+    }
+  }
+  return String(err);
+}
+
 /**
  * Merge one streaming batch into the accumulated DiffResult.
  *
@@ -601,7 +618,7 @@ function useDiffState() {
       if (xmlSections.length > 0 || finalSections.length > 0) setShowModal(true);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return; // user reset
-      setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
+      setError(toErrorMessage(e));
     } finally {
       setLoading(false);
     }
