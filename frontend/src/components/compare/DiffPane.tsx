@@ -149,13 +149,33 @@ export interface FoldMapEntry {
 
 export type WordToken = { type: "equal" | "delete" | "insert"; value: string };
 
+function _toWordList(value: unknown): string[] {
+  if (typeof value === "string") return value.split(/\s+/).filter(Boolean);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item == null) return "";
+        if (typeof item === "number" || typeof item === "boolean") return String(item);
+        if (typeof item === "object" && "value" in (item as Record<string, unknown>)) {
+          const v = (item as Record<string, unknown>).value;
+          return typeof v === "string" ? v : "";
+        }
+        return "";
+      })
+      .flatMap((s) => s.split(/\s+/))
+      .filter(Boolean);
+  }
+  return [];
+}
+
 export function buildWordTokens(chunk: Chunk, side: "a" | "b"): WordToken[] | null {
-  const removed = chunk.words_removed?.split(/\s+/).filter(Boolean) ?? [];
-  const added   = chunk.words_added?.split(/\s+/).filter(Boolean)   ?? [];
+  const removed = _toWordList((chunk as unknown as Record<string, unknown>).words_removed);
+  const added   = _toWordList((chunk as unknown as Record<string, unknown>).words_added);
   if (removed.length === 0 && added.length === 0) return null;
 
-  const before = chunk.words_before?.split(/\s+/).filter(Boolean) ?? [];
-  const after  = chunk.words_after?.split(/\s+/).filter(Boolean)  ?? [];
+  const before = _toWordList((chunk as unknown as Record<string, unknown>).words_before);
+  const after  = _toWordList((chunk as unknown as Record<string, unknown>).words_after);
 
   const tokens: WordToken[] = [];
   before.forEach((w) => tokens.push({ type: "equal",  value: w }));
@@ -919,6 +939,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       pane,
       chunks,
       activeChunkId,
+      activeChunk,
       filename,
       side,
       onChunkClick,
@@ -1124,6 +1145,14 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
     const sideBadge     = side === "a" ? "bg-rose-500 text-white" : "bg-emerald-500 text-white";
     const hasStats      = headerStats && headerStats.length > 0;
     const realLineCount = lines.filter((l) => l !== null && Array.isArray(l)).length;
+    const headerWordTokens = useMemo(() => {
+      if (!activeChunk || activeChunk.kind !== "mod") return null;
+      return buildWordTokens(activeChunk, side);
+    }, [activeChunk, side]);
+    const headerWordLabel = side === "a" ? "removed" : "added";
+    const headerWordLabelClass = side === "a"
+      ? "text-rose-500"
+      : "text-emerald-600 dark:text-emerald-400";
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
@@ -1170,6 +1199,17 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
               {realLineCount.toLocaleString()} lines
             </span>
           </div>
+
+          {headerWordTokens && headerWordTokens.length > 0 && (
+            <div className="px-3 pb-2 text-[10px] font-mono leading-relaxed border-t border-slate-200/70 dark:border-white/8">
+              <span className={`mr-1.5 font-semibold ${headerWordLabelClass}`}>
+                {headerWordLabel}:
+              </span>
+              <span className="text-slate-600 dark:text-slate-300 break-words">
+                {renderWordTokens(headerWordTokens, dark)}
+              </span>
+            </div>
+          )}
         </div>
 
         <DiffPaneInner

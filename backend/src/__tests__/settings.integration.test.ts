@@ -135,4 +135,36 @@ describe("PATCH /settings/governance", () => {
     expect(res.body.settings.securityPolicy.sessionTimeoutMinutes).toBe(5);
     expect(pool.query).toHaveBeenCalled();
   });
+
+  it("returns 400 for invalid maintenanceLearnMoreUrl", async () => {
+    const payload = {
+      securityPolicy: {},
+      operationsPolicy: {
+        maintenanceLearnMoreUrl: "javascript:alert(1)",
+      },
+    };
+
+    const res = await request(app)
+      .patch("/settings/governance")
+      .set(AUTH_HEADER)
+      .send(payload);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("maintenanceLearnMoreUrl");
+  });
+
+  it("still succeeds when audit log insert fails", async () => {
+    (pool.query as jest.Mock)
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockRejectedValueOnce(new Error("audit log insert failed"));
+
+    const res = await request(app)
+      .patch("/settings/governance")
+      .set(AUTH_HEADER)
+      .send({ securityPolicy: {}, operationsPolicy: {} });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe("Governance settings updated");
+  });
 });

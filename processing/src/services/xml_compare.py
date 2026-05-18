@@ -9,6 +9,52 @@ import copy
 import re
 
 
+_RE_INNOD_HEADING_OPEN = re.compile(r"<innodHeading\b[^>]*>", re.I)
+_RE_INNOD_HEADING_CLOSE = re.compile(r"</innodHeading>", re.I)
+_RE_INNOD_IDENTIFIER = re.compile(r"<innodIdentifier\b[^>]*>([\s\S]*?)</innodIdentifier>", re.I)
+_RE_FOOTNOTE_BLOCK = re.compile(r"(<footnote\b[^>]*>)([\s\S]*?)(</footnote>)", re.I)
+_RE_P_BLOCK = re.compile(r"<p\b[^>]*>([\s\S]*?)</p>", re.I)
+
+
+def _normalize_xml_markup_for_compare(xml_content: str) -> str:
+    """Normalize INNOD markup wrappers before XML structural comparison.
+
+    Rules encoded here are intentionally narrow and deterministic:
+    - Treat <innodHeading> as a wrapper only; keep its children in-place.
+    - Treat <innodIdentifier> as a wrapper only; keep identifier text.
+    - Treat multi-<p> footnotes as one logical footnote entity by collapsing
+      all paragraph text into the first paragraph.
+    """
+    if not xml_content:
+        return ""
+
+    out = _RE_INNOD_HEADING_OPEN.sub("", xml_content)
+    out = _RE_INNOD_HEADING_CLOSE.sub("", out)
+    out = _RE_INNOD_IDENTIFIER.sub(r"\1", out)
+
+    def _collapse_footnote(match: re.Match[str]) -> str:
+        open_tag, body, close_tag = match.group(1), match.group(2), match.group(3)
+        p_blocks = list(_RE_P_BLOCK.finditer(body))
+        if len(p_blocks) <= 1:
+            return match.group(0)
+
+        merged_parts: list[str] = []
+        for p in p_blocks:
+            txt = p.group(1)
+            txt = re.sub(r"\s+", " ", txt).strip()
+            if txt:
+                merged_parts.append(txt)
+
+        if not merged_parts:
+            return f"{open_tag}<p></p>{close_tag}"
+
+        merged = " ".join(merged_parts)
+        return f"{open_tag}<p>{merged}</p>{close_tag}"
+
+    out = _RE_FOOTNOTE_BLOCK.sub(_collapse_footnote, out)
+    return out
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _elem_to_str(elem: ET.Element) -> str:
@@ -239,6 +285,15 @@ def _collect_elements(
     tag_counters: dict[str, int] = {}
 
     for child in root:
+        # Compare each <footnote> as one logical block so paragraph-level
+        # changes inside a footnote do not split into multiple diff entities.
+        if child.tag.lower() == "footnote":
+            count = tag_counters.get(child.tag, 0)
+            tag_counters[child.tag] = count + 1
+            path = f"{parent_path}/{child.tag}[{count}]"
+            result[path] = child
+            continue
+
         count = tag_counters.get(child.tag, 0)
         tag_counters[child.tag] = count + 1
         path = f"{parent_path}/{child.tag}[{count}]"
@@ -286,8 +341,8 @@ def compare_xml(old_xml: str, new_xml: str) -> dict[str, Any]:
       comparison so cosmetic PDF re-encoding doesn't produce false positives.
     • Attribute comparison ignores whitespace differences in attribute values.
     """
-    old_root = _parse_xml(old_xml)
-    new_root = _parse_xml(new_xml)
+    old_root = _parse_xml(_normalize_xml_markup_for_compare(old_xml))
+    new_root = _parse_xml(_normalize_xml_markup_for_compare(new_xml))
 
     old_elems = _collect_elements(old_root)
     new_elems = _collect_elements(new_root)

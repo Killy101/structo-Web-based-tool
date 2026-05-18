@@ -82,6 +82,22 @@ function normalizeOperationsPolicy(input: unknown): OperationsPolicyState {
   }
 }
 
+function isValidIsoDateTime(value: string): boolean {
+  if (!value) return true
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed)
+}
+
+function isValidLearnMoreUrl(value: string): boolean {
+  if (!value) return true
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function isSameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
@@ -175,9 +191,23 @@ router.get('/governance-history', authenticate, authorize(['SUPER_ADMIN']), asyn
 
 router.patch('/governance', authenticate, authorize(['SUPER_ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
+    if (!req.user?.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
     const current = await loadGovernanceSettings()
     const securityPolicy   = normalizeSecurityPolicy(req.body?.securityPolicy)
     const operationsPolicy = normalizeOperationsPolicy(req.body?.operationsPolicy)
+
+    if (!isValidIsoDateTime(operationsPolicy.maintenanceWindowStartUtc)) {
+      return res.status(400).json({ error: 'maintenanceWindowStartUtc must be a valid date-time string' })
+    }
+    if (!isValidIsoDateTime(operationsPolicy.maintenanceWindowEndUtc)) {
+      return res.status(400).json({ error: 'maintenanceWindowEndUtc must be a valid date-time string' })
+    }
+    if (!isValidLearnMoreUrl(operationsPolicy.maintenanceLearnMoreUrl)) {
+      return res.status(400).json({ error: 'maintenanceLearnMoreUrl must be an http/https URL' })
+    }
 
     await pool.query(
       `INSERT INTO app_settings (key, value) VALUES ($1, $2), ($3, $4)
@@ -194,10 +224,15 @@ router.patch('/governance', authenticate, authorize(['SUPER_ADMIN']), async (req
     ]
     const sections = Array.from(new Set(changes.map((c) => c.section)))
 
-    await pool.query(
-      `INSERT INTO user_logs (user_id, action, details) VALUES ($1, $2, $3)`,
-      [req.user!.userId, 'GOVERNANCE_SETTINGS_UPDATED', JSON.stringify({ message: 'Updated governance settings', sections, changes })],
-    )
+    try {
+      await pool.query(
+        `INSERT INTO user_logs (user_id, action, details) VALUES ($1, $2, $3)`,
+        [req.user.userId, 'GOVERNANCE_SETTINGS_UPDATED', JSON.stringify({ message: 'Updated governance settings', sections, changes })],
+      )
+    } catch (auditError) {
+      // Governance settings persistence should not fail due to optional audit log insert issues.
+      console.log('Update governance settings audit log error:', auditError)
+    }
 
     invalidateOperationsStatusCache()
     invalidateSecurityPolicyCache()

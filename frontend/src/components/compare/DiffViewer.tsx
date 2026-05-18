@@ -19,7 +19,6 @@ import ChunkList from "./ChunkList";
 import DiffPane, { buildAlignedLines, foldUnchangedLines } from "./DiffPane";
 import type { AlignedLine, FoldMapEntry } from "./DiffPane";
 import XmlPanel  from "./XmlPanel";
-import WordDiffPanel from "./WordDiffPanel";
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -137,7 +136,7 @@ export default function DiffViewer({
   const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
   const [syncScrollLeft, setSyncScrollLeft] = useState<{side:"a"|"b"; left:number} | null>(null);
-  const [wordPanelOpen, setWordPanelOpen] = useState(true);
+  const [chunkListCollapsed, setChunkListCollapsed] = useState(false);
   const [applyHistory, setApplyHistory]   = useState<{ xmlText: string; appliedId: number }[]>([]);
   const [expandedFoldKeys, setExpandedFoldKeys] = useState<Set<number>>(() => new Set());
 
@@ -553,6 +552,13 @@ export default function DiffViewer({
     reader.readAsText(f);
   }, [mode]);
 
+  const handleXmlChange = useCallback((nextXml: string) => {
+    setXmlText(nextXml);
+    // Manual edits invalidate stale locate badges/highlight spans.
+    setLocateSignal(null);
+    setNavSpan(null);
+  }, []);
+
   const undoApply = useCallback(() => {
     setApplyHistory((prev) => {
       if (prev.length === 0) return prev;
@@ -867,6 +873,17 @@ export default function DiffViewer({
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
+          <IconBtn
+            title={chunkListCollapsed ? "Show chunk list panel" : "Hide chunk list panel"}
+            active={!chunkListCollapsed}
+            onClick={() => setChunkListCollapsed((v) => !v)}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+            <span className="hidden sm:inline">Chunks</span>
+          </IconBtn>
+
           {/* Show All Lines toggle — default ON so nothing is hidden */}
           <IconBtn
             title={showAllContext ? "Collapse unchanged lines (C)" : "Show all lines (C)"}
@@ -992,15 +1009,17 @@ export default function DiffViewer({
       {/* Main content area */}
       <div className="flex-1 overflow-hidden min-h-0 flex">
 
-        <div className="flex-shrink-0 w-[240px] min-w-[240px] flex flex-col
-          border-r border-slate-200 dark:border-white/8">
+        <div className={`flex-shrink-0 flex flex-col
+          ${chunkListCollapsed ? "w-[48px] min-w-[48px]" : "w-[240px] min-w-[240px]"}
+          border-r border-slate-200 dark:border-white/8`}>
           <ChunkList
             chunks={filteredChunks}
             stats={filteredStats}
             activeId={activeId}
             appliedIds={appliedIds}
             onSelect={selectChunk}
-            collapsed={false}
+            collapsed={chunkListCollapsed}
+            onToggle={() => setChunkListCollapsed((v) => !v)}
             headerActions={mode === "edit" && filteredChunks.some((c) => !appliedIds.has(c.id)) ? (
               <button
                 onClick={() => void applyAllVisible()}
@@ -1117,22 +1136,16 @@ export default function DiffViewer({
                   onLoad={loadXml}
                   onApply={applyChunk}
                   onDownload={downloadXml}
-                  onXmlChange={setXmlText}
+                  onXmlChange={handleXmlChange}
                   onScrollFraction={(f) => schedulePanelSync("xml", f)}
                   canUndo={applyHistory.length > 0}
                   onUndo={undoApply}
                   onXmlLineClick={handleXmlLineClick}
+                  onToggleVisibility={() => setXmlOpen(false)}
                 />
               </div>
             </>
           )}
-
-          {/* Word diff panel */}
-          <WordDiffPanel
-            chunk={activeChunk}
-            open={wordPanelOpen}
-            onToggle={() => setWordPanelOpen((v) => !v)}
-          />
         </div>
       </div>
 

@@ -1240,7 +1240,6 @@ def load_pdf(
                 # the overlap test is in the same coordinate space.
                 #
                 # Also collect Underline/Link y-positions for Method B exclusion.
-                _annot_rects: list = []  # (x0, y0, x1, y1, type)
                 for _an in (fz.annots() or []):
                     _atype_raw = _an.type[1] if _an.type else ""
                     _atype = str(_atype_raw).strip().lower()
@@ -1248,15 +1247,14 @@ def load_pdf(
                     if _ar is None:
                         continue
 
-                    _annot_rects.append((_ar.x0, _ar.y0, _ar.x1, _ar.y1, _atype))
-
                     if "strike" in _atype:
                         # Direct annotation match — mark all spans it covers.
                         # Convert annotation absolute coords to local page space.
                         _ann_x0 = _ar.x0
                         _ann_x1 = _ar.x1
-                        _ann_y0 = _ar.y0 - page_y_offset
-                        _ann_y1 = _ar.y1 - page_y_offset
+                        # Annotation rects are page-local coordinates.
+                        _ann_y0 = _ar.y0
+                        _ann_y1 = _ar.y1
                         _ann_mid_y = (_ann_y0 + _ann_y1) / 2
                         for _pl in merged:
                             for _sp in _pl.spans:
@@ -1275,8 +1273,9 @@ def load_pdf(
                         # Preserve explicit underline annotations as emphasis.
                         _ann_x0 = _ar.x0
                         _ann_x1 = _ar.x1
-                        _ann_y0 = _ar.y0 - page_y_offset
-                        _ann_y1 = _ar.y1 - page_y_offset
+                        # Annotation rects are page-local coordinates.
+                        _ann_y0 = _ar.y0
+                        _ann_y1 = _ar.y1
                         _ann_mid_y = (_ann_y0 + _ann_y1) / 2
                         for _pl in merged:
                             for _sp in _pl.spans:
@@ -1331,16 +1330,19 @@ def load_pdf(
                                 if _sx1 <= _sp.x or _sx0 >= _sp.x2:
                                     continue
                                 _line_y = (_sy0 + _sy1) / 2
-                                if abs(_line_y - _sp_mid) > 7:
+                                if abs(_line_y - _sp_mid) > 9:
                                     continue
-                                # Guard 2: underlines at ~0.78-1.05; strikethroughs at ~0.35-0.75
+                                # Guard 2: underlines typically sit very close to baseline;
+                                # many legal-PDF strike lines fall around 0.76-0.85.
+                                # Bias ambiguous cases toward strikethrough so we do not
+                                # silently drop struck text in compare rendering.
                                 _rel = (_line_y - _sp_top) / _sp_h
-                                if 0.78 <= _rel <= 1.05:
+                                if 0.86 <= _rel <= 1.05:
                                     # Only treat as underline from thin drawn lines.
                                     if (_sx0, _sy0, _sx1, _sy1) in _ul:
                                         _sp.underline = True
                                     continue
-                                if _rel < 0.35 or _rel > 0.75:
+                                if _rel < 0.30 or _rel > 0.86:
                                     continue
                                 _sp.strikeout = True
                                 break

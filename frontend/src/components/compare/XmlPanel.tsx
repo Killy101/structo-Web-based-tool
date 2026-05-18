@@ -1,5 +1,5 @@
 "use client";
-import React, { forwardRef, useEffect, useRef, useState } from "react";
+import React, { forwardRef, useRef, useState } from "react";
 import XmlEditor from "./XmlEditor";
 import type { Chunk, WorkflowMode, XmlScrollTarget } from "./types";
 
@@ -26,6 +26,8 @@ interface Props {
    * DiffViewer uses this to locate the matching diff chunk and scroll both PDF panes.
    */
   onXmlLineClick?: (lineStart: number, lineEnd: number) => void;
+  /** Collapse/hide XML panel from within panel header. */
+  onToggleVisibility?: () => void;
 }
 
 /** Max chars to render at once — keeps DOM small for large XML files */
@@ -345,10 +347,8 @@ function XmlBody({
 
 
 const XmlPanel = forwardRef<XmlScrollTarget, Props>(
-  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick }, ref) => {
+  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick, onToggleVisibility }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const cursorLocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const lastCursorLineRef = useRef<{ start: number; end: number } | null>(null);
 
     // XML validation error surfaced up from XmlEditor's DOMParser check
     const [xmlError, setXmlError] = useState<string | null>(null);
@@ -378,12 +378,6 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
       onScrollFraction(el.scrollTop / max);
     };
 
-    useEffect(() => {
-      return () => {
-        if (cursorLocateTimerRef.current) clearTimeout(cursorLocateTimerRef.current);
-      };
-    }, []);
-
     return (
       <div className="flex flex-col h-full min-w-0 border-t border-slate-200 dark:border-white/8">
 
@@ -404,6 +398,18 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
             }`}>
               {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
+
+            {onToggleVisibility && (
+              <button
+                onClick={onToggleVisibility}
+                title="Collapse XML panel"
+                className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/8 text-slate-400 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
 
             {!xmlText && (
               <>
@@ -494,19 +500,9 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
                 navSpan={navSpan}
                 onScrollFraction={onScrollFraction}
                 onValidationChange={setXmlError}
-                onCursorOffset={onXmlLineClick ? (offset) => {
-                  // Convert Monaco cursor character offset → line char range → chunk lookup
-                  const lineStart  = xmlText.lastIndexOf("\n", offset - 1) + 1;
-                  const lineEndIdx = xmlText.indexOf("\n", offset);
-                  const lineEnd = lineEndIdx === -1 ? xmlText.length : lineEndIdx;
-                  const prev = lastCursorLineRef.current;
-                  if (prev && prev.start === lineStart && prev.end === lineEnd) return;
-                  lastCursorLineRef.current = { start: lineStart, end: lineEnd };
-                  if (cursorLocateTimerRef.current) clearTimeout(cursorLocateTimerRef.current);
-                  cursorLocateTimerRef.current = setTimeout(() => {
-                    onXmlLineClick(lineStart, lineEnd);
-                  }, 120);
-                } : undefined}
+                // Keep editor cursor movement local: avoid implicit chunk locate
+                // that can cause unwanted auto-jumps while typing.
+                onCursorOffset={undefined}
               />
               {/* Inline validation error bar — shown below editor when XML is malformed */}
               {xmlError && (
