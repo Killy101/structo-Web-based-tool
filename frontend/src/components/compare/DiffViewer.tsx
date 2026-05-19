@@ -26,9 +26,13 @@ interface Props {
   mode:               WorkflowMode;
   result:             DiffResult;
   onReset:            () => void;
+  onBackToChunkList?: () => void;
   initialXmlFile?:    File | null;
   xmlSections?:       XmlSection[];
   initialSection?:    string | null;
+  initialChunkId?:    number | null;
+  initialAnchorChunkId?: number | null;
+  viewedChunkNumber?: number | null;
   sectionMapper?:     (chunkSection: string) => string | null;
   isStreaming?:       boolean;
   streamingProgress?: DiffProgress | null;
@@ -118,14 +122,22 @@ export default function DiffViewer({
   mode,
   result,
   onReset,
+  onBackToChunkList,
   initialXmlFile,
   xmlSections,
   initialSection,
+  initialChunkId,
+  initialAnchorChunkId,
+  viewedChunkNumber,
   sectionMapper,
   isStreaming       = false,
   streamingProgress = null,
 }: Props) {
-  const [activeId,      setActiveId]      = useState<number | null>(result.chunks[0]?.id ?? null);
+  const [activeId,      setActiveId]      = useState<number | null>(() => {
+    if (initialChunkId != null && result.chunks.some((c) => c.id === initialChunkId)) return initialChunkId;
+    if (initialAnchorChunkId != null && result.chunks.some((c) => c.id === initialAnchorChunkId)) return initialAnchorChunkId;
+    return result.chunks[0]?.id ?? null;
+  });
   const [appliedIds,    setAppliedIds]    = useState<Set<number>>(new Set());
   const [applyStatus,   setApplyStatus]   = useState<ApplyStatus>("idle");
   const [xmlText,       setXmlText]       = useState("");
@@ -135,6 +147,7 @@ export default function DiffViewer({
   const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
   const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
+  const [focusChunkId,  setFocusChunkId]  = useState<number | null>(initialChunkId ?? null);
   const [syncScrollLeft, setSyncScrollLeft] = useState<{side:"a"|"b"; left:number} | null>(null);
   const [chunkListCollapsed, setChunkListCollapsed] = useState(false);
   const [applyHistory, setApplyHistory]   = useState<{ xmlText: string; appliedId: number }[]>([]);
@@ -143,7 +156,7 @@ export default function DiffViewer({
   // showAllContext = true means ALL lines are visible (no folding).
   // This is the correct default — matches Beyond Compare / VSCode behaviour.
   // Users can toggle folding with the "Collapse" button or press C.
-  const [showAllContext, setShowAllContext] = useState(true);
+  const [showAllContext, setShowAllContext] = useState(initialChunkId == null);
 
   const [pulseSide,    setPulseSide]      = useState<"old" | "new" | null>(null);
 
@@ -151,6 +164,7 @@ export default function DiffViewer({
   const paneARef       = useRef<DiffPaneHandle>(null);
   const paneBRef       = useRef<DiffPaneHandle>(null);
   const xmlRef         = useRef<XmlScrollTarget>(null);
+  const initialXmlTokenRef = useRef<string | null>(null);
   const locateSeqRef   = useRef(0);
   const xmlLocateSeqRef = useRef(0);
   // navSyncLock prevents scroll-sync echo immediately after chunk navigation
@@ -166,7 +180,10 @@ export default function DiffViewer({
 
   // ── Load initial XML file ─────────────────────────────────────────────────
   useEffect(() => {
-    if (!initialXmlFile || xmlText) return;
+    if (!initialXmlFile) return;
+    const token = `${initialXmlFile.name}:${initialXmlFile.size}:${initialXmlFile.lastModified}`;
+    if (initialXmlTokenRef.current === token) return;
+    initialXmlTokenRef.current = token;
     const reader = new FileReader();
     reader.onload = (e) => {
       setXmlFilename(initialXmlFile.name);
@@ -177,11 +194,32 @@ export default function DiffViewer({
       setXmlOpen(true);
     };
     reader.readAsText(initialXmlFile);
-  }, [initialXmlFile, xmlText, mode]);
+  }, [initialXmlFile, mode]);
+
+  useEffect(() => {
+    setFilterSection(initialSection ?? null);
+  }, [initialSection]);
+
+  useEffect(() => {
+    setFocusChunkId(initialChunkId ?? null);
+    if (initialChunkId != null) setShowAllContext(false);
+  }, [initialChunkId]);
+
+  useEffect(() => {
+    if (initialChunkId != null) return;
+    if (initialAnchorChunkId != null) {
+      setActiveId(initialAnchorChunkId);
+    }
+  }, [initialAnchorChunkId, initialChunkId]);
 
   // ── Alignment — separate from chunks (visual layer only) ──────────────────
   // alignmentChunks is stable: changes only when result.chunks identity changes.
-  const alignmentChunks = useMemo(() => [...result.chunks], [result.chunks]);
+  const alignmentChunks = useMemo(() => {
+    if (focusChunkId != null) {
+      return result.chunks.filter((c) => c.id === focusChunkId);
+    }
+    return [...result.chunks];
+  }, [result.chunks, focusChunkId]);
 
   // Build raw aligned lines from pane data + chunk positions.
   // This is the pure alignment computation; it knows nothing about UI state
@@ -192,17 +230,27 @@ export default function DiffViewer({
   const didAutoScrollRef = useRef(false);
   useEffect(() => {
     // New compare payload should start from first chunk and clear stale review state.
-    setActiveId(result.chunks[0]?.id ?? null);
+    if (focusChunkId != null && result.chunks.some((c) => c.id === focusChunkId)) {
+      setActiveId(focusChunkId);
+    } else if (initialAnchorChunkId != null && result.chunks.some((c) => c.id === initialAnchorChunkId)) {
+      setActiveId(initialAnchorChunkId);
+    } else {
+      setActiveId(result.chunks[0]?.id ?? null);
+    }
     setNavSpan(null);
     setLocateSignal(null);
     setAppliedIds(new Set());
     appliedIdsRef.current = new Set();
     didAutoScrollRef.current = false;
-  }, [result.chunks, result.file_a, result.file_b]);
+  }, [result.chunks, result.file_a, result.file_b, focusChunkId, initialAnchorChunkId]);
 
   useEffect(() => {
     if (didAutoScrollRef.current) return;
-    const firstId = result.chunks[0]?.id;
+    const firstId = focusChunkId != null
+      ? (result.chunks.find((c) => c.id === focusChunkId)?.id ?? null)
+      : (initialAnchorChunkId != null
+        ? (result.chunks.find((c) => c.id === initialAnchorChunkId)?.id ?? null)
+        : (result.chunks[0]?.id ?? null));
     if (firstId == null) return;
     const timer = setTimeout(() => {
       didAutoScrollRef.current = true;
@@ -210,8 +258,7 @@ export default function DiffViewer({
       paneBRef.current?.scrollToChunk(firstId);
     }, 120);
     return () => clearTimeout(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result.pane_a, result.pane_b, alignmentChunks]);
+  }, [result.pane_a, result.pane_b, alignmentChunks, focusChunkId, initialAnchorChunkId, result.chunks]);
 
   // ── Section / filter helpers ──────────────────────────────────────────────
   const mapSection = useCallback(
@@ -220,10 +267,12 @@ export default function DiffViewer({
   );
 
   const filteredChunks = useMemo(() => {
-    const base = result.chunks;
+    const base = focusChunkId != null
+      ? result.chunks.filter((c) => c.id === focusChunkId)
+      : result.chunks;
     if (!filterSection) return base;
     return base.filter((c) => mapSection(c.section ?? "") === filterSection);
-  }, [result.chunks, filterSection, mapSection]);
+  }, [result.chunks, filterSection, mapSection, focusChunkId]);
 
   const filteredStats = useMemo(() => {
     if (!filterSection) return result.stats;
@@ -849,6 +898,31 @@ export default function DiffViewer({
         </div>
 
         <div className="w-px h-4 bg-slate-200 dark:bg-white/10 mx-1 flex-shrink-0" />
+
+        {focusChunkId != null && (
+          <>
+            <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-violet-400 bg-violet-500/10 border border-violet-500/25 px-1.5 py-0.5 rounded-full">
+              Viewing Chunk {viewedChunkNumber ?? focusChunkId}
+            </span>
+            {onBackToChunkList && (
+              <button
+                onClick={onBackToChunkList}
+                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-md border border-slate-300 dark:border-white/15 text-slate-600 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                title="Back to chunk list"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                Back to Chunk List
+              </button>
+            )}
+          </>
+        )}
+        {focusChunkId == null && initialSection && (
+          <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-cyan-400 bg-cyan-500/10 border border-cyan-500/25 px-1.5 py-0.5 rounded-full">
+            Viewing Section {initialSection}
+          </span>
+        )}
 
         {/* Chunk navigation */}
         <div className="flex items-center gap-0.5 flex-shrink-0">

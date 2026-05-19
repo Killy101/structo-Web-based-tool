@@ -823,3 +823,91 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
 
   return { stage: "batch", pct: 0, message: "Processing large document…" };
 }
+
+// ── Chunked XML merge APIs ──────────────────────────────────────────────────
+
+export interface MergeChunkedXmlInput {
+  filename: string;
+  content: string;
+  relative_path?: string;
+}
+
+export interface MergeChunkRow {
+  index: number;
+  filename: string;
+  relative_path: string;
+  sequence: number | null;
+  part_order: number;
+  section_level: number;
+  has_changes: boolean;
+  duplicate: boolean;
+  selected: boolean;
+  heading: string;
+  source_path: string | null;
+}
+
+export interface MergeChunkInspectResult {
+  success: boolean;
+  chunk_rows: MergeChunkRow[];
+  invalid_files: Array<{ filename: string; reason: string }>;
+  warnings: string[];
+  missing_sequences: number[];
+  summary: {
+    total_detected: number;
+    selected: number;
+    changed_selected: number;
+    duplicates_selected: number;
+  };
+}
+
+export interface MergeChunkBuildResult extends MergeChunkInspectResult {
+  merged_xml: string;
+  export_mode: string;
+  export_filename: string;
+  strict_mode?: boolean;
+}
+
+export async function apiInspectChunkedXmlMerge(
+  files: MergeChunkedXmlInput[],
+  selectedFilenames: string[] = [],
+): Promise<MergeChunkInspectResult> {
+  const res = await fetch(`${BASE}/merge/chunked/inspect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files, selected_filenames: selectedFilenames }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(_extractErrMsg(err, "Chunk merge inspect failed"));
+  }
+
+  return res.json() as Promise<MergeChunkInspectResult>;
+}
+
+export async function apiBuildChunkedXmlMerge(
+  files: MergeChunkedXmlInput[],
+  selectedFilenames: string[] = [],
+  exportMode: "single" | "versioned" | "backup" = "single",
+  baseFilename = "merged",
+  strictMode = false,
+): Promise<MergeChunkBuildResult> {
+  const res = await fetch(`${BASE}/merge/chunked/build`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      files,
+      selected_filenames: selectedFilenames,
+      export_mode: exportMode,
+      base_filename: baseFilename,
+      strict_mode: strictMode,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(_extractErrMsg(err, "Chunk merge failed"));
+  }
+
+  return res.json() as Promise<MergeChunkBuildResult>;
+}

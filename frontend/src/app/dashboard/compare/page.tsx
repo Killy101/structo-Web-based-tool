@@ -192,12 +192,13 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
 const DiffViewer          = dynamic(() => import("../../../components/compare/DiffViewer"),          { ssr: false });
 const DiffUpload          = dynamic(() => import("../../../components/compare/DiffUpload"),          { ssr: false });
 const ChunkDetectionModal = dynamic(() => import("../../../components/compare/ChunkDetectionModal"), { ssr: false });
+const MergeChunkedXmlPanel = dynamic(() => import("../../../components/compare/MergeChunkedXmlPanel"), { ssr: false });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Workflow selector UI
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ActiveWorkflow = "selector" | "browse" | "edit";
+type ActiveWorkflow = "selector" | "browse" | "edit" | "merge";
 
 const PALETTES = {
   teal: {
@@ -213,6 +214,13 @@ const PALETTES = {
     icon:  "bg-violet-100 text-violet-600 border-violet-200 dark:bg-violet-500/15 dark:text-violet-400 dark:border-violet-500/20",
     dot:   "bg-violet-100 text-violet-700 dark:bg-violet-500/40 dark:text-violet-300",
     btn:   "bg-violet-600 hover:bg-violet-500 shadow-lg shadow-violet-500/25",
+  },
+  amber: {
+    card:  "border-amber-500/30 hover:border-amber-400/50 bg-amber-500/5 dark:bg-gradient-to-br dark:from-amber-600/20 dark:to-amber-500/5",
+    badge: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30",
+    icon:  "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/20",
+    dot:   "bg-amber-100 text-amber-700 dark:bg-amber-500/40 dark:text-amber-300",
+    btn:   "bg-amber-600 hover:bg-amber-500 shadow-lg shadow-amber-500/25",
   },
 } as const;
 
@@ -278,9 +286,9 @@ function WorkflowCard({
 }
 
 function WorkflowSelector({
-  canWf1, canWf2, onSelect,
+  canWf1, canWf2, canMerge, onSelect,
 }: {
-  canWf1: boolean; canWf2: boolean;
+  canWf1: boolean; canWf2: boolean; canMerge: boolean;
   onSelect: (w: ActiveWorkflow) => void;
 }) {
   return (
@@ -301,7 +309,7 @@ function WorkflowSelector({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl mx-auto">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 max-w-6xl mx-auto">
         <WorkflowCard
           badge="Workflow 1"
           title="Chunk & Compare"
@@ -340,9 +348,28 @@ function WorkflowSelector({
             </svg>
           }
         />
+        <WorkflowCard
+          badge="Workflow 3"
+          title="Merge Chunked XML"
+          description="Rebuild a complete XML from chunked XML files. Validate order, detect duplicates/missing chunks, preview merge output, and export final XML."
+          steps={[
+            "Upload chunk XML files or load a folder path",
+            "Review detected chunk order and validation warnings",
+            "Merge selected chunks and export consolidated XML",
+          ]}
+          color="amber"
+          locked={!canMerge}
+          onClick={() => onSelect("merge")}
+          icon={
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M7 7h10M7 12h10M7 17h10M4 5h.01M4 12h.01M4 19h.01" />
+            </svg>
+          }
+        />
       </div>
 
-      {!canWf1 && !canWf2 && (
+      {!canWf1 && !canWf2 && !canMerge && (
         <div className="max-w-3xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
           <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -472,7 +499,14 @@ function useDiffState() {
   const [allSections, setAllSections] = useState<XmlSection[]>([]);
   const [showModal,   setShowModal]   = useState(false);
   const [showDetection, setShowDetection] = useState(false);
+  const [pendingDetectionOpen, setPendingDetectionOpen] = useState(false);
   const [selectedSec, setSelectedSec] = useState<string | null>(null);
+  const [selectedChunkId, setSelectedChunkId] = useState<number | null>(null);
+  const [selectedChunkNumber, setSelectedChunkNumber] = useState<number | null>(null);
+  const [selectedAnchorChunkId, setSelectedAnchorChunkId] = useState<number | null>(null);
+  const [selectedChunkXmlFile, setSelectedChunkXmlFile] = useState<File | null>(null);
+  const [detectionListScrollTop, setDetectionListScrollTop] = useState(0);
+  const [chunkFocusMode, setChunkFocusMode] = useState(false);
 
   function reset() {
     // Abort any in-flight streaming request
@@ -483,9 +517,24 @@ function useDiffState() {
     latestResultRef.current = null;
     setResult(null); setError(null); setProgress(null);
     setXmlSections([]); setAllSections([]);
+    setPendingDetectionOpen(false);
     setShowModal(false); setShowDetection(false); setSelectedSec(null);
+    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
   }
+
+  useEffect(() => {
+    if (!pendingDetectionOpen) return;
+    if (loading) return;
+    if (!result) return;
+
+    const hasDetectionData = (result.chunks?.length ?? 0) > 0 || xmlSections.length > 0;
+    if (hasDetectionData) {
+      setShowDetection(true);
+      setShowModal(false);
+    }
+    setPendingDetectionOpen(false);
+  }, [pendingDetectionOpen, loading, result, xmlSections.length]);
 
   // ── Session restore — reload previous result on mount ─────────────────────
   // Clears stale keys from the old wf2/wf3 naming scheme.
@@ -528,6 +577,9 @@ function useDiffState() {
 
     latestResultRef.current = null;
     setLoading(true); setError(null); setResult(null); setProgress(null);
+    setPendingDetectionOpen(false);
+    setShowDetection(false); setShowModal(false); setSelectedSec(null);
+    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
     setLoadMsg("Uploading files…"); setLoadPct(0);
 
     try {
@@ -615,7 +667,20 @@ function useDiffState() {
         if (allSections.length === 0) setAllSections(finalSections);
         if (xmlSections.length === 0) setXmlSections(finalSections);
       }
-      if (xmlSections.length > 0 || finalSections.length > 0) setShowModal(true);
+
+      const finalResult = data ?? latestResultRef.current;
+      const hasDetectedChunks = (finalResult?.chunks?.length ?? 0) > 0;
+      const hasDetectionData = finalSections.length > 0 || xmlSections.length > 0 || hasDetectedChunks;
+
+      if (hasDetectionData) {
+        // Defer opening until loading is complete and result state is committed.
+        setPendingDetectionOpen(true);
+        setShowModal(false);
+      } else {
+        setPendingDetectionOpen(false);
+        setShowDetection(false);
+        setShowModal(false);
+      }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return; // user reset
       setError(toErrorMessage(e));
@@ -630,7 +695,14 @@ function useDiffState() {
     xmlSections, setXmlSections, allSections, setAllSections,
     showModal, setShowModal,
     showDetection, setShowDetection,
+    pendingDetectionOpen,
     selectedSec, setSelectedSec,
+    selectedChunkId, setSelectedChunkId,
+    selectedChunkNumber, setSelectedChunkNumber,
+    selectedAnchorChunkId, setSelectedAnchorChunkId,
+    selectedChunkXmlFile, setSelectedChunkXmlFile,
+    detectionListScrollTop, setDetectionListScrollTop,
+    chunkFocusMode, setChunkFocusMode,
     reset, run,
   };
 }
@@ -645,6 +717,7 @@ export default function ComparePage() {
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
   const canWf1       = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
   const canWf2       = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canMerge     = canWf2 || isSuperAdmin;
 
   const [active, setActive] = useState<ActiveWorkflow>("selector");
   const d = useDiffState();
@@ -712,18 +785,41 @@ export default function ComparePage() {
     <div className="relative flex flex-col h-full min-h-0">
 
       {active === "selector" && (
-        <WorkflowSelector canWf1={canWf1} canWf2={canWf2} onSelect={selectWorkflow} />
+        <WorkflowSelector canWf1={canWf1} canWf2={canWf2} canMerge={canMerge} onSelect={selectWorkflow} />
+      )}
+
+      {active === "merge" && (
+        <MergeChunkedXmlPanel onBack={() => setActive("selector")} />
       )}
 
       {(active === "browse" || active === "edit") && (
         <div className="flex-1 overflow-hidden min-h-0">
           {/* Detection report modal — shown when user clicks "Detection Report" */}
-          {d.result && d.showDetection ? (
+          {d.result && (d.showDetection || d.pendingDetectionOpen) && !d.loading ? (
             <ChunkDetectionModal
               result={d.result}
               xmlSections={d.xmlSections}
               sectionMapper={sectionMapper}
-              onClose={() => d.setShowDetection(false)}
+              xmlFile={d.xmlFile}
+              listScrollTop={d.detectionListScrollTop}
+              onListScroll={d.setDetectionListScrollTop}
+              onViewChunk={({ chunkId, anchorChunkId, sectionLabel, chunkNumber, chunkXml, chunkXmlFilename }) => {
+                d.setSelectedSec(sectionLabel);
+                d.setSelectedChunkId(chunkId);
+                d.setSelectedChunkNumber(chunkNumber);
+                d.setSelectedAnchorChunkId(anchorChunkId);
+                d.setSelectedChunkXmlFile(new File([chunkXml], chunkXmlFilename, { type: "application/xml" }));
+                d.setChunkFocusMode(true);
+                d.setShowDetection(false);
+              }}
+              onClose={() => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setShowDetection(false);
+              }}
             />
           ) : d.result && d.showModal && !d.loading ? (
             /* Changes summary modal — shown after diff completes */
@@ -731,11 +827,27 @@ export default function ComparePage() {
               result={d.result}
               xmlSections={d.xmlSections}
               sectionMapper={sectionMapper}
-              onViewAll={() => { d.setSelectedSec(null); d.setShowModal(false); }}
-              onSelectSection={(label) => { d.setSelectedSec(label); d.setShowModal(false); }}
+              onViewAll={() => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setSelectedSec(null);
+                d.setShowModal(false);
+              }}
+              onSelectSection={(label) => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setSelectedSec(label);
+                d.setShowModal(false);
+              }}
               onViewDetection={() => d.setShowDetection(true)}
             />
-          ) : d.result && !d.showModal ? (
+          ) : d.result && !d.showModal && !d.showDetection && !d.pendingDetectionOpen && !d.loading ? (
             /* DiffViewer — shown as soon as result arrives (may still be streaming) */
             <DiffViewer
               mode={workflowMode}
@@ -743,10 +855,20 @@ export default function ComparePage() {
               isStreaming={d.loading}
               streamingProgress={d.progress}
               onReset={() => { d.reset(); setActive(active); }}
-              initialXmlFile={d.xmlFile}
+              initialXmlFile={d.chunkFocusMode ? d.selectedChunkXmlFile : d.xmlFile}
               xmlSections={d.xmlSections}
               initialSection={d.selectedSec}
+              initialChunkId={d.chunkFocusMode ? d.selectedChunkId : null}
+              initialAnchorChunkId={d.selectedAnchorChunkId}
+              viewedChunkNumber={d.chunkFocusMode ? d.selectedChunkNumber : null}
               sectionMapper={sectionMapper}
+              onBackToChunkList={d.chunkFocusMode ? () => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setShowDetection(true);
+              } : undefined}
             />
           ) : (
             /* Upload form — shown before run, during loading, or on error */

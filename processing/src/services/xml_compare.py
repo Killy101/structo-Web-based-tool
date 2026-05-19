@@ -108,6 +108,98 @@ def _elem_signature(elem: ET.Element) -> str:
 
 # ── Chunking ───────────────────────────────────────────────────────────────────
 
+def _build_parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
+    parent_map: dict[ET.Element, ET.Element] = {}
+    for parent in root.iter():
+        for child in list(parent):
+            parent_map[child] = parent
+    return parent_map
+
+
+def _elem_path_with_parent_map(
+    elem: ET.Element,
+    root: ET.Element,
+    parent_map: dict[ET.Element, ET.Element],
+) -> str:
+    path_parts: list[str] = []
+    current: ET.Element | None = elem
+
+    while current is not None:
+        parent = parent_map.get(current)
+        tag = current.tag
+        if parent is not None:
+            siblings = [c for c in parent if c.tag == current.tag]
+            idx = siblings.index(current)
+            path_parts.append(f"{tag}[{idx}]" if len(siblings) > 1 else str(tag))
+        else:
+            path_parts.append(str(tag))
+        if current is root:
+            break
+        current = parent
+
+    return "/" + "/".join(reversed(path_parts))
+
+
+def _build_self_contained_chunk_document(
+    root: ET.Element,
+    target: ET.Element,
+    parent_map: dict[ET.Element, ET.Element],
+) -> str:
+    # Build a minimal XML tree that preserves full ancestry down to target,
+    # so each chunk is a valid, self-contained XML document.
+    chain: list[ET.Element] = []
+    current: ET.Element | None = target
+    while current is not None:
+        chain.append(current)
+        if current is root:
+            break
+        current = parent_map.get(current)
+
+    if not chain or chain[-1] is not root:
+        # Safety fallback: still return the element itself as valid XML.
+        return _elem_to_str(target)
+
+    chain.reverse()  # [root, ..., target]
+    shell_root = ET.Element(root.tag, dict(root.attrib))
+    cursor = shell_root
+
+    # Recreate ancestor wrappers (excluding root and target itself).
+    for ancestor in chain[1:-1]:
+        wrapper = ET.Element(ancestor.tag, dict(ancestor.attrib))
+        cursor.append(wrapper)
+        cursor = wrapper
+
+    cursor.append(copy.deepcopy(target))
+    return _elem_to_str(shell_root)
+
+
+def _chunk_entries_from_elements(
+    root: ET.Element,
+    elements: list[ET.Element],
+    max_file_size: Optional[int],
+) -> list[dict[str, Any]]:
+    parent_map = _build_parent_map(root)
+    total_chunks = len(elements)
+    chunks: list[dict[str, Any]] = []
+
+    for idx, elem in enumerate(elements, start=1):
+        chunk_str = _build_self_contained_chunk_document(root, elem, parent_map)
+        size_bytes = len(chunk_str.encode("utf-8"))
+        source_path = _elem_path_with_parent_map(elem, root, parent_map)
+        chunk_entry = {
+            "tag": elem.tag,
+            "attributes": dict(elem.attrib),
+            "content": chunk_str,
+            "size": size_bytes,
+            "chunk_index": idx,
+            "total_chunks": total_chunks,
+            "source_path": source_path,
+            "oversized": bool(max_file_size and size_bytes > max_file_size),
+        }
+        chunks.append(chunk_entry)
+
+    return chunks
+
 def chunk_xml(
     xml_content: str,
     tag_name: str,
@@ -118,13 +210,23 @@ def chunk_xml(
     """
     Split XML into chunks based on tag name, optional attribute/value filter,
     and optional max_file_size (bytes per chunk).
+
+    Structural guarantees:
+    - Never slices tag bodies or child text.
+    - Never sub-splits a large element into children.
+    - Each chunk contains full ancestor hierarchy from root to target element.
+    - Output order is the original document order, suitable for future merge.
+
+    Notes:
+    - max_file_size is advisory. Oversized chunks are flagged with
+      `oversized=true` but are still kept intact to preserve XML validity.
     Returns a list of chunk dicts.
     Returns an empty list when xml_content is empty (2-file / PDF-only mode).
     """
     if not xml_content or not xml_content.strip():
         return []
     root = _parse_xml(xml_content)
-    chunks: list[dict[str, Any]] = []
+    matched: list[ET.Element] = []
 
     for elem in root.iter(tag_name):
         if attribute:
@@ -134,35 +236,9 @@ def chunk_xml(
             if value is not None and attr_val != value:
                 continue
 
-        chunk_str = _elem_to_str(elem)
-        size_bytes = len(chunk_str.encode("utf-8"))
+        matched.append(elem)
 
-        if max_file_size and size_bytes > max_file_size:
-            # Sub-chunk: yield child elements individually
-            for child in elem:
-                child_str = _elem_to_str(child)
-                child_size = len(child_str.encode("utf-8"))
-                if child_size <= (max_file_size or child_size):
-                    chunks.append(
-                        {
-                            "tag": child.tag,
-                            "attributes": dict(child.attrib),
-                            "content": child_str,
-                            "size": child_size,
-                        }
-                    )
-            continue
-
-        chunks.append(
-            {
-                "tag": elem.tag,
-                "attributes": dict(elem.attrib),
-                "content": chunk_str,
-                "size": size_bytes,
-            }
-        )
-
-    return chunks
+    return _chunk_entries_from_elements(root, matched, max_file_size)
 
 
 def detect_xml_chunk_tag(xml_content: str, preferred_tag: str) -> str:
@@ -241,31 +317,13 @@ def chunk_xml_smart(
         # the user's chosen prefix (e.g. "art" → "art. L1", "art. L2")
         pref_upper = tag_name.upper()
         root = _parse_xml(xml_content)
-        chunks: list[dict[str, Any]] = []
+        matched: list[ET.Element] = []
         for elem in root.iter("innodLevel"):
             lp = (elem.get("last-path") or "").upper()
             if not lp.startswith(pref_upper):
                 continue
-            chunk_str = _elem_to_str(elem)
-            size_bytes = len(chunk_str.encode("utf-8"))
-            if max_file_size and size_bytes > max_file_size:
-                for child in elem:
-                    child_str = _elem_to_str(child)
-                    child_size = len(child_str.encode("utf-8"))
-                    chunks.append({
-                        "tag": child.tag,
-                        "attributes": dict(child.attrib),
-                        "content": child_str,
-                        "size": child_size,
-                    })
-                continue
-            chunks.append({
-                "tag": elem.tag,
-                "attributes": dict(elem.attrib),
-                "content": chunk_str,
-                "size": size_bytes,
-            })
-        return chunks
+            matched.append(elem)
+        return _chunk_entries_from_elements(root, matched, max_file_size)
 
     return chunk_xml(
         xml_content=xml_content,

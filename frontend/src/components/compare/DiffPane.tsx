@@ -120,6 +120,25 @@ function _serverPaletteKind(bg?: string): "del" | "add" | "mod" | "emp" | null {
   return null;
 }
 
+function _isVisualDiffSegment(cfg: TagConfig, kind?: ChunkKind): boolean {
+  if (!kind) return false;
+  const fontStyle = cfg.font && !Array.isArray(cfg.font) ? (cfg.font.style ?? "") : "";
+  const hasPalette = _serverPaletteKind(cfg.background) !== null;
+
+  if (kind === "emp") {
+    return !!cfg.underline || !!cfg.overstrike || !!cfg.foreground ||
+      fontStyle.includes("bold") || fontStyle.includes("italic") || hasPalette;
+  }
+
+  if (kind === "strike") {
+    return !!cfg.overstrike || hasPalette || !!cfg.background;
+  }
+
+  // add / del / mod should only be interactive-highlighted when the segment
+  // actually has diff styling markers from the server.
+  return !!cfg.background || !!cfg.overstrike || !!cfg.underline || hasPalette;
+}
+
 // ── Line types ────────────────────────────────────────────────────────────────
 
 export type LineSeg = {
@@ -792,7 +811,15 @@ function DiffPaneInner({
           const segs       = item as Line;
           const lineNodes: React.ReactNode[] = [];
 
-          const lineChunkId = segs.find((s) => s.chunkId != null)?.chunkId ?? null;
+          const lineChunkId = (() => {
+            for (const s of segs) {
+              if (s.chunkId == null) continue;
+              const kind = kindMap.get(s.chunkId);
+              const cfg = pane.tag_cfgs[s.tagName] ?? {};
+              if (_isVisualDiffSegment(cfg, kind)) return s.chunkId;
+            }
+            return null;
+          })();
           const lineKind    = lineChunkId != null ? kindMap.get(lineChunkId) : undefined;
           const isModLine   = lineKind === "mod";
 
@@ -805,7 +832,12 @@ function DiffPaneInner({
             vRow.index > 0 &&
             vRow.index - 1 < lines.length &&
             Array.isArray(lines[vRow.index - 1]) &&
-            (lines[vRow.index - 1] as Line).some((s) => s.chunkId === lineChunkId);
+            (lines[vRow.index - 1] as Line).some((s) => {
+              if (s.chunkId !== lineChunkId) return false;
+              const kind = s.chunkId != null ? kindMap.get(s.chunkId) : undefined;
+              const cfg = pane.tag_cfgs[s.tagName] ?? {};
+              return _isVisualDiffSegment(cfg, kind);
+            });
 
           const lineHasRichText = segs.some((s) => {
             const cfg = pane.tag_cfgs[s.tagName] ?? {};
@@ -839,12 +871,12 @@ function DiffPaneInner({
               const style = tagToStyle(cfg, dark, kind);
 
               lineNodes.push(
-                seg.chunkId !== null
+                seg.chunkId !== null && _isVisualDiffSegment(cfg, kind)
                   ? <span
                       key={si}
                       style={style}
                       data-chunk-id={String(seg.chunkId)}
-                      data-changed={cfg.background ? "true" : undefined}
+                      data-changed-chunk-id={String(seg.chunkId)}
                     >{seg.text}</span>
                   : <span key={si} style={style}>{seg.text}</span>,
               );
@@ -855,9 +887,8 @@ function DiffPaneInner({
           const lineHasPaintedSegment = lineChunkId != null && segs.some((s) => {
             if (s.chunkId == null) return false;
             const cfg = pane.tag_cfgs[s.tagName] ?? {};
-            const style = cfg.font && !Array.isArray(cfg.font) ? (cfg.font.style ?? "") : "";
-            return !!cfg.background || !!cfg.underline || !!cfg.overstrike ||
-              style.includes("bold") || style.includes("italic");
+            const kind = kindMap.get(s.chunkId);
+            return _isVisualDiffSegment(cfg, kind);
           });
 
           const isActiveRow =
@@ -1005,7 +1036,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       const kind = kindMap.get(activeChunkId);
       if (!kind) return "";
       const ahl = ACTIVE_HL[kind] ?? ACTIVE_HL.mod;
-      const sel = `[data-chunk-id="${activeChunkId}"]`;
+      const sel = `[data-changed-chunk-id="${activeChunkId}"]`;
       if (kind === "mod") {
         return `${sel} { border-radius: 2px; outline: 2px solid ${ahl.border}; outline-offset: 0px; }`;
       }

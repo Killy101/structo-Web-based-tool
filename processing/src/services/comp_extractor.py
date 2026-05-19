@@ -1288,10 +1288,10 @@ def load_pdf(
 
                 # ── Method B: Drawn vector paths ──────────────────────────────
                 # Fallback for PDFs that use drawn lines instead of annotations.
-                # Two guards prevent false positives:
-                #   1. Reject lines at relative position > 0.75 (underlines are
-                #      at 0.85-0.95 of span height; strikethroughs at 0.40-0.65)
-                #   2. Use local page coords (subtract page_y_offset) throughout
+                # We classify candidate lines as underline-like (thin) or general
+                # strike candidates. Some legal PDFs draw strike lines low (0.86-0.92
+                # relative to text box), so baseline-near lines must not be dropped
+                # purely for being low when they are not thin underline strokes.
                 _sr: list = []
                 _ul: list = []
                 for _path in fz.get_drawings():
@@ -1312,7 +1312,7 @@ def load_pdf(
                         continue
                     if _h <= 1.7:
                         _ul.append((_x0, _y0, _x1, _y1))
-                    _sr.append((_x0, _y0, _x1, _y1))
+                    _sr.append((_x0, _y0, _x1, _y1, _w, _h))
 
                 if _sr:
                     for _pl in merged:
@@ -1326,24 +1326,36 @@ def load_pdf(
                             if _sp_h <= 0:
                                 continue
                             _sp_mid = (_sp_top + _sp_bot) / 2
-                            for (_sx0, _sy0, _sx1, _sy1) in _sr:
+                            for (_sx0, _sy0, _sx1, _sy1, _sw, _sh) in _sr:
                                 if _sx1 <= _sp.x or _sx0 >= _sp.x2:
                                     continue
                                 _line_y = (_sy0 + _sy1) / 2
                                 if abs(_line_y - _sp_mid) > 9:
                                     continue
-                                # Guard 2: underlines typically sit very close to baseline;
-                                # many legal-PDF strike lines fall around 0.76-0.85.
-                                # Bias ambiguous cases toward strikethrough so we do not
-                                # silently drop struck text in compare rendering.
+                                # Relative line height in the glyph box.
                                 _rel = (_line_y - _sp_top) / _sp_h
-                                if 0.86 <= _rel <= 1.05:
-                                    # Only treat as underline from thin drawn lines.
-                                    if (_sx0, _sy0, _sx1, _sy1) in _ul:
+
+                                # Very near baseline: thin lines are underlines.
+                                # Thicker lines are often strike overlays in legal PDFs.
+                                if 0.88 <= _rel <= 1.05:
+                                    if (_sx0, _sy0, _sx1, _sy1) in _ul or _sh <= 1.7:
                                         _sp.underline = True
+                                    else:
+                                        _sp.strikeout = True
                                     continue
-                                if _rel < 0.30 or _rel > 0.86:
+
+                                # Typical strike band; allow slightly lower lines to
+                                # avoid dropping real strikethrough rendered near baseline.
+                                if _rel < 0.30 or _rel > 0.92:
                                     continue
+
+                                # Require reasonable horizontal overlap with the span.
+                                _ov = min(_sx1, _sp.x2) - max(_sx0, _sp.x)
+                                if _ov <= 0:
+                                    continue
+                                if _ov < max(6.0, 0.22 * max(_sp.x2 - _sp.x, 1.0)):
+                                    continue
+
                                 _sp.strikeout = True
                                 break
             except Exception:
@@ -3864,6 +3876,45 @@ def _is_strike_only_change(block_a: Block, block_b: Block) -> bool:
     # If bold/italic also changed → this is a compound emphasis change (EMP), not pure STRIKE
     return len(other_changed) == 0
 
+
+def _strike_profile_changed(block_a: Block, block_b: Block) -> bool:
+    """
+    Fallback detection for strikeout-only deltas when _emp_word_map is too
+    ambiguous (repeated words, long legal paragraphs with duplicate tokens).
+
+    Compares struck-character ratio across both blocks using raw span metadata.
+    Used only in equal-key paths where textual content is already aligned.
+    """
+    def _stats(block: Block) -> tuple[int, int]:
+        total = 0
+        strike = 0
+        for line in block.lines:
+            for span in line.spans:
+                txt = (span.text or "").strip()
+                if not txt:
+                    continue
+                n = len(txt)
+                total += n
+                if span.strikeout:
+                    strike += n
+        return total, strike
+
+    total_a, strike_a = _stats(block_a)
+    total_b, strike_b = _stats(block_b)
+    if total_a <= 0 or total_b <= 0:
+        return False
+    if strike_a == strike_b:
+        return False
+
+    ratio_a = strike_a / total_a
+    ratio_b = strike_b / total_b
+    ratio_delta = abs(ratio_a - ratio_b)
+    strike_delta = abs(strike_a - strike_b)
+
+    # Require both a meaningful ratio shift and character-count shift to
+    # avoid tiny-noise toggles from OCR/font artifacts.
+    return ratio_delta >= 0.05 and strike_delta >= 4
+
 def _emp_detail(block_a: Block, block_b: Block) -> str:
     """Return a human-readable description of which emphasis changed and how.
 
@@ -4819,10 +4870,19 @@ def _xml_cross_validate_chunks(
                     keep = False
 
         elif ch.kind == KIND_EMP and xml_index_b:
-            match_a = xml_index_b.probe(ch.text_a, threshold=0.85)
-            match_b = xml_index_b.probe(ch.text_b, threshold=0.85)
-            if match_a and match_b and (match_a == match_b or _similarity(match_a, match_b) >= 0.95):
-                keep = False
+            # XML probes are plain-text only and cannot prove strike semantics
+            # when XML does not carry <s>/<del>-style markup.
+            _emp_lc = (getattr(ch, "emp_detail", "") or "").lower()
+            _strike_sensitive = (
+                "strike" in _emp_lc
+                or "strikethrough" in _emp_lc
+                or "overstrike" in _emp_lc
+            )
+            if not _strike_sensitive:
+                match_a = xml_index_b.probe(ch.text_a, threshold=0.85)
+                match_b = xml_index_b.probe(ch.text_b, threshold=0.85)
+                if match_a and match_b and (match_a == match_b or _similarity(match_a, match_b) >= 0.95):
+                    keep = False
 
         if keep:
             out.append(ch)
@@ -5074,6 +5134,12 @@ def compute_diff(
                                    bla.text, blb.text)
                         ch.emp_detail = detail
                         chunks.append(ch)
+                elif _strike_profile_changed(bla, blb):
+                    # Fallback for repeated-token blocks where word-level
+                    # mapping is ambiguous but struck-character profile differs.
+                    ch = Chunk(KIND_STRIKE, ri, rj, bla.text, blb.text)
+                    ch.emp_detail = "strikeout changed (profile)"
+                    chunks.append(ch)
             continue
 
         ar = _expand_a(i1, i2)
