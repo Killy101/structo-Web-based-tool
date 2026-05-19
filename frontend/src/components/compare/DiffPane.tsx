@@ -63,14 +63,20 @@ interface InnerProps {
 }
 
 // ── Active highlight colours per kind ─────────────────────────────────────────
-
+// Improved highlight logic: more distinct, clear, and accessible
 const ACTIVE_HL: Record<ChunkKind, { border: string; bg: string }> = {
-  add:    { border: "rgba(34,197,94,0.65)",   bg: "rgba(34,197,94,0.10)"  },
-  del:    { border: "rgba(244,63,94,0.65)",   bg: "rgba(244,63,94,0.10)"  },
-  mod:    { border: "rgba(249,115,22,0.65)",  bg: "rgba(249,115,22,0.10)" },
-  emp:    { border: "rgba(96,165,250,0.70)",  bg: "rgba(96,165,250,0.10)" },
-  strike: { border: "rgba(190,24,93,0.65)",   bg: "rgba(190,24,93,0.10)"  },
+  add:    { border: "#22c55e",   bg: "#bbf7d0" }, // green
+  del:    { border: "#f43f5e",   bg: "#fecdd3" }, // red
+  mod:    { border: "#f59e42",   bg: "#fed7aa" }, // orange
+  emp:    { border: "#60a5fa",   bg: "#bfdbfe" }, // blue
+  strike: { border: "#be185d",   bg: "#fda4af" }, // pink
 };
+// --- Placeholder for future editable PDF text feature ---
+// To implement: render editable fields for changed lines, and on edit, trigger re-alignment and diff update.
+// Example:
+// if (isEditable && chunk.kind !== 'emp') {
+//   return <input value={lineText} onChange={...} />;
+// }
 
 // ── Dark-mode colour maps ─────────────────────────────────────────────────────
 
@@ -94,6 +100,11 @@ const DARK_FG_MAP: Record<string, string> = {
   "#6e1c1a": "#fda4af",
   "#5a3e00": "#fdba74",
   "#3d007a": "#93c5fd",
+  // Server-generated foreground colours (comp_extractor.py constants) that are
+  // dark in light-mode but must be remapped to light equivalents for dark-mode.
+  "#111111": "#c8d8e8",  // COL_NORMAL  — near-black normal text → light slate
+  "#1d4ed8": "#93c5fd",  // COL_BOLD / COL_ITALIC / COL_BOLD_IT / COL_UNDERLINE → light blue
+  "#be185d": "#fda4af",  // COL_STRIKE  — dark rose strikethrough → light rose
 };
 
 // ── Line types ────────────────────────────────────────────────────────────────
@@ -246,7 +257,7 @@ export function renderWordTokens(tokens: WordToken[], dark: boolean): React.Reac
           color:           dark ? "#fda4af" : "#6e1c1a",
           borderRadius: 2, padding: "0 1px",
           textDecoration: "line-through",
-        }}>{tok.value}</span>
+        }} data-diff="delete">{tok.value}</span>
       );
     }
     if (tok.type === "insert") {
@@ -255,7 +266,17 @@ export function renderWordTokens(tokens: WordToken[], dark: boolean): React.Reac
           backgroundColor: dark ? "rgba(16,185,129,0.28)" : "#ccffd8",
           color:           dark ? "#6ee7b7" : "#1a4d2e",
           borderRadius: 2, padding: "0 1px",
-        }}>{tok.value}</span>
+        }} data-diff="insert">{tok.value}</span>
+      );
+    }
+    if (tok.type === "emphasis") {
+      return (
+        <span key={`emp-${i}`} style={{
+          backgroundColor: dark ? "rgba(253,224,71,0.25)" : "#fffbe6",
+          color:           dark ? "#fde047" : "#b59f00",
+          borderRadius: 2, padding: "0 1px",
+          fontWeight: 600,
+        }} data-diff="emphasis">{tok.value}</span>
       );
     }
     return <span key={`e-${i}`}>{tok.value}</span>;
@@ -734,18 +755,24 @@ function DiffPaneInner({
                   top: 0, left: 0, right: 0,
                   transform: `translateY(${vRow.start}px)`,
                   minHeight: ROW_HEIGHT_PX,
+                  height: ROW_HEIGHT_PX,
+                  display: "flex",
+                  alignItems: "center",
                 }}
               >
-                <div className="grid grid-cols-[52px_minmax(0,1fr)] gap-3">
-                  <span className="sticky left-0 z-[1] select-none border-r border-slate-200 bg-white dark:border-white/10 dark:bg-[#0a1020]" />
+                <div className="grid grid-cols-[52px_minmax(0,1fr)] gap-3 w-full h-full">
+                  <span className="sticky left-0 z-[1] select-none border-r border-slate-200 bg-white dark:border-white/10 dark:bg-[#0a1020]" style={{height: ROW_HEIGHT_PX}} />
                   <span
                     style={{
                       display:    "block",
                       minHeight:  ROW_HEIGHT_PX,
+                      height:     ROW_HEIGHT_PX,
                       borderLeft: `2px solid ${dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.07)"}`,
                       opacity:    0.4,
                     }}
-                  />
+                  >
+                    {/* blank row for alignment */}
+                  </span>
                 </div>
               </div>
             );
@@ -965,7 +992,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           }
           if (targetLine >= 0) {
             try {
-              const r = virtualizer.scrollToIndex(targetLine, { align: "start", behavior: "auto" }) as unknown;
+              const r = virtualizer.scrollToIndex(targetLine, { align: "center", behavior: "auto" }) as unknown;
               if (r != null && typeof r === "object" && "catch" in r) {
                 (r as Promise<void>).catch(() => {});
               }
@@ -1015,6 +1042,74 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           syncClearTimerRef.current = null;
         }, 150);
       },
+
+      scrollToText(text: string): boolean {
+        const virtualizer = virtualizerRef.current;
+        if (!virtualizer) return false;
+
+        const needle = text.toLowerCase().replace(/\s+/g, " ").trim();
+        if (needle.length < 4) return false;
+
+        const needleWords = needle.split(" ").filter((w) => w.length >= 3);
+
+        let bestLine  = -1;
+        let bestScore = 0;
+
+        for (let li = 0; li < lines.length; li++) {
+          const line = lines[li];
+          if (!Array.isArray(line) || line.length === 0) continue;
+
+          const lineText = line
+            .map((s) => s.text)
+            .join("")
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim();
+          if (lineText.length < 2) continue;
+
+          let score = 0;
+
+          if (lineText.includes(needle)) {
+            // Line contains the full needle — score by coverage density
+            score = needle.length / Math.max(lineText.length, needle.length);
+          } else if (needle.includes(lineText) && lineText.length >= 5) {
+            // Needle contains this line — line is part of the clicked element
+            score = (lineText.length / needle.length) * 0.85;
+          } else if (needleWords.length >= 2) {
+            // Word-overlap fallback — handles minor encoding / punctuation differences
+            const lineWordSet = new Set(lineText.split(" ").filter((w) => w.length >= 3));
+            let hits = 0;
+            for (const w of needleWords) if (lineWordSet.has(w)) hits++;
+            const ratio = hits / needleWords.length;
+            if (ratio >= 0.5) score = ratio * 0.7;
+          }
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestLine  = li;
+          }
+        }
+
+        if (bestLine >= 0 && bestScore >= 0.3) {
+          // Suppress onScrollFraction so this programmatic scroll does NOT
+          // loop back through schedulePanelSync → syncXmlScroll and move the
+          // XML panel away from where the user just clicked.
+          if (syncClearTimerRef.current !== null) clearTimeout(syncClearTimerRef.current);
+          syncingRef.current = true;
+          try {
+            const r = virtualizer.scrollToIndex(bestLine, { align: "center", behavior: "auto" }) as unknown;
+            if (r != null && typeof r === "object" && "catch" in r) {
+              (r as Promise<void>).catch(() => {});
+            }
+          } catch { /* ignore sync throw before first measure */ }
+          syncClearTimerRef.current = setTimeout(() => {
+            syncingRef.current        = false;
+            syncClearTimerRef.current = null;
+          }, 150);
+          return true;
+        }
+        return false;
+      },
     }), [lines]);
 
     // RAF-throttled scroll handler
@@ -1026,7 +1121,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         onScrollLeft(container.scrollLeft);
       }
 
-      if (syncingRef.current || wrapLines) return;
+      if (syncingRef.current) return;
       if (!onScrollFraction) return;
       if (scrollFrameRef.current !== null) return;
 
@@ -1076,6 +1171,18 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
             </span>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate flex-1 min-w-0">
               {filename}
+            </span>
+
+            {/* Formatting disclaimer */}
+            <span
+              title="Note: Some text formatting from the original PDF (e.g. strikethrough) may not appear in this extracted text view. Refer to the original PDF for visual formatting accuracy."
+              className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded-full
+                         text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300
+                         cursor-help select-none"
+            >
+              <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 1.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM8 6a.75.75 0 00-.75.75v4.5a.75.75 0 001.5 0v-4.5A.75.75 0 008 6zm0-2.5a1 1 0 110 2 1 1 0 010-2z"/>
+              </svg>
             </span>
 
             {hasStats && (

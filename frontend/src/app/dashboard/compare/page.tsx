@@ -532,7 +532,11 @@ function useDiffState() {
             }
           },
         },
-        xmlFile,
+        // XML is stored in state for the DiffViewer (initialXmlFile) but is
+        // intentionally NOT sent to the comparison API.  The PDF-to-PDF diff
+        // runs without it; the XML panel is loaded separately after the result
+        // is ready.
+        null,
       );
 
       if (ac.signal.aborted) return;

@@ -274,9 +274,9 @@ function XmlBody({
             key={`${lineNum}-${lineStart}`}
             role={isNavigable ? "button" : undefined}
             tabIndex={isNavigable ? 0 : undefined}
-            onClick={isNavigable ? () => onLineClick(lineStart, lineStart + lineText.length) : undefined}
+            onClick={isNavigable ? () => onLineClick?.(lineStart, lineStart + lineText.length) : undefined}
             onKeyDown={isNavigable ? (e) => {
-              if (e.key === "Enter" || e.key === " ") onLineClick(lineStart, lineStart + lineText.length);
+              if ((e.key === "Enter" || e.key === " ") && onLineClick) onLineClick(lineStart, lineStart + lineText.length);
             } : undefined}
             className={`grid grid-cols-[48px_minmax(0,1fr)] gap-0 leading-[1.75]
               ${isHL ? "bg-yellow-300/10 dark:bg-yellow-400/8" : ""}

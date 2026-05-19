@@ -9,6 +9,7 @@ import React, {
 import type {
   DiffPaneHandle,
   DiffResult,
+  PaneData,
   WorkflowMode,
   XmlSection,
   XmlScrollTarget,
@@ -16,9 +17,11 @@ import type {
 import { apiApply, apiLocate, apiChunkLocate, invalidateXmlSession } from "./api";
 import type { DiffProgress } from "./api";
 import ChunkList from "./ChunkList";
-import DiffPane, { buildAlignedLines, foldUnchangedLines } from "./DiffPane";
+import DiffPane, { buildLines, foldUnchangedLines } from "./DiffPane";
 import type { AlignedLine, FoldMapEntry } from "./DiffPane";
 import XmlPanel  from "./XmlPanel";
+import XmlPreviewPanel from "./XmlPreviewPanel";
+import type { XmlPreviewHandle } from "./XmlPreviewPanel";
 import WordDiffPanel from "./WordDiffPanel";
 
 interface Props {
@@ -104,6 +107,70 @@ function IconBtn({
 }
 
 
+// ── patchPaneB ────────────────────────────────────────────────────────────────
+// Immutably replace a single chunk's text inside pane_b after an XML apply.
+// Updates segments and adjusts all offsets so downstream buildLines stays correct.
+function patchPaneB(pane: PaneData, chunkId: number, newText: string): PaneData {
+  const chunkStart = (pane.offsets ?? {})[String(chunkId)];
+  const chunkEnd   = (pane.offset_ends ?? {})[String(chunkId)];
+  if (chunkStart == null || chunkEnd == null) return pane;
+
+  const origLen = chunkEnd - chunkStart;
+  const newLen  = newText.length;
+  const delta   = newLen - origLen;
+
+  const newSegments: [string, string][] = [];
+  let pos = 0;
+  let inserted = false;
+  let chunkTag = "";
+
+  for (const [text, tagName] of pane.segments) {
+    const segEnd = pos + text.length;
+    if (segEnd <= chunkStart || pos >= chunkEnd) {
+      // Entirely outside chunk range — keep as-is
+      newSegments.push([text, tagName]);
+    } else {
+      if (!chunkTag) chunkTag = tagName;
+      // Keep text before chunk start
+      if (pos < chunkStart) {
+        newSegments.push([text.slice(0, chunkStart - pos), tagName]);
+      }
+      // Insert replacement text once
+      if (!inserted) {
+        if (newText) newSegments.push([newText, chunkTag]);
+        inserted = true;
+      }
+      // Keep text after chunk end
+      if (segEnd > chunkEnd) {
+        newSegments.push([text.slice(chunkEnd - pos), tagName]);
+      }
+    }
+    pos += text.length;
+  }
+
+  // Adjust all offsets by delta for chunks that start after the replaced range
+  if (delta !== 0) {
+    const newOffsets: Record<string, number>    = {};
+    const newOffsetEnds: Record<string, number> = {};
+    for (const [k, v] of Object.entries(pane.offsets ?? {})) {
+      const e = (pane.offset_ends ?? {})[k] ?? v;
+      if (Number(k) === chunkId) {
+        newOffsets[k]    = v;
+        newOffsetEnds[k] = v + newLen;
+      } else if (v > chunkStart) {
+        newOffsets[k]    = v + delta;
+        newOffsetEnds[k] = e + delta;
+      } else {
+        newOffsets[k]    = v;
+        newOffsetEnds[k] = e > chunkStart ? e + delta : e;
+      }
+    }
+    return { ...pane, segments: newSegments, offsets: newOffsets, offset_ends: newOffsetEnds };
+  }
+
+  return { ...pane, segments: newSegments };
+}
+
 export default function DiffViewer({
   mode,
   result,
@@ -117,17 +184,25 @@ export default function DiffViewer({
 }: Props) {
   const [activeId,      setActiveId]      = useState<number | null>(result.chunks[0]?.id ?? null);
   const [appliedIds,    setAppliedIds]    = useState<Set<number>>(new Set());
+  // Track which chunks have been edited via XML (for live sync and icon)
+  const [xmlEditedIds, setXmlEditedIds] = useState<Set<number>>(new Set());
+  // Local override for chunk text_b (live sync)
+  const [chunkTextBOverrides, setChunkTextBOverrides] = useState<Record<number, string>>({});
   const [applyStatus,   setApplyStatus]   = useState<ApplyStatus>("idle");
   const [xmlText,       setXmlText]       = useState("");
   const [xmlFilename,   setXmlFilename]   = useState<string | null>(null);
   const [xmlStatus,     setXmlStatus]     = useState("");
   const [navSpan,       setNavSpan]       = useState<{ start: number; end: number } | null>(null);
-  const [xmlOpen,       setXmlOpen]       = useState(mode === "edit" || !!initialXmlFile);
+  // XML panel is now collapsed by default, user can toggle open
+  const [xmlOpen, setXmlOpen] = useState(false);
   const [filterSection, setFilterSection] = useState<string | null>(initialSection ?? null);
-  const [wrapLines,     setWrapLines]     = useState(false);
+  const [wrapLines,     setWrapLines]     = useState(true);
   const [syncScrollLeft, setSyncScrollLeft] = useState<{side:"a"|"b"; left:number} | null>(null);
   const [sidebarOpen,   setSidebarOpen]   = useState(true);
-  const [wordPanelOpen, setWordPanelOpen] = useState(true);
+  // Only one WordDiffPanel open at a time; store the chunk id or null
+  const [wordPanelOpenId, setWordPanelOpenId] = useState<number | null>(null);
+  // Live HTML preview panel alongside the XML editor
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [applyHistory, setApplyHistory]   = useState<{ xmlText: string; appliedId: number }[]>([]);
   const [expandedFoldKeys, setExpandedFoldKeys] = useState<Set<number>>(() => new Set());
 
@@ -139,18 +214,32 @@ export default function DiffViewer({
   const [reviewedIds,  setReviewedIds]    = useState<Set<number>>(new Set());
   const [pulseSide,    setPulseSide]      = useState<"old" | "new" | null>(null);
 
+  // Local copy of pane_b that gets patched after each apply so the B pane
+  // re-renders with the updated text without a full re-diff.
+  const [localPaneB,   setLocalPaneB]    = useState<PaneData>(result.pane_b);
+
   const containerRef   = useRef<HTMLDivElement>(null);
   const paneARef       = useRef<DiffPaneHandle>(null);
   const paneBRef       = useRef<DiffPaneHandle>(null);
   const xmlRef         = useRef<XmlScrollTarget>(null);
+  const previewRef     = useRef<XmlPreviewHandle>(null);
   const locateSeqRef   = useRef(0);
   const navSyncLockRef = useRef(false);
   const navSyncLockSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pulseTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // xmlNavLockRef: set while handleXmlLineClick is in flight so that
+  //   syncXmlScroll does NOT move the XML panel away from the clicked position.
+  // xmlScrollLockRef: set inside syncXmlScroll so the resulting onScrollFraction
+  //   event from the XML panel does NOT loop back and sync panes again.
+  const xmlNavLockRef    = useRef(false);
+  const xmlScrollLockRef = useRef(false);
 
   const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20,  80);
   const [xmlHeight, startDragH] = useDragSplitter(containerRef, 260, "y", 120, 560);
+  const xmlPanelContainerRef = useRef<HTMLDivElement>(null);
+  // previewSplit: XML editor width % within the XML+preview row (preview gets the rest)
+  const [previewSplit, startDragPreview] = useDragSplitter(xmlPanelContainerRef, 62, "x", 20, 85);
 
   useEffect(() => {
     if (!initialXmlFile || xmlText) return;
@@ -158,16 +247,19 @@ export default function DiffViewer({
     reader.onload = (e) => {
       setXmlFilename(initialXmlFile.name);
       setXmlText(typeof e.target?.result === "string" ? e.target.result : "");
-      setXmlStatus(mode === "browse"
+      setXmlStatus((prev) => prev ? prev : (mode === "browse"
         ? `Baseline: ${initialXmlFile.name}`
-        : `Loaded: ${initialXmlFile.name}`);
+        : `Loaded: ${initialXmlFile.name}`));
       setXmlOpen(true);
     };
     reader.readAsText(initialXmlFile);
-  }, [initialXmlFile, xmlText, mode]);
+    // Only run when initialXmlFile changes, not on every xmlText change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialXmlFile, mode]);
 
+  // Ensure alignmentChunks is always in sync with result.chunks for alignment
   const alignmentChunks = useMemo(
-    () => [...result.chunks],
+    () => result.chunks.map((c) => ({ ...c })),
     [result.chunks],
   );
 
@@ -190,14 +282,27 @@ export default function DiffViewer({
     [sectionMapper],
   );
 
+  // Store original text_b for robust XML navigation
+  const originalTextBMap = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const c of result.chunks) map[c.id] = c.text_b;
+    return map;
+  }, [result.chunks]);
+
+  // Use overrides for text_b if present (live sync)
   const filteredChunks = useMemo(() => {
-    const base = result.chunks;
+    const base = result.chunks.map((c) => {
+      if (chunkTextBOverrides[c.id] !== undefined) {
+        return { ...c, text_b: chunkTextBOverrides[c.id] };
+      }
+      return c;
+    });
     if (!filterSection) return base;
     return base.filter((c) => {
       const section = mapSection(c.section ?? "");
       return section === filterSection;
     });
-  }, [result.chunks, filterSection, mapSection]);
+  }, [result.chunks, chunkTextBOverrides, filterSection, mapSection]);
 
   const filteredStats = useMemo(() => {
     if (!filterSection) return result.stats;
@@ -233,6 +338,11 @@ export default function DiffViewer({
     [result.chunks, activeId],
   );
 
+  // Handler to open/close WordDiffPanel for a specific chunk
+  const handleWordPanelToggle = useCallback((chunkId: number) => {
+    setWordPanelOpenId((prev) => (prev === chunkId ? null : chunkId));
+  }, []);
+
   const chunkIds = useMemo(() => result.chunks.map((c) => c.id), [result.chunks]);
 
   const activeFilteredIndex = useMemo(
@@ -259,10 +369,20 @@ export default function DiffViewer({
     [filteredChunks],
   );
 
-  // ── Build aligned lines (visual layer only) ───────────────────────────────
+  // ── Build lines independently per pane — no null/gap rows ─────────────────
+  // Each pane shows all lines from its own PDF in order, starting from row 1.
+  // Differences are highlighted via chunkId on each segment. Scroll sync is
+  // handled by fraction so both panes stay roughly aligned while scrolling.
   const { linesA: rawLinesA, linesB: rawLinesB } = useMemo(() => {
-    return buildAlignedLines(result.pane_a, result.pane_b, alignmentChunks);
-  }, [result.pane_a, result.pane_b, alignmentChunks]);
+    const la: AlignedLine[] = buildLines(result.pane_a);
+    // Use localPaneB so pane B re-renders after each XML apply
+    const lb: AlignedLine[] = buildLines(localPaneB);
+    // Pad to equal length so foldUnchangedLines (opt-in) works correctly
+    const maxLen = Math.max(la.length, lb.length);
+    const linesA = la.length < maxLen ? [...la, ...Array(maxLen - la.length).fill(null)] : la;
+    const linesB = lb.length < maxLen ? [...lb, ...Array(maxLen - lb.length).fill(null)] : lb;
+    return { linesA, linesB };
+  }, [result.pane_a, localPaneB]);
 
   // ── Apply optional folding ────────────────────────────────────────────────
   // When showAllContext is true (default) NO lines are hidden — every line
@@ -322,11 +442,18 @@ export default function DiffViewer({
     });
   }, []);
 
-  function scrollXmlToMark() {
+
+  // Only scroll XML to mark if a new chunk is selected by user action
+  const lastNavSpanRef = useRef<{start:number,end:number}|null>(null);
+  function scrollXmlToMark(force = false) {
     const el = xmlRef.current;
     if (!el) return;
     if (el.tagName !== "DIV") return;
-    (el as unknown as HTMLDivElement).querySelector("mark")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Only scroll if navSpan changed (new chunk selected) or forced
+    if (force || JSON.stringify(navSpan) !== JSON.stringify(lastNavSpanRef.current)) {
+      (el as unknown as HTMLDivElement).querySelector("mark")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      lastNavSpanRef.current = navSpan ? { ...navSpan } : null;
+    }
   }
 
   function getScrollFraction(paneData: typeof result.pane_a, chunkId: number) {
@@ -338,20 +465,39 @@ export default function DiffViewer({
   }
 
   const syncXmlScroll = useCallback((fraction: number) => {
+    // When the user just clicked inside the XML panel, don't scroll it away.
+    if (xmlNavLockRef.current) return;
     const xmlEl = xmlRef.current;
     if (!xmlEl) return;
     const max = xmlEl.scrollHeight - xmlEl.clientHeight;
     if (max <= 0) return;
+    // Set feedback lock so the scroll event that fires from setting scrollTop
+    // does not loop back into schedulePanelSync and re-sync the panes.
+    xmlScrollLockRef.current = true;
     xmlEl.scrollTop = Math.max(0, Math.min(1, fraction)) * max;
+    requestAnimationFrame(() => { xmlScrollLockRef.current = false; });
   }, []);
 
   const schedulePanelSync = useCallback(
     (source: "old" | "new" | "xml", fraction: number) => {
       if (navSyncLockRef.current) return;
       const f = Math.max(0, Math.min(1, fraction));
-      if (source !== "old") paneARef.current?.scrollToFraction(f);
-      if (source !== "new") paneBRef.current?.scrollToFraction(f);
+      // Pane A ↔ Pane B cross-sync.
+      if (source === "new") paneARef.current?.scrollToFraction(f);
+      if (source === "old") paneBRef.current?.scrollToFraction(f);
+      // Pane scrolling drives XML.
       if (source !== "xml") syncXmlScroll(f);
+      // XML scrolling drives both panes — but only when NOT caused by a
+      // programmatic syncXmlScroll call (xmlScrollLockRef prevents that loop)
+      // and NOT while an XML-click navigation is in flight (xmlNavLockRef).
+      if (source === "xml" && !xmlScrollLockRef.current && !xmlNavLockRef.current) {
+        paneARef.current?.scrollToFraction(f);
+        paneBRef.current?.scrollToFraction(f);
+      }
+      // PDF pane scrolling drives the live preview (one-way, no feedback loop).
+      if (source === "old" || source === "new" || source === "xml") {
+        previewRef.current?.scrollToFraction(f);
+      }
       if (source === "old" || source === "new") {
         if (pulseTimerRef.current) clearTimeout(pulseTimerRef.current);
         setPulseSide(source);
@@ -361,7 +507,7 @@ export default function DiffViewer({
     [syncXmlScroll],
   );
 
-  const selectChunk = useCallback(async (id: number) => {
+  const selectChunk = useCallback(async (id: number, skipXmlScroll = false) => {
     const seq = ++locateSeqRef.current;
     setActiveId(id);
     setApplyStatus("idle");
@@ -386,8 +532,13 @@ export default function DiffViewer({
         if (probe.length >= 6) {
           const idx = xmlText.indexOf(probe.slice(0, Math.min(60, probe.length)));
           if (idx !== -1) {
-            setNavSpan({ start: idx, end: idx + probe.length });
-            requestAnimationFrame(scrollXmlToMark);
+            // When triggered by an XML click (skipXmlScroll), don't set navSpan
+            // — doing so would make XmlEditor.revealLineInCenterIfOutsideViewport
+            // scroll Monaco away from the position the user just clicked.
+            if (!skipXmlScroll) {
+              setNavSpan({ start: idx, end: idx + probe.length });
+              requestAnimationFrame(() => scrollXmlToMark());
+            }
           }
         }
 
@@ -397,9 +548,9 @@ export default function DiffViewer({
         const loc = await apiLocate(xmlText, chunk);
         if (seq !== locateSeqRef.current) return;
         if (loc?.span_start != null && loc.span_end != null) {
-          setNavSpan({ start: loc.span_start, end: loc.span_end });
+          if (!skipXmlScroll) setNavSpan({ start: loc.span_start, end: loc.span_end });
         } else {
-          setNavSpan(null);
+          if (!skipXmlScroll) setNavSpan(null);
         }
       }
     } catch {
@@ -427,12 +578,13 @@ export default function DiffViewer({
       if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); goTo(1);  }
       if (e.key === "ArrowLeft"  || e.key === "ArrowUp"   || e.key === "k") { e.preventDefault(); goTo(-1); }
       if (e.key === "w" || e.key === "W") setWrapLines((v) => !v);
-      if (e.key === "x" || e.key === "X") setXmlOpen((v) => !v);
+      if ((e.key === "x" || e.key === "X") && mode === "edit") setXmlOpen((v) => !v);
+      if ((e.key === "p" || e.key === "P") && mode === "edit") setPreviewOpen((v) => !v);
       if (e.key === "c" || e.key === "C") setShowAllContext((v) => !v);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goTo]);
+  }, [goTo, mode]);
 
   useEffect(() => {
     return () => {
@@ -466,9 +618,33 @@ export default function DiffViewer({
           if (activeId !== null) next.add(activeId);
           return next;
         });
+        // Mark as XML-edited and update text_b for live sync
+        setXmlEditedIds((prev) => {
+          const next = new Set(prev);
+          next.add(activeId);
+          return next;
+        });
+        // Extract the actual new text from the updated XML at the applied span
+        const newChunkText = (res.span_start != null && res.span_end != null)
+          ? res.xml_text
+              .slice(res.span_start, res.span_end)
+              .replace(/<[^>]*>/g, " ")
+              .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+              .replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim()
+          : chunk.text_b;
+        setChunkTextBOverrides((prev) => ({ ...prev, [activeId]: newChunkText }));
+        // Patch localPaneB so the B pane re-renders with the updated text
+        if (newChunkText !== chunk.text_b) {
+          setLocalPaneB((prev) => patchPaneB(prev, activeId, newChunkText));
+        }
         if (res.span_start != null) {
           setNavSpan({ start: res.span_start, end: res.span_end! });
-          requestAnimationFrame(scrollXmlToMark);
+          requestAnimationFrame(() => scrollXmlToMark());
+          // Scroll B pane to the updated location
+          const bFraction = res.xml_text.length > 0 ? res.span_start / res.xml_text.length : undefined;
+          if (bFraction !== undefined) {
+            setTimeout(() => paneBRef.current?.scrollToFraction(bFraction), 120);
+          }
         }
         // Capture snapshot to avoid stale-closure bug in the 800ms timer.
         const snapshotFiltered = filteredChunks;
@@ -491,7 +667,7 @@ export default function DiffViewer({
       setXmlStatus(`Error: ${(e as Error).message}`);
       setTimeout(() => setApplyStatus("idle"), 3000);
     }
-  }, [mode, xmlText, activeId, result, filteredChunks, appliedIds, selectChunk]);
+  }, [mode, xmlText, activeId, result, filteredChunks, appliedIds, selectChunk]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadXml = useCallback((f: File) => {
     setXmlFilename(f.name);
@@ -623,7 +799,7 @@ export default function DiffViewer({
   const handleXmlLineClick = useCallback(async (lineStart: number, lineEnd: number) => {
     if (!xmlText || result.chunks.length === 0) return;
     try {
-      const CONTEXT_RADIUS = 1500;
+      const CONTEXT_RADIUS = 600;   // reduced from 1500 — tighter = fewer false matches
       const ctxStart = Math.max(0, lineStart - CONTEXT_RADIUS);
       const ctxEnd   = Math.min(xmlText.length, lineEnd + CONTEXT_RADIUS);
 
@@ -634,6 +810,132 @@ export default function DiffViewer({
         .replace(/&amp;/g, "&").replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
         .replace(/&#\d+;/g, " ").replace(/\s+/g, " ").trim();
+
+      // ── linePlain: clicked-element text only (no radius) ─────────────────
+      // Computed early so it is available for the scrollToText fallback at
+      // the end of the function (when no diff chunk was matched).
+      const linePlain = xmlText
+        .slice(lineStart, lineEnd)
+        .replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").replace(/&#\d+;/g, " ")
+        .replace(/\s+/g, " ").trim().toLowerCase();
+
+      // ── Earliest path: xml_context position match ──────────────────────
+      // chunk.xml_context is populated by the processing service with the
+      // actual XML snippet where that chunk was located. Searching for its
+      // position in xmlText gives a direct, reliable XML-offset→chunk mapping
+      // that bypasses all text-normalisation issues (Nº vs n°, date formats,
+      // abbreviations, etc.).
+      {
+        let xmlCtxBestId: number | null = null;
+        let xmlCtxBestDist = Infinity;
+        for (const chunk of result.chunks) {
+          if (chunk.kind === "del") continue;
+          if (!chunk.xml_context || chunk.xml_context.length < 8) continue;
+          // Use first 80 chars as the search key to avoid matching too broadly
+          const key = chunk.xml_context.slice(0, 80);
+          let pos = xmlText.indexOf(key);
+          if (pos === -1) {
+            // Try shorter key in case the stored snippet was trimmed/modified
+            const shortKey = chunk.xml_context.slice(0, 40);
+            pos = shortKey.length >= 8 ? xmlText.indexOf(shortKey) : -1;
+          }
+          if (pos === -1) continue;
+          const dist = Math.abs(pos - lineStart);
+          if (dist < xmlCtxBestDist) {
+            xmlCtxBestDist = dist;
+            xmlCtxBestId   = chunk.id;
+          }
+        }
+        // Accept if the closest match is within 1000 chars of the click point
+        if (xmlCtxBestId !== null && xmlCtxBestDist < 1000) {
+          xmlNavLockRef.current = true;
+          const isInPaneB = localPaneB.offsets && String(xmlCtxBestId) in localPaneB.offsets;
+          void selectChunk(xmlCtxBestId, true);
+          if (!isInPaneB) {
+            const xmlFrac = xmlText.length > 0 ? lineStart / xmlText.length : 0;
+            setTimeout(() => paneBRef.current?.scrollToFraction(xmlFrac), 100);
+          }
+          setTimeout(() => { xmlNavLockRef.current = false; }, 600);
+          return;
+        }
+      }
+
+      // ── Fast path: tight-context substring match (using original text_b) ──
+      const TIGHT_RADIUS = 200;
+      const tightPlain = xmlText
+        .slice(Math.max(0, lineStart - TIGHT_RADIUS), Math.min(xmlText.length, lineEnd + TIGHT_RADIUS))
+        .replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").replace(/&#\d+;/g, " ")
+        .replace(/\s+/g, " ").trim().toLowerCase();
+      // linePlain is now computed above (at function top) for the fallback.
+
+      if (tightPlain.length >= 10) {
+        let subMatchId: number | null = null;
+        let subMatchLen = 0;
+        for (const chunk of result.chunks) {
+          // Skip del chunks — deleted content is NOT in the XML (new file B)
+          if (chunk.kind === "del") continue;
+          // Use text_b for add/mod, text_a for emp/strike (same content in both)
+          const chunkProbe = ((chunk.kind === "add" || chunk.kind === "mod")
+            ? (originalTextBMap[chunk.id] || chunk.text_b || chunk.text_a)
+            : chunk.text_a
+          )?.replace(/\s+/g, " ").trim() ?? "";
+          if (chunkProbe.length < 10) continue;
+          const needle = chunkProbe.slice(0, 60).toLowerCase().replace(/\s+/g, " ").trim();
+          if (needle.length >= 10 && tightPlain.includes(needle) && needle.length > subMatchLen) {
+            subMatchLen = needle.length;
+            subMatchId  = chunk.id;
+          }
+        }
+
+        // Word-overlap fallback: handles cases where chunk text and XML title are
+        // semantically the same but lexically different — e.g. "n° 2 de 12/8/2020"
+        // vs "Nº 2, DE 12 DE AGOSTO DE 2020" (different Unicode degree/ordinal chars,
+        // different date formats). Strip punctuation/ordinals, split into words ≥3 chars,
+        // and accept if ≥50% of the chunk's meaningful words appear in the XML context.
+        // IMPORTANT: use linePlain (clicked line only, no radius) NOT tightPlain here —
+        // tightPlain includes adjacent paragraphs whose vocabulary falsely matches other
+        // chunks (e.g. the "Consolida os critérios..." paragraph right below the heading).
+        if (subMatchId === null) {
+          const normalizeWords = (s: string) =>
+            s.toLowerCase().replace(/[°º\/,\.]/g, " ").replace(/\s+/g, " ").trim()
+              .split(" ").filter(w => w.length >= 3);
+          const ctxWordSet = new Set(normalizeWords(linePlain));
+          let wordBestId: number | null = null;
+          let wordBestRatio = 0;
+          for (const chunk of result.chunks) {
+            if (chunk.kind === "del") continue;
+            const chunkProbeW = ((chunk.kind === "add" || chunk.kind === "mod")
+              ? (originalTextBMap[chunk.id] || chunk.text_b || chunk.text_a)
+              : chunk.text_a
+            )?.replace(/\s+/g, " ").trim() ?? "";
+            const chunkWords = normalizeWords(chunkProbeW);
+            if (chunkWords.length < 2) continue;
+            let hits = 0;
+            for (const w of chunkWords) { if (ctxWordSet.has(w)) hits++; }
+            const ratio = hits / chunkWords.length;
+            if (ratio >= 0.5 && ratio > wordBestRatio) {
+              wordBestRatio = ratio;
+              wordBestId = chunk.id;
+            }
+          }
+          if (wordBestId !== null) subMatchId = wordBestId;
+        }
+
+        if (subMatchId !== null) {
+          xmlNavLockRef.current = true;
+          const isInPaneB = localPaneB.offsets && String(subMatchId) in localPaneB.offsets;
+          void selectChunk(subMatchId, true);
+          if (!isInPaneB) {
+            // Chunk not tracked in pane B offsets — scroll B directly by XML fraction
+            const xmlFrac = xmlText.length > 0 ? lineStart / xmlText.length : 0;
+            setTimeout(() => paneBRef.current?.scrollToFraction(xmlFrac), 100);
+          }
+          setTimeout(() => { xmlNavLockRef.current = false; }, 600);
+          return;
+        }
+      }
 
       let fastBestId: number | null = null;
       let fastBestScore = 0;
@@ -655,6 +957,8 @@ export default function DiffViewer({
         }
 
         for (const chunk of result.chunks) {
+          // Skip del chunks — deleted content is NOT in the XML (new file B)
+          if (chunk.kind === "del") continue;
           const cached = chunkNgramCache.get(chunk.id);
           if (!cached) continue;
           let hits = 0;
@@ -669,9 +973,20 @@ export default function DiffViewer({
         }
       }
 
+      // Lock: prevent syncXmlScroll from scrolling the XML panel away from
+      // the position the user just clicked, for the duration of this navigation.
+      xmlNavLockRef.current = true;
+      const releaseNavLock = () => { xmlNavLockRef.current = false; };
+
       const serverResult = await serverLocatePromise;
       if (serverResult?.success && serverResult.chunk_id != null) {
-        void selectChunk(serverResult.chunk_id);
+        const isInPaneBServer = localPaneB.offsets && String(serverResult.chunk_id) in localPaneB.offsets;
+        void selectChunk(serverResult.chunk_id, true /* skipXmlScroll */);
+        if (!isInPaneBServer) {
+          const xmlFrac = xmlText.length > 0 ? lineStart / xmlText.length : 0;
+          setTimeout(() => paneBRef.current?.scrollToFraction(xmlFrac), 100);
+        }
+        setTimeout(releaseNavLock, 600);
         return;
       }
 
@@ -689,21 +1004,34 @@ export default function DiffViewer({
           const spanMid = (loc.span_start + (loc.span_end ?? loc.span_start)) / 2;
           let closestId: number | null = null;
           let closestDist = Infinity;
-          for (const [k, off] of Object.entries(result.pane_a.offsets ?? {}) as Array<[string, number]>) {
+          // XML is based on the new file (pane B) — use pane_b.offsets as primary.
+          // Fall back to pane_a.offsets only if pane_b has no offsets at all.
+          const primaryOffsets = Object.keys(result.pane_b.offsets ?? {}).length > 0
+            ? result.pane_b.offsets
+            : result.pane_a.offsets;
+          for (const [k, off] of Object.entries(primaryOffsets ?? {}) as Array<[string, number]>) {
             const d = Math.abs(Number(off) - spanMid);
             if (d < closestDist) { closestDist = d; closestId = Number(k); }
           }
-          for (const [k, off] of Object.entries(result.pane_b.offsets ?? {}) as Array<[string, number]>) {
-            const d = Math.abs(Number(off) - spanMid);
-            if (d < closestDist) { closestDist = d; closestId = Number(k); }
-          }
-          if (closestId !== null) void selectChunk(closestId);
+          if (closestId !== null) void selectChunk(closestId, true /* skipXmlScroll */);
         } else if (fastBestId !== null && fastBestScore < 0.30) {
-          void selectChunk(fastBestId);
+          void selectChunk(fastBestId, true /* skipXmlScroll */);
         }
       }
+      // ── Text-search fallback (Option 2): scroll both panes to the clicked text ─
+      // Runs when no diff chunk could be matched — handles unchanged XML content
+      // whose text exists in the PDF but is not part of any diff chunk.
+      // Both panes are scrolled independently so A and B stay in sync.
+      // scrollToText returns false (no-op) if the text scores below threshold,
+      // so pane A won't jump to a wrong position when text only exists in B.
+      if (linePlain.length >= 4) {
+        paneBRef.current?.scrollToText(linePlain);
+        paneARef.current?.scrollToText(linePlain);
+      }
+
+      setTimeout(releaseNavLock, 600);
     } catch { /* best-effort; must not throw */ }
-  }, [xmlText, result.chunks, result.pane_a.offsets, result.pane_b.offsets, chunkNgramCache, selectChunk]);
+  }, [xmlText, result.chunks, result.pane_a.offsets, localPaneB.offsets, chunkNgramCache, selectChunk, localPaneB]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const posLabel = activeFilteredIndex >= 0
     ? `${activeFilteredIndex + 1} / ${filteredChunks.length}`
@@ -716,6 +1044,28 @@ export default function DiffViewer({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-white dark:bg-[#0a1020] overflow-hidden">
+
+      {/* Chunk Level Filter UI (WF2 only) */}
+      {mode === "edit" && sectionsWithChanges.length > 0 && (
+        <div className="flex flex-wrap gap-2 px-4 pt-3 pb-1.5 bg-white dark:bg-[#0a1020] z-10">
+          <span className="text-[11px] font-semibold text-slate-400 mr-2 mt-1">CHUNK LEVEL</span>
+          <button
+            className={`px-2 py-0.5 rounded-full text-[11px] font-bold border transition-all ${!filterSection ? "bg-orange-50 text-orange-600 border-orange-200 dark:bg-orange-900/30 dark:text-orange-200" : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"}`}
+            onClick={() => setFilterSection(null)}
+          >
+            All
+          </button>
+          {sectionsWithChanges.map((s) => (
+            <button
+              key={s.label}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-bold border transition-all ${filterSection === s.label ? "bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/60 dark:text-orange-200" : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"}`}
+              onClick={() => setFilterSection(s.label)}
+            >
+              {s.label} <span className="ml-1 text-[10px] font-mono font-normal">({sectionCountMap.get(s.label) ?? 0})</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {isStreaming && (
         <div className="flex-shrink-0 relative h-0.5 bg-slate-200 dark:bg-white/8 overflow-hidden">
@@ -826,6 +1176,7 @@ export default function DiffViewer({
           </IconBtn>
 
           {/* Show All Lines toggle — default ON so nothing is hidden */}
+
           <IconBtn
             title={showAllContext ? "Collapse unchanged lines (C)" : "Show all lines (C)"}
             active={showAllContext}
@@ -838,12 +1189,25 @@ export default function DiffViewer({
             <span className="hidden sm:inline">All Lines</span>
           </IconBtn>
 
-          <IconBtn title={xmlOpen ? "Hide XML panel (X)" : "Show XML panel (X)"} active={xmlOpen} onClick={() => setXmlOpen((v) => !v)}>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-            </svg>
-            <span className="hidden sm:inline">XML</span>
-          </IconBtn>
+          {mode === "edit" && (
+            <>
+              <IconBtn title={xmlOpen ? "Hide XML panel (X)" : "Show XML panel (X)"} active={xmlOpen} onClick={() => setXmlOpen((v) => !v)}>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                </svg>
+                <span className="hidden sm:inline">XML</span>
+              </IconBtn>
+              {xmlOpen && (
+                <IconBtn title={previewOpen ? "Hide live preview (P)" : "Show live preview (P)"} active={previewOpen} onClick={() => setPreviewOpen((v) => !v)}>
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0zM2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  <span className="hidden sm:inline">Preview</span>
+                </IconBtn>
+              )}
+            </>
+          )}
 
           {result.chunks.some((c) => c.kind === "emp") && (
             <IconBtn title="Download unchanged chunks as JSON" active={false} onClick={downloadUnchanged}>
@@ -890,8 +1254,14 @@ export default function DiffViewer({
           wrap
           <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">C</kbd>
           context
-          <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">X</kbd>
-          xml
+          {mode === "edit" && (
+            <>
+              <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">X</kbd>
+              xml
+              <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-white/5 font-mono">P</kbd>
+              preview
+            </>
+          )}
         </span>
       </div>
 
@@ -970,6 +1340,7 @@ export default function DiffViewer({
                   Apply All Visible ({filteredChunks.filter((c) => !appliedIds.has(c.id)).length})
                 </button>
               ) : undefined}
+              xmlEditedIds={xmlEditedIds}
             />
           </div>
         )}
@@ -1036,7 +1407,7 @@ export default function DiffViewer({
             <div className="min-w-0 flex-1 overflow-hidden">
               <DiffPane
                 ref={paneBRef}
-                pane={result.pane_b}
+                pane={localPaneB}
                 chunks={result.chunks}
                 activeChunkId={activeId}
                 activeChunk={activeChunk}
@@ -1056,7 +1427,7 @@ export default function DiffViewer({
             </div>
           </div>
 
-          {xmlOpen && (
+          {mode === "edit" && xmlOpen && (
             <>
               <div
                 className="flex-shrink-0 h-1 cursor-row-resize hover:bg-teal-400/40
@@ -1072,33 +1443,66 @@ export default function DiffViewer({
                   ))}
                 </div>
               </div>
-              <div className="flex-shrink-0 overflow-hidden" style={{ height: xmlHeight }}>
-                <XmlPanel
-                  ref={xmlRef}
-                  mode={mode}
-                  xmlText={xmlText}
-                  xmlFilename={xmlFilename}
-                  activeChunk={activeChunk}
-                  appliedIds={appliedIds}
-                  navSpan={navSpan}
-                  status={xmlStatus}
-                  onLoad={loadXml}
-                  onApply={applyChunk}
-                  onDownload={downloadXml}
-                  onXmlChange={setXmlText}
-                  onScrollFraction={(f) => schedulePanelSync("xml", f)}
-                  canUndo={applyHistory.length > 0}
-                  onUndo={undoApply}
-                  onXmlLineClick={handleXmlLineClick}
-                />
+              <div ref={xmlPanelContainerRef} className="flex-shrink-0 overflow-hidden flex" style={{ height: xmlHeight }}>
+                {/* XML editor — width controlled by previewSplit when preview is open */}
+                <div
+                  className="overflow-hidden"
+                  style={previewOpen ? { width: `${previewSplit}%`, flexShrink: 0 } : { flex: 1, minWidth: 0 }}
+                >
+                  <XmlPanel
+                    ref={xmlRef}
+                    mode={mode}
+                    xmlText={xmlText}
+                    xmlFilename={xmlFilename}
+                    activeChunk={activeChunk}
+                    appliedIds={appliedIds}
+                    navSpan={navSpan}
+                    status={xmlStatus}
+                    onLoad={loadXml}
+                    onApply={applyChunk}
+                    onDownload={downloadXml}
+                    onXmlChange={setXmlText}
+                    onScrollFraction={(f) => schedulePanelSync("xml", f)}
+                    canUndo={applyHistory.length > 0}
+                    onUndo={undoApply}
+                    onXmlLineClick={handleXmlLineClick}
+                  />
+                </div>
+
+                {/* Draggable splitter between XML editor and preview */}
+                {previewOpen && (
+                  <>
+                    <div
+                      className="flex-shrink-0 w-1 cursor-col-resize hover:bg-teal-400/40
+                        active:bg-teal-500/50 transition-colors relative z-10
+                        bg-slate-200/60 dark:bg-white/[0.06]"
+                      onMouseDown={startDragPreview}
+                    >
+                      <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
+                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                        flex flex-col gap-0.5 opacity-40">
+                        {[0,1,2].map((i) => (
+                          <div key={i} className="w-1 h-1 rounded-full bg-slate-400 dark:bg-slate-500" />
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Live HTML preview — takes the remaining width */}
+                    <div className="flex-1 min-w-0 overflow-hidden">
+                      <XmlPreviewPanel ref={previewRef} xmlText={xmlText} />
+                    </div>
+                  </>
+                )}
               </div>
             </>
           )}
 
+
+          {/* Only show WordDiffPanel for the active chunk, and only if open for that chunk */}
           <WordDiffPanel
             chunk={activeChunk}
-            open={wordPanelOpen}
-            onToggle={() => setWordPanelOpen((v) => !v)}
+            open={wordPanelOpenId === activeChunk?.id}
+            onToggle={() => handleWordPanelToggle(activeChunk?.id ?? -1)}
           />
         </div>
       </div>

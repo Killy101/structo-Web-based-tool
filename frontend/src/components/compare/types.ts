@@ -63,6 +63,13 @@ export interface DiffPaneHandle {
   scrollToChunk: (chunkId: number, orderedIds?: number[], scrollFraction?: number) => void;
   /** Programmatically scroll to a proportional position (0–1) without triggering onScrollFraction */
   scrollToFraction: (fraction: number) => void;
+  /**
+   * Search pane lines for text content matching `text` and scroll to the best
+   * matching line. Uses substring + word-overlap matching so it works even when
+   * the XML and PDF text differ slightly in whitespace or punctuation.
+   * Returns true if a match was found and scrolled to, false otherwise.
+   */
+  scrollToText: (text: string) => boolean;
 }
 
 export interface PaneData {

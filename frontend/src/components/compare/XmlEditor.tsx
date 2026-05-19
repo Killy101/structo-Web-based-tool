@@ -126,13 +126,14 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
         });
 
         // Report cursor character offset for XML → PDF navigation (WF3).
-        // Reads from the stable ref so no Monaco listener is recreated on re-renders.
-        editor.onDidChangeCursorPosition((e) => {
+        // Use onMouseDown so navigation fires on the clicked position (not on
+        // every cursor-position change from typing / arrow keys).
+        editor.onMouseDown((e) => {
           const cb = onCursorOffsetRef.current;
           if (!cb) return;
           const model = editor.getModel();
-          if (!model) return;
-          cb(model.getOffsetAt(e.position));
+          if (!model || !e.target.position) return;
+          cb(model.getOffsetAt(e.target.position));
         });
 
         // Kick off initial validation.

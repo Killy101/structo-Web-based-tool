@@ -5240,38 +5240,61 @@ def compute_diff(
 
     def _contained_in_corpus(nt: str, corpus_joined: str, corpus_clean: str,
                               block_set: frozenset, strip_text: str = "") -> bool:
-        """Check if normalised text is contained in the other side's corpus."""
+        """Check if normalised text is contained in the other side's corpus.
+
+        Short texts (< 40 chars) are NOT suppressed by exact-block match either,
+        because PDF exports from web pages often embed hidden/invisible UI text
+        (form labels, dropdowns) as PDF text objects even when not rendered.
+        Example: "Selecione outra versão do normativo" (35 chars) can appear as a
+        hidden layer in the new PDF even though it is not visible → must NOT
+        suppress the DEL chunk for it.
+        Texts >= 40 chars are safe to suppress on exact match because they are
+        almost certainly genuine document content (not UI artefacts).
+        """
         if len(nt) < 4:
             return False
-        # Fast path: exact block match (O(1))
-        if nt in block_set:
+        # Exact block match — only suppress if text is long enough to be genuine
+        # legal content rather than a hidden UI label / navigation element.
+        if len(nt) >= 40 and nt in block_set:
             return True
-        # Substring in joined corpus
-        if nt in corpus_joined:
+        # Substring in joined corpus — only for longer texts to avoid false
+        # positives on short navigation/UI phrases (< 60 chars normalised).
+        if len(nt) >= 60 and nt in corpus_joined:
             return True
-        # Bracket+space-stripped fallback
+        # Bracket+space-stripped fallback — require 40 clean chars for safety
         nc = _RE_CLEAN2.sub('', nt)
-        if len(nc) >= 4 and nc in corpus_clean:
+        if len(nc) >= 40 and nc in corpus_clean:
             return True
-        # Provision-anchor-stripped fallback
-        if strip_text and len(nt) >= 12:
+        # Provision-anchor-stripped fallback — only for reasonably long texts
+        if strip_text and len(nt) >= 60:
             st = _strip_prov_anchors(strip_text)
             if st:
                 sn = _norm_cmp(st).strip()
-                if len(sn) >= 4 and sn in corpus_joined:
+                if len(sn) >= 40 and sn in corpus_joined:
                     return True
         return False
 
     contain_suppress = set()
+    _DEBUG_CONTAIN = True  # temporary — set False to disable
     for ci, ch in enumerate(chunks):
         if ch.kind == KIND_ADD:
             nt = _norm_cmp(ch.text_b).strip()
             if _contained_in_corpus(nt, corpus_a_joined, corpus_a_clean, _block_set_a, ch.text_b):
                 contain_suppress.add(ci)
+                if _DEBUG_CONTAIN:
+                    reason = ("exact-block" if nt in _block_set_a else
+                              "substring" if (len(nt) >= 60 and nt in corpus_a_joined) else
+                              "clean-substr" if (len(_RE_CLEAN2.sub('', nt)) >= 40 and _RE_CLEAN2.sub('', nt) in corpus_a_clean) else "other")
+                    print(f"  [contain-suppress] ADD  [{reason}] {repr(nt[:80])}", flush=True)
         elif ch.kind == KIND_DEL:
             nt = _norm_cmp(ch.text_a).strip()
             if _contained_in_corpus(nt, corpus_b_joined, corpus_b_clean, _block_set_b, ch.text_a):
                 contain_suppress.add(ci)
+                if _DEBUG_CONTAIN:
+                    reason = ("exact-block" if nt in _block_set_b else
+                              "substring" if (len(nt) >= 60 and nt in corpus_b_joined) else
+                              "clean-substr" if (len(_RE_CLEAN2.sub('', nt)) >= 40 and _RE_CLEAN2.sub('', nt) in corpus_b_clean) else "other")
+                    print(f"  [contain-suppress] DEL  [{reason}] {repr(nt[:80])}", flush=True)
 
     if contain_suppress:
         print(f"  [compute_diff] containment-suppress: {len(contain_suppress)} chunks", flush=True)
@@ -5318,11 +5341,12 @@ def compute_diff(
         elif ch.kind == KIND_MOD:
             # Suppress MOD where one side is contained in the opposite corpus
             # (block-boundary truncation → the "missing" text is elsewhere).
+            # Require >= 60 chars to avoid suppressing short navigation phrases.
             nta = _norm_cmp(ch.text_a).strip()
             ntb = _norm_cmp(ch.text_b).strip()
             if nta and ntb:
-                a_in_b_corpus = len(nta) >= 4 and nta in corpus_b_joined
-                b_in_a_corpus = len(ntb) >= 4 and ntb in corpus_a_joined
+                a_in_b_corpus = len(nta) >= 60 and nta in corpus_b_joined
+                b_in_a_corpus = len(ntb) >= 60 and ntb in corpus_a_joined
                 if a_in_b_corpus and b_in_a_corpus:
                     contain2.add(ci)
                 # If the shorter side is contained in the longer side (prefix/
@@ -5389,12 +5413,13 @@ def compute_diff(
 
     def _fuzzy_match_block(nt, ct, bk1, bks, bkco, other_corpus_clean, other_corpus_co):
         """Check if text has a fuzzy match in the other side's blocks."""
-        # Fast path: clean corpus containment (brackets+spaces removed)
+        # Fast path: clean corpus containment (brackets+spaces removed).
+        # Require >= 40 clean chars to avoid false positives on short phrases.
         nt_clean = _clean_all(nt)
-        if len(nt_clean) >= 3 and nt_clean in other_corpus_clean:
+        if len(nt_clean) >= 40 and nt_clean in other_corpus_clean:
             return True
-        # Content-only corpus containment
-        if ct and len(ct) >= 4 and ct in other_corpus_co:
+        # Content-only corpus containment — same 40-char minimum
+        if ct and len(ct) >= 40 and ct in other_corpus_co:
             return True
 
         # Index-based candidate lookup
@@ -5426,16 +5451,21 @@ def compute_diff(
                 unique.append((bn, bc))
 
         for cand_n, cand_c in unique:
-            if nt == cand_n or ct == cand_c:
+            # Exact block match — require >= 40 chars to avoid hidden UI text
+            # in PDF exports suppressing genuine deletions of short phrases.
+            if len(nt) >= 40 and (nt == cand_n or ct == cand_c):
                 return True
-            if ct and cand_c and ct == cand_c:
+            if ct and cand_c and len(ct) >= 40 and ct == cand_c:
                 return True
-            if len(nt) >= 4 and (nt in cand_n or cand_n in nt):
+            # Substring containment: require >= 60 chars to avoid suppressing
+            # short navigation/UI phrases that happen to be prefixes of a
+            # larger merged block in the other document.
+            if len(nt) >= 60 and (nt in cand_n or cand_n in nt):
                 return True
-            if ct and cand_c and len(ct) >= 4 and (ct in cand_c or cand_c in ct):
+            if ct and cand_c and len(ct) >= 60 and (ct in cand_c or cand_c in ct):
                 return True
             cand_clean = _clean_all(cand_n)
-            if len(nt_clean) >= 4 and (nt_clean in cand_clean or cand_clean in nt_clean):
+            if len(nt_clean) >= 40 and (nt_clean in cand_clean or cand_clean in nt_clean):
                 return True
             sim = _similarity(nt, cand_n)
             if sim >= 0.82 and _numbers_match(nt, cand_n):
@@ -5464,6 +5494,7 @@ def compute_diff(
             ct = _norm_cmp(_content_only(ch.text_a)).strip()
             if _fuzzy_match_block(nt, ct, _bk1_b, _bks_b, _bkco_b, _corpus_b_clean, _corpus_co_b):
                 fuzzy_suppress.add(ci)
+                print(f"  [fuzzy-suppress] DEL {repr(nt[:80])}", flush=True)
     if fuzzy_suppress:
         print(f"  [compute_diff] fuzzy-block-suppress: {len(fuzzy_suppress)} chunks", flush=True)
         chunks = [ch for ci, ch in enumerate(chunks) if ci not in fuzzy_suppress]

@@ -347,7 +347,9 @@ export default function DiffUpload({
     onSectionsLoaded?.(filtered);
   };
 
-  const ready = !!(fileA && fileB) && (!xmlFile || skipChunking || chosenLevel !== null);
+  // When the XML upload section is visible (onXmlFile provided), require the
+  // XML file before enabling Run — in addition to both PDFs.
+  const ready = !!(fileA && fileB && (!onXmlFile || xmlFile)) && (!xmlFile || skipChunking || chosenLevel !== null);
   const hasBothPdfs = !!(fileA && fileB);
 
   const headingTitle = title ?? (onXmlFile ? (skipChunking ? "Compare & Apply" : "Chunk & Compare") : "Direct Compare");

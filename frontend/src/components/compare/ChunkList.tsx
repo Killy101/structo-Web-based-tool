@@ -51,12 +51,14 @@ const ChunkRow = React.memo(function ChunkRow({
   isApplied,
   isReviewed,
   onSelect,
+  xmlEditedIds,
 }: {
   ch: Chunk;
   isActive: boolean;
   isApplied: boolean;
   isReviewed: boolean;
   onSelect: (id: number) => void;
+  xmlEditedIds?: Set<number>;
 }) {
   const m = KIND_META[ch.kind];
   const preview = (ch.text_b || ch.text_a).slice(0, 55);
@@ -67,19 +69,24 @@ const ChunkRow = React.memo(function ChunkRow({
     ch.kind === "del" ? "near (new):" :
     ch.kind === "add" ? "near (old):" : "";
 
+  const isXmlEdited = xmlEditedIds?.has(ch.id);
   return (
     <button
       onClick={() => onSelect(ch.id)}
       className={`w-full flex items-start gap-2 px-2.5 py-1.5 mx-1 rounded-lg mb-0.5 text-left transition-all
         ${isActive
-          ? `${m.bgClass} border ${m.ringClass} shadow-sm`
+          ? ch.kind === "emp"
+            ? "bg-blue-400/10 border border-blue-400/70 shadow-sm"
+            : `${m.bgClass} border ${m.ringClass} shadow-sm`
           : "border border-transparent hover:bg-slate-100 dark:hover:bg-white/4"
         }
-        ${isApplied ? "opacity-40" : ""}`}
+        ${isApplied ? "opacity-40" : ""}
+        ${isXmlEdited ? "ring-2 ring-violet-400/60" : ""}`}
       style={{ width: "calc(100% - 8px)" }}
     >
       <span className={`flex-shrink-0 mt-0.5 text-[8px] font-black tracking-widest px-1.5 py-0.5 rounded text-white ${m.pillClass}`}>
         {m.label}
+        {isXmlEdited && <span className="ml-1 text-violet-400" title="Edited via XML">✏️</span>}
       </span>
       <span className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed font-mono break-words min-w-0">
         {isApplied && (
@@ -108,10 +115,15 @@ const ChunkRow = React.memo(function ChunkRow({
               const isXmlSuggest = lower.startsWith("xml_suggest:");
 
               const colorClass =
-                isXmlSuggest                                     ? "text-orange-400 italic" :
+                isXmlSuggest                                          ? "text-orange-400 italic" :
                 lower.includes("removed") || lower.includes("deleted") ? "text-red-400" :
-                lower.includes("added")                            ? "text-green-500" :
-                "text-orange-400";   // bold, italic, bold+italic, underline, strikeout, monospace → orange
+                lower.includes("added")                                ? "text-green-500" :
+                lower.includes("bold") && lower.includes("italic")    ? "text-violet-700 dark:text-violet-200" :
+                lower.includes("bold")                                ? "text-orange-800 dark:text-orange-300" :
+                lower.includes("italic")                              ? "text-teal-700 dark:text-teal-200" :
+                lower.includes("underline") || lower.includes("under") ? "text-blue-700 dark:text-blue-200" :
+                lower.includes("strike")                              ? "text-rose-700 dark:text-rose-300" :
+                "text-slate-700 dark:text-slate-300";  // default EMP text
 
               const previewText = (ch.text_b || ch.text_a).slice(0, 28);
               const previewStyle: React.CSSProperties =
@@ -214,8 +226,8 @@ function SectionHeader({
 }
 
 export default function ChunkList({
-  chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions, reviewedIds,
-}: Props) {
+  chunks, stats, activeId, appliedIds, onSelect, collapsed, onToggle, headerActions, reviewedIds, xmlEditedIds,
+}: Props & { xmlEditedIds?: Set<number> }) {
   const [filter, setFilter] = useState<FilterKind>("all");
   const [hideLoConfidence, setHideLoConfidence] = useState(false);
 
@@ -338,14 +350,15 @@ export default function ChunkList({
             onSelect={onSelect}
           />
         )) : filtered.map((ch) => (
-          <ChunkRow
-            key={ch.id}
-            ch={ch}
-            isActive={ch.id === activeId}
-            isApplied={appliedIds.has(ch.id)}
-            isReviewed={reviewedIds?.has(ch.id) ?? false}
-            onSelect={onSelect}
-          />
+            <ChunkRow
+              key={ch.id}
+              ch={ch}
+              isActive={ch.id === activeId}
+              isApplied={appliedIds.has(ch.id)}
+              isReviewed={reviewedIds?.has(ch.id) ?? false}
+              onSelect={onSelect}
+              xmlEditedIds={xmlEditedIds}
+            />
         ))}
       </div>
     </div>
