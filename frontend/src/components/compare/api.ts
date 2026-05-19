@@ -836,10 +836,12 @@ export interface MergeChunkRow {
   index: number;
   filename: string;
   relative_path: string;
+  selection_key: string;
   sequence: number | null;
   part_order: number;
   section_level: number;
   has_changes: boolean;
+  source_group: "corrected" | "haschanges" | "nochanges" | "unknown";
   duplicate: boolean;
   selected: boolean;
   heading: string;
@@ -852,6 +854,7 @@ export interface MergeChunkInspectResult {
   invalid_files: Array<{ filename: string; reason: string }>;
   warnings: string[];
   missing_sequences: number[];
+  duplicate_sequences?: number[];
   summary: {
     total_detected: number;
     selected: number;

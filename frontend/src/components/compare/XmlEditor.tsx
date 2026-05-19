@@ -48,7 +48,7 @@ type Marker = {
   severity: "warning" | "info";
 };
 
-const INNOD_LEVEL_VALUES = ["", ...Array.from({ length: 15 }, (_, i) => String(i + 1))] as const;
+const INNOD_LEVEL_VALUES = ["0", ...Array.from({ length: 15 }, (_, i) => String(i + 1))] as const;
 
 const EMPHASIS_SHORTCUTS: Record<string, { open: string; close: string }> = {
   "&title": { open: "<title>", close: "</title>" },
@@ -75,14 +75,67 @@ const TAG_SHORTCUTS = new Set([
   "innodimg",
   "innodreplace",
   "innodfootnote",
+  "innodfootnoteref",
+  "table",
+  "tr",
+  "th",
+  "td",
+  "li",
+  "ul",
+  "ol",
 ]);
 
 const INNOD_SNIPPETS = [
   {
+    label: "p",
+    detail: "Paragraph",
+    insertText: "<p>${1:text}</p>",
+  },
+  {
+    label: "b",
+    detail: "Bold",
+    insertText: "<b>${1:text}</b>",
+  },
+  {
+    label: "i",
+    detail: "Italic",
+    insertText: "<i>${1:text}</i>",
+  },
+  {
+    label: "u",
+    detail: "Underline",
+    insertText: "<u>${1:text}</u>",
+  },
+  {
+    label: "s",
+    detail: "Strike",
+    insertText: "<s>${1:text}</s>",
+  },
+  {
+    label: "bold",
+    detail: "Alias for <b>",
+    insertText: "<b>${1:text}</b>",
+  },
+  {
+    label: "italic",
+    detail: "Alias for <i>",
+    insertText: "<i>${1:text}</i>",
+  },
+  {
+    label: "underline",
+    detail: "Alias for <u>",
+    insertText: "<u>${1:text}</u>",
+  },
+  {
+    label: "strike",
+    detail: "Alias for <s>",
+    insertText: "<s>${1:text}</s>",
+  },
+  {
     label: "innodLevel section",
     detail: "Collapsed level section scaffold",
     insertText: [
-      "innodLevel level=\"${1:5}\" collapsed=\"${2:true}\">",
+      "<innodLevel level=\"${1:0}\" collapsed=\"${2:true}\">",
       "  <section level=\"$1\" collapsed=\"$2\">",
       "    <innodHeading><title><innodIdentifier>${3:a}</innodIdentifier>. ${4:Section title}</title></innodHeading>",
       "    <innodReplace>${5:Replaceable content}</innodReplace>",
@@ -94,18 +147,18 @@ const INNOD_SNIPPETS = [
   {
     label: "innodHeading title",
     detail: "Heading with identifier-aware title",
-    insertText: "innodHeading><title><innodIdentifier>${1:a}</innodIdentifier>. ${2:Heading text}</title></innodHeading>",
+    insertText: "<innodHeading><title><innodIdentifier>${1:a}</innodIdentifier>. ${2:Heading text}</title></innodHeading>",
   },
   {
     label: "innodIdentifier",
     detail: "Identifier token in path/title mapping",
-    insertText: "innodIdentifier>${1:EDG}</innodIdentifier>",
+    insertText: "<innodIdentifier>${1:EDG}</innodIdentifier>",
   },
   {
     label: "innodTable",
     detail: "Structured editable table",
     insertText: [
-      "innodTable>",
+      "<innodTable>",
       "  <table>",
       "    <tr>",
       "      <th><p>${1:Header}</p></th>",
@@ -119,7 +172,7 @@ const INNOD_SNIPPETS = [
     label: "innodImg",
     detail: "Image wrapper preserving source path",
     insertText: [
-      "innodImg src=\"${1:/assets/image.png}\">",
+      "<innodImg src=\"${1:/assets/image.png}\">",
       "  <img src=\"$1\" />",
       "</innodImg>",
     ].join("\n"),
@@ -127,13 +180,13 @@ const INNOD_SNIPPETS = [
   {
     label: "innodFootnoteRef",
     detail: "Footnote reference",
-    insertText: "innodFootnoteRef fid=\"${1:F1}\" id=\"${2:ref-1}\" text=\"${3:1}\" />",
+    insertText: "<innodFootnoteRef fid=\"${1:F1}\" id=\"${2:ref-1}\" text=\"${3:1}\" />",
   },
   {
     label: "innodFootnote",
     detail: "Footnote definition",
     insertText: [
-      "innodFootnote fid=\"${1:F1}\" id=\"${2:fn-1}\">",
+      "<innodFootnote fid=\"${1:F1}\" id=\"${2:fn-1}\">",
       "  <footnote id=\"$2\">",
       "    <p>${3:Footnote text}</p>",
       "  </footnote>",
@@ -143,7 +196,12 @@ const INNOD_SNIPPETS = [
   {
     label: "innodReplace",
     detail: "Replaceable content wrapper",
-    insertText: "innodReplace>${1:Editable content}</innodReplace>",
+    insertText: "<innodReplace>${1:Editable content}</innodReplace>",
+  },
+  {
+    label: "user edit marker",
+    detail: "Audit tag for manual editor changes",
+    insertText: "<innodReplace userEdit=\"true\" editedBy=\"${1:user}\" editedAt=\"${2:2026-05-19T00:00:00Z}\">${3:Edited content}</innodReplace>",
   },
 ] as const;
 
@@ -206,14 +264,14 @@ function buildInnodGuidance(text: string): Marker[] {
       markers.push({
         startOffset: levelStart,
         endOffset: levelStart + levelMatch[0].length,
-        message: "INNOD: add level=\"\" (default) or a numeric level 1-15.",
+        message: "INNOD: add level=\"0\" (default) or a numeric level 1-15.",
         severity: "warning",
       });
-    } else if (levelValue !== null && levelValue !== "" && !/^(?:[1-9]|1[0-5])$/.test(levelValue)) {
+    } else if (levelValue !== null && !/^(?:0|[1-9]|1[0-5])$/.test(levelValue)) {
       markers.push({
         startOffset: levelStart,
         endOffset: levelStart + levelMatch[0].length,
-        message: "INNOD: level must be blank or a number from 1 to 15.",
+        message: "INNOD: level must be a number from 0 to 15.",
         severity: "warning",
       });
     }
@@ -345,6 +403,44 @@ function buildInnodGuidance(text: string): Marker[] {
     }
   }
 
+  // User-edit audit guidance: optional but recommended for traceability.
+  const userEditRe = /<([a-z][\w:-]*)([^>]*\b(?:userEdit|data-user-edit)\s*=\s*["']([^"']*)["'][^>]*)>/gi;
+  let userEditMatch: RegExpExecArray | null;
+  while ((userEditMatch = userEditRe.exec(text)) !== null) {
+    const tag = userEditMatch[1] ?? "tag";
+    const attrs = userEditMatch[2] ?? "";
+    const rawVal = (userEditMatch[3] ?? "").trim().toLowerCase();
+    const editedBy = getAttr(attrs, "editedBy") ?? getAttr(attrs, "data-edited-by");
+    const editedAt = getAttr(attrs, "editedAt") ?? getAttr(attrs, "data-edited-at");
+
+    if (!["true", "false", "1", "0", "yes", "no"].includes(rawVal)) {
+      markers.push({
+        startOffset: userEditMatch.index,
+        endOffset: userEditMatch.index + userEditMatch[0].length,
+        message: `INNOD: user-edit flag on <${tag}> should be boolean-like (true/false/1/0).`,
+        severity: "warning",
+      });
+    }
+
+    if ((rawVal === "true" || rawVal === "1" || rawVal === "yes") && !editedBy) {
+      markers.push({
+        startOffset: userEditMatch.index,
+        endOffset: userEditMatch.index + userEditMatch[0].length,
+        message: `INNOD: add editedBy for user-edit traceability on <${tag}>.`,
+        severity: "info",
+      });
+    }
+
+    if (editedAt && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(editedAt)) {
+      markers.push({
+        startOffset: userEditMatch.index,
+        endOffset: userEditMatch.index + userEditMatch[0].length,
+        message: `INNOD: editedAt on <${tag}> should use ISO datetime format (e.g. 2026-05-19T12:34:56Z).`,
+        severity: "info",
+      });
+    }
+  }
+
   return markers;
 }
 
@@ -395,6 +491,7 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
     /** Disposable registration for custom INNOD completion provider. */
     const completionDisposableRef = useRef<{ dispose: () => void } | null>(null);
     const formatCommandDisposableRef = useRef<{ dispose: () => void } | null>(null);
+    const userEditCommandDisposableRef = useRef<{ dispose: () => void } | null>(null);
     const shortcutDisposableRef = useRef<{ dispose: () => void } | null>(null);
     const applyingShortcutRef = useRef(false);
 
@@ -492,6 +589,47 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
             },
           };
 
+          const userEditCommandId = editor.addCommand(
+            monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyE,
+            () => {
+              const model = editor.getModel();
+              const selection = editor.getSelection();
+              if (!model || !selection) return;
+
+              const selected = model.getValueInRange(selection);
+              const inner = selected.length > 0 ? selected : "Edited content";
+              const editedAt = new Date().toISOString();
+              const openTag = `<innodReplace userEdit="true" editedBy="user" editedAt="${editedAt}">`;
+              const closeTag = "</innodReplace>";
+              const wrapped = `${openTag}${inner}${closeTag}`;
+
+              const startOffset = model.getOffsetAt(selection.getStartPosition());
+              editor.pushUndoStop();
+              editor.executeEdits("innod-user-edit-wrap", [{
+                range: selection,
+                text: wrapped,
+                forceMoveMarkers: true,
+              }]);
+              editor.pushUndoStop();
+
+              const innerStart = model.getPositionAt(startOffset + openTag.length);
+              const innerEnd = model.getPositionAt(startOffset + openTag.length + inner.length);
+              editor.setSelection({
+                startLineNumber: innerStart.lineNumber,
+                startColumn: innerStart.column,
+                endLineNumber: innerEnd.lineNumber,
+                endColumn: innerEnd.column,
+              });
+              editor.revealPositionInCenterIfOutsideViewport(innerStart);
+            },
+          );
+          userEditCommandDisposableRef.current = {
+            dispose: () => {
+              // Monaco command IDs are not disposable by API; keep noop to simplify cleanup flow.
+              void userEditCommandId;
+            },
+          };
+
           shortcutDisposableRef.current = editor.onDidChangeModelContent((e) => {
             if (applyingShortcutRef.current || e.isUndoing || e.isRedoing) return;
             const change = e.changes[0];
@@ -502,6 +640,11 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
             if (!model) return;
             const pos = editor.getPosition();
             if (!pos) return;
+
+            if (change.text === "<") {
+              editor.trigger("innod-tag-suggest", "editor.action.triggerSuggest", {});
+              return;
+            }
 
             const linePrefix = model.getValueInRange({
               startLineNumber: pos.lineNumber,
@@ -732,9 +875,9 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
             };
             return {
               suggestions: INNOD_LEVEL_VALUES.map((v, idx) => ({
-                label: v === "" ? '(default) ""' : v,
+                label: v === "0" ? '(default) "0"' : v,
                 kind: monaco.languages.CompletionItemKind.Value,
-                detail: v === "" ? "Default level (blank)" : "INNOD level",
+                detail: v === "0" ? "Default level" : "INNOD level",
                 insertText: v,
                 range: replaceRange,
                 sortText: `00${idx}`,
@@ -866,6 +1009,8 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
         completionDisposableRef.current = null;
         shortcutDisposableRef.current?.dispose();
         shortcutDisposableRef.current = null;
+        userEditCommandDisposableRef.current?.dispose();
+        userEditCommandDisposableRef.current = null;
         formatCommandDisposableRef.current?.dispose();
         formatCommandDisposableRef.current = null;
       },
@@ -889,6 +1034,8 @@ const XmlEditor = forwardRef<XmlScrollTarget, Props>(
         folding:           true,
         bracketPairColorization: { enabled: true },
         matchBrackets:     "always" as const,
+        autoClosingBrackets: "never" as const,
+        autoClosingQuotes: "never" as const,
         renderLineHighlight: "line" as const,
         // Suppress noisy IntelliSense that is unhelpful for raw XML editing
         quickSuggestions:  { other: false, comments: false, strings: false },

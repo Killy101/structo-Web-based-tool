@@ -1,4 +1,5 @@
 "use client";
+import dynamic from "next/dynamic";
 import React, {
   useCallback,
   useEffect,
@@ -20,6 +21,15 @@ import DiffPane, { buildAlignedLines, foldUnchangedLines } from "./DiffPane";
 import type { AlignedLine, FoldMapEntry } from "./DiffPane";
 import XmlPanel  from "./XmlPanel";
 
+const RawPdfPane = dynamic(() => import("./RawPdfPane"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-full flex items-center justify-center text-xs text-slate-500 dark:text-slate-400">
+      Loading PDF viewer…
+    </div>
+  ),
+});
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -27,16 +37,23 @@ interface Props {
   result:             DiffResult;
   onReset:            () => void;
   onBackToChunkList?: () => void;
+  sourcePdfA?:        File | null;
+  sourcePdfB?:        File | null;
   initialXmlFile?:    File | null;
   xmlSections?:       XmlSection[];
   initialSection?:    string | null;
   initialChunkId?:    number | null;
   initialAnchorChunkId?: number | null;
   viewedChunkNumber?: number | null;
+  viewedChunkHasChanges?: boolean | null;
   sectionMapper?:     (chunkSection: string) => string | null;
   isStreaming?:       boolean;
   streamingProgress?: DiffProgress | null;
 }
+
+type DirectoryPickerWindow = Window & {
+  showDirectoryPicker?: (opts?: { mode?: "read" | "readwrite"; startIn?: "documents" | "downloads" }) => Promise<FileSystemDirectoryHandle>;
+};
 
 type ApplyStatus = "idle" | "applying" | "done" | "error";
 type LocateSignal = {
@@ -54,7 +71,7 @@ function useDragSplitter(
   axis: "x" | "y",
   min: number,
   max: number,
-): [number, (e: React.MouseEvent<HTMLElement>) => void] {
+): [number, (e: React.MouseEvent<HTMLElement>) => void, React.Dispatch<React.SetStateAction<number>>] {
   const [value, setValue] = useState(initial);
 
   const startDrag = useCallback((e: React.MouseEvent<HTMLElement>) => {
@@ -81,7 +98,7 @@ function useDragSplitter(
     document.addEventListener("mouseup",  onUp);
   }, [containerRef, axis, min, max]);
 
-  return [value, startDrag];
+  return [value, startDrag, setValue];
 }
 
 function StatPill({ label, count, cls }: { label: string; count: number; cls: string }) {
@@ -123,16 +140,20 @@ export default function DiffViewer({
   result,
   onReset,
   onBackToChunkList,
+  sourcePdfA = null,
+  sourcePdfB = null,
   initialXmlFile,
   xmlSections,
   initialSection,
   initialChunkId,
   initialAnchorChunkId,
   viewedChunkNumber,
+  viewedChunkHasChanges,
   sectionMapper,
   isStreaming       = false,
   streamingProgress = null,
 }: Props) {
+  const [viewMode, setViewMode] = useState<"pdf" | "compare">("compare");
   const [activeId,      setActiveId]      = useState<number | null>(() => {
     if (initialChunkId != null && result.chunks.some((c) => c.id === initialChunkId)) return initialChunkId;
     if (initialAnchorChunkId != null && result.chunks.some((c) => c.id === initialAnchorChunkId)) return initialAnchorChunkId;
@@ -159,6 +180,8 @@ export default function DiffViewer({
   const [showAllContext, setShowAllContext] = useState(initialChunkId == null);
 
   const [pulseSide,    setPulseSide]      = useState<"old" | "new" | null>(null);
+  const [pdfSync, setPdfSync] = useState<{ side: "a" | "b"; frac: number } | null>(null);
+  const [modeSplitPct, setModeSplitPct] = useState<{ compare: number; pdf: number }>({ compare: 50, pdf: 50 });
 
   const containerRef   = useRef<HTMLDivElement>(null);
   const paneARef       = useRef<DiffPaneHandle>(null);
@@ -174,9 +197,43 @@ export default function DiffViewer({
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const applyLockRef   = useRef(false);
   const appliedIdsRef  = useRef<Set<number>>(new Set());
+  const compareActiveIdRef = useRef<number | null>(null);
+  const compareXmlOpenRef = useRef<boolean>(mode === "edit" || !!initialXmlFile);
 
-  const [splitPct,  startDragV] = useDragSplitter(containerRef, 50,  "x", 20, 80);
+  const [splitPct,  startDragV, setSplitPct] = useDragSplitter(containerRef, 50,  "x", 20, 80);
   const [xmlHeight, startDragH] = useDragSplitter(containerRef, 260, "y", 120, 560);
+
+  useEffect(() => {
+    if (viewMode === "pdf" && (!sourcePdfA || !sourcePdfB)) {
+      setViewMode("compare");
+    }
+  }, [viewMode, sourcePdfA, sourcePdfB]);
+
+  useEffect(() => {
+    setModeSplitPct((prev) => {
+      const current = prev[viewMode];
+      if (Math.abs(current - splitPct) < 0.01) return prev;
+      return { ...prev, [viewMode]: splitPct };
+    });
+  }, [viewMode, splitPct]);
+
+  useEffect(() => {
+    setSplitPct(modeSplitPct[viewMode]);
+  }, [viewMode, modeSplitPct, setSplitPct]);
+
+  useEffect(() => {
+    if (viewMode !== "compare") return;
+    compareActiveIdRef.current = activeId;
+    compareXmlOpenRef.current = xmlOpen;
+  }, [viewMode, activeId, xmlOpen]);
+
+  useEffect(() => {
+    if (viewMode !== "compare") return;
+    if (compareActiveIdRef.current != null && result.chunks.some((c) => c.id === compareActiveIdRef.current)) {
+      setActiveId(compareActiveIdRef.current);
+    }
+    setXmlOpen(compareXmlOpenRef.current);
+  }, [viewMode, result.chunks]);
 
   // ── Load initial XML file ─────────────────────────────────────────────────
   useEffect(() => {
@@ -514,6 +571,7 @@ export default function DiffViewer({
       const target = e.target as HTMLElement | null;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
       if (target?.closest?.(".monaco-editor")) return;
+      if (viewMode !== "compare") return;
       if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); goTo(1);  }
       if (e.key === "ArrowLeft"  || e.key === "ArrowUp"   || e.key === "k") { e.preventDefault(); goTo(-1); }
       if (e.key === "x" || e.key === "X") setXmlOpen((v) => !v);
@@ -521,7 +579,7 @@ export default function DiffViewer({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goTo]);
+  }, [goTo, viewMode]);
 
   useEffect(() => {
     return () => {
@@ -675,6 +733,58 @@ export default function DiffViewer({
     a.click();
     URL.revokeObjectURL(url);
   }, [mode, xmlText, xmlFilename]);
+
+  const saveCorrectedChunk = useCallback(async () => {
+    if (mode !== "edit") return;
+    if (!xmlText || !xmlFilename) return;
+
+    const sourceMatch = /<!--\s*Source:\s*([^\n\r<]+?)\s*-->/i.exec(xmlText);
+    const sourceBase = (sourceMatch?.[1] ?? "").trim().replace(/\.xml$/i, "");
+    const fallbackBase = (result.file_b || result.file_a || xmlFilename)
+      .replace(/\.xml$/i, "")
+      .replace(/[\\/:*?"<>|]+/g, "_")
+      .trim();
+    const rootName = (sourceBase || fallbackBase || "document").replace(/[_\-]+$/, "");
+    const chunkFilename = xmlFilename.toLowerCase().endsWith(".xml") ? xmlFilename : `${xmlFilename}.xml`;
+
+    const w = window as DirectoryPickerWindow;
+    if (!w.showDirectoryPicker) {
+      const blob = new Blob([xmlText], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `corrected_${chunkFilename}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setXmlStatus(`✓ Saved corrected chunk (download): ${chunkFilename}`);
+      return;
+    }
+
+    try {
+      const picked = await w.showDirectoryPicker({ mode: "readwrite", startIn: "documents" });
+      const lrduRoot = picked.name.toLowerCase() === "lrdu"
+        ? picked
+        : await picked.getDirectoryHandle("LRDU", { create: true });
+      const docRoot = await lrduRoot.getDirectoryHandle(rootName, { create: true });
+      const correctedDir = await docRoot.getDirectoryHandle("correctedchunk", { create: true });
+      const correctedAliasDir = await docRoot.getDirectoryHandle("corrected", { create: true });
+
+      const writeTo = async (dir: FileSystemDirectoryHandle) => {
+        const fileHandle = await dir.getFileHandle(chunkFilename, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(xmlText);
+        await writable.close();
+      };
+
+      await writeTo(correctedDir);
+      await writeTo(correctedAliasDir);
+      setXmlStatus(`✓ Saved corrected chunk: LRDU/${rootName}/correctedchunk/${chunkFilename}`);
+    } catch {
+      // User cancelled or picker blocked.
+    }
+  }, [mode, result.file_a, result.file_b, xmlFilename, xmlText]);
+
+  const canSaveCorrectedChunk = mode === "edit" && !!onBackToChunkList && !!viewedChunkNumber && viewedChunkHasChanges === true;
 
   const downloadUnchanged = useCallback(() => {
     const empChunks = result.chunks.filter((c) => c.kind === "emp");
@@ -948,8 +1058,28 @@ export default function DiffViewer({
 
         <div className="flex items-center gap-1 flex-shrink-0">
           <IconBtn
+            title="Raw PDF source view"
+            active={viewMode === "pdf"}
+            disabled={!sourcePdfA || !sourcePdfB}
+            onClick={() => setViewMode("pdf")}
+          >
+            <span>📄</span>
+            <span className="hidden sm:inline">PDF View</span>
+          </IconBtn>
+
+          <IconBtn
+            title="Structured diff comparison view"
+            active={viewMode === "compare"}
+            onClick={() => setViewMode("compare")}
+          >
+            <span>🧠</span>
+            <span className="hidden sm:inline">Compare View</span>
+          </IconBtn>
+
+          <IconBtn
             title={chunkListCollapsed ? "Show chunk list panel" : "Hide chunk list panel"}
             active={!chunkListCollapsed}
+            disabled={viewMode !== "compare"}
             onClick={() => setChunkListCollapsed((v) => !v)}
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -962,6 +1092,7 @@ export default function DiffViewer({
           <IconBtn
             title={showAllContext ? "Collapse unchanged lines (C)" : "Show all lines (C)"}
             active={showAllContext}
+            disabled={viewMode !== "compare"}
             onClick={() => setShowAllContext((v) => !v)}
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -971,7 +1102,12 @@ export default function DiffViewer({
             <span className="hidden sm:inline">All Lines</span>
           </IconBtn>
 
-          <IconBtn title={xmlOpen ? "Hide XML panel (X)" : "Show XML panel (X)"} active={xmlOpen} onClick={() => setXmlOpen((v) => !v)}>
+          <IconBtn
+            title={xmlOpen ? "Hide XML panel (X)" : "Show XML panel (X)"}
+            active={xmlOpen}
+            disabled={viewMode !== "compare"}
+            onClick={() => setXmlOpen((v) => !v)}
+          >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
             </svg>
@@ -1037,7 +1173,7 @@ export default function DiffViewer({
       </div>
 
       {/* Section filter tabs */}
-      {sectionsWithChanges.length > 0 && (
+      {viewMode === "compare" && sectionsWithChanges.length > 0 && (
         <div className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto
           border-b border-slate-200 dark:border-white/8
           bg-white dark:bg-[#0a1020] scrollbar-none">
@@ -1083,6 +1219,37 @@ export default function DiffViewer({
       {/* Main content area */}
       <div className="flex-1 overflow-hidden min-h-0 flex">
 
+        {viewMode === "pdf" && (
+          <div className="flex-1 min-w-0 flex overflow-hidden" ref={containerRef}>
+            <div className="min-w-0 overflow-hidden" style={{ width: `${splitPct}%` }}>
+              <RawPdfPane
+                file={sourcePdfA}
+                title={result.file_a}
+                onScrollFraction={(frac) => setPdfSync({ side: "a", frac })}
+                syncScrollFraction={pdfSync?.side === "b" ? pdfSync.frac : null}
+              />
+            </div>
+            <div
+              className="flex-shrink-0 w-1 cursor-col-resize hover:bg-teal-400/40
+                active:bg-teal-500/50 transition-colors relative z-10
+                bg-slate-200/60 dark:bg-white/[0.06]"
+              onMouseDown={startDragV}
+            >
+              <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
+            </div>
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <RawPdfPane
+                file={sourcePdfB}
+                title={result.file_b}
+                onScrollFraction={(frac) => setPdfSync({ side: "b", frac })}
+                syncScrollFraction={pdfSync?.side === "a" ? pdfSync.frac : null}
+              />
+            </div>
+          </div>
+        )}
+
+        {viewMode === "compare" && (
+          <>
         <div className={`flex-shrink-0 flex flex-col
           ${chunkListCollapsed ? "w-[48px] min-w-[48px]" : "w-[240px] min-w-[240px]"}
           border-r border-slate-200 dark:border-white/8`}>
@@ -1210,6 +1377,7 @@ export default function DiffViewer({
                   onLoad={loadXml}
                   onApply={applyChunk}
                   onDownload={downloadXml}
+                  onSaveCorrectedChunk={canSaveCorrectedChunk ? () => void saveCorrectedChunk() : undefined}
                   onXmlChange={handleXmlChange}
                   onScrollFraction={(f) => schedulePanelSync("xml", f)}
                   canUndo={applyHistory.length > 0}
@@ -1221,12 +1389,24 @@ export default function DiffViewer({
             </>
           )}
         </div>
+          </>
+        )}
       </div>
 
       {/* Status bar */}
       <div className="flex-shrink-0 flex items-center gap-3 px-3 h-6
         border-t border-slate-200 dark:border-white/8
         bg-slate-50 dark:bg-[#0d1525] text-[10px] font-mono">
+
+        {viewMode === "pdf" && (
+          <>
+            <span className="text-slate-500 dark:text-slate-400">PDF View</span>
+            <span className="text-slate-400 dark:text-slate-600">Raw source fidelity mode (no extraction, no diff).</span>
+          </>
+        )}
+
+        {viewMode === "compare" && (
+          <>
 
         {activeChunk && (
           <span className={`font-bold ${
@@ -1265,6 +1445,9 @@ export default function DiffViewer({
 
         {!showAllContext && (
           <span className="text-amber-500/70">folded</span>
+        )}
+
+          </>
         )}
       </div>
     </div>

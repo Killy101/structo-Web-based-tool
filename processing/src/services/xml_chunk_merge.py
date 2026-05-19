@@ -25,6 +25,7 @@ class ParsedChunk:
     part_order: int
     section_level: int
     has_changes: bool
+    source_group: str
     duplicate_key: str
     source_path: str | None
 
@@ -199,7 +200,15 @@ def _parse_chunk_file(filename: str, content: str, relative_path: str = "") -> P
     section_level = int(level_raw) if level_raw.isdigit() else 10**9
 
     rel_lc = relative_path.lower().replace("\\", "/")
-    has_changes = "/haschanges/" in rel_lc or "/has_changes/" in rel_lc
+    source_group = "unknown"
+    if "/correctedchunk/" in rel_lc or "/corrected/" in rel_lc or "/corrected_chunk/" in rel_lc:
+        source_group = "corrected"
+    elif "/haschanges/" in rel_lc or "/has_changes/" in rel_lc:
+        source_group = "haschanges"
+    elif "/nochanges/" in rel_lc or "/no_changes/" in rel_lc:
+        source_group = "nochanges"
+
+    has_changes = source_group in {"haschanges", "corrected"}
     source_path = _source_path_from_comments(comments)
     duplicate_key = _build_duplicate_key(root, source_path)
 
@@ -212,6 +221,7 @@ def _parse_chunk_file(filename: str, content: str, relative_path: str = "") -> P
         part_order=part_order,
         section_level=section_level,
         has_changes=has_changes,
+        source_group=source_group,
         duplicate_key=duplicate_key,
         source_path=source_path,
     )
@@ -220,6 +230,46 @@ def _parse_chunk_file(filename: str, content: str, relative_path: str = "") -> P
 def _sort_key(chunk: ParsedChunk) -> tuple[int, int, int, str]:
     seq = chunk.sequence if chunk.sequence is not None else 10**9
     return (seq, chunk.part_order, chunk.section_level, chunk.filename.lower())
+
+
+def _sequence_preference_key(chunk: ParsedChunk) -> tuple[int, int, int, str, str]:
+    # For sequence collisions, prefer corrected > haschanges > nochanges > unknown.
+    group_priority = {
+        "corrected": 0,
+        "haschanges": 1,
+        "nochanges": 2,
+        "unknown": 3,
+    }
+    return (
+        group_priority.get(chunk.source_group, 9),
+        chunk.part_order,
+        chunk.section_level,
+        chunk.filename.lower(),
+        chunk.relative_path.lower(),
+    )
+
+
+def _selection_key(chunk: ParsedChunk) -> str:
+    rel = _safe_text(chunk.relative_path)
+    return rel or chunk.filename
+
+
+def _is_selected(chunk: ParsedChunk, selected: set[str]) -> bool:
+    if not selected:
+        return True
+    key = _selection_key(chunk)
+    return key in selected or chunk.filename in selected
+
+
+def _pick_preferred_by_sequence(chunks: list[ParsedChunk]) -> dict[int, ParsedChunk]:
+    preferred: dict[int, ParsedChunk] = {}
+    for ch in chunks:
+        if ch.sequence is None:
+            continue
+        current = preferred.get(ch.sequence)
+        if current is None or _sequence_preference_key(ch) < _sequence_preference_key(current):
+            preferred[ch.sequence] = ch
+    return preferred
 
 
 def inspect_chunk_files(
@@ -259,6 +309,14 @@ def inspect_chunk_files(
             if n not in seqs:
                 missing_sequences.append(n)
 
+    by_sequence: dict[int, list[ParsedChunk]] = {}
+    for p in parsed:
+        if p.sequence is None:
+            continue
+        by_sequence.setdefault(p.sequence, []).append(p)
+    duplicate_sequences = sorted(seq for seq, items in by_sequence.items() if len(items) > 1)
+    preferred_by_sequence = _pick_preferred_by_sequence(parsed)
+
     seen_dup: set[str] = set()
     rows: list[dict[str, Any]] = []
     selected_count = 0
@@ -266,11 +324,14 @@ def inspect_chunk_files(
     duplicate_selected = 0
 
     for idx, p in enumerate(parsed, start=1):
-        is_dup = p.duplicate_key in seen_dup
-        if not is_dup:
+        is_content_dup = p.duplicate_key in seen_dup
+        if not is_content_dup:
             seen_dup.add(p.duplicate_key)
 
-        is_selected = True if not selected else p.filename in selected
+        is_sequence_dup = p.sequence is not None and preferred_by_sequence.get(p.sequence) is not p
+        is_dup = is_content_dup or is_sequence_dup
+
+        is_selected = _is_selected(p, selected)
         if is_selected:
             selected_count += 1
             if p.has_changes:
@@ -287,8 +348,10 @@ def inspect_chunk_files(
                 "part_order": p.part_order,
                 "section_level": p.section_level,
                 "has_changes": p.has_changes,
+                "source_group": p.source_group,
                 "duplicate": is_dup,
                 "selected": is_selected,
+                "selection_key": _selection_key(p),
                 "heading": _heading_text(p.root),
                 "source_path": p.source_path,
             }
@@ -299,6 +362,10 @@ def inspect_chunk_files(
         warnings.append(f"Skipped {len(invalid)} invalid/non-XML files")
     if missing_sequences:
         warnings.append("Missing sequence numbers: " + ", ".join(str(x) for x in missing_sequences[:30]))
+    if duplicate_sequences:
+        warnings.append(
+            "Multiple chunks detected for the same sequence: " + ", ".join(str(x) for x in duplicate_sequences[:30])
+        )
     if any(r["duplicate"] for r in rows):
         warnings.append("Duplicate chunks detected; duplicates will be excluded from merge")
     if selected_count == 0:
@@ -310,6 +377,7 @@ def inspect_chunk_files(
         "invalid_files": invalid,
         "warnings": warnings,
         "missing_sequences": missing_sequences,
+        "duplicate_sequences": duplicate_sequences,
         "summary": {
             "total_detected": len(rows),
             "selected": selected_count,
@@ -320,9 +388,11 @@ def inspect_chunk_files(
 
 
 def _merge_selected(parsed: list[ParsedChunk], selected: set[str]) -> ET.Element:
-    chosen = [p for p in parsed if (not selected or p.filename in selected)]
+    chosen = [p for p in parsed if _is_selected(p, selected)]
     if not chosen:
         raise ChunkedMergeError("No chunks selected to merge")
+
+    preferred_by_sequence = _pick_preferred_by_sequence(chosen)
 
     base_root: ET.Element | None = None
     for p in chosen:
@@ -336,6 +406,11 @@ def _merge_selected(parsed: list[ParsedChunk], selected: set[str]) -> ET.Element
     seen_keys: set[str] = set()
 
     for p in chosen:
+        if p.sequence is not None and preferred_by_sequence.get(p.sequence) is not p:
+            # Sequence-colliding chunks are resolved deterministically to one
+            # preferred representative to avoid duplicate insertion.
+            continue
+
         units = _iter_units(p.root)
         for unit in units:
             key = _build_duplicate_key(unit, p.source_path)

@@ -1667,6 +1667,11 @@ async def merge_chunked_build_endpoint(payload: ChunkedMergeBuildRequest):
             )
         if inspected_pre["summary"]["duplicates_selected"] > 0:
             strict_reasons.append("Duplicate chunks are included in current selection")
+        if inspected_pre.get("duplicate_sequences"):
+            strict_reasons.append(
+                "Duplicate sequence numbers detected: "
+                + ", ".join(str(v) for v in inspected_pre["duplicate_sequences"][:30])
+            )
 
         if strict_reasons:
             raise HTTPException(

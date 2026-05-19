@@ -26,6 +26,18 @@ import {
 } from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
 
+type LiveChunkStatus = "processing" | "has_changes" | "no_changes" | "failed";
+
+type LiveChunkRow = {
+  chunkNumber: number;
+  batch: number;
+  totalBatches: number;
+  pageRange: [number, number] | null;
+  status: LiveChunkStatus;
+  kind: string | null;
+  error?: string;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +113,18 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     paneBatchRaw: DiffResult["pane_a"] | undefined,
   ): DiffResult["pane_a"] => {
     const paneBatch = safePaneBatch(paneBatchRaw);
+    const stableTags = new Set(["add", "del", "dmod", "mod", "emp", "nav", "nl"]);
+
+    // Batch payloads reuse local style tag IDs (e.g. t1, t2, ...).
+    // Without namespacing, merging batches can overwrite older tag configs,
+    // causing style inheritance leaks (e.g. false line-through on ADD rows).
+    const tagKeyMap = new Map<string, string>();
+    const remappedTagCfgs: Record<string, unknown> = {};
+    for (const [rawTag, cfg] of Object.entries(paneBatch.tag_cfgs ?? {})) {
+      const mappedTag = stableTags.has(rawTag) ? rawTag : `b${batch.batch}_${rawTag}`;
+      tagKeyMap.set(rawTag, mappedTag);
+      remappedTagCfgs[mappedTag] = cfg;
+    }
 
     // ── Cross-batch newline sentinel ─────────────────────────────────────────
     // If the previous batch ended mid-paragraph (last segment ≠ "\n"), inject
@@ -149,11 +173,13 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     // Build segments: inject sentinel "\n" between batches when needed
     const newSegs: typeof baseSegs = [...baseSegs];
     if (needsNL) newSegs.push(["\n", "nl"]);
-    newSegs.push(...(paneBatch.segments ?? []));
+    for (const [text, rawTag] of paneBatch.segments ?? []) {
+      newSegs.push([text, tagKeyMap.get(rawTag) ?? rawTag]);
+    }
 
     return {
       segments:         newSegs,
-      tag_cfgs:         { ...(paneBase.tag_cfgs ?? {}), ...(paneBatch.tag_cfgs ?? {}) },
+      tag_cfgs:         { ...(paneBase.tag_cfgs ?? {}), ...remappedTagCfgs as DiffResult["pane_a"]["tag_cfgs"] },
       offsets,
       offset_ends:      offsetEnds,
       line_offsets:     lineOffsets,
@@ -485,6 +511,9 @@ function ChangeSummaryModal({
 function useDiffState() {
   const latestResultRef    = useRef<DiffResult | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const chunkOrdinalRef    = useRef(0);
+  const batchCacheRef      = useRef<Map<number, BatchResult>>(new Map());
+  const batchStatusRef     = useRef<Map<number, { status: LiveChunkStatus; error?: string }>>(new Map());
 
   const [fileA,       setFileA]       = useState<File | null>(null);
   const [fileB,       setFileB]       = useState<File | null>(null);
@@ -504,9 +533,73 @@ function useDiffState() {
   const [selectedChunkId, setSelectedChunkId] = useState<number | null>(null);
   const [selectedChunkNumber, setSelectedChunkNumber] = useState<number | null>(null);
   const [selectedAnchorChunkId, setSelectedAnchorChunkId] = useState<number | null>(null);
+  const [selectedChunkHasChanges, setSelectedChunkHasChanges] = useState<boolean | null>(null);
   const [selectedChunkXmlFile, setSelectedChunkXmlFile] = useState<File | null>(null);
   const [detectionListScrollTop, setDetectionListScrollTop] = useState(0);
   const [chunkFocusMode, setChunkFocusMode] = useState(false);
+  const [liveChunkRows, setLiveChunkRows] = useState<LiveChunkRow[]>([]);
+  const [processingBatch, setProcessingBatch] = useState<{ batch: number; of: number; pageRange: [number, number] | null } | null>(null);
+  const [completedBatches, setCompletedBatches] = useState(0);
+  const [totalBatches, setTotalBatches] = useState(0);
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+
+  const rebuildLiveRows = React.useCallback(() => {
+    const rows: LiveChunkRow[] = [];
+    const sortedBatches = Array.from(batchCacheRef.current.values()).sort((a, b) => a.batch - b.batch);
+    let ordinal = 0;
+
+    for (const batch of sortedBatches) {
+      const override = batchStatusRef.current.get(batch.batch);
+      for (const chunk of batch.chunks) {
+        ordinal += 1;
+        const hasChanges = chunk.kind === "add" || chunk.kind === "del" || chunk.kind === "mod" || chunk.kind === "strike";
+        rows.push({
+          chunkNumber: ordinal,
+          batch: batch.batch,
+          totalBatches: batch.of,
+          pageRange: batch.pageRange,
+          status: override?.status ?? (hasChanges ? "has_changes" : "no_changes"),
+          kind: chunk.kind,
+          error: override?.error,
+        });
+      }
+    }
+
+    chunkOrdinalRef.current = ordinal;
+    setLiveChunkRows(rows);
+  }, []);
+
+  const retryBatch = React.useCallback((batchNo: number) => {
+    const cached = batchCacheRef.current.get(batchNo);
+    if (!cached) return;
+    batchStatusRef.current.set(batchNo, { status: "processing" });
+    rebuildLiveRows();
+
+    try {
+      const merged = {
+        ...mergeBatchIntoResult(latestResultRef.current, cached),
+        file_a: latestResultRef.current?.file_a || fileA?.name || "",
+        file_b: latestResultRef.current?.file_b || fileB?.name || "",
+      };
+      latestResultRef.current = merged;
+      startTransition(() => setResult(merged));
+      batchStatusRef.current.delete(batchNo);
+      rebuildLiveRows();
+      setProcessingBatch(null);
+    } catch (err) {
+      batchStatusRef.current.set(batchNo, { status: "failed", error: toErrorMessage(err) });
+      rebuildLiveRows();
+    }
+  }, [fileA?.name, fileB?.name, rebuildLiveRows]);
+
+  const cancelProcessing = React.useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+    setProcessingBatch(null);
+    setProgress((prev) => prev ?? { stage: "batch", pct: 0, message: "Processing cancelled" });
+    setLoadMsg("Processing cancelled");
+  }, []);
 
   function reset() {
     // Abort any in-flight streaming request
@@ -519,7 +612,15 @@ function useDiffState() {
     setXmlSections([]); setAllSections([]);
     setPendingDetectionOpen(false);
     setShowModal(false); setShowDetection(false); setSelectedSec(null);
-    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
+    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkHasChanges(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
+    setLiveChunkRows([]);
+    setProcessingBatch(null);
+    setCompletedBatches(0);
+    setTotalBatches(0);
+    setStartedAtMs(null);
+    chunkOrdinalRef.current = 0;
+    batchCacheRef.current.clear();
+    batchStatusRef.current.clear();
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
   }
 
@@ -578,8 +679,16 @@ function useDiffState() {
     latestResultRef.current = null;
     setLoading(true); setError(null); setResult(null); setProgress(null);
     setPendingDetectionOpen(false);
-    setShowDetection(false); setShowModal(false); setSelectedSec(null);
-    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
+    setShowDetection(true); setShowModal(false); setSelectedSec(null);
+    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkHasChanges(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
+    setLiveChunkRows([]);
+    setProcessingBatch(null);
+    setCompletedBatches(0);
+    setTotalBatches(0);
+    setStartedAtMs(Date.now());
+    chunkOrdinalRef.current = 0;
+    batchCacheRef.current.clear();
+    batchStatusRef.current.clear();
     setLoadMsg("Uploading files…"); setLoadPct(0);
 
     try {
@@ -589,10 +698,23 @@ function useDiffState() {
           signal: ac.signal,
           onProgress: (p: DiffProgress) => {
             setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p);
+            if (p.stage === "batch" && typeof p.batch === "number") {
+              setProcessingBatch({
+                batch: p.batch,
+                of: p.totalBatches ?? p.batch,
+                pageRange: p.pageRange ?? null,
+              });
+              setTotalBatches((prev) => Math.max(prev, p.totalBatches ?? 0));
+            }
           },
           onBatch: (batch: BatchResult) => {
             try {
               if (ac.signal.aborted) return;
+              batchCacheRef.current.set(batch.batch, batch);
+              batchStatusRef.current.set(batch.batch, { status: "processing" });
+              setProcessingBatch({ batch: batch.batch, of: batch.of, pageRange: batch.pageRange ?? null });
+              setTotalBatches((prev) => Math.max(prev, batch.of));
+
               const merged = {
                 ...mergeBatchIntoResult(latestResultRef.current, batch),
                 file_a: latestResultRef.current?.file_a || fileA.name,
@@ -601,9 +723,16 @@ function useDiffState() {
               latestResultRef.current = merged;
               // Use startTransition so heavy re-renders don't block scroll/sidebar
               startTransition(() => setResult(merged));
+              batchStatusRef.current.delete(batch.batch);
+              rebuildLiveRows();
+              setCompletedBatches((prev) => Math.max(prev, batch.batch));
+              setProcessingBatch((prev) => (prev?.batch === batch.batch ? null : prev));
               try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
             } catch (batchErr) {
               console.error("[compare] batch merge error:", batchErr);
+              batchStatusRef.current.set(batch.batch, { status: "failed", error: toErrorMessage(batchErr) });
+              rebuildLiveRows();
+              setProcessingBatch((prev) => (prev?.batch === batch.batch ? null : prev));
             }
           },
         },
@@ -678,7 +807,7 @@ function useDiffState() {
         setShowModal(false);
       } else {
         setPendingDetectionOpen(false);
-        setShowDetection(false);
+        if (!loading) setShowDetection(false);
         setShowModal(false);
       }
     } catch (e) {
@@ -700,9 +829,17 @@ function useDiffState() {
     selectedChunkId, setSelectedChunkId,
     selectedChunkNumber, setSelectedChunkNumber,
     selectedAnchorChunkId, setSelectedAnchorChunkId,
+    selectedChunkHasChanges, setSelectedChunkHasChanges,
     selectedChunkXmlFile, setSelectedChunkXmlFile,
     detectionListScrollTop, setDetectionListScrollTop,
     chunkFocusMode, setChunkFocusMode,
+    liveChunkRows,
+    processingBatch,
+    completedBatches,
+    totalBatches,
+    startedAtMs,
+    retryBatch,
+    cancelProcessing,
     reset, run,
   };
 }
@@ -795,19 +932,49 @@ export default function ComparePage() {
       {(active === "browse" || active === "edit") && (
         <div className="flex-1 overflow-hidden min-h-0">
           {/* Detection report modal — shown when user clicks "Detection Report" */}
-          {d.result && (d.showDetection || d.pendingDetectionOpen) && !d.loading ? (
+          {(d.showDetection || d.pendingDetectionOpen) && (d.loading || !!d.result) ? (
             <ChunkDetectionModal
-              result={d.result}
+              result={d.result ?? {
+                success: true,
+                chunks: [],
+                pane_a: emptyPane(),
+                pane_b: emptyPane(),
+                stats: { total: 0, additions: 0, deletions: 0, modifications: 0, emphasis: 0, strike: 0 },
+                xml_sections: [],
+                file_a: d.fileA?.name ?? "Old PDF",
+                file_b: d.fileB?.name ?? "New PDF",
+              }}
               xmlSections={d.xmlSections}
               sectionMapper={sectionMapper}
               xmlFile={d.xmlFile}
+              loading={d.loading}
+              progressMessage={d.progress?.message ?? d.loadMsg}
+              processingBatch={d.processingBatch}
+              completedBatches={d.completedBatches}
+              totalBatches={d.totalBatches}
+              startedAtMs={d.startedAtMs}
+              liveChunkRows={d.liveChunkRows}
+              onRetryBatch={d.retryBatch}
+              onCancelProcessing={d.cancelProcessing}
+              onExit={() => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setShowDetection(false);
+              }}
               listScrollTop={d.detectionListScrollTop}
               onListScroll={d.setDetectionListScrollTop}
-              onViewChunk={({ chunkId, anchorChunkId, sectionLabel, chunkNumber, chunkXml, chunkXmlFilename }) => {
+              onViewChunk={({ chunkId, anchorChunkId, sectionLabel, chunkNumber, hasChanges, chunkXml, chunkXmlFilename }) => {
+                  if (!d.result) return;
+                if (chunkId == null && anchorChunkId == null) return;
                 d.setSelectedSec(sectionLabel);
                 d.setSelectedChunkId(chunkId);
                 d.setSelectedChunkNumber(chunkNumber);
                 d.setSelectedAnchorChunkId(anchorChunkId);
+                d.setSelectedChunkHasChanges(hasChanges);
                 d.setSelectedChunkXmlFile(new File([chunkXml], chunkXmlFilename, { type: "application/xml" }));
                 d.setChunkFocusMode(true);
                 d.setShowDetection(false);
@@ -817,6 +984,7 @@ export default function ComparePage() {
                 d.setSelectedChunkId(null);
                 d.setSelectedChunkNumber(null);
                 d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
                 d.setSelectedChunkXmlFile(null);
                 d.setShowDetection(false);
               }}
@@ -832,6 +1000,7 @@ export default function ComparePage() {
                 d.setSelectedChunkId(null);
                 d.setSelectedChunkNumber(null);
                 d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
                 d.setSelectedChunkXmlFile(null);
                 d.setSelectedSec(null);
                 d.setShowModal(false);
@@ -841,17 +1010,20 @@ export default function ComparePage() {
                 d.setSelectedChunkId(null);
                 d.setSelectedChunkNumber(null);
                 d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
                 d.setSelectedChunkXmlFile(null);
                 d.setSelectedSec(label);
                 d.setShowModal(false);
               }}
               onViewDetection={() => d.setShowDetection(true)}
             />
-          ) : d.result && !d.showModal && !d.showDetection && !d.pendingDetectionOpen && !d.loading ? (
+          ) : d.result && !d.showModal && !d.showDetection && !d.pendingDetectionOpen ? (
             /* DiffViewer — shown as soon as result arrives (may still be streaming) */
             <DiffViewer
               mode={workflowMode}
               result={d.result}
+              sourcePdfA={d.fileA}
+              sourcePdfB={d.fileB}
               isStreaming={d.loading}
               streamingProgress={d.progress}
               onReset={() => { d.reset(); setActive(active); }}
@@ -861,11 +1033,13 @@ export default function ComparePage() {
               initialChunkId={d.chunkFocusMode ? d.selectedChunkId : null}
               initialAnchorChunkId={d.selectedAnchorChunkId}
               viewedChunkNumber={d.chunkFocusMode ? d.selectedChunkNumber : null}
+              viewedChunkHasChanges={d.chunkFocusMode ? d.selectedChunkHasChanges : null}
               sectionMapper={sectionMapper}
               onBackToChunkList={d.chunkFocusMode ? () => {
                 d.setChunkFocusMode(false);
                 d.setSelectedChunkId(null);
                 d.setSelectedChunkNumber(null);
+                d.setSelectedChunkHasChanges(null);
                 d.setSelectedChunkXmlFile(null);
                 d.setShowDetection(true);
               } : undefined}

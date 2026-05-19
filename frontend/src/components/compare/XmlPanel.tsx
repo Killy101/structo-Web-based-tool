@@ -14,6 +14,7 @@ interface Props {
   onLoad:      (f: File) => void;
   onApply:     () => void;     // no-op in wf2
   onDownload:  () => void;     // no-op in wf2
+  onSaveCorrectedChunk?: () => void;
   onXmlChange?: (text: string) => void;  // wf3 only: user edits XML directly
   onScrollFraction?: (scrollFraction: number) => void;
   /** Whether there is an apply to undo (history stack non-empty). */
@@ -347,7 +348,7 @@ function XmlBody({
 
 
 const XmlPanel = forwardRef<XmlScrollTarget, Props>(
-  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick, onToggleVisibility }, ref) => {
+  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onSaveCorrectedChunk, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick, onToggleVisibility }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // XML validation error surfaced up from XmlEditor's DOMParser check
@@ -369,6 +370,8 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
         : activeChunk?.kind === "emp"
           ? "Apply emphasis change to XML"
           : "Apply selected change to XML";
+
+        const shortcutHint = 'Tips: type "<" for tag suggestions, type tag then complete to auto-close, Ctrl+Shift+E wraps user-edit.';
 
     const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
       if (!onScrollFraction) return;
@@ -463,11 +466,29 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
                   </svg>
                   Download
                 </button>
+
+                {onSaveCorrectedChunk && (
+                  <button
+                    onClick={onSaveCorrectedChunk}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-cyan-300/70 dark:border-cyan-500/35 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 text-[11px] font-semibold transition-colors"
+                    title="Save this edited chunk into correctedchunk output"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Save Corrected Chunk
+                  </button>
+                )}
               </>
             )}
           </div>
 
           <div className="flex items-center gap-3 min-w-0">
+            {isWf3 && xmlText && (
+              <span className="hidden 2xl:inline text-[10px] text-slate-500 truncate max-w-[520px]" title={shortcutHint}>
+                {shortcutHint}
+              </span>
+            )}
             {xmlFilename && (
               <span className="text-[10px] text-slate-500 font-mono truncate max-w-[200px]">
                 {xmlFilename}

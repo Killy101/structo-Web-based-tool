@@ -2,21 +2,42 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // ChunkDetectionModal.tsx — Chunk detection report modal
 //
-// Displays a concise chunk status list and provides grouped downloads:
-// - ChunkedListHasChanges
-// - ChunkedListNoChanges
+// Displays a concise chunk status list and provides unified grouped download:
+// - haschanges
+// - nochanges
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useMemo, useRef } from "react";
 import type { DiffResult, XmlSection } from "./types";
 
 type ChunkStatus = "no_changes" | "modified" | "added" | "removed";
+type LiveChunkStatus = "processing" | "has_changes" | "no_changes" | "failed";
+
+type LiveChunkRow = {
+  chunkNumber: number;
+  batch: number;
+  totalBatches: number;
+  pageRange: [number, number] | null;
+  status: LiveChunkStatus;
+  kind: string | null;
+  error?: string;
+};
 
 interface Props {
   result:        DiffResult;
   xmlSections:   XmlSection[];
   sectionMapper: (s: string) => string | null;
   xmlFile?:      File | null;
+  loading?:      boolean;
+  progressMessage?: string;
+  processingBatch?: { batch: number; of: number; pageRange: [number, number] | null } | null;
+  completedBatches?: number;
+  totalBatches?: number;
+  startedAtMs?: number | null;
+  liveChunkRows?: LiveChunkRow[];
+  onRetryBatch?: (batchNo: number) => void;
+  onCancelProcessing?: () => void;
+  onExit?: () => void;
   onViewChunk:   (payload: {
     chunkId: number | null;
     anchorChunkId: number | null;
@@ -102,10 +123,9 @@ function StatusIcon({ status }: { status: ChunkStatus }) {
   );
 }
 
-async function saveChunksToDirectory(
-  chunks: ExportChunk[],
+async function saveChunkGroupsToDirectory(
+  groups: { hasChanges: ExportChunk[]; noChanges: ExportChunk[] },
   xmlFolderName: string,
-  groupFolderName: "HasChanges" | "NoChanges",
 ): Promise<boolean> {
   type DirectoryPickerWindow = Window & {
     showDirectoryPicker?: (opts?: { mode?: "read" | "readwrite"; startIn?: "documents" | "downloads" }) => Promise<FileSystemDirectoryHandle>;
@@ -120,10 +140,18 @@ async function saveChunksToDirectory(
       ? picked
       : await picked.getDirectoryHandle("LRDU", { create: true });
     const xmlRoot = await lrduRoot.getDirectoryHandle(xmlFolderName, { create: true });
-    const target = await xmlRoot.getDirectoryHandle(groupFolderName, { create: true });
+    const hasChangesDir = await xmlRoot.getDirectoryHandle("haschanges", { create: true });
+    const noChangesDir = await xmlRoot.getDirectoryHandle("nochanges", { create: true });
 
-    for (const chunk of chunks) {
-      const fileHandle = await target.getFileHandle(chunk.filename, { create: true });
+    for (const chunk of groups.hasChanges) {
+      const fileHandle = await hasChangesDir.getFileHandle(chunk.filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(chunk.content);
+      await writable.close();
+    }
+
+    for (const chunk of groups.noChanges) {
+      const fileHandle = await noChangesDir.getFileHandle(chunk.filename, { create: true });
       const writable = await fileHandle.createWritable();
       await writable.write(chunk.content);
       await writable.close();
@@ -149,17 +177,36 @@ export default function ChunkDetectionModal({
   xmlSections,
   sectionMapper,
   xmlFile,
+  loading = false,
+  progressMessage,
+  processingBatch = null,
+  completedBatches = 0,
+  totalBatches = 0,
+  startedAtMs = null,
+  liveChunkRows = [],
+  onRetryBatch,
+  onCancelProcessing,
+  onExit,
   onViewChunk,
   listScrollTop = 0,
   onListScroll,
   onClose,
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
+  const [elapsedSec, setElapsedSec] = React.useState(0);
 
   useEffect(() => {
     if (!listRef.current) return;
     listRef.current.scrollTop = listScrollTop;
   }, [listScrollTop]);
+
+  useEffect(() => {
+    if (!startedAtMs) return;
+    const update = () => setElapsedSec(Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [startedAtMs]);
 
   const statusMeta = (status: ChunkStatus) => {
     if (status === "no_changes") {
@@ -221,6 +268,7 @@ export default function ChunkDetectionModal({
   }, [result.chunks]);
 
   const sectionsForList = xmlSections.length > 0 ? xmlSections : fallbackSectionsFromChunks;
+  const hasRealChunkData = (result.chunks?.length ?? 0) > 0;
 
   const chunkStatusRows = useMemo(() => {
     const sectionFirstChunkId = new Map<string, number>();
@@ -246,9 +294,19 @@ export default function ChunkDetectionModal({
     };
 
     return sectionsForList.map((section, idx) => {
-      const hasChanges = coveredSectionLabels.has(section.label);
-      const chunkId = sectionFirstChunkId.get(section.label) ?? null;
-      const status = resolveStatus(sectionKinds.get(section.label));
+      const directChunk = result.chunks[idx] ?? null;
+      const mappedKinds = sectionKinds.get(section.label);
+      const effectiveKinds = mappedKinds && mappedKinds.size > 0
+        ? mappedKinds
+        : directChunk
+        ? new Set<string>([directChunk.kind])
+        : undefined;
+
+      const chunkId = sectionFirstChunkId.get(section.label) ?? directChunk?.id ?? null;
+      const hasChanges = coveredSectionLabels.has(section.label) || !!(
+        directChunk && (directChunk.kind === "add" || directChunk.kind === "del" || directChunk.kind === "mod" || directChunk.kind === "strike")
+      );
+      const status = resolveStatus(effectiveKinds);
       return {
         idx: idx + 1,
         section,
@@ -440,24 +498,82 @@ export default function ChunkDetectionModal({
     });
   };
 
-  const downloadGroupedList = async (target: "hasChanges" | "noChanges") => {
-    const chunkFiles = await buildChunkExports(target);
-    if (chunkFiles.length === 0) return;
+  const downloadGroupedList = async () => {
+    const [hasChangesFiles, noChangesFiles] = await Promise.all([
+      buildChunkExports("hasChanges"),
+      buildChunkExports("noChanges"),
+    ]);
+    if (hasChangesFiles.length === 0 && noChangesFiles.length === 0) return;
 
     const xmlFolderName = sanitizeFilename(xmlFile?.name || fileBaseName);
-    const groupFolderName: "HasChanges" | "NoChanges" = target === "hasChanges" ? "HasChanges" : "NoChanges";
 
-    const savedToFolder = await saveChunksToDirectory(chunkFiles, xmlFolderName, groupFolderName);
+    const savedToFolder = await saveChunkGroupsToDirectory(
+      { hasChanges: hasChangesFiles, noChanges: noChangesFiles },
+      xmlFolderName,
+    );
     if (savedToFolder) return;
 
     // Fallback for browsers without File System Access API: trigger one download per chunk.
-    for (const chunk of chunkFiles) {
-      downloadXmlFile(chunk.filename, chunk.content);
+    // Prefix file names to preserve group context when directories are unavailable.
+    for (const chunk of hasChangesFiles) {
+      downloadXmlFile(`haschanges_${chunk.filename}`, chunk.content);
+    }
+    for (const chunk of noChangesFiles) {
+      downloadXmlFile(`nochanges_${chunk.filename}`, chunk.content);
     }
   };
 
   const fileBaseName = sanitizeFilename(result.file_a || result.file_b || "document");
   const xmlFolderName = sanitizeFilename(xmlFile?.name || fileBaseName);
+  const canShowStaticRows = hasRealChunkData && chunkStatusRows.length > 0;
+  const liveCounts = useMemo(() => ({
+    hasChanges: liveChunkRows.filter((r) => r.status === "has_changes").length,
+    noChanges: liveChunkRows.filter((r) => r.status === "no_changes").length,
+    failed: liveChunkRows.filter((r) => r.status === "failed").length,
+  }), [liveChunkRows]);
+  const chunkToBatch = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const row of liveChunkRows) {
+      m.set(row.chunkNumber, row.batch);
+    }
+    return m;
+  }, [liveChunkRows]);
+  const failedBatchNos = useMemo(() => {
+    const batches = new Set<number>();
+    for (const row of liveChunkRows) {
+      if (row.status === "failed") batches.add(row.batch);
+    }
+    return Array.from(batches).sort((a, b) => a - b);
+  }, [liveChunkRows]);
+
+  const liveStatusMeta = (status: LiveChunkStatus) => {
+    if (status === "has_changes") {
+      return {
+        label: "Has Changes",
+        rowClass: "bg-amber-500/5 border border-amber-500/15 dark:border-amber-500/10",
+        textClass: "text-amber-400 dark:text-amber-300",
+      };
+    }
+    if (status === "no_changes") {
+      return {
+        label: "No Changes",
+        rowClass: "bg-emerald-500/5 border border-emerald-500/15 dark:border-emerald-500/10",
+        textClass: "text-emerald-400 dark:text-emerald-300",
+      };
+    }
+    if (status === "failed") {
+      return {
+        label: "Failed to process",
+        rowClass: "bg-rose-500/5 border border-rose-500/15 dark:border-rose-500/10",
+        textClass: "text-rose-400 dark:text-rose-300",
+      };
+    }
+    return {
+      label: "Processing",
+      rowClass: "bg-sky-500/5 border border-sky-500/15 dark:border-sky-500/10",
+      textClass: "text-sky-400 dark:text-sky-300",
+    };
+  };
 
   return (
     <div className="flex items-center justify-center h-full p-8">
@@ -468,29 +584,49 @@ export default function ChunkDetectionModal({
           <div>
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">Chunk Detection Report</h3>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              {xmlSections.length} chunk section{xmlSections.length !== 1 ? "s" : ""} · {hasChangesRows.length} with changes · {noChangesRows.length} without changes
+              {liveChunkRows.length > 0
+                ? `${liveChunkRows.length} chunk${liveChunkRows.length !== 1 ? "s" : ""} streamed · ${liveCounts.hasChanges} with changes · ${liveCounts.noChanges} without changes${liveCounts.failed > 0 ? ` · ${liveCounts.failed} failed` : ""}`
+                : loading
+                ? "Processing started. Waiting for first diff chunks…"
+                : `${xmlSections.length} chunk section${xmlSections.length !== 1 ? "s" : ""} · ${hasChangesRows.length} with changes · ${noChangesRows.length} without changes`
+              }
             </p>
+            {(loading || completedBatches > 0 || totalBatches > 0) && (
+              <p className="text-[10px] text-slate-400 mt-1">
+                {totalBatches > 0
+                  ? `Batch progress: ${Math.min(completedBatches, totalBatches)}/${totalBatches}`
+                  : `Batch progress: ${completedBatches}`}
+                {startedAtMs ? ` · elapsed ${elapsedSec}s` : ""}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => void downloadGroupedList("hasChanges")}
+              onClick={() => void downloadGroupedList()}
               className="text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
-              disabled={hasChangesRows.length === 0}
+              disabled={loading || (!hasChangesRows.length && !noChangesRows.length) || !hasRealChunkData}
             >
-              Download Has Changes
-            </button>
-            <button
-              onClick={() => void downloadGroupedList("noChanges")}
-              className="text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-500/30 bg-slate-500/10 text-slate-300 hover:bg-slate-500/20 transition-colors"
-              disabled={noChangesRows.length === 0}
-            >
-              Download No Changes
+              Download
             </button>
             <button
               onClick={onClose}
               className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white transition-colors"
             >
               Continue View More
+            </button>
+            {loading && (
+              <button
+                onClick={onCancelProcessing}
+                className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-rose-500/35 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors"
+              >
+                Cancel Processing
+              </button>
+            )}
+            <button
+              onClick={onExit ?? onClose}
+              className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-slate-300 dark:border-white/15 text-slate-600 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+            >
+              Exit
             </button>
           </div>
         </div>
@@ -501,9 +637,74 @@ export default function ChunkDetectionModal({
           onScroll={(e) => onListScroll?.(e.currentTarget.scrollTop)}
           className="flex-1 overflow-y-auto p-3 space-y-0.5"
         >
-          {chunkStatusRows.length === 0 ? (
+          {(loading || processingBatch || liveChunkRows.length > 0) && (
+            <div className="mb-3 space-y-1.5">
+              {processingBatch && (
+                <div className="px-3 py-2 rounded-lg bg-sky-500/10 border border-sky-500/20 text-[11px] text-sky-300 flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+                  <span>
+                    Processing Batch {processingBatch.batch}
+                    {processingBatch.of > 0 ? ` / ${processingBatch.of}` : ""}
+                    {processingBatch.pageRange ? ` (pages ${processingBatch.pageRange[0]}-${processingBatch.pageRange[1]})` : ""}
+                    …
+                  </span>
+                </div>
+              )}
+
+              {progressMessage && (
+                <p className="px-1 text-[10px] text-slate-500 dark:text-slate-400">{progressMessage}</p>
+              )}
+
+              {liveChunkRows
+                .slice()
+                .sort((a, b) => a.chunkNumber - b.chunkNumber)
+                .map((row) => {
+                  const meta = liveStatusMeta(row.status);
+                  return (
+                    <div
+                      key={`live-${row.chunkNumber}-${row.batch}`}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-lg ${meta.rowClass}`}
+                    >
+                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 w-[74px] flex-shrink-0">
+                        Chunk {row.chunkNumber}
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 w-[110px] flex-shrink-0">
+                        Batch {row.batch}{row.totalBatches > 0 ? `/${row.totalBatches}` : ""}
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 w-[120px] flex-shrink-0">
+                        {row.pageRange ? `Pages ${row.pageRange[0]}-${row.pageRange[1]}` : "—"}
+                      </span>
+                      <span className={`text-[10px] font-semibold ${meta.textClass}`}>
+                        {meta.label}
+                      </span>
+                      {row.status === "failed" && row.error && (
+                        <span className="text-[10px] text-rose-300 truncate" title={row.error}>{row.error}</span>
+                      )}
+                    </div>
+                  );
+                })}
+
+              {failedBatchNos.length > 0 && (
+                <div className="pt-1 flex flex-wrap gap-2">
+                  {failedBatchNos.map((batchNo) => (
+                    <button
+                      key={`retry-${batchNo}`}
+                      onClick={() => onRetryBatch?.(batchNo)}
+                      className="text-[10px] font-semibold px-2.5 py-1 rounded-md border border-rose-400/40 text-rose-300 hover:bg-rose-500/15 transition-colors"
+                    >
+                      Retry Batch {batchNo}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!canShowStaticRows ? (
             <p className="text-xs text-slate-500 text-center py-8">
-              No chunked sections available. Upload XML and choose a chunk level to see status.
+              {loading
+                ? "Waiting for detected chunks…"
+                : "No chunked sections available. Upload XML and choose a chunk level to see status."}
             </p>
           ) : (
             chunkRowsWithAnchors.map((row) => {
@@ -526,6 +727,9 @@ export default function ChunkDetectionModal({
                     title={row.section.label}
                   >
                     {row.section.label}
+                    <span className="ml-2 text-[10px] text-slate-400 dark:text-slate-500">
+                      {`(Batch ${chunkToBatch.get(row.idx) ?? "?"})`}
+                    </span>
                   </span>
 
                   <span className={`inline-flex items-center gap-1 text-[10px] font-semibold flex-shrink-0 ${meta.textClass}`}>
@@ -535,6 +739,7 @@ export default function ChunkDetectionModal({
 
                   <button
                     onClick={() => { void handleViewRow(row); }}
+                    disabled={row.chunkId == null && row.anchorChunkId == null}
                     className="ml-2 text-[10px] font-semibold px-2 py-1 rounded-md border border-slate-300 dark:border-white/15 text-slate-600 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
                   >
                     View
@@ -548,9 +753,9 @@ export default function ChunkDetectionModal({
         <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 dark:border-white/8 bg-slate-50/60 dark:bg-white/[0.02] rounded-b-2xl">
           <p className="text-[10px] text-slate-500 leading-relaxed">
             Export path structure:
-            <span className="font-semibold"> C:/Users/T7I/Documents/LRDU/{xmlFolderName}/HasChanges</span>
+            <span className="font-semibold"> C:/Users/T7I/Documents/LRDU/{xmlFolderName}/haschanges</span>
             {" "}and
-            <span className="font-semibold"> C:/Users/T7I/Documents/LRDU/{xmlFolderName}/NoChanges</span>.
+            <span className="font-semibold"> C:/Users/T7I/Documents/LRDU/{xmlFolderName}/nochanges</span>.
           </p>
         </div>
       </div>

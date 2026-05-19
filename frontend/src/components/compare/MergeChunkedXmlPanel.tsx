@@ -31,8 +31,49 @@ function xmlDownload(filename: string, xml: string): void {
 
 function inferBaseFilename(files: MergeChunkedXmlInput[]): string {
   if (files.length === 0) return "merged";
+
+  const sourceCommentRe = /<!--\s*Source:\s*([^\n\r<]+?)\s*-->/i;
+  for (const f of files) {
+    const m = sourceCommentRe.exec(f.content);
+    if (m?.[1]) {
+      const fromSource = m[1]
+        .trim()
+        .replace(/\.xml$/i, "")
+        .replace(/[\\/:*?"<>|]+/g, "_")
+        .replace(/[_\-]+$/g, "");
+      if (fromSource) return fromSource;
+    }
+  }
+
+  const groupRootRe = /^(.*?)(?:\/)?(?:haschanges|nochanges|corrected|correctedchunk|has_changes|no_changes|corrected_chunk)\b/i;
+  for (const f of files) {
+    const rel = (f.relative_path ?? "").replace(/\\/g, "/");
+    const m = groupRootRe.exec(rel);
+    if (m?.[1]) {
+      const parts = m[1].split("/").filter(Boolean);
+      const base = (parts[parts.length - 1] ?? "")
+        .replace(/\.xml$/i, "")
+        .replace(/[\\/:*?"<>|]+/g, "_")
+        .replace(/[_\-]+$/g, "");
+      if (base) return base;
+    }
+  }
+
   const first = files[0].filename.replace(/\.xml$/i, "");
   return first.replace(/(?:_innod\.\d+|Chunk\d+.*)$/i, "").replace(/[_\-]+$/, "") || "merged";
+}
+
+function normalizeGroupInputs(files: MergeChunkedXmlInput[], groupFolder: "haschanges" | "nochanges" | "corrected"): MergeChunkedXmlInput[] {
+  const groupRe = new RegExp(`(^|/)${groupFolder}(/|$)`, "i");
+  return files.map((f) => {
+    const rel = (f.relative_path ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
+    const nextRel = rel
+      ? groupRe.test(rel)
+        ? rel
+        : `${groupFolder}/${rel}`
+      : `${groupFolder}/${f.filename}`;
+    return { ...f, relative_path: nextRel };
+  });
 }
 
 async function filesToInputs(fileList: FileList | null): Promise<MergeChunkedXmlInput[]> {
@@ -77,9 +118,18 @@ async function collectDirectoryXmlFiles(dir: FileSystemDirectoryHandle, prefix =
 
 export default function MergeChunkedXmlPanel({ onBack }: Props) {
   const uploadRef = useRef<HTMLInputElement>(null);
-  const folderRef = useRef<HTMLInputElement>(null);
+  const hasFolderRef = useRef<HTMLInputElement>(null);
+  const noFolderRef = useRef<HTMLInputElement>(null);
+  const correctedFolderRef = useRef<HTMLInputElement>(null);
+  const rootFolderRef = useRef<HTMLInputElement>(null);
 
   const [chunkFiles, setChunkFiles] = useState<MergeChunkedXmlInput[]>([]);
+  const [hasChangesFiles, setHasChangesFiles] = useState<MergeChunkedXmlInput[]>([]);
+  const [noChangesFiles, setNoChangesFiles] = useState<MergeChunkedXmlInput[]>([]);
+  const [correctedFiles, setCorrectedFiles] = useState<MergeChunkedXmlInput[]>([]);
+  const [hasFolderLabel, setHasFolderLabel] = useState<string>("");
+  const [noFolderLabel, setNoFolderLabel] = useState<string>("");
+  const [correctedFolderLabel, setCorrectedFolderLabel] = useState<string>("");
   const [selectedMap, setSelectedMap] = useState<Record<string, boolean>>({});
   const [inspect, setInspect] = useState<MergeChunkInspectResult | null>(null);
   const [buildResult, setBuildResult] = useState<MergeChunkBuildResult | null>(null);
@@ -93,10 +143,13 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
   const [strictMode, setStrictMode] = useState(true);
 
   useEffect(() => {
-    if (!folderRef.current) return;
-    const el = folderRef.current as HTMLInputElement & { webkitdirectory?: boolean; directory?: boolean };
-    el.webkitdirectory = true;
-    el.directory = true;
+    const refs = [hasFolderRef.current, noFolderRef.current, correctedFolderRef.current, rootFolderRef.current];
+    for (const ref of refs) {
+      if (!ref) continue;
+      const el = ref as HTMLInputElement & { webkitdirectory?: boolean; directory?: boolean };
+      el.webkitdirectory = true;
+      el.directory = true;
+    }
   }, []);
 
   const selectedNames = useMemo(
@@ -105,6 +158,8 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
   );
 
   const previewXml = buildResult?.merged_xml ?? "";
+
+  const groupedMode = hasChangesFiles.length > 0 || noChangesFiles.length > 0 || correctedFiles.length > 0;
 
   const inspectNow = async (files: MergeChunkedXmlInput[], selected: string[] = []): Promise<void> => {
     setBusyInspect(true);
@@ -116,7 +171,9 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
 
       const nextSelection: Record<string, boolean> = {};
       for (const row of data.chunk_rows) {
-        nextSelection[row.filename] = selected.length > 0 ? selected.includes(row.filename) : !row.duplicate;
+        nextSelection[row.selection_key] = selected.length > 0
+          ? selected.includes(row.selection_key)
+          : !row.duplicate;
       }
       setSelectedMap(nextSelection);
     } catch (e) {
@@ -138,26 +195,160 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
     await inspectNow(files, []);
   };
 
-  const onUpload = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+  const loadFromGroups = async (
+    hasFiles: MergeChunkedXmlInput[],
+    noFiles: MergeChunkedXmlInput[],
+    corrected: MergeChunkedXmlInput[],
+  ) => {
+    const combined = [...hasFiles, ...noFiles, ...corrected];
+    if (combined.length === 0) {
+      setChunkFiles([]);
+      setInspect(null);
+      setBuildResult(null);
+      setSelectedMap({});
+      setError("No XML chunk files detected.");
+      return;
+    }
+    await loadFiles(combined);
+  };
+
+  const onUploadMixed = async (ev: React.ChangeEvent<HTMLInputElement>) => {
     const files = await filesToInputs(ev.target.files);
+    setHasChangesFiles([]);
+    setNoChangesFiles([]);
+    setCorrectedFiles([]);
+    setHasFolderLabel("");
+    setNoFolderLabel("");
+    setCorrectedFolderLabel("");
     await loadFiles(files);
     ev.target.value = "";
   };
 
-  const pickFolderWithFSAPI = async () => {
+  const onUploadGrouped = (group: "haschanges" | "nochanges" | "corrected") =>
+    async (ev: React.ChangeEvent<HTMLInputElement>) => {
+      const files = normalizeGroupInputs(await filesToInputs(ev.target.files), group);
+      if (group === "haschanges") {
+        setHasChangesFiles(files);
+        setHasFolderLabel(ev.target.files?.[0]?.webkitRelativePath?.split("/")?.[0] ?? "haschanges");
+        await loadFromGroups(files, noChangesFiles, correctedFiles);
+      } else if (group === "nochanges") {
+        setNoChangesFiles(files);
+        setNoFolderLabel(ev.target.files?.[0]?.webkitRelativePath?.split("/")?.[0] ?? "nochanges");
+        await loadFromGroups(hasChangesFiles, files, correctedFiles);
+      } else {
+        setCorrectedFiles(files);
+        setCorrectedFolderLabel(ev.target.files?.[0]?.webkitRelativePath?.split("/")?.[0] ?? "corrected");
+        await loadFromGroups(hasChangesFiles, noChangesFiles, files);
+      }
+      ev.target.value = "";
+    };
+
+  const pickGroupedFolderWithFSAPI = async (group: "haschanges" | "nochanges" | "corrected") => {
     const w = window as DirectoryPickerWindow;
     if (!w.showDirectoryPicker) {
-      folderRef.current?.click();
+      if (group === "haschanges") {
+        hasFolderRef.current?.click();
+      } else if (group === "nochanges") {
+        noFolderRef.current?.click();
+      } else {
+        correctedFolderRef.current?.click();
+      }
       return;
     }
     setError(null);
     try {
       const dir = await w.showDirectoryPicker({ mode: "read", startIn: "documents" });
-      const files = await collectDirectoryXmlFiles(dir, dir.name);
-      await loadFiles(files);
+      const files = normalizeGroupInputs(await collectDirectoryXmlFiles(dir, ""), group);
+      if (group === "haschanges") {
+        setHasChangesFiles(files);
+        setHasFolderLabel(dir.name || "haschanges");
+        await loadFromGroups(files, noChangesFiles, correctedFiles);
+      } else if (group === "nochanges") {
+        setNoChangesFiles(files);
+        setNoFolderLabel(dir.name || "nochanges");
+        await loadFromGroups(hasChangesFiles, files, correctedFiles);
+      } else {
+        setCorrectedFiles(files);
+        setCorrectedFolderLabel(dir.name || "corrected");
+        await loadFromGroups(hasChangesFiles, noChangesFiles, files);
+      }
     } catch {
       // user cancelled
     }
+  };
+
+  const detectGroupFromRelativePath = (relativePath: string): "haschanges" | "nochanges" | "corrected" | null => {
+    const p = (relativePath || "").replace(/\\/g, "/").toLowerCase();
+    if (/\/(correctedchunk|corrected|corrected_chunk)\//.test(`/${p}`)) return "corrected";
+    if (/\/(haschanges|has_changes)\//.test(`/${p}`)) return "haschanges";
+    if (/\/(nochanges|no_changes)\//.test(`/${p}`)) return "nochanges";
+    return null;
+  };
+
+  const splitByGroup = (files: MergeChunkedXmlInput[]) => {
+    const has: MergeChunkedXmlInput[] = [];
+    const no: MergeChunkedXmlInput[] = [];
+    const corrected: MergeChunkedXmlInput[] = [];
+    const unknown: MergeChunkedXmlInput[] = [];
+
+    for (const f of files) {
+      const grp = detectGroupFromRelativePath(f.relative_path ?? "");
+      if (grp === "haschanges") has.push(normalizeGroupInputs([f], "haschanges")[0]);
+      else if (grp === "nochanges") no.push(normalizeGroupInputs([f], "nochanges")[0]);
+      else if (grp === "corrected") corrected.push(normalizeGroupInputs([f], "corrected")[0]);
+      else unknown.push(f);
+    }
+
+    return { has, no, corrected, unknown };
+  };
+
+  const pickRootFolderWithFSAPI = async () => {
+    const w = window as DirectoryPickerWindow;
+    if (!w.showDirectoryPicker) {
+      rootFolderRef.current?.click();
+      return;
+    }
+
+    setError(null);
+    try {
+      const dir = await w.showDirectoryPicker({ mode: "read", startIn: "documents" });
+      const files = await collectDirectoryXmlFiles(dir, dir.name);
+      const { has, no, corrected, unknown } = splitByGroup(files);
+
+      if (has.length + no.length + corrected.length === 0) {
+        setError("Main folder must contain subfolders haschanges, nochanges, and/or corrected with XML files.");
+        return;
+      }
+
+      setHasChangesFiles(has);
+      setNoChangesFiles(no);
+      setCorrectedFiles(corrected);
+      setHasFolderLabel(has.length > 0 ? "haschanges" : "");
+      setNoFolderLabel(no.length > 0 ? "nochanges" : "");
+      setCorrectedFolderLabel(corrected.length > 0 ? "corrected" : "");
+      await loadFromGroups(has, no, corrected);
+      if (unknown.length > 0) {
+        setError(`Ignored ${unknown.length} XML file(s) outside haschanges/nochanges/corrected folders.`);
+      }
+    } catch {
+      // user cancelled
+    }
+  };
+
+  const onUploadRoot = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const files = await filesToInputs(ev.target.files);
+    const { has, no, corrected, unknown } = splitByGroup(files);
+    setHasChangesFiles(has);
+    setNoChangesFiles(no);
+    setCorrectedFiles(corrected);
+    setHasFolderLabel(has.length > 0 ? "haschanges" : "");
+    setNoFolderLabel(no.length > 0 ? "nochanges" : "");
+    setCorrectedFolderLabel(corrected.length > 0 ? "corrected" : "");
+    await loadFromGroups(has, no, corrected);
+    if (unknown.length > 0) {
+      setError(`Ignored ${unknown.length} XML file(s) outside haschanges/nochanges/corrected folders.`);
+    }
+    ev.target.value = "";
   };
 
   const toggleFile = async (filename: string) => {
@@ -212,21 +403,48 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
           </p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <input ref={uploadRef} type="file" accept=".xml" multiple className="hidden" onChange={onUpload} />
-            <input ref={folderRef} type="file" multiple className="hidden" onChange={onUpload} />
+            <input ref={uploadRef} type="file" accept=".xml" multiple className="hidden" onChange={onUploadMixed} />
+            <input ref={hasFolderRef} type="file" multiple className="hidden" onChange={onUploadGrouped("haschanges")} />
+            <input ref={noFolderRef} type="file" multiple className="hidden" onChange={onUploadGrouped("nochanges")} />
+            <input ref={correctedFolderRef} type="file" multiple className="hidden" onChange={onUploadGrouped("corrected")} />
+            <input ref={rootFolderRef} type="file" multiple className="hidden" onChange={onUploadRoot} />
 
             <button
               onClick={() => uploadRef.current?.click()}
               className="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5"
             >
-              Upload XML Chunks
+              Upload Mixed XML Chunks
             </button>
             <button
-              onClick={pickFolderWithFSAPI}
-              className="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5"
+              onClick={() => void pickGroupedFolderWithFSAPI("haschanges")}
+              className="px-3 py-2 text-xs font-semibold rounded-lg border border-amber-300/70 dark:border-amber-500/30 hover:bg-amber-50 dark:hover:bg-amber-500/10"
             >
-              Select Folder Path
+              Select HasChanges Folder
             </button>
+            <button
+              onClick={() => void pickGroupedFolderWithFSAPI("nochanges")}
+              className="px-3 py-2 text-xs font-semibold rounded-lg border border-emerald-300/70 dark:border-emerald-500/30 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
+            >
+              Select NoChanges Folder
+            </button>
+            <button
+              onClick={() => void pickGroupedFolderWithFSAPI("corrected")}
+              className="px-3 py-2 text-xs font-semibold rounded-lg border border-cyan-300/70 dark:border-cyan-500/30 hover:bg-cyan-50 dark:hover:bg-cyan-500/10"
+            >
+              Select Corrected Folder
+            </button>
+            <button
+              onClick={pickRootFolderWithFSAPI}
+              className="px-3 py-2 text-xs font-semibold rounded-lg border border-violet-300/70 dark:border-violet-500/30 hover:bg-violet-50 dark:hover:bg-violet-500/10"
+            >
+              Select Main Folder
+            </button>
+
+            <span className="text-[11px] text-slate-500 self-center ml-1">
+              {groupedMode
+                ? `Loaded: haschanges ${hasChangesFiles.length}${hasFolderLabel ? ` (${hasFolderLabel})` : ""}, nochanges ${noChangesFiles.length}${noFolderLabel ? ` (${noFolderLabel})` : ""}, corrected ${correctedFiles.length}${correctedFolderLabel ? ` (${correctedFolderLabel})` : ""}`
+                : "Use either separate has/no/corrected folders or one main folder containing those subfolders."}
+            </span>
 
             <div className="ml-auto flex items-center gap-2">
               <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300 mr-2">
@@ -290,13 +508,13 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
                 </thead>
                 <tbody>
                   {inspect?.chunk_rows?.map((row) => (
-                    <tr key={row.filename} className="border-t border-slate-200/80 dark:border-white/10">
+                    <tr key={row.selection_key} className="border-t border-slate-200/80 dark:border-white/10">
                       <td className="px-2 py-1.5">
                         <input
                           type="checkbox"
-                          checked={!!selectedMap[row.filename]}
+                          checked={!!selectedMap[row.selection_key]}
                           disabled={row.duplicate}
-                          onChange={() => { void toggleFile(row.filename); }}
+                          onChange={() => { void toggleFile(row.selection_key); }}
                         />
                       </td>
                       <td className="px-2 py-1.5 font-mono">{row.sequence ?? "-"}</td>
@@ -307,6 +525,8 @@ export default function MergeChunkedXmlPanel({ onBack }: Props) {
                       <td className="px-2 py-1.5">
                         {row.duplicate ? (
                           <span className="text-rose-500">Duplicate</span>
+                        ) : row.source_group === "corrected" ? (
+                          <span className="text-cyan-600 dark:text-cyan-300">Corrected</span>
                         ) : row.has_changes ? (
                           <span className="text-amber-600 dark:text-amber-400">Changed</span>
                         ) : (
