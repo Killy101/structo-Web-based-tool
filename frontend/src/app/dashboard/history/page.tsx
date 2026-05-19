@@ -31,6 +31,14 @@ function getUserLabel(log: UserLog) {
   return log.user?.userId ?? `#${log.userId}`;
 }
 
+function csvField(value: unknown): string {
+  const s = String(value ?? "");
+  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 function exportCSV(logs: UserLog[]) {
   const headers = ["ID", "Timestamp", "User", "User ID", "Role", "Action", "Details"];
   const rows = logs.map(l => [
@@ -40,9 +48,9 @@ function exportCSV(logs: UserLog[]) {
     l.user?.userId ?? l.userId,
     l.user?.role ?? "",
     l.action,
-    (l.details ?? "").replace(/,/g, ";"),
+    l.details ?? "",
   ]);
-  const csv = [headers, ...rows].map(r => r.join(",")).join("\n");
+  const csv = [headers, ...rows].map(r => r.map(csvField).join(",")).join("\r\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

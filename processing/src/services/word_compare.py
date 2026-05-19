@@ -35,6 +35,8 @@ _LIGATURE = str.maketrans({
 _RE_HYPHEN_BREAK  = re.compile(r"-\s*\n\s*")
 _RE_WHITESPACE    = re.compile(r"\s+")
 _RE_SPLIT_WORDS   = re.compile(r"\s+")
+
+_MAX_TOKENS = 40_000
 _RE_STRIP_PUNCT   = re.compile(r"^[^\w]+|[^\w]+$")
 
 # Legal-aware sentence splitter: handles .!?  and also ;/:  followed by a
@@ -66,6 +68,8 @@ def _tokenise(text: str):
 
     tokens = []
     for tok in raw:
+        if len(tokens) >= _MAX_TOKENS:
+            break
         cleaned = _RE_STRIP_PUNCT.sub("", tok)
         if not cleaned:
             continue

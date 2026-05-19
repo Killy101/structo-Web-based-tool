@@ -45,6 +45,12 @@ api.interceptors.response.use(
         : "Service temporarily unavailable (503). Please try again in a moment.";
       return Promise.reject(new Error(msg));
     }
+    if (error?.response?.status === 401 || error?.response?.status === 403) {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("token");
+      }
+      return Promise.reject(error);
+    }
     return Promise.reject(error);
   },
 );

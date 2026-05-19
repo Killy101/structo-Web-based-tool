@@ -13,15 +13,28 @@ import type {
 } from "./types";
 import type { LoadingStage } from "./DiffUpload";
 
-const BASE = process.env.NEXT_PUBLIC_PROCESSING_URL
-  ? `${process.env.NEXT_PUBLIC_PROCESSING_URL}/compare`
-  : "http://localhost:8000/compare";
+const _rawProcessingBase = process.env.NEXT_PUBLIC_PROCESSING_URL || "http://localhost:8000";
+const _processingBase = _rawProcessingBase.replace(/\/+$/, "").replace(/\/compare$/i, "");
+const BASE = `${_processingBase}/compare`;
 
 export const LARGE_DOC_THRESHOLD = 100;
 
 // ── Chunked upload ────────────────────────────────────────────────────────────
 const CHUNK_SIZE   = 2 * 1024 * 1024;
 const MAX_PARALLEL = 4;
+
+let _chunkUploadAvailable: boolean | null = null;
+
+async function _hasChunkUploadEndpoint(): Promise<boolean> {
+  if (_chunkUploadAvailable !== null) return _chunkUploadAvailable;
+  try {
+    const probe = await fetch(`${_processingBase}/upload/chunk`, { method: "HEAD" });
+    _chunkUploadAvailable = probe.ok;
+  } catch {
+    _chunkUploadAvailable = false;
+  }
+  return _chunkUploadAvailable;
+}
 
 interface UploadResult { fileId: string; sha256: string; path: string; }
 
@@ -35,18 +48,15 @@ async function _uploadChunked(
   file:       File,
   onProgress: (pct: number) => void,
 ): Promise<UploadResult | null> {
-  const probe = await fetch(`${BASE.replace("/compare", "")}/upload/chunk`, {
-    method: "HEAD",
-  }).catch(() => null);
-  if (!probe || !probe.ok) return null;
+  if (!(await _hasChunkUploadEndpoint())) return null;
 
-  const BASE_UPLOAD = BASE.replace("/compare", "");
+  const BASE_UPLOAD = _processingBase;
   const fileId      = crypto.randomUUID();
   const totalParts  = Math.ceil(file.size / CHUNK_SIZE);
 
   for (let i = 0; i < totalParts; i += MAX_PARALLEL) {
     const batchSize = Math.min(MAX_PARALLEL, totalParts - i);
-    await Promise.all(
+    const results = await Promise.all(
       Array.from({ length: batchSize }, (_, k) => {
         const idx   = i + k;
         const start = idx * CHUNK_SIZE;
@@ -58,6 +68,16 @@ async function _uploadChunked(
         return fetch(`${BASE_UPLOAD}/upload/chunk`, { method: "POST", body: form });
       }),
     );
+    const failed = results.find(r => !r.ok);
+    if (failed) {
+      // If the deployment does not expose chunk-upload routes, disable this
+      // path for the session and fall back to legacy direct upload flow.
+      if (failed.status === 404 || failed.status === 405) {
+        _chunkUploadAvailable = false;
+        return null;
+      }
+      throw new Error(`Chunk upload failed: HTTP ${failed.status}`);
+    }
     onProgress(Math.round(((i + batchSize) / totalParts) * 85));
   }
 
@@ -65,7 +85,13 @@ async function _uploadChunked(
   fin.append("file_id",  fileId);
   fin.append("filename", file.name);
   const res  = await fetch(`${BASE_UPLOAD}/upload/finalise`, { method: "POST", body: fin });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    if (res.status === 404 || res.status === 405) {
+      _chunkUploadAvailable = false;
+      return null;
+    }
+    return null;
+  }
   const data = await res.json() as { file_id: string; sha256: string; path: string };
   onProgress(100);
   return { fileId: data.file_id, sha256: data.sha256, path: data.path };
@@ -280,7 +306,7 @@ export interface LargeDiffResult {
   file_a:      string;
   file_b:      string;
   totalPages:  number;
-  elapsedS:    number;
+  elapsedS?:   number;
 }
 
 export async function apiDiffLarge(
@@ -595,7 +621,6 @@ export async function apiLocate(xmlText: string, chunk: Chunk): Promise<LocateRe
 export async function apiChunkLocate(
   xmlText:   string,
   xmlOffset: number,
-  chunks:    Chunk[],
 ): Promise<ChunkLocateResult | null> {
   try {
     const sessionId = await _ensureXmlSession(xmlText);
@@ -797,4 +822,95 @@ function _parseLargeProgress(msg: Record<string, unknown>): DiffProgress {
   }
 
   return { stage: "batch", pct: 0, message: "Processing large document…" };
+}
+
+// ── Chunked XML merge APIs ──────────────────────────────────────────────────
+
+export interface MergeChunkedXmlInput {
+  filename: string;
+  content: string;
+  relative_path?: string;
+}
+
+export interface MergeChunkRow {
+  index: number;
+  filename: string;
+  relative_path: string;
+  selection_key: string;
+  sequence: number | null;
+  part_order: number;
+  section_level: number;
+  has_changes: boolean;
+  source_group: "corrected" | "haschanges" | "nochanges" | "unknown";
+  duplicate: boolean;
+  selected: boolean;
+  heading: string;
+  source_path: string | null;
+}
+
+export interface MergeChunkInspectResult {
+  success: boolean;
+  chunk_rows: MergeChunkRow[];
+  invalid_files: Array<{ filename: string; reason: string }>;
+  warnings: string[];
+  missing_sequences: number[];
+  duplicate_sequences?: number[];
+  summary: {
+    total_detected: number;
+    selected: number;
+    changed_selected: number;
+    duplicates_selected: number;
+  };
+}
+
+export interface MergeChunkBuildResult extends MergeChunkInspectResult {
+  merged_xml: string;
+  export_mode: string;
+  export_filename: string;
+  strict_mode?: boolean;
+}
+
+export async function apiInspectChunkedXmlMerge(
+  files: MergeChunkedXmlInput[],
+  selectedFilenames: string[] = [],
+): Promise<MergeChunkInspectResult> {
+  const res = await fetch(`${BASE}/merge/chunked/inspect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files, selected_filenames: selectedFilenames }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(_extractErrMsg(err, "Chunk merge inspect failed"));
+  }
+
+  return res.json() as Promise<MergeChunkInspectResult>;
+}
+
+export async function apiBuildChunkedXmlMerge(
+  files: MergeChunkedXmlInput[],
+  selectedFilenames: string[] = [],
+  exportMode: "single" | "versioned" | "backup" = "single",
+  baseFilename = "merged",
+  strictMode = false,
+): Promise<MergeChunkBuildResult> {
+  const res = await fetch(`${BASE}/merge/chunked/build`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      files,
+      selected_filenames: selectedFilenames,
+      export_mode: exportMode,
+      base_filename: baseFilename,
+      strict_mode: strictMode,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(_extractErrMsg(err, "Chunk merge failed"));
+  }
+
+  return res.json() as Promise<MergeChunkBuildResult>;
 }

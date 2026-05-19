@@ -56,6 +56,7 @@ import threading
 import time
 import traceback
 import uuid
+import math
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
@@ -91,11 +92,22 @@ logger = logging.getLogger(__name__)
 # ── Concurrency guard ─────────────────────────────────────────────────────────
 _MAX_CONCURRENT_DIFFS: int = int(os.environ.get("MAX_CONCURRENT_DIFFS",    "5"))
 _active_diffs: int = 0
+_active_diffs_lock: threading.Lock = threading.Lock()
 _RETRY_AFTER_SECONDS: int = 30
 _COMPARE_TIMEOUT_SECONDS: int = int(os.environ.get("COMPARE_TIMEOUT_SECONDS", "1800"))
 
 # ── Batch size ────────────────────────────────────────────────────────────────
 PAGE_BATCH_SIZE: int = int(os.environ.get("COMPARE_BATCH_SIZE", "100"))
+_BATCH_ADAPTIVE: bool = os.environ.get("COMPARE_BATCH_ADAPTIVE", "1") == "1"
+_BATCH_MIN: int = int(os.environ.get("COMPARE_BATCH_SIZE_MIN", "40"))
+_BATCH_MAX: int = int(os.environ.get("COMPARE_BATCH_SIZE_MAX", "240"))
+_BATCH_TARGET_COUNT: int = int(os.environ.get("COMPARE_BATCH_TARGET_COUNT", "12"))
+
+# ── Pipeline / profiling tuning ───────────────────────────────────────────────
+_PIPELINE_WORKERS: int = int(os.environ.get("COMPARE_PIPELINE_WORKERS", "6"))
+_INLINE_PRECOMPUTE_CHUNK_MAX: int = int(os.environ.get("COMPARE_INLINE_PRECOMPUTE_CHUNK_MAX", "14"))
+_PROFILE_ENABLED: bool = os.environ.get("COMPARE_PROFILE", "1") == "1"
+_STREAM_IDLE_SLEEP_MS: int = int(os.environ.get("COMPARE_STREAM_IDLE_SLEEP_MS", "30"))
 
 # ── File size limit ───────────────────────────────────────────────────────────
 MAX_FILE_SIZE_BYTES: int = int(os.environ.get("MAX_FILE_SIZE_MB", "200")) * 1024 * 1024
@@ -153,6 +165,22 @@ _render_pool: ProcessPoolExecutor | None = None
 _render_pool_lock = threading.Lock()
 
 
+def _resolve_batch_size(total_pages: int) -> int:
+    """Choose batch size based on document size unless adaptive mode is disabled."""
+    base = max(1, PAGE_BATCH_SIZE)
+    if not _BATCH_ADAPTIVE:
+        return base
+    if total_pages <= 0:
+        return base
+
+    # Aim for a stable number of batches to reduce per-batch overhead on very
+    # large files while keeping UI updates frequent for moderate files.
+    adaptive = int(math.ceil(total_pages / max(1, _BATCH_TARGET_COUNT)))
+    resolved = max(base, adaptive)
+    resolved = max(_BATCH_MIN, min(_BATCH_MAX, resolved))
+    return max(1, resolved)
+
+
 def _get_render_pool() -> ProcessPoolExecutor:
     """Return the long-lived process pool, creating it on first use."""
     global _render_pool
@@ -161,6 +189,7 @@ def _get_render_pool() -> ProcessPoolExecutor:
             _render_pool = ProcessPoolExecutor(
                 max_workers=_RENDER_WORKERS,
                 mp_context=_mp.get_context("spawn"),
+                max_tasks_per_child=50,
             )
         return _render_pool
 
@@ -257,6 +286,19 @@ def _load_engine():
 
 ce = _load_engine()
 
+try:
+    from src.services.word_compare import align_sentences as _align_sentences  # type: ignore[import]
+except ImportError:
+    try:
+        from word_compare import align_sentences as _align_sentences  # type: ignore[import]
+    except ImportError:
+        def _align_sentences(old_text: str, new_text: str) -> list[tuple[str, str, float]]:  # type: ignore[misc]
+            old_text = (old_text or "").strip()
+            new_text = (new_text or "").strip()
+            if not old_text and not new_text:
+                return []
+            return [(old_text, new_text, 0.0)]
+
 
 # ── Extractor loader ──────────────────────────────────────────────────────────
 
@@ -290,6 +332,54 @@ def _ext_load_pdf(path: str, progress_cb, page_start: int, page_end: int):
 
 # ── Serialisation helpers ─────────────────────────────────────────────────────
 
+_MAX_SENT_ALIGN_CHARS: int = int(os.environ.get("COMPARE_SENT_ALIGN_MAX_CHARS", "4000"))
+_MAX_SENT_ALIGN_ROWS: int = int(os.environ.get("COMPARE_SENT_ALIGN_MAX_ROWS", "120"))
+
+
+def _serialise_sentence_alignment(ch) -> list[dict]:
+    """Return sentence-level alignment rows for MOD chunks."""
+    if getattr(ch, "kind", "") != getattr(ce, "KIND_MOD", "mod"):
+        return []
+
+    existing = getattr(ch, "sentence_alignment", None)
+    if isinstance(existing, list):
+        rows: list[dict] = []
+        for row in existing[:_MAX_SENT_ALIGN_ROWS]:
+            if not isinstance(row, dict):
+                continue
+            old_s = str(row.get("old", "") or "")[:_MAX_SENT_ALIGN_CHARS]
+            new_s = str(row.get("new", "") or "")[:_MAX_SENT_ALIGN_CHARS]
+            try:
+                score = float(row.get("similarity", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            rows.append({
+                "old": old_s,
+                "new": new_s,
+                "similarity": round(max(0.0, min(1.0, score)), 3),
+            })
+        if rows:
+            return rows
+
+    old_text = (getattr(ch, "text_a", "") or "").strip()[:_MAX_SENT_ALIGN_CHARS]
+    new_text = (getattr(ch, "text_b", "") or "").strip()[:_MAX_SENT_ALIGN_CHARS]
+    if not old_text and not new_text:
+        return []
+
+    try:
+        aligned = _align_sentences(old_text, new_text)
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for old_s, new_s, score in aligned[:_MAX_SENT_ALIGN_ROWS]:
+        rows.append({
+            "old": old_s,
+            "new": new_s,
+            "similarity": round(float(score), 3),
+        })
+    return rows
+
 def _chunk_to_dict(ch, idx: int) -> dict:
     d = {
         "id":          idx,
@@ -315,6 +405,7 @@ def _chunk_to_dict(ch, idx: int) -> dict:
     emp = getattr(ch, "emp_detail", "") or ""
     if emp:
         d["emp_detail"] = emp
+    d["sentence_alignment"] = _serialise_sentence_alignment(ch)
     return d
 
 
@@ -490,13 +581,14 @@ async def diff_pdfs_stream(
     page_end_b:   Optional[int]    = Form(None),
 ):
     global _active_diffs
-    if _active_diffs >= _MAX_CONCURRENT_DIFFS:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Server busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons running.",
-            headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
-        )
-    _active_diffs += 1
+    with _active_diffs_lock:
+        if _active_diffs >= _MAX_CONCURRENT_DIFFS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Server busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons running.",
+                headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
+            )
+        _active_diffs += 1
     try:
         _check_file_size(old_file)
         _check_file_size(new_file)
@@ -507,7 +599,8 @@ async def diff_pdfs_stream(
         fname_a    = old_file.filename
         fname_b    = new_file.filename
     except Exception:
-        _active_diffs -= 1
+        with _active_diffs_lock:
+            _active_diffs -= 1
         raise
 
     q: _queue_mod.Queue = _queue_mod.Queue()
@@ -645,7 +738,8 @@ async def diff_pdfs_stream(
                         break
                     await asyncio.sleep(0.05)
         finally:
-            _active_diffs -= 1
+            with _active_diffs_lock:
+                _active_diffs -= 1
 
     return StreamingResponse(
         _generate(),
@@ -663,17 +757,18 @@ async def diff_pdfs_stream_large(
     xml_file_a: Optional[UploadFile] = File(None),
     xml_file_b: Optional[UploadFile] = File(None),
 ):
+    global _active_diffs
     if _extractor is None:
         raise HTTPException(status_code=501, detail="load_pdf_batched not available.")
 
-    global _active_diffs
-    if _active_diffs >= _MAX_CONCURRENT_DIFFS:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Server busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons running.",
-            headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
-        )
-    _active_diffs += 1
+    with _active_diffs_lock:
+        if _active_diffs >= _MAX_CONCURRENT_DIFFS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Server busy — {_active_diffs}/{_MAX_CONCURRENT_DIFFS} comparisons running.",
+                headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
+            )
+        _active_diffs += 1
     try:
         _check_file_size(old_file)
         _check_file_size(new_file)
@@ -685,7 +780,8 @@ async def diff_pdfs_stream_large(
         fname_b    = new_file.filename
         job_id     = str(uuid.uuid4())
     except Exception:
-        _active_diffs -= 1
+        with _active_diffs_lock:
+            _active_diffs -= 1
         raise
 
     q: _queue_mod.Queue = _queue_mod.Queue()
@@ -754,13 +850,17 @@ async def diff_pdfs_stream_large(
                     )
                 else:
                     result_lines = _ext_load_pdf(str(src), None, start_p, end_p)
-                # Store in extraction cache
+                # Only cache successful (non-None) extraction results
+                if result_lines is None:
+                    logger.warning("_do_load: extractor returned None for pages %d-%d", start_p, end_p)
+                    return []
                 if sha is not None:
                     _extract_cache_put(sha, start_p, end_p, result_lines)
                 return result_lines
 
             n_pages   = max(n_a, n_b)
-            batches   = list(range(0, n_pages, PAGE_BATCH_SIZE))
+            batch_size = _resolve_batch_size(n_pages)
+            batches   = list(range(0, n_pages, batch_size))
             n_batches = len(batches)
 
             q.put(_emit_ndjson({
@@ -772,7 +872,7 @@ async def diff_pdfs_stream_large(
             logger.info(
                 "diff/stream/large: job=%s  old=%d pages  new=%d pages  "
                 "%d batches x %d pages  fast_batch=%s  cache=%s",
-                job_id, n_a, n_b, n_batches, PAGE_BATCH_SIZE,
+                job_id, n_a, n_b, n_batches, batch_size,
                 has_fast_batch, _EXTRACT_CACHE_AVAILABLE,
             )
 
@@ -785,13 +885,23 @@ async def diff_pdfs_stream_large(
             all_offsets_b:     dict = {}
             all_offset_ends_a: dict = {}
             all_offset_ends_b: dict = {}
+            all_line_offsets_a: dict = {}
+            all_line_offsets_b: dict = {}
+            all_line_offset_ends_a: dict = {}
+            all_line_offset_ends_b: dict = {}
             all_blocks_b_headings: list = []
 
             # Pipeline pool: pre-fetch extraction while diff+render runs
-            pipeline_pool = ThreadPoolExecutor(max_workers=4)
+            pipeline_pool = ThreadPoolExecutor(max_workers=max(2, _PIPELINE_WORKERS))
+
+            total_extract_wait_s = 0.0
+            total_diff_s = 0.0
+            total_render_s = 0.0
+            total_serialise_s = 0.0
+            total_batch_s = 0.0
 
             def _submit_extract(bs: int):
-                be  = min(bs + PAGE_BATCH_SIZE - 1, n_pages - 1)
+                be  = min(bs + batch_size - 1, n_pages - 1)
                 oe  = min(be, n_a - 1)
                 ne  = min(be, n_b - 1)
                 fa_ = pipeline_pool.submit(_do_load, src_a, hf_a, flags_a, gap_a, sha_a, bs, oe)
@@ -807,7 +917,8 @@ async def diff_pdfs_stream_large(
             render_pool = _get_render_pool()
 
             for batch_k, batch_start in enumerate(batches):
-                batch_end = min(batch_start + PAGE_BATCH_SIZE - 1, n_pages - 1)
+                tb0 = time.perf_counter()
+                batch_end = min(batch_start + batch_size - 1, n_pages - 1)
                 pct_start = int(batch_k / n_batches * 90)
                 pct_end   = int((batch_k + 1) / n_batches * 90)
 
@@ -820,8 +931,11 @@ async def diff_pdfs_stream_large(
                 }))
 
                 fut_a, fut_b = next_futs
+                t_extract0 = time.perf_counter()
                 lines_a = fut_a.result() if fut_a is not None else []
                 lines_b = fut_b.result() if fut_b is not None else []
+                extract_wait_s = time.perf_counter() - t_extract0
+                total_extract_wait_s += extract_wait_s
 
                 next_batch_idx = batch_k + 1
                 if next_batch_idx < len(batches):
@@ -838,10 +952,13 @@ async def diff_pdfs_stream_large(
                 }))
 
                 try:
+                    t_diff0 = time.perf_counter()
                     blocks_a, blocks_b, chunks = ce.compute_diff(
                         lines_a, lines_b,
                         xml_text_a=xml_a_text, xml_text_b=xml_b_text,
                     )
+                    diff_s = time.perf_counter() - t_diff0
+                    total_diff_s += diff_s
                 except Exception as diff_exc:
                     logger.warning("batch %d diff failed: %s", batch_k, diff_exc)
                     pane_empty = {"segments": [], "tag_cfgs": {}, "offsets": {}, "offset_ends": {}}
@@ -865,18 +982,28 @@ async def diff_pdfs_stream_large(
                 }))
 
                 # ProcessPool precompute — breaks GIL for parallel render
-                fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
-                fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
-                pane_a = fut_pa.result()
-                pane_b = fut_pb.result()
+                t_render0 = time.perf_counter()
+                if len(chunks) <= _INLINE_PRECOMPUTE_CHUNK_MAX:
+                    pane_a = ce.precompute(blocks_a, chunks, "a", blocks_b)
+                    pane_b = ce.precompute(blocks_b, chunks, "b", blocks_a)
+                else:
+                    fut_pa = render_pool.submit(ce.precompute, blocks_a, chunks, "a", blocks_b)
+                    fut_pb = render_pool.submit(ce.precompute, blocks_b, chunks, "b", blocks_a)
+                    pane_a = fut_pa.result()
+                    pane_b = fut_pb.result()
+                render_s = time.perf_counter() - t_render0
+                total_render_s += render_s
 
                 id_offset    = len(all_chunks)
                 chunks_dicts = [_chunk_to_dict(ch, id_offset + i) for i, ch in enumerate(chunks)]
+                for ch_dict in chunks_dicts:
+                    ch_dict["page_start"] = batch_start
+                    ch_dict["page_end"] = batch_end
                 all_chunks.extend(chunks_dicts)
 
                 if not xml_b_text and hasattr(ce, "assign_chunks_to_pdf_sections"):
                     try:
-                        _batch_secs = ce.assign_chunks_to_pdf_sections(list(chunks), blocks_b)
+                        _batch_secs = ce.assign_chunks_to_pdf_sections(chunks, blocks_b)
                         for ch_obj, ch_dict in zip(chunks, chunks_dicts):
                             if getattr(ch_obj, "section", ""):
                                 ch_dict["section"] = ch_obj.section
@@ -884,6 +1011,7 @@ async def diff_pdfs_stream_large(
                     except Exception:
                         pass
 
+                t_ser0 = time.perf_counter()
                 pane_a_json = _pane_to_json(pane_a)
                 pane_b_json = _pane_to_json(pane_b)
 
@@ -897,16 +1025,38 @@ async def diff_pdfs_stream_large(
                     all_offsets_b[str(int(cid) + id_offset)] = off
                 for cid, off in pane_b_json["offset_ends"].items():
                     all_offset_ends_b[str(int(cid) + id_offset)] = off
+                for cid, off in pane_a_json.get("line_offsets", {}).items():
+                    all_line_offsets_a[str(int(cid) + id_offset)] = off
+                for cid, off in pane_a_json.get("line_offset_ends", {}).items():
+                    all_line_offset_ends_a[str(int(cid) + id_offset)] = off
+                for cid, off in pane_b_json.get("line_offsets", {}).items():
+                    all_line_offsets_b[str(int(cid) + id_offset)] = off
+                for cid, off in pane_b_json.get("line_offset_ends", {}).items():
+                    all_line_offset_ends_b[str(int(cid) + id_offset)] = off
                 last_tag_cfgs_a = {**last_tag_cfgs_a, **pane_a_json["tag_cfgs"]}
                 last_tag_cfgs_b = {**last_tag_cfgs_b, **pane_b_json["tag_cfgs"]}
 
+                add_n = del_n = mod_n = emp_n = strike_n = 0
+                for c in chunks:
+                    k = getattr(c, "kind", None)
+                    if k == ce.KIND_ADD:
+                        add_n += 1
+                    elif k == ce.KIND_DEL:
+                        del_n += 1
+                    elif k == ce.KIND_MOD:
+                        mod_n += 1
+                    elif k == ce.KIND_EMP:
+                        emp_n += 1
+                    elif k == "strike":
+                        strike_n += 1
+
                 batch_stats = {
                     "total":         len(chunks),
-                    "additions":     sum(1 for c in chunks if c.kind == ce.KIND_ADD),
-                    "deletions":     sum(1 for c in chunks if c.kind == ce.KIND_DEL),
-                    "modifications": sum(1 for c in chunks if c.kind == ce.KIND_MOD),
-                    "emphasis":      sum(1 for c in chunks if c.kind == ce.KIND_EMP),
-                    "strike":        sum(1 for c in chunks if getattr(c, "kind", ce.KIND_EMP) == "strike"),
+                    "additions":     add_n,
+                    "deletions":     del_n,
+                    "modifications": mod_n,
+                    "emphasis":      emp_n,
+                    "strike":        strike_n,
                 }
 
                 batch_payload = {
@@ -919,16 +1069,32 @@ async def diff_pdfs_stream_large(
                     "pane_b":     pane_b_json,
                     "stats":      batch_stats,
                 }
+                serialise_s = time.perf_counter() - t_ser0
+                total_serialise_s += serialise_s
+
+                if _PROFILE_ENABLED:
+                    batch_payload["timings"] = {
+                        "extract_wait_s": round(extract_wait_s, 3),
+                        "diff_s": round(diff_s, 3),
+                        "render_s": round(render_s, 3),
+                        "serialize_s": round(serialise_s, 3),
+                    }
                 q.put(_emit_ndjson(batch_payload))
 
+                batch_total_s = time.perf_counter() - tb0
+                total_batch_s += batch_total_s
                 del lines_a, lines_b, blocks_a, blocks_b, chunks, pane_a, pane_b
                 logger.info(
-                    "[batch %d/%d] pages=%d-%d  elapsed=%.1fs",
+                    "[batch %d/%d] pages=%d-%d elapsed=%.1fs (extract=%.2fs diff=%.2fs render=%.2fs serialize=%.2fs)",
                     batch_k + 1, n_batches, batch_start, batch_end,
-                    time.perf_counter() - t0,
+                    batch_total_s,
+                    extract_wait_s,
+                    diff_s,
+                    render_s,
+                    serialise_s,
                 )
 
-            pipeline_pool.shutdown(wait=False)
+            pipeline_pool.shutdown(wait=True, cancel_futures=True)
 
             xml_sections: list = []
             if xml_b_text and hasattr(ce, "extract_xml_sections"):
@@ -956,12 +1122,16 @@ async def diff_pdfs_stream_large(
                     "tag_cfgs":    last_tag_cfgs_a,
                     "offsets":     all_offsets_a,
                     "offset_ends": all_offset_ends_a,
+                    "line_offsets": all_line_offsets_a,
+                    "line_offset_ends": all_line_offset_ends_a,
                 },
                 "pane_b": {
                     "segments":    all_pane_b_segs,
                     "tag_cfgs":    last_tag_cfgs_b,
                     "offsets":     all_offsets_b,
                     "offset_ends": all_offset_ends_b,
+                    "line_offsets": all_line_offsets_b,
+                    "line_offset_ends": all_line_offset_ends_b,
                 },
                 "chunks":      all_chunks,
                 "stats":       final_stats,
@@ -975,6 +1145,7 @@ async def diff_pdfs_stream_large(
                 "file_a":      fname_a,
                 "file_b":      fname_b,
                 "total_pages": n_pages,
+                "elapsed_s":   round(time.perf_counter() - t0, 2),
                 "xml_sections": [
                     {"id": s["id"], "label": s["label"], "level": s["level"],
                      "parent_id": s["parent_id"]}
@@ -982,6 +1153,18 @@ async def diff_pdfs_stream_large(
                 ],
                 "pct": 100,
             }
+            if _PROFILE_ENABLED:
+                done_payload["profiling"] = {
+                    "batch_size": batch_size,
+                    "pipeline_workers": max(2, _PIPELINE_WORKERS),
+                    "inline_precompute_chunk_max": _INLINE_PRECOMPUTE_CHUNK_MAX,
+                    "batches": n_batches,
+                    "extract_wait_s_total": round(total_extract_wait_s, 3),
+                    "diff_s_total": round(total_diff_s, 3),
+                    "render_s_total": round(total_render_s, 3),
+                    "serialize_s_total": round(total_serialise_s, 3),
+                    "batch_total_s": round(total_batch_s, 3),
+                }
             q.put(_emit_ndjson(done_payload))
             q.put(None)
 
@@ -1029,9 +1212,10 @@ async def diff_pdfs_stream_large(
                         if exc:
                             yield (_json.dumps({"t": "e", "msg": str(exc)}) + "\n").encode()
                         break
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(max(0.005, _STREAM_IDLE_SLEEP_MS / 1000.0))
         finally:
-            _active_diffs -= 1
+            with _active_diffs_lock:
+                _active_diffs -= 1
 
     return StreamingResponse(
         _generate_large(),
@@ -1058,16 +1242,25 @@ async def get_segments(
     pane_a: dict = cached["pane_a"]
     pane_b: dict = cached["pane_b"]
     all_chunks   = cached["chunks"]
-    n_chunks     = len(all_chunks)
-    n_pages      = cached.get("total_pages", max(page_end, 1) + 1)
-    c_start      = int(page_start / n_pages * n_chunks)
-    c_end        = int((page_end + 1) / n_pages * n_chunks)
-    window_chunks = all_chunks[c_start:c_end]
+    window_chunks = [
+        c for c in all_chunks
+        if int(c.get("page_start", page_start)) <= page_end
+        and int(c.get("page_end", page_end)) >= page_start
+    ]
+    if not window_chunks:
+        # Backward compatibility for cache entries that predate page bounds.
+        n_chunks = len(all_chunks)
+        n_pages = cached.get("total_pages", max(page_end, 1) + 1)
+        c_start = int(page_start / n_pages * n_chunks)
+        c_end = int((page_end + 1) / n_pages * n_chunks)
+        window_chunks = all_chunks[c_start:c_end]
     chunk_ids     = {c["id"] for c in window_chunks}
 
     def _filter_pane(pane: dict) -> dict:
         offsets     = pane.get("offsets",     {})
         offset_ends = pane.get("offset_ends", {})
+        line_offsets = pane.get("line_offsets", {})
+        line_offset_ends = pane.get("line_offset_ends", {})
         segments    = pane.get("segments",    [])
 
         if chunk_ids and offsets:
@@ -1096,6 +1289,8 @@ async def get_segments(
             "tag_cfgs":    pane.get("tag_cfgs", {}),
             "offsets":     {k: v for k, v in offsets.items()     if int(k) in chunk_ids},
             "offset_ends": {k: v for k, v in offset_ends.items() if int(k) in chunk_ids},
+            "line_offsets": {k: v for k, v in line_offsets.items() if int(k) in chunk_ids},
+            "line_offset_ends": {k: v for k, v in line_offset_ends.items() if int(k) in chunk_ids},
         }
 
     return ORJSONResponse({

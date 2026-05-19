@@ -23,6 +23,12 @@ export type WorkflowMode = "browse" | "edit";
  */
 export type ChunkKind = "add" | "del" | "mod" | "emp" | "strike";
 
+export interface SentenceAlignmentRow {
+  old: string;
+  new: string;
+  similarity: number;
+}
+
 export interface Chunk {
   id:           number;
   kind:         ChunkKind;
@@ -41,6 +47,9 @@ export interface Chunk {
   words_after?:   string;
   section?:       string;
   emp_detail?:    string;
+  sentence_alignment?: SentenceAlignmentRow[];
+  page_start?: number;
+  page_end?: number;
 }
 
 export interface FontCfg {
@@ -185,7 +194,7 @@ export const KIND_META: Record<ChunkKind, KindMeta> = {
     label:           "DEL",
     pillClass:       "bg-rose-600 dark:bg-rose-500",
     ringClass:       "border-rose-500/40",
-    bgClass:         "bg-rose-500/10 dark:bg-rose-500/12",
+    bgClass:         "bg-rose-500/10 dark:bg-rose-500/12",  
     textClass:       "text-rose-400",
     highlightBg:     "rgba(244,63,94,0.18)",
     highlightBorder: "rgba(244,63,94,0.70)",

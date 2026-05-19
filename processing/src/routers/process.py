@@ -32,6 +32,11 @@ from src.services.xml_compare import (
     line_diff,
     merge_xml,
 )
+from src.services.xml_chunk_merge import (
+    ChunkedMergeError,
+    build_merged_xml,
+    inspect_chunk_files,
+)
 from src.services.pdf_chunk import (
     chunk_pdfs_and_xml,
     compare_pdfs_with_xml,
@@ -42,11 +47,14 @@ from src.services.pdf_chunk import (
 try:
     from src.services.word_compare import build_git_inline_diff as _build_git_inline_diff
     from src.services.word_compare import compare_words as _compare_words
+    from src.services.pdf_chunk import stable_chunk_id
 except ImportError:
     def _build_git_inline_diff(old_text: str, new_text: str) -> list:  # type: ignore[misc]
         return []
     def _compare_words(old_text: str, new_text: str) -> dict:  # type: ignore[misc]
         return {"has_changes": True, "change_ratio": 1.0, "summary": {}, "old_word_count": 0, "new_word_count": 0}
+    def stable_chunk_id(text: str) -> str:  # type: ignore[misc]
+        return "000000000000"
 
 
 def _make_word_diff(old_text: str, new_text: str) -> dict | None:
@@ -1303,7 +1311,7 @@ async def get_compare_chunk_endpoint(chunk_id: str, job_id: str):
     return {
         "success":     True,
         "job_id":      job_id,
-        "chunk_id":    chunk_id,
+        "chunk_id":   stable_chunk_id(chunk),
         "source_name": job["source_name"],
         "chunk":       chunk,
     }
@@ -1587,6 +1595,25 @@ class MergeRequest(BaseModel):
     reject:  list[str] = []
 
 
+class ChunkedXmlInput(BaseModel):
+    filename: str
+    content: str
+    relative_path: str = ""
+
+
+class ChunkedMergeInspectRequest(BaseModel):
+    files: list[ChunkedXmlInput]
+    selected_filenames: list[str] = []
+
+
+class ChunkedMergeBuildRequest(BaseModel):
+    files: list[ChunkedXmlInput]
+    selected_filenames: list[str] = []
+    export_mode: str = "single"
+    base_filename: str = "merged"
+    strict_mode: bool = False
+
+
 @router.post("/merge")
 async def merge_endpoint(payload: MergeRequest):
     """Merge old and new XML based on accepted/rejected change paths."""
@@ -1601,6 +1628,80 @@ async def merge_endpoint(payload: MergeRequest):
         raise HTTPException(status_code=422, detail=str(exc))
 
     return {"success": True, "merged_xml": merged}
+
+
+@router.post("/merge/chunked/inspect")
+async def merge_chunked_inspect_endpoint(payload: ChunkedMergeInspectRequest):
+    """Inspect chunked XML files and return merge order/validation diagnostics."""
+    try:
+        inspected = inspect_chunk_files(
+            [f.model_dump() for f in payload.files],
+            payload.selected_filenames,
+        )
+    except ChunkedMergeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return inspected
+
+
+@router.post("/merge/chunked/build")
+async def merge_chunked_build_endpoint(payload: ChunkedMergeBuildRequest):
+    """Merge selected chunked XML files into a single consolidated XML document."""
+    if payload.strict_mode:
+        try:
+            inspected_pre = inspect_chunk_files(
+                [f.model_dump() for f in payload.files],
+                payload.selected_filenames,
+            )
+        except ChunkedMergeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        strict_reasons: list[str] = []
+        if inspected_pre["summary"]["selected"] == 0:
+            strict_reasons.append("No chunks selected for merge")
+        if inspected_pre["invalid_files"]:
+            strict_reasons.append(f"Invalid/corrupted files detected: {len(inspected_pre['invalid_files'])}")
+        if inspected_pre["missing_sequences"]:
+            strict_reasons.append(
+                "Missing chunk sequences: " + ", ".join(str(v) for v in inspected_pre["missing_sequences"][:30])
+            )
+        if inspected_pre["summary"]["duplicates_selected"] > 0:
+            strict_reasons.append("Duplicate chunks are included in current selection")
+        if inspected_pre.get("duplicate_sequences"):
+            strict_reasons.append(
+                "Duplicate sequence numbers detected: "
+                + ", ".join(str(v) for v in inspected_pre["duplicate_sequences"][:30])
+            )
+
+        if strict_reasons:
+            raise HTTPException(
+                status_code=422,
+                detail="Strict merge blocked: " + " | ".join(strict_reasons),
+            )
+
+    try:
+        merged = build_merged_xml(
+            [f.model_dump() for f in payload.files],
+            payload.selected_filenames,
+        )
+    except ChunkedMergeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    mode = (payload.export_mode or "single").strip().lower()
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", payload.base_filename or "merged").strip("_") or "merged"
+    if mode == "versioned":
+        export_filename = f"{safe_base}_v1.xml"
+    elif mode == "backup":
+        export_filename = f"{safe_base}_backup.xml"
+    else:
+        export_filename = f"{safe_base}.xml"
+
+    return {
+        **merged,
+        "export_mode": mode,
+        "export_filename": export_filename,
+        "strict_mode": payload.strict_mode,
+    }
 
 
 @router.post("/merge/download")

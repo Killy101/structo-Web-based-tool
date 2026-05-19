@@ -26,6 +26,18 @@ import {
 } from "../../../components/compare/api";
 import { userLogsApi } from "../../../services/api";
 
+type LiveChunkStatus = "processing" | "has_changes" | "no_changes" | "failed";
+
+type LiveChunkRow = {
+  chunkNumber: number;
+  batch: number;
+  totalBatches: number;
+  pageRange: [number, number] | null;
+  status: LiveChunkStatus;
+  kind: string | null;
+  error?: string;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,6 +48,23 @@ function emptyPane(): DiffResult["pane_a"] {
 
 function paneCharLength(pane: DiffResult["pane_a"]): number {
   return (pane?.segments ?? []).reduce((sum, [text]) => sum + (text?.length ?? 0), 0);
+}
+
+function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const rec = err as Record<string, unknown>;
+    const detail = rec.detail;
+    if (typeof detail === "string") return detail;
+    if (typeof rec.message === "string") return rec.message;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return "Unexpected error";
+    }
+  }
+  return String(err);
 }
 
 /**
@@ -84,6 +113,18 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     paneBatchRaw: DiffResult["pane_a"] | undefined,
   ): DiffResult["pane_a"] => {
     const paneBatch = safePaneBatch(paneBatchRaw);
+    const stableTags = new Set(["add", "del", "dmod", "mod", "emp", "nav", "nl"]);
+
+    // Batch payloads reuse local style tag IDs (e.g. t1, t2, ...).
+    // Without namespacing, merging batches can overwrite older tag configs,
+    // causing style inheritance leaks (e.g. false line-through on ADD rows).
+    const tagKeyMap = new Map<string, string>();
+    const remappedTagCfgs: Record<string, unknown> = {};
+    for (const [rawTag, cfg] of Object.entries(paneBatch.tag_cfgs ?? {})) {
+      const mappedTag = stableTags.has(rawTag) ? rawTag : `b${batch.batch}_${rawTag}`;
+      tagKeyMap.set(rawTag, mappedTag);
+      remappedTagCfgs[mappedTag] = cfg;
+    }
 
     // ── Cross-batch newline sentinel ─────────────────────────────────────────
     // If the previous batch ended mid-paragraph (last segment ≠ "\n"), inject
@@ -132,11 +173,13 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
     // Build segments: inject sentinel "\n" between batches when needed
     const newSegs: typeof baseSegs = [...baseSegs];
     if (needsNL) newSegs.push(["\n", "nl"]);
-    newSegs.push(...(paneBatch.segments ?? []));
+    for (const [text, rawTag] of paneBatch.segments ?? []) {
+      newSegs.push([text, tagKeyMap.get(rawTag) ?? rawTag]);
+    }
 
     return {
       segments:         newSegs,
-      tag_cfgs:         { ...(paneBase.tag_cfgs ?? {}), ...(paneBatch.tag_cfgs ?? {}) },
+      tag_cfgs:         { ...(paneBase.tag_cfgs ?? {}), ...remappedTagCfgs as DiffResult["pane_a"]["tag_cfgs"] },
       offsets,
       offset_ends:      offsetEnds,
       line_offsets:     lineOffsets,
@@ -175,12 +218,13 @@ function mergeBatchIntoResult(prev: DiffResult | null, batch: BatchResult): Diff
 const DiffViewer          = dynamic(() => import("../../../components/compare/DiffViewer"),          { ssr: false });
 const DiffUpload          = dynamic(() => import("../../../components/compare/DiffUpload"),          { ssr: false });
 const ChunkDetectionModal = dynamic(() => import("../../../components/compare/ChunkDetectionModal"), { ssr: false });
+const MergeChunkedXmlPanel = dynamic(() => import("../../../components/compare/MergeChunkedXmlPanel"), { ssr: false });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Workflow selector UI
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ActiveWorkflow = "selector" | "browse" | "edit";
+type ActiveWorkflow = "selector" | "browse" | "edit" | "merge";
 
 const PALETTES = {
   teal: {
@@ -196,6 +240,13 @@ const PALETTES = {
     icon:  "bg-violet-100 text-violet-600 border-violet-200 dark:bg-violet-500/15 dark:text-violet-400 dark:border-violet-500/20",
     dot:   "bg-violet-100 text-violet-700 dark:bg-violet-500/40 dark:text-violet-300",
     btn:   "bg-violet-600 hover:bg-violet-500 shadow-lg shadow-violet-500/25",
+  },
+  amber: {
+    card:  "border-amber-500/30 hover:border-amber-400/50 bg-amber-500/5 dark:bg-gradient-to-br dark:from-amber-600/20 dark:to-amber-500/5",
+    badge: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30",
+    icon:  "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/20",
+    dot:   "bg-amber-100 text-amber-700 dark:bg-amber-500/40 dark:text-amber-300",
+    btn:   "bg-amber-600 hover:bg-amber-500 shadow-lg shadow-amber-500/25",
   },
 } as const;
 
@@ -261,9 +312,9 @@ function WorkflowCard({
 }
 
 function WorkflowSelector({
-  canWf1, canWf2, onSelect,
+  canWf1, canWf2, canMerge, onSelect,
 }: {
-  canWf1: boolean; canWf2: boolean;
+  canWf1: boolean; canWf2: boolean; canMerge: boolean;
   onSelect: (w: ActiveWorkflow) => void;
 }) {
   return (
@@ -284,7 +335,7 @@ function WorkflowSelector({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl mx-auto">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 max-w-6xl mx-auto">
         <WorkflowCard
           badge="Workflow 1"
           title="Chunk & Compare"
@@ -323,9 +374,28 @@ function WorkflowSelector({
             </svg>
           }
         />
+        <WorkflowCard
+          badge="Workflow 3"
+          title="Merge Chunked XML"
+          description="Rebuild a complete XML from chunked XML files. Validate order, detect duplicates/missing chunks, preview merge output, and export final XML."
+          steps={[
+            "Upload chunk XML files or load a folder path",
+            "Review detected chunk order and validation warnings",
+            "Merge selected chunks and export consolidated XML",
+          ]}
+          color="amber"
+          locked={!canMerge}
+          onClick={() => onSelect("merge")}
+          icon={
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M7 7h10M7 12h10M7 17h10M4 5h.01M4 12h.01M4 19h.01" />
+            </svg>
+          }
+        />
       </div>
 
-      {!canWf1 && !canWf2 && (
+      {!canWf1 && !canWf2 && !canMerge && (
         <div className="max-w-3xl mx-auto mt-5 flex items-center gap-3 p-4 rounded-xl border border-rose-500/20 bg-rose-500/5">
           <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -441,6 +511,9 @@ function ChangeSummaryModal({
 function useDiffState() {
   const latestResultRef    = useRef<DiffResult | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const chunkOrdinalRef    = useRef(0);
+  const batchCacheRef      = useRef<Map<number, BatchResult>>(new Map());
+  const batchStatusRef     = useRef<Map<number, { status: LiveChunkStatus; error?: string }>>(new Map());
 
   const [fileA,       setFileA]       = useState<File | null>(null);
   const [fileB,       setFileB]       = useState<File | null>(null);
@@ -455,7 +528,78 @@ function useDiffState() {
   const [allSections, setAllSections] = useState<XmlSection[]>([]);
   const [showModal,   setShowModal]   = useState(false);
   const [showDetection, setShowDetection] = useState(false);
+  const [pendingDetectionOpen, setPendingDetectionOpen] = useState(false);
   const [selectedSec, setSelectedSec] = useState<string | null>(null);
+  const [selectedChunkId, setSelectedChunkId] = useState<number | null>(null);
+  const [selectedChunkNumber, setSelectedChunkNumber] = useState<number | null>(null);
+  const [selectedAnchorChunkId, setSelectedAnchorChunkId] = useState<number | null>(null);
+  const [selectedChunkHasChanges, setSelectedChunkHasChanges] = useState<boolean | null>(null);
+  const [selectedChunkXmlFile, setSelectedChunkXmlFile] = useState<File | null>(null);
+  const [detectionListScrollTop, setDetectionListScrollTop] = useState(0);
+  const [chunkFocusMode, setChunkFocusMode] = useState(false);
+  const [liveChunkRows, setLiveChunkRows] = useState<LiveChunkRow[]>([]);
+  const [processingBatch, setProcessingBatch] = useState<{ batch: number; of: number; pageRange: [number, number] | null } | null>(null);
+  const [completedBatches, setCompletedBatches] = useState(0);
+  const [totalBatches, setTotalBatches] = useState(0);
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+
+  const rebuildLiveRows = React.useCallback(() => {
+    const rows: LiveChunkRow[] = [];
+    const sortedBatches = Array.from(batchCacheRef.current.values()).sort((a, b) => a.batch - b.batch);
+    let ordinal = 0;
+
+    for (const batch of sortedBatches) {
+      const override = batchStatusRef.current.get(batch.batch);
+      for (const chunk of batch.chunks) {
+        ordinal += 1;
+        const hasChanges = chunk.kind === "add" || chunk.kind === "del" || chunk.kind === "mod" || chunk.kind === "strike";
+        rows.push({
+          chunkNumber: ordinal,
+          batch: batch.batch,
+          totalBatches: batch.of,
+          pageRange: batch.pageRange,
+          status: override?.status ?? (hasChanges ? "has_changes" : "no_changes"),
+          kind: chunk.kind,
+          error: override?.error,
+        });
+      }
+    }
+
+    chunkOrdinalRef.current = ordinal;
+    setLiveChunkRows(rows);
+  }, []);
+
+  const retryBatch = React.useCallback((batchNo: number) => {
+    const cached = batchCacheRef.current.get(batchNo);
+    if (!cached) return;
+    batchStatusRef.current.set(batchNo, { status: "processing" });
+    rebuildLiveRows();
+
+    try {
+      const merged = {
+        ...mergeBatchIntoResult(latestResultRef.current, cached),
+        file_a: latestResultRef.current?.file_a || fileA?.name || "",
+        file_b: latestResultRef.current?.file_b || fileB?.name || "",
+      };
+      latestResultRef.current = merged;
+      startTransition(() => setResult(merged));
+      batchStatusRef.current.delete(batchNo);
+      rebuildLiveRows();
+      setProcessingBatch(null);
+    } catch (err) {
+      batchStatusRef.current.set(batchNo, { status: "failed", error: toErrorMessage(err) });
+      rebuildLiveRows();
+    }
+  }, [fileA?.name, fileB?.name, rebuildLiveRows]);
+
+  const cancelProcessing = React.useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+    setProcessingBatch(null);
+    setProgress((prev) => prev ?? { stage: "batch", pct: 0, message: "Processing cancelled" });
+    setLoadMsg("Processing cancelled");
+  }, []);
 
   function reset() {
     // Abort any in-flight streaming request
@@ -466,9 +610,32 @@ function useDiffState() {
     latestResultRef.current = null;
     setResult(null); setError(null); setProgress(null);
     setXmlSections([]); setAllSections([]);
+    setPendingDetectionOpen(false);
     setShowModal(false); setShowDetection(false); setSelectedSec(null);
+    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkHasChanges(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
+    setLiveChunkRows([]);
+    setProcessingBatch(null);
+    setCompletedBatches(0);
+    setTotalBatches(0);
+    setStartedAtMs(null);
+    chunkOrdinalRef.current = 0;
+    batchCacheRef.current.clear();
+    batchStatusRef.current.clear();
     try { sessionStorage.removeItem("diff_last_result"); } catch { /* ok */ }
   }
+
+  useEffect(() => {
+    if (!pendingDetectionOpen) return;
+    if (loading) return;
+    if (!result) return;
+
+    const hasDetectionData = (result.chunks?.length ?? 0) > 0 || xmlSections.length > 0;
+    if (hasDetectionData) {
+      setShowDetection(true);
+      setShowModal(false);
+    }
+    setPendingDetectionOpen(false);
+  }, [pendingDetectionOpen, loading, result, xmlSections.length]);
 
   // ── Session restore — reload previous result on mount ─────────────────────
   // Clears stale keys from the old wf2/wf3 naming scheme.
@@ -487,7 +654,13 @@ function useDiffState() {
         return;
       }
       const parsed = JSON.parse(saved) as DiffResult;
-      if (parsed?.success && parsed?.chunks !== undefined) {
+      if (
+        parsed?.success &&
+        Array.isArray(parsed?.chunks) &&
+        Array.isArray(parsed?.pane_a?.segments) &&
+        Array.isArray(parsed?.pane_b?.segments) &&
+        parsed?.stats != null
+      ) {
         latestResultRef.current = parsed;
         startTransition(() => setResult(parsed));
         if (parsed.xml_sections?.length) setAllSections(parsed.xml_sections);
@@ -505,6 +678,17 @@ function useDiffState() {
 
     latestResultRef.current = null;
     setLoading(true); setError(null); setResult(null); setProgress(null);
+    setPendingDetectionOpen(false);
+    setShowDetection(true); setShowModal(false); setSelectedSec(null);
+    setSelectedChunkId(null); setSelectedChunkNumber(null); setSelectedAnchorChunkId(null); setSelectedChunkHasChanges(null); setSelectedChunkXmlFile(null); setDetectionListScrollTop(0); setChunkFocusMode(false);
+    setLiveChunkRows([]);
+    setProcessingBatch(null);
+    setCompletedBatches(0);
+    setTotalBatches(0);
+    setStartedAtMs(Date.now());
+    chunkOrdinalRef.current = 0;
+    batchCacheRef.current.clear();
+    batchStatusRef.current.clear();
     setLoadMsg("Uploading files…"); setLoadPct(0);
 
     try {
@@ -514,10 +698,23 @@ function useDiffState() {
           signal: ac.signal,
           onProgress: (p: DiffProgress) => {
             setLoadMsg(p.message); setLoadPct(p.pct); setProgress(p);
+            if (p.stage === "batch" && typeof p.batch === "number") {
+              setProcessingBatch({
+                batch: p.batch,
+                of: p.totalBatches ?? p.batch,
+                pageRange: p.pageRange ?? null,
+              });
+              setTotalBatches((prev) => Math.max(prev, p.totalBatches ?? 0));
+            }
           },
           onBatch: (batch: BatchResult) => {
             try {
               if (ac.signal.aborted) return;
+              batchCacheRef.current.set(batch.batch, batch);
+              batchStatusRef.current.set(batch.batch, { status: "processing" });
+              setProcessingBatch({ batch: batch.batch, of: batch.of, pageRange: batch.pageRange ?? null });
+              setTotalBatches((prev) => Math.max(prev, batch.of));
+
               const merged = {
                 ...mergeBatchIntoResult(latestResultRef.current, batch),
                 file_a: latestResultRef.current?.file_a || fileA.name,
@@ -526,9 +723,16 @@ function useDiffState() {
               latestResultRef.current = merged;
               // Use startTransition so heavy re-renders don't block scroll/sidebar
               startTransition(() => setResult(merged));
+              batchStatusRef.current.delete(batch.batch);
+              rebuildLiveRows();
+              setCompletedBatches((prev) => Math.max(prev, batch.batch));
+              setProcessingBatch((prev) => (prev?.batch === batch.batch ? null : prev));
               try { sessionStorage.setItem("diff_last_result", JSON.stringify(merged)); } catch { /* ok */ }
             } catch (batchErr) {
               console.error("[compare] batch merge error:", batchErr);
+              batchStatusRef.current.set(batch.batch, { status: "failed", error: toErrorMessage(batchErr) });
+              rebuildLiveRows();
+              setProcessingBatch((prev) => (prev?.batch === batch.batch ? null : prev));
             }
           },
         },
@@ -592,10 +796,23 @@ function useDiffState() {
         if (allSections.length === 0) setAllSections(finalSections);
         if (xmlSections.length === 0) setXmlSections(finalSections);
       }
-      if (xmlSections.length > 0 || finalSections.length > 0) setShowModal(true);
+
+      const finalResult = data ?? latestResultRef.current;
+      const hasDetectedChunks = (finalResult?.chunks?.length ?? 0) > 0;
+      const hasDetectionData = finalSections.length > 0 || xmlSections.length > 0 || hasDetectedChunks;
+
+      if (hasDetectionData) {
+        // Defer opening until loading is complete and result state is committed.
+        setPendingDetectionOpen(true);
+        setShowModal(false);
+      } else {
+        setPendingDetectionOpen(false);
+        if (!loading) setShowDetection(false);
+        setShowModal(false);
+      }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return; // user reset
-      setError(e instanceof Error ? e.message : typeof e === "string" ? e : String(e));
+      setError(toErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -607,7 +824,22 @@ function useDiffState() {
     xmlSections, setXmlSections, allSections, setAllSections,
     showModal, setShowModal,
     showDetection, setShowDetection,
+    pendingDetectionOpen,
     selectedSec, setSelectedSec,
+    selectedChunkId, setSelectedChunkId,
+    selectedChunkNumber, setSelectedChunkNumber,
+    selectedAnchorChunkId, setSelectedAnchorChunkId,
+    selectedChunkHasChanges, setSelectedChunkHasChanges,
+    selectedChunkXmlFile, setSelectedChunkXmlFile,
+    detectionListScrollTop, setDetectionListScrollTop,
+    chunkFocusMode, setChunkFocusMode,
+    liveChunkRows,
+    processingBatch,
+    completedBatches,
+    totalBatches,
+    startedAtMs,
+    retryBatch,
+    cancelProcessing,
     reset, run,
   };
 }
@@ -622,6 +854,7 @@ export default function ComparePage() {
   const isSuperAdmin = user?.role === "SUPER_ADMIN" || features.includes("*");
   const canWf1       = isSuperAdmin || features.includes("compare-basic") || features.includes("compare-pdf-xml-only");
   const canWf2       = isSuperAdmin || features.includes("compare-pdf-xml-only");
+  const canMerge     = canWf2 || isSuperAdmin;
 
   const [active, setActive] = useState<ActiveWorkflow>("selector");
   const d = useDiffState();
@@ -689,18 +922,72 @@ export default function ComparePage() {
     <div className="relative flex flex-col h-full min-h-0">
 
       {active === "selector" && (
-        <WorkflowSelector canWf1={canWf1} canWf2={canWf2} onSelect={selectWorkflow} />
+        <WorkflowSelector canWf1={canWf1} canWf2={canWf2} canMerge={canMerge} onSelect={selectWorkflow} />
+      )}
+
+      {active === "merge" && (
+        <MergeChunkedXmlPanel onBack={() => setActive("selector")} />
       )}
 
       {(active === "browse" || active === "edit") && (
         <div className="flex-1 overflow-hidden min-h-0">
           {/* Detection report modal — shown when user clicks "Detection Report" */}
-          {d.result && d.showDetection ? (
+          {(d.showDetection || d.pendingDetectionOpen) && (d.loading || !!d.result) ? (
             <ChunkDetectionModal
-              result={d.result}
+              result={d.result ?? {
+                success: true,
+                chunks: [],
+                pane_a: emptyPane(),
+                pane_b: emptyPane(),
+                stats: { total: 0, additions: 0, deletions: 0, modifications: 0, emphasis: 0, strike: 0 },
+                xml_sections: [],
+                file_a: d.fileA?.name ?? "Old PDF",
+                file_b: d.fileB?.name ?? "New PDF",
+              }}
               xmlSections={d.xmlSections}
               sectionMapper={sectionMapper}
-              onClose={() => d.setShowDetection(false)}
+              xmlFile={d.xmlFile}
+              loading={d.loading}
+              progressMessage={d.progress?.message ?? d.loadMsg}
+              processingBatch={d.processingBatch}
+              completedBatches={d.completedBatches}
+              totalBatches={d.totalBatches}
+              startedAtMs={d.startedAtMs}
+              liveChunkRows={d.liveChunkRows}
+              onRetryBatch={d.retryBatch}
+              onCancelProcessing={d.cancelProcessing}
+              onExit={() => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setShowDetection(false);
+              }}
+              listScrollTop={d.detectionListScrollTop}
+              onListScroll={d.setDetectionListScrollTop}
+              onViewChunk={({ chunkId, anchorChunkId, sectionLabel, chunkNumber, hasChanges, chunkXml, chunkXmlFilename }) => {
+                  if (!d.result) return;
+                if (chunkId == null && anchorChunkId == null) return;
+                d.setSelectedSec(sectionLabel);
+                d.setSelectedChunkId(chunkId);
+                d.setSelectedChunkNumber(chunkNumber);
+                d.setSelectedAnchorChunkId(anchorChunkId);
+                d.setSelectedChunkHasChanges(hasChanges);
+                d.setSelectedChunkXmlFile(new File([chunkXml], chunkXmlFilename, { type: "application/xml" }));
+                d.setChunkFocusMode(true);
+                d.setShowDetection(false);
+              }}
+              onClose={() => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setShowDetection(false);
+              }}
             />
           ) : d.result && d.showModal && !d.loading ? (
             /* Changes summary modal — shown after diff completes */
@@ -708,22 +995,54 @@ export default function ComparePage() {
               result={d.result}
               xmlSections={d.xmlSections}
               sectionMapper={sectionMapper}
-              onViewAll={() => { d.setSelectedSec(null); d.setShowModal(false); }}
-              onSelectSection={(label) => { d.setSelectedSec(label); d.setShowModal(false); }}
+              onViewAll={() => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setSelectedSec(null);
+                d.setShowModal(false);
+              }}
+              onSelectSection={(label) => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedAnchorChunkId(null);
+                d.setSelectedChunkHasChanges(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setSelectedSec(label);
+                d.setShowModal(false);
+              }}
               onViewDetection={() => d.setShowDetection(true)}
             />
-          ) : d.result && !d.showModal ? (
+          ) : d.result && !d.showModal && !d.showDetection && !d.pendingDetectionOpen ? (
             /* DiffViewer — shown as soon as result arrives (may still be streaming) */
             <DiffViewer
               mode={workflowMode}
               result={d.result}
+              sourcePdfA={d.fileA}
+              sourcePdfB={d.fileB}
               isStreaming={d.loading}
               streamingProgress={d.progress}
               onReset={() => { d.reset(); setActive(active); }}
-              initialXmlFile={d.xmlFile}
+              initialXmlFile={d.chunkFocusMode ? d.selectedChunkXmlFile : d.xmlFile}
               xmlSections={d.xmlSections}
               initialSection={d.selectedSec}
+              initialChunkId={d.chunkFocusMode ? d.selectedChunkId : null}
+              initialAnchorChunkId={d.selectedAnchorChunkId}
+              viewedChunkNumber={d.chunkFocusMode ? d.selectedChunkNumber : null}
+              viewedChunkHasChanges={d.chunkFocusMode ? d.selectedChunkHasChanges : null}
               sectionMapper={sectionMapper}
+              onBackToChunkList={d.chunkFocusMode ? () => {
+                d.setChunkFocusMode(false);
+                d.setSelectedChunkId(null);
+                d.setSelectedChunkNumber(null);
+                d.setSelectedChunkHasChanges(null);
+                d.setSelectedChunkXmlFile(null);
+                d.setShowDetection(true);
+              } : undefined}
             />
           ) : (
             /* Upload form — shown before run, during loading, or on error */

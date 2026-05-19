@@ -14,6 +14,7 @@ interface Props {
   onLoad:      (f: File) => void;
   onApply:     () => void;     // no-op in wf2
   onDownload:  () => void;     // no-op in wf2
+  onSaveCorrectedChunk?: () => void;
   onXmlChange?: (text: string) => void;  // wf3 only: user edits XML directly
   onScrollFraction?: (scrollFraction: number) => void;
   /** Whether there is an apply to undo (history stack non-empty). */
@@ -26,6 +27,8 @@ interface Props {
    * DiffViewer uses this to locate the matching diff chunk and scroll both PDF panes.
    */
   onXmlLineClick?: (lineStart: number, lineEnd: number) => void;
+  /** Collapse/hide XML panel from within panel header. */
+  onToggleVisibility?: () => void;
 }
 
 /** Max chars to render at once — keeps DOM small for large XML files */
@@ -84,86 +87,111 @@ const TOKEN_CLASS: Record<XmlTokenKind, string> = {
   text:     "text-slate-800 dark:text-[#d4d4d4]",        // near-black / near-white
 };
 
-function _tokenizeLine(line: string): XmlToken[] {
+type TokenizeState = "text" | "tag" | "comment" | "cdata" | "pi" | "doctype";
+
+function _tokenizeLine(line: string, inState: TokenizeState = "text"): { tokens: XmlToken[]; outState: TokenizeState } {
   const tokens: XmlToken[] = [];
   let i = 0;
+  let state = inState;
 
   function push(kind: XmlTokenKind, text: string) {
     if (text) tokens.push({ kind, text });
   }
 
+  // If we're resuming inside a multi-line construct, consume until its closer
+  if (state === "comment") {
+    const end = line.indexOf("-->", i);
+    if (end === -1) { push("comment", line); return { tokens, outState: "comment" }; }
+    push("comment", line.slice(i, end + 3)); i = end + 3; state = "text";
+  } else if (state === "cdata") {
+    const end = line.indexOf("]]>", i);
+    if (end === -1) { push("cdata", line); return { tokens, outState: "cdata" }; }
+    push("cdata", line.slice(i, end + 3)); i = end + 3; state = "text";
+  } else if (state === "pi") {
+    const end = line.indexOf("?>", i);
+    if (end === -1) { push("pi", line); return { tokens, outState: "pi" }; }
+    push("pi", line.slice(i, end + 2)); i = end + 2; state = "text";
+  } else if (state === "doctype") {
+    const end = line.indexOf(">", i);
+    if (end === -1) { push("doctype", line); return { tokens, outState: "doctype" }; }
+    push("doctype", line.slice(i, end + 1)); i = end + 1; state = "text";
+  } else if (state === "tag") {
+    // Inside a multi-line tag — consume attributes until >
+    while (i < line.length && line[i] !== ">") {
+      if (line[i] === "/" && line[i + 1] === ">") { push("bracket", "/>"); i += 2; state = "text"; break; }
+      if (line[i] === "=") { push("bracket", "="); i += 1; continue; }
+      if (line[i] === '"' || line[i] === "'") {
+        const q = line[i]; let j = i + 1;
+        while (j < line.length && line[j] !== q) j += 1;
+        push("value", line.slice(i, j + 1)); i = j + 1; continue;
+      }
+      if (/\s/.test(line[i])) {
+        let ws = "";
+        while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i += 1; }
+        push("text", ws); continue;
+      }
+      const attrStart = i;
+      while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
+      push("attr", line.slice(attrStart, i));
+    }
+    if (i < line.length && line[i] === ">") { push("bracket", ">"); i += 1; state = "text"; }
+    else if (i >= line.length) { return { tokens, outState: "tag" }; }
+  }
+
   while (i < line.length) {
-    // Comment
     if (line.startsWith("<!--", i)) {
       const end = line.indexOf("-->", i + 4);
-      if (end === -1) { push("comment", line.slice(i)); i = line.length; }
-      else            { push("comment", line.slice(i, end + 3)); i = end + 3; }
-      continue;
+      if (end === -1) { push("comment", line.slice(i)); return { tokens, outState: "comment" }; }
+      push("comment", line.slice(i, end + 3)); i = end + 3; continue;
     }
-    // CDATA
     if (line.startsWith("<![CDATA[", i)) {
       const end = line.indexOf("]]>", i + 9);
-      if (end === -1) { push("cdata", line.slice(i)); i = line.length; }
-      else            { push("cdata", line.slice(i, end + 3)); i = end + 3; }
-      continue;
+      if (end === -1) { push("cdata", line.slice(i)); return { tokens, outState: "cdata" }; }
+      push("cdata", line.slice(i, end + 3)); i = end + 3; continue;
     }
-    // DOCTYPE
     if (line.startsWith("<!", i) && !line.startsWith("<!--", i)) {
       const end = line.indexOf(">", i);
-      if (end === -1) { push("doctype", line.slice(i)); i = line.length; }
-      else            { push("doctype", line.slice(i, end + 1)); i = end + 1; }
-      continue;
+      if (end === -1) { push("doctype", line.slice(i)); return { tokens, outState: "doctype" }; }
+      push("doctype", line.slice(i, end + 1)); i = end + 1; continue;
     }
-    // PI <?…?>
     if (line.startsWith("<?", i)) {
       const end = line.indexOf("?>", i + 2);
-      if (end === -1) { push("pi", line.slice(i)); i = line.length; }
-      else            { push("pi", line.slice(i, end + 2)); i = end + 2; }
-      continue;
+      if (end === -1) { push("pi", line.slice(i)); return { tokens, outState: "pi" }; }
+      push("pi", line.slice(i, end + 2)); i = end + 2; continue;
     }
-    // Tag <…>
     if (line[i] === "<") {
-      push("bracket", "<");
-      i += 1;
-      // optional /
+      push("bracket", "<"); i += 1;
       if (line[i] === "/") { push("bracket", "/"); i += 1; }
-      // tag name
       const nameStart = i;
       while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
       push("tag", line.slice(nameStart, i));
-      // attributes until >
       while (i < line.length && line[i] !== ">") {
-        if (line[i] === "/" && line[i + 1] === ">") {
-          push("bracket", "/>"); i += 2; break;
-        }
+        if (line[i] === "/" && line[i + 1] === ">") { push("bracket", "/>"); i += 2; break; }
         if (line[i] === "=") { push("bracket", "="); i += 1; continue; }
-        // quoted value
         if (line[i] === '"' || line[i] === "'") {
           const q = line[i]; let j = i + 1;
           while (j < line.length && line[j] !== q) j += 1;
           push("value", line.slice(i, j + 1)); i = j + 1; continue;
         }
-        // whitespace
         if (/\s/.test(line[i])) {
           let ws = "";
           while (i < line.length && /\s/.test(line[i])) { ws += line[i]; i += 1; }
           push("text", ws); continue;
         }
-        // attr name
         const attrStart = i;
         while (i < line.length && !/[\s>\/=]/.test(line[i])) i += 1;
         push("attr", line.slice(attrStart, i));
       }
       if (i < line.length && line[i] === ">") { push("bracket", ">"); i += 1; }
+      else if (i >= line.length) { return { tokens, outState: "tag" }; }
       continue;
     }
-    // Plain text
     const txtStart = i;
     while (i < line.length && line[i] !== "<") i += 1;
     push("text", line.slice(txtStart, i));
   }
 
-  return tokens;
+  return { tokens, outState: "text" };
 }
 
 function _renderTokensWithHighlight(
@@ -213,6 +241,19 @@ function _renderTokensWithHighlight(
   });
 }
 
+// Defined outside any component so React Compiler does not track the
+// `state` mutation as a render-scoped variable reassignment.
+// Takes the raw visible-text string and splits it internally so the caller
+// can list it as the sole honest dependency of useMemo.
+function _tokenizeAllLines(visibleText: string): XmlToken[][] {
+  let state: TokenizeState = "text";
+  return visibleText.split("\n").map((lineText) => {
+    const { tokens, outState } = _tokenizeLine(lineText, state);
+    state = outState;
+    return tokens;
+  });
+}
+
 function XmlBody({
   text,
   navSpan,
@@ -222,7 +263,9 @@ function XmlBody({
   navSpan:       { start: number; end: number } | null;
   onLineClick?:  (lineStart: number, lineEnd: number) => void;
 }) {
-  const center = navSpan?.start ?? 0;
+  const center = navSpan
+    ? Math.floor((navSpan.start + navSpan.end) / 2)
+    : 0;
   let winStart = 0;
   let winEnd = text.length;
 
@@ -248,12 +291,17 @@ function XmlBody({
     return offset;
   });
 
+  // Tokenize all visible lines with carry-over state for multi-line constructs.
+  // Keep this as a plain calculation to avoid React Compiler preserving a
+  // fragile manual memoization boundary around visibleText.
+  const tokenizedLines = _tokenizeAllLines(visibleText);
+
   return (
     <div className="space-y-0">
       {prefixHidden > 0 && <Ellipsis chars={prefixHidden} />}
       {lines.map((lineText, idx) => {
         const lineStart = lineStarts[idx];
-        const tokens    = _tokenizeLine(lineText);
+        const tokens    = tokenizedLines[idx];
         const lineNum   = startLineNumber + idx;
         const isHL = navSpan && lineStart < navSpan.end && lineStart + lineText.length > navSpan.start;
 
@@ -267,7 +315,8 @@ function XmlBody({
           .replace(/&[a-z]+;/g, " ")
           .replace(/\s+/g, " ")
           .trim();
-        const isNavigable = onLineClick && plainLineText.length >= 4;
+        const hasAlphaNum = /[a-z0-9]/i.test(plainLineText);
+        const isNavigable = onLineClick && hasAlphaNum && plainLineText.length >= 2;
 
         return (
           <div
@@ -299,7 +348,7 @@ function XmlBody({
 
 
 const XmlPanel = forwardRef<XmlScrollTarget, Props>(
-  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick }, ref) => {
+  ({ mode, xmlText, xmlFilename, activeChunk, appliedIds, navSpan, status, onLoad, onApply, onDownload, onSaveCorrectedChunk, onXmlChange, onScrollFraction, canUndo, onUndo, onXmlLineClick, onToggleVisibility }, ref) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // XML validation error surfaced up from XmlEditor's DOMParser check
@@ -321,6 +370,8 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
         : activeChunk?.kind === "emp"
           ? "Apply emphasis change to XML"
           : "Apply selected change to XML";
+
+        const shortcutHint = 'Tips: type "<" for tag suggestions, type tag then complete to auto-close, Ctrl+Shift+E wraps user-edit.';
 
     const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
       if (!onScrollFraction) return;
@@ -350,6 +401,18 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
             }`}>
               {isWf3 ? "WF2 · editable" : "WF1 · read-only"}
             </span>
+
+            {onToggleVisibility && (
+              <button
+                onClick={onToggleVisibility}
+                title="Collapse XML panel"
+                className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/8 text-slate-400 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
 
             {!xmlText && (
               <>
@@ -403,11 +466,29 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
                   </svg>
                   Download
                 </button>
+
+                {onSaveCorrectedChunk && (
+                  <button
+                    onClick={onSaveCorrectedChunk}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-cyan-300/70 dark:border-cyan-500/35 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 text-[11px] font-semibold transition-colors"
+                    title="Save this edited chunk into correctedchunk output"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Save Corrected Chunk
+                  </button>
+                )}
               </>
             )}
           </div>
 
           <div className="flex items-center gap-3 min-w-0">
+            {isWf3 && xmlText && (
+              <span className="hidden 2xl:inline text-[10px] text-slate-500 truncate max-w-[520px]" title={shortcutHint}>
+                {shortcutHint}
+              </span>
+            )}
             {xmlFilename && (
               <span className="text-[10px] text-slate-500 font-mono truncate max-w-[200px]">
                 {xmlFilename}
@@ -440,12 +521,9 @@ const XmlPanel = forwardRef<XmlScrollTarget, Props>(
                 navSpan={navSpan}
                 onScrollFraction={onScrollFraction}
                 onValidationChange={setXmlError}
-                onCursorOffset={onXmlLineClick ? (offset) => {
-                  // Convert Monaco cursor character offset → line char range → chunk lookup
-                  const lineStart  = xmlText.lastIndexOf("\n", offset - 1) + 1;
-                  const lineEndIdx = xmlText.indexOf("\n", offset);
-                  onXmlLineClick(lineStart, lineEndIdx === -1 ? xmlText.length : lineEndIdx);
-                } : undefined}
+                // Keep editor cursor movement local: avoid implicit chunk locate
+                // that can cause unwanted auto-jumps while typing.
+                onCursorOffset={undefined}
               />
               {/* Inline validation error bar — shown below editor when XML is malformed */}
               {xmlError && (

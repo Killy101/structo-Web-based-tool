@@ -132,11 +132,13 @@ except Exception:
 _wc_compare_words: Any = None
 _wc_myers_diff:    Any = None
 _wc_tokenise:      Any = None
+_wc_align_sentences: Any = None
 try:
     from src.services.word_compare import (          # type: ignore[import]
         compare_words   as _wc_compare_words,
         _tokenise       as _wc_tokenise,
         _myers_word_diff as _wc_myers_diff,
+        align_sentences as _wc_align_sentences,
     )
     _HAS_WORD_COMPARE = True
 except ImportError:
@@ -146,6 +148,7 @@ except ImportError:
             compare_words    as _wc_compare_words,
             _tokenise        as _wc_tokenise,
             _myers_word_diff as _wc_myers_diff,
+            align_sentences  as _wc_align_sentences,
         )
         _HAS_WORD_COMPARE = True
     except ImportError:
@@ -194,16 +197,36 @@ EQL_FG    = "#111111"
 # Emphasis-axis colours (used only on diff-marked spans inside precompute).
 # All map to the EMP foreground so emphasis changes look consistent regardless
 # of which axis (bold/italic/underline/strikeout) flipped.
-COL_BOLD      = "#1d4ed8"
-COL_ITALIC    = "#1d4ed8"
-COL_BOLD_IT   = "#1d4ed8"
+COL_BOLD      = "#9a3412"
+COL_ITALIC    = "#0f766e"
+COL_BOLD_IT   = "#6d28d9"
 COL_MONO      = "#1d4ed8"
 COL_SUPER     = "#1d4ed8"
 COL_UNDERLINE = "#1d4ed8"
-COL_STRIKE    = "#be185d"   # struck-out spans pick up DEL-pink semantically
+COL_STRIKE    = "#be123c"   # struck-out spans pick up rose-red semantically
 COL_CITATION  = "#a0c4e8"   # BACEN amendment-citation blue (#3298d5 spans)
 COL_SMALL     = "#777777"
 COL_NORMAL    = "#111111"
+
+
+def _emp_axis_fg(self_emp: tuple[bool, bool, bool, bool], other_emp: tuple[bool, bool, bool, bool]) -> str:
+    """Return token colour by emphasis axis changed between two versions."""
+    b_changed = self_emp[0] != other_emp[0]
+    i_changed = self_emp[1] != other_emp[1]
+    u_changed = self_emp[2] != other_emp[2]
+    s_changed = self_emp[3] != other_emp[3]
+
+    if s_changed:
+        return COL_STRIKE
+    if u_changed:
+        return COL_UNDERLINE
+    if b_changed and i_changed:
+        return COL_BOLD_IT
+    if b_changed:
+        return COL_BOLD
+    if i_changed:
+        return COL_ITALIC
+    return EMP_FG
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1217,50 +1240,60 @@ def load_pdf(
                 # the overlap test is in the same coordinate space.
                 #
                 # Also collect Underline/Link y-positions for Method B exclusion.
-                _annot_ys: set = set()  # y-midpoints of underline/link annots
                 for _an in (fz.annots() or []):
-                    _atype = _an.type[1] if _an.type else ""
+                    _atype_raw = _an.type[1] if _an.type else ""
+                    _atype = str(_atype_raw).strip().lower()
                     _ar = getattr(_an, "rect", None)
                     if _ar is None:
                         continue
 
-                    if _atype == "StrikeOut":
+                    if "strike" in _atype:
                         # Direct annotation match — mark all spans it covers.
                         # Convert annotation absolute coords to local page space.
                         _ann_x0 = _ar.x0
                         _ann_x1 = _ar.x1
-                        _ann_y0 = _ar.y0 - page_y_offset
-                        _ann_y1 = _ar.y1 - page_y_offset
+                        # Annotation rects are page-local coordinates.
+                        _ann_y0 = _ar.y0
+                        _ann_y1 = _ar.y1
                         _ann_mid_y = (_ann_y0 + _ann_y1) / 2
                         for _pl in merged:
                             for _sp in _pl.spans:
                                 # x-overlap: annotation covers this span
                                 if _sp.x2 <= _ann_x0 or _sp.x >= _ann_x1:
                                     continue
-                                # y-proximity: annotation midpoint within ±8pt of span midpoint
+                                # Use vertical overlap with tolerance instead of midpoint-only
+                                # matching; several legal PDFs place strike annots slightly
+                                # off the text midpoint.
                                 _sp_top = _sp.y  - page_y_offset
                                 _sp_bot = _sp.y2 - page_y_offset
-                                _sp_mid = (_sp_top + _sp_bot) / 2
-                                if abs(_ann_mid_y - _sp_mid) <= 8:
+                                if not (_sp_bot < (_ann_y0 - 2) or _sp_top > (_ann_y1 + 2)):
                                     _sp.strikeout = True
 
-                    elif _atype in ("Underline", "Link"):
-                        # Collect for Method B exclusion guard
-                        _annot_ys.add(round((_ar.y0 + _ar.y1) / 2 / 2) * 2)
-
-                for _lk in (fz.get_links() or []):
-                    _lr = _lk.get("from")
-                    if _lr is not None:
-                        _annot_ys.add(round((_lr.y0 + _lr.y1) / 2 / 2) * 2)
+                    elif "underline" in _atype:
+                        # Preserve explicit underline annotations as emphasis.
+                        _ann_x0 = _ar.x0
+                        _ann_x1 = _ar.x1
+                        # Annotation rects are page-local coordinates.
+                        _ann_y0 = _ar.y0
+                        _ann_y1 = _ar.y1
+                        _ann_mid_y = (_ann_y0 + _ann_y1) / 2
+                        for _pl in merged:
+                            for _sp in _pl.spans:
+                                if _sp.x2 <= _ann_x0 or _sp.x >= _ann_x1:
+                                    continue
+                                _sp_top = _sp.y  - page_y_offset
+                                _sp_bot = _sp.y2 - page_y_offset
+                                if not (_sp_bot < (_ann_y0 - 2) or _sp_top > (_ann_y1 + 2)):
+                                    _sp.underline = True
 
                 # ── Method B: Drawn vector paths ──────────────────────────────
                 # Fallback for PDFs that use drawn lines instead of annotations.
-                # Three guards prevent false positives:
-                #   1. Exclude y-positions matching Link/Underline annotations
-                #   2. Reject lines at relative position > 0.75 (underlines are
-                #      at 0.85-0.95 of span height; strikethroughs at 0.40-0.65)
-                #   3. Use local page coords (subtract page_y_offset) throughout
+                # We classify candidate lines as underline-like (thin) or general
+                # strike candidates. Some legal PDFs draw strike lines low (0.86-0.92
+                # relative to text box), so baseline-near lines must not be dropped
+                # purely for being low when they are not thin underline strokes.
                 _sr: list = []
+                _ul: list = []
                 for _path in fz.get_drawings():
                     _rect = _path.get("rect")
                     if _rect is None:
@@ -1277,16 +1310,15 @@ def load_pdf(
                     _my = (_y0 + _y1) / 2
                     if _my / _ph < 0.10 or _my / _ph > 0.92:
                         continue
-                    # Guard 1: skip lines at same y as a known link/underline annot
-                    if round(_my / 2) * 2 in _annot_ys:
-                        continue
-                    _sr.append((_x0, _y0, _x1, _y1))
+                    if _h <= 1.7:
+                        _ul.append((_x0, _y0, _x1, _y1))
+                    _sr.append((_x0, _y0, _x1, _y1, _w, _h))
 
                 if _sr:
                     for _pl in merged:
                         for _sp in _pl.spans:
-                            if _sp.strikeout:
-                                continue  # already marked by Method A
+                            if _sp.strikeout and _sp.underline:
+                                continue  # already marked by annotations
                             # Guard 3: convert absolute span coords to local page space
                             _sp_top = _sp.y  - page_y_offset
                             _sp_bot = _sp.y2 - page_y_offset
@@ -1294,16 +1326,36 @@ def load_pdf(
                             if _sp_h <= 0:
                                 continue
                             _sp_mid = (_sp_top + _sp_bot) / 2
-                            for (_sx0, _sy0, _sx1, _sy1) in _sr:
+                            for (_sx0, _sy0, _sx1, _sy1, _sw, _sh) in _sr:
                                 if _sx1 <= _sp.x or _sx0 >= _sp.x2:
                                     continue
                                 _line_y = (_sy0 + _sy1) / 2
-                                if abs(_line_y - _sp_mid) > 7:
+                                if abs(_line_y - _sp_mid) > 9:
                                     continue
-                                # Guard 2: underlines at 0.85-0.95; strikethroughs at 0.40-0.65
+                                # Relative line height in the glyph box.
                                 _rel = (_line_y - _sp_top) / _sp_h
-                                if _rel > 0.75:
+
+                                # Very near baseline: thin lines are underlines.
+                                # Thicker lines are often strike overlays in legal PDFs.
+                                if 0.88 <= _rel <= 1.05:
+                                    if (_sx0, _sy0, _sx1, _sy1) in _ul or _sh <= 1.7:
+                                        _sp.underline = True
+                                    else:
+                                        _sp.strikeout = True
                                     continue
+
+                                # Typical strike band; allow slightly lower lines to
+                                # avoid dropping real strikethrough rendered near baseline.
+                                if _rel < 0.30 or _rel > 0.92:
+                                    continue
+
+                                # Require reasonable horizontal overlap with the span.
+                                _ov = min(_sx1, _sp.x2) - max(_sx0, _sp.x)
+                                if _ov <= 0:
+                                    continue
+                                if _ov < max(6.0, 0.22 * max(_sp.x2 - _sp.x, 1.0)):
+                                    continue
+
                                 _sp.strikeout = True
                                 break
             except Exception:
@@ -1698,6 +1750,32 @@ def _is_legal_leader_line(t: str) -> bool:
         prefix,
         re.I,
     ))
+
+
+_RE_TOC_TRAIL = re.compile(r'[.\xb7]{3,}\s*\d{1,4}[a-z]?\s*$', re.I)
+
+
+def _is_toc_entry_line(t: str) -> bool:
+    """True for table-of-contents rows with dot leaders and trailing page refs."""
+    if not t:
+        return False
+    raw = t.strip()
+    if not _RE_TOC_TRAIL.search(raw):
+        return False
+    head = _RE_TOC_TRAIL.sub('', raw).strip()
+    if len(head) < 3:
+        return False
+    # Keep legal amendment marker leaders out of TOC logic.
+    if re.match(r'^[FCEMSX]\d+[A-Za-z]?(?:\([A-Za-z0-9]{1,4}\))?$', head, re.I):
+        return False
+    return True
+
+
+def _toc_core_text(t: str) -> str:
+    """Normalised TOC text with trailing leader/page reference removed."""
+    raw = (t or '').strip()
+    raw = _RE_TOC_TRAIL.sub('', raw).strip()
+    return _norm_cmp(raw)
 
 
 def _is_noise(t: str) -> bool:
@@ -2251,6 +2329,8 @@ def segment_blocks(lines: List[PdfLine]) -> List[Block]:
         anchor = anchors[i]
         gap = lines[i].y - lines[i - 1].y
         prev_text = norm_texts[i - 1]
+        line_raw = raw_texts[i]
+        prev_raw = raw_texts[i - 1]
         next_anchor = anchors[i + 1] if i + 1 < len(lines) else ""
 
         start_new = False
@@ -2259,6 +2339,12 @@ def segment_blocks(lines: List[PdfLine]) -> List[Block]:
             # Treat the heading as a standalone block; the next non-empty line
             # begins the amendment entry list or a following cross-heading.
             start_new = True
+
+        # TOC rows should remain line-granular; merging them into one block
+        # causes single-page-ref changes to paint an entire section as modified.
+        if not start_new and _open_br <= 0:
+            if _is_toc_entry_line(prev_raw) or _is_toc_entry_line(line_raw):
+                start_new = True
 
         # Strikethrough boundary: never merge a predominantly-strikethrough line
         # with a regular line (or vice versa).  This keeps superseded text
@@ -2451,6 +2537,7 @@ class Chunk:
     words_after: str = ""    # words immediately after the change (anchor context)
     section: str = ""        # nearest structural heading (Part/Chapter/Section)
     emp_detail: str = ""     # emphasis change detail (e.g. "bold removed", "italic added")
+    sentence_alignment: list = field(default_factory=list)  # [{old,new,similarity}] for MOD chunks
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3789,6 +3876,45 @@ def _is_strike_only_change(block_a: Block, block_b: Block) -> bool:
     # If bold/italic also changed → this is a compound emphasis change (EMP), not pure STRIKE
     return len(other_changed) == 0
 
+
+def _strike_profile_changed(block_a: Block, block_b: Block) -> bool:
+    """
+    Fallback detection for strikeout-only deltas when _emp_word_map is too
+    ambiguous (repeated words, long legal paragraphs with duplicate tokens).
+
+    Compares struck-character ratio across both blocks using raw span metadata.
+    Used only in equal-key paths where textual content is already aligned.
+    """
+    def _stats(block: Block) -> tuple[int, int]:
+        total = 0
+        strike = 0
+        for line in block.lines:
+            for span in line.spans:
+                txt = (span.text or "").strip()
+                if not txt:
+                    continue
+                n = len(txt)
+                total += n
+                if span.strikeout:
+                    strike += n
+        return total, strike
+
+    total_a, strike_a = _stats(block_a)
+    total_b, strike_b = _stats(block_b)
+    if total_a <= 0 or total_b <= 0:
+        return False
+    if strike_a == strike_b:
+        return False
+
+    ratio_a = strike_a / total_a
+    ratio_b = strike_b / total_b
+    ratio_delta = abs(ratio_a - ratio_b)
+    strike_delta = abs(strike_a - strike_b)
+
+    # Require both a meaningful ratio shift and character-count shift to
+    # avoid tiny-noise toggles from OCR/font artifacts.
+    return ratio_delta >= 0.05 and strike_delta >= 4
+
 def _emp_detail(block_a: Block, block_b: Block) -> str:
     """Return a human-readable description of which emphasis changed and how.
 
@@ -4744,10 +4870,19 @@ def _xml_cross_validate_chunks(
                     keep = False
 
         elif ch.kind == KIND_EMP and xml_index_b:
-            match_a = xml_index_b.probe(ch.text_a, threshold=0.85)
-            match_b = xml_index_b.probe(ch.text_b, threshold=0.85)
-            if match_a and match_b and (match_a == match_b or _similarity(match_a, match_b) >= 0.95):
-                keep = False
+            # XML probes are plain-text only and cannot prove strike semantics
+            # when XML does not carry <s>/<del>-style markup.
+            _emp_lc = (getattr(ch, "emp_detail", "") or "").lower()
+            _strike_sensitive = (
+                "strike" in _emp_lc
+                or "strikethrough" in _emp_lc
+                or "overstrike" in _emp_lc
+            )
+            if not _strike_sensitive:
+                match_a = xml_index_b.probe(ch.text_a, threshold=0.85)
+                match_b = xml_index_b.probe(ch.text_b, threshold=0.85)
+                if match_a and match_b and (match_a == match_b or _similarity(match_a, match_b) >= 0.95):
+                    keep = False
 
         if keep:
             out.append(ch)
@@ -4999,6 +5134,12 @@ def compute_diff(
                                    bla.text, blb.text)
                         ch.emp_detail = detail
                         chunks.append(ch)
+                elif _strike_profile_changed(bla, blb):
+                    # Fallback for repeated-token blocks where word-level
+                    # mapping is ambiguous but struck-character profile differs.
+                    ch = Chunk(KIND_STRIKE, ri, rj, bla.text, blb.text)
+                    ch.emp_detail = "strikeout changed (profile)"
+                    chunks.append(ch)
             continue
 
         ar = _expand_a(i1, i2)
@@ -5615,6 +5756,42 @@ def _compute_word_level_diff(ch: Chunk) -> None:
         ch.words_after = " ".join(wa[last_change_a:last_change_a + 3])[:150]
 
 
+_SENT_ALIGN_MAX_CHARS = max(400, int(os.getenv("COMPARE_SENT_ALIGN_MAX_CHARS", "8000")))
+_SENT_ALIGN_MAX_ROWS = max(10, int(os.getenv("COMPARE_SENT_ALIGN_MAX_ROWS", "120")))
+
+
+def _compute_sentence_alignment(ch: Chunk) -> None:
+    """Populate sentence_alignment for MOD chunks using word_compare alignment."""
+    ch.sentence_alignment = []
+    if not ch.text_a or not ch.text_b or _wc_align_sentences is None:
+        return
+    if (len(ch.text_a) + len(ch.text_b)) > _SENT_ALIGN_MAX_CHARS:
+        return
+
+    try:
+        pairs = _wc_align_sentences(ch.text_a, ch.text_b)
+    except Exception:
+        return
+
+    rows = []
+    for old_s, new_s, sim in pairs[:_SENT_ALIGN_MAX_ROWS]:
+        old_txt = (old_s or "").strip()
+        new_txt = (new_s or "").strip()
+        if not old_txt and not new_txt:
+            continue
+        try:
+            sim_f = float(sim)
+        except Exception:
+            sim_f = 0.0
+        rows.append({
+            "old": old_txt[:500],
+            "new": new_txt[:500],
+            "similarity": round(max(0.0, min(1.0, sim_f)), 4),
+        })
+
+    ch.sentence_alignment = rows
+
+
 def _compute_word_level_diff_difflib(ch: Chunk, wa: list, wb: list) -> None:
     """Difflib fallback for words_removed / words_added population."""
     sm = difflib.SequenceMatcher(None, wa, wb, autojunk=False)
@@ -5837,6 +6014,7 @@ def _populate_chunk_context(
         # Word-level diff for MOD chunks (enables precise XML Apply)
         if ch.kind == KIND_MOD and ch.text_a and ch.text_b:
             _compute_word_level_diff(ch)
+            _compute_sentence_alignment(ch)
 
 
 def _strip_prov_anchors(text: str) -> str:
@@ -6242,11 +6420,20 @@ def _convert_adjacent_del_add_runs_to_mod(chunks: List[Chunk]) -> List[Chunk]:
         )
         overlap_ok = overlap >= min_overlap or (numbers_or_numeric_mod and overlap >= 0.30)
 
+        # Strong textual-scaffold edits (non-numeric) should also convert to MOD
+        # so side-by-side alignment stays stable and sentence alignment can run.
+        textual_scaffold_mod = (
+            sim >= max(min_sim + 0.04, 0.86) and
+            overlap >= max(min_overlap, 0.80) and
+            len_ratio >= 0.55
+        )
+
         should_convert = (
             not _should_suppress_chunk(joined_a, joined_b) and
-            numbers_or_numeric_mod and
-            sim >= min_sim and
-            overlap_ok
+            (
+                (numbers_or_numeric_mod and sim >= min_sim and overlap_ok) or
+                textual_scaffold_mod
+            )
         )
 
         if should_convert:
@@ -6370,7 +6557,12 @@ def _convert_high_similarity_del_add_to_mod(chunks: List[Chunk]) -> List[Chunk]:
                 _numbers_match(dn, an) or
                 _is_high_confidence_numeric_mod(dn, an, sim, overlap)
             )
-            if not numbers_or_numeric_mod:
+            textual_scaffold_mod = (
+                sim >= 0.87 and
+                overlap >= 0.82 and
+                len_ratio >= 0.55
+            )
+            if not (numbers_or_numeric_mod or textual_scaffold_mod):
                 continue
             pos_bonus = 1.0 - (abs(ai - di) / 60.0)
             score = sim + max(0.0, pos_bonus) * 0.03
@@ -6544,6 +6736,16 @@ def _should_suppress_chunk_inner(text_a: str, text_b: str) -> bool:
         return True
 
     na, nb = _norm_cmp(text_a), _norm_cmp(text_b)
+
+    # TOC-only churn (typically page references) is non-semantic noise.
+    if _is_toc_entry_line(text_a) and _is_toc_entry_line(text_b):
+        core_a = _toc_core_text(text_a)
+        core_b = _toc_core_text(text_b)
+        if core_a and core_b:
+            if core_a == core_b or _is_punctuation_only_diff(core_a, core_b):
+                return True
+            if _similarity(core_a, core_b) >= 0.95:
+                return True
 
     # Fast path: normalized texts equal → formatting difference only
     if na == nb:
@@ -7146,7 +7348,7 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
     char_pos        = [0]
     seq             = [0]
 
-    _F = (BASE_FONT_FAMILY, BASE_FONT_SIZE)
+    _F = {"family": BASE_FONT_FAMILY, "size": BASE_FONT_SIZE, "style": ""}
     diff_styles = {
         "add":  {"background": ADD_BG, "foreground": ADD_FG,  "font": _F},
         "del":  {"background": DEL_BG, "foreground": DEL_FG,  "font": _F},
@@ -7178,11 +7380,17 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
             fg = _span_fg(span)
         else:
             fg = COL_NORMAL
-        font = _span_font(span)
-        kw   = {"foreground": fg, "font": font}
-        # Show underline only on diff-marked spans (bg_tag set); unchanged underlines
-        # are suppressed because they are almost always hyperlinks in legal PDFs.
-        if span.underline and bg_tag:  kw["underline"]  = True
+        font_tuple = _span_font(span)
+        font_dict  = {
+            "family": font_tuple[0],
+            "size":   font_tuple[1],
+            "style":  font_tuple[2] if len(font_tuple) > 2 else "",
+        }
+        kw   = {"foreground": fg, "font": font_dict}
+        # Preserve underline only on diff-marked spans. For unchanged text,
+        # suppress underline to avoid hyperlink-style leakage across the pane.
+        if bg_tag and span.underline:
+            kw["underline"] = True
         # Show strikethrough on ALL spans (bg_tag or not).
         # Unlike underlines (which are often hyperlink artefacts), struck-through text
         # in legislative/regulatory PDFs is intentional content that must always be
@@ -7193,10 +7401,10 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
         if bg_tag:
             bg = diff_styles[bg_tag]["background"]
             kw["background"] = bg
-            pool_key = ("_pool_", fg, font, span.underline, span.strikeout, bg)
+            pool_key = ("_pool_", fg, font_tuple, span.underline, span.strikeout, bg)
         else:
             # Unchanged text: all spans collapse to same plain-text tag per font/strikeout
-            pool_key = ("_pool_", COL_NORMAL, font, False, span.strikeout, None)
+            pool_key = ("_pool_", COL_NORMAL, font_tuple, False, span.strikeout, None)
 
         existing = tag_cfgs.get(pool_key)
         if existing is None:
@@ -7367,28 +7575,41 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
 
                     def _fe(buf, hi, fg, font, span, empinfo=None):
                         if not buf: return
-                        kw = {"foreground": (EMP_FG if hi else fg), "font": font}
+                        font_dict = {
+                            "family": font[0],
+                            "size":   font[1],
+                            "style":  font[2] if len(font) > 2 else "",
+                        }
+                        kw = {"foreground": (EMP_FG if hi else fg), "font": font_dict}
                         if hi:
-                            # Only apply the span's decorations (underline/overstrike)
-                            # to highlighted (changed) words.  Applying them to
-                            # unchanged context words would incorrectly decorate
-                            # words whose emphasis did NOT change.
-                            if span.underline:  kw["underline"]  = True
-                            if span.strikeout:  kw["overstrike"] = True
                             kw["background"] = EMP_BG
-                            # Annotate what kind of change occurred:
-                            # If emphasis was ADDED in B (self has it, A does not),
-                            # use bold+italic for the highlight font to make it pop.
+                            # Apply emphasis strictly by changed axis for this word.
+                            # Do NOT inherit underline/strike from the full span,
+                            # otherwise bold-only changes in mixed-format spans can
+                            # incorrectly render as underlined.
                             if empinfo:
                                 self_e, other_e = empinfo
-                                # Determine if emphasis was gained or lost on this side
-                                gained = any(s and not o for s, o in zip(self_e, other_e))
-                                lost   = any(o and not s for s, o in zip(self_e, other_e))
-                                if gained:
-                                    # This side HAS the emphasis — show it clearly
-                                    kw["font"] = (font[0], font[1], "bold italic") if len(font) >= 2 else font
-                                elif lost:
-                                    # This side LOST the emphasis — show strikethrough hint
+                                kw["foreground"] = _emp_axis_fg(self_e, other_e)
+                                b_changed = self_e[0] != other_e[0]
+                                i_changed = self_e[1] != other_e[1]
+                                u_changed = self_e[2] != other_e[2]
+                                s_changed = self_e[3] != other_e[3]
+
+                                style_parts: list[str] = []
+                                if b_changed and self_e[0]:
+                                    style_parts.append("bold")
+                                if i_changed and self_e[1]:
+                                    style_parts.append("italic")
+                                if style_parts:
+                                    kw["font"] = {
+                                        "family": font[0],
+                                        "size": font[1],
+                                        "style": " ".join(style_parts),
+                                    }
+
+                                if u_changed and self_e[2]:
+                                    kw["underline"] = True
+                                if s_changed and self_e[3]:
                                     kw["overstrike"] = True
                         t2 = new_tag(); tag_cfgs[t2] = kw
                         emit(" ".join(buf) + " ", t2)
@@ -7520,7 +7741,9 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                     def _flush_mod_buf(bw, bk):
                         if not bw: return
                         text = " ".join(bw) + " "
-                        sk = (bk.get("foreground"), bk.get("font"),
+                        _fd = bk.get("font") or {}
+                        sk = (bk.get("foreground"),
+                              (_fd.get("family"), _fd.get("size"), _fd.get("style")),
                               bk.get("underline"), bk.get("overstrike"),
                               bk.get("background"))
                         ex = tag_cfgs.get(("_pool_", sk))
@@ -7537,7 +7760,11 @@ def precompute(blocks: List[Block], chunks: List[Chunk], side: str, blocks_other
                             continue
                         fg2    = _span_fg(sp2)
                         font2  = _span_font(sp2)
-                        kw2: dict = {"foreground": fg2, "font": font2}
+                        kw2: dict = {"foreground": fg2, "font": {
+                            "family": font2[0],
+                            "size":   font2[1],
+                            "style":  font2[2] if len(font2) > 2 else "",
+                        }}
                         if sp2.underline:  kw2["underline"]  = True
                         if sp2.strikeout:  kw2["overstrike"] = True
                         if is_c:

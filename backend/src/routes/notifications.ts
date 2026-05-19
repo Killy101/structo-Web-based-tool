@@ -44,7 +44,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
         const alreadyStored = active.some((n) => (n.meta as Record<string, unknown> | null)?.brdId === brd.brdId)
         if (!alreadyStored) {
           virtual.push({
-            id: -(Math.abs(brd.brdId.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0)) + 100000),
+            id: -(Math.abs(brd.brdId.split('').reduce((a: number, c: string) => ((a * 31) ^ c.charCodeAt(0)) >>> 0, 5381)) + 100000),
             userId,
             type: 'BRD_STATUS',
             title: 'BRD Source Uploaded',

@@ -39,7 +39,6 @@ interface Props {
   syncScrollLeft?:   number | null;
   headerStats?:      HeaderStat[];
   onJumpToFirst?:    () => void;
-  wrapLines?:        boolean;
   alignedLines?:     AlignedLine[];
   contextLines?:     number;
   onUnfoldRow?:      (foldKey: number) => void;
@@ -54,7 +53,6 @@ interface InnerProps {
   activeChunkId:  number | null;
   activeChunkCSS: string;
   scrollRef:      React.RefObject<HTMLDivElement>;
-  wrapLines:      boolean;
   dark:           boolean;
   onChunkClick?:  (chunkId: number) => void;
   onScroll:       () => void;
@@ -96,29 +94,14 @@ const DARK_FG_MAP: Record<string, string> = {
   "#3d007a": "#93c5fd",
 };
 
-// ── Line types ────────────────────────────────────────────────────────────────
-
-export type LineSeg = {
-  text:    string;
-  tagName: string;
-  chunkId: number | null;
-};
-
-export type Line = LineSeg[];
-
-/** null = gap placeholder (one side has no content for this row)
- *  { type:"fold" } = collapsed unchanged rows the user can expand */
-export type AlignedLine =
-  | Line
-  | null
-  | { type: "fold"; count: number; key: number; hasGap?: boolean };
-
-/** Returned by foldUnchangedLines so DiffViewer can expand folds correctly */
-export interface FoldMapEntry {
-  /** Index into the *pre-fold* rawLinesA / rawLinesB arrays */
-  rawStart: number;
-  count:    number;
-}
+const EMP_TEXT_COLORS = {
+  bold:       { light: "#9a3412", dark: "#fdba74" },
+  italic:     { light: "#0f766e", dark: "#99f6e4" },
+  underline:  { light: "#1d4ed8", dark: "#bfdbfe" },
+  strike:     { light: "#be123c", dark: "#fda4af" },
+  boldItalic: { light: "#6d28d9", dark: "#ddd6fe" },
+  defaultEmp: { light: "#334155", dark: "#cbd5e1" },
+} as const;
 
 // ── Server palette helpers ────────────────────────────────────────────────────
 
@@ -137,94 +120,81 @@ function _serverPaletteKind(bg?: string): "del" | "add" | "mod" | "emp" | null {
   return null;
 }
 
-// ── Colour helper ─────────────────────────────────────────────────────────────
+function _isVisualDiffSegment(cfg: TagConfig, kind?: ChunkKind): boolean {
+  if (!kind) return false;
+  const fontStyle = cfg.font && !Array.isArray(cfg.font) ? (cfg.font.style ?? "") : "";
+  const hasPalette = _serverPaletteKind(cfg.background) !== null;
 
-function tagToStyle(
-  cfg: TagConfig,
-  dark: boolean,
-  kind?: ChunkKind,
-  forceStrike?: boolean,
-): React.CSSProperties {
-  const s: React.CSSProperties = {};
-
-  const serverKind       = _serverPaletteKind(cfg.background);
-  const isInlineWordDiff = kind === "mod" && (serverKind === "del" || serverKind === "add");
-
-  const effectiveKind: ChunkKind | undefined =
-    isInlineWordDiff && serverKind ? (serverKind as ChunkKind) :
-    kind === "mod" && !cfg.background ? undefined :
-    kind;
-
-  if (cfg.font) {
-    if (cfg.font.style.includes("bold"))   s.fontWeight = "bold";
-    if (cfg.font.style.includes("italic")) s.fontStyle  = "italic";
+  if (kind === "emp") {
+    return !!cfg.underline || !!cfg.overstrike || !!cfg.foreground ||
+      fontStyle.includes("bold") || fontStyle.includes("italic") || hasPalette;
   }
 
-  const isStrikeContent =
-    effectiveKind === "strike" ||
-    (effectiveKind === "emp" && (cfg.overstrike || forceStrike));
-
-  const isModStrike = effectiveKind === "mod" && cfg.overstrike;
-
-  if (isStrikeContent || isModStrike) {
-    s.backgroundColor = dark ? "rgba(244,63,94,0.22)" : "#fecdd3";
-    s.color           = dark ? "#fda4af"               : "#881337";
-    s.textDecoration  = "line-through";
-  } else if (effectiveKind === "add") {
-    s.backgroundColor = dark ? "rgba(34,197,94,0.22)"  : "#ccffd8";
-    s.color           = dark ? "#86efac"                : "#14532d";
-  } else if (effectiveKind === "del") {
-    s.backgroundColor = dark ? "rgba(244,63,94,0.22)"  : "#fecdd3";
-    s.color           = dark ? "#fda4af"                : "#881337";
-    if (isInlineWordDiff) s.textDecoration = "line-through";
-  } else if (effectiveKind === "mod") {
-    s.backgroundColor = dark ? "rgba(249,115,22,0.22)" : "#fed7aa";
-    s.color           = dark ? "#fdba74"                : "#7c2d12";
-  } else if (effectiveKind === "emp") {
-    s.backgroundColor = dark ? "rgba(96,165,250,0.22)" : "#bfdbfe";
-    s.color           = dark ? "#93c5fd"                : "#1e3a8a";
-  } else {
-    if (cfg.background) {
-      s.backgroundColor = dark
-        ? (DARK_BG_MAP[cfg.background.toLowerCase()] ?? cfg.background)
-        : cfg.background;
-    }
-    if (cfg.foreground) {
-      s.color = dark
-        ? (DARK_FG_MAP[cfg.foreground.toLowerCase()] ?? cfg.foreground)
-        : cfg.foreground;
-    }
+  if (kind === "strike") {
+    return !!cfg.overstrike || hasPalette || !!cfg.background;
   }
 
-  const decorations: string[] = [];
-  if (cfg.underline && effectiveKind !== undefined) decorations.push("underline");
-  // overstrike: apply line-through on ANY span that carries it, regardless of
-  // effectiveKind.  This ensures PDF StrikeOut annotations on unchanged spans
-  // (effectiveKind === undefined) AND on diff-marked spans inside changed regions
-  // are always rendered with line-through.  The previous guard
-  // `effectiveKind === undefined` silently dropped strikethrough on spans that
-  // happened to sit inside a changed block.
-  if (cfg.overstrike && !isStrikeContent && !isModStrike && !isInlineWordDiff) {
-    decorations.push("line-through");
-  }
-  if (decorations.length > 0 && !isStrikeContent && !isModStrike && !isInlineWordDiff) {
-    s.textDecoration = decorations.join(" ");
-  }
+  // add / del / mod should only be interactive-highlighted when the segment
+  // actually has diff styling markers from the server.
+  return !!cfg.background || !!cfg.overstrike || !!cfg.underline || hasPalette;
+}
 
-  return s;
+// ── Line types ────────────────────────────────────────────────────────────────
+
+export type LineSeg = {
+  text:    string;
+  tagName: string;
+  chunkId: number | null;
+};
+
+export type Line = LineSeg[];
+
+/**
+ * null              = gap placeholder (one side has no content for this row)
+ * { type: "fold" }  = collapsed unchanged rows the user can expand
+ */
+export type AlignedLine =
+  | Line
+  | null
+  | { type: "fold"; count: number; key: number; hasGap?: boolean };
+
+/** Returned by foldUnchangedLines so DiffViewer can expand folds correctly */
+export interface FoldMapEntry {
+  rawStart: number;
+  count:    number;
 }
 
 // ── Word-level token types ────────────────────────────────────────────────────
 
 export type WordToken = { type: "equal" | "delete" | "insert"; value: string };
 
+function _toWordList(value: unknown): string[] {
+  if (typeof value === "string") return value.split(/\s+/).filter(Boolean);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item == null) return "";
+        if (typeof item === "number" || typeof item === "boolean") return String(item);
+        if (typeof item === "object" && "value" in (item as Record<string, unknown>)) {
+          const v = (item as Record<string, unknown>).value;
+          return typeof v === "string" ? v : "";
+        }
+        return "";
+      })
+      .flatMap((s) => s.split(/\s+/))
+      .filter(Boolean);
+  }
+  return [];
+}
+
 export function buildWordTokens(chunk: Chunk, side: "a" | "b"): WordToken[] | null {
-  const removed = chunk.words_removed?.split(/\s+/).filter(Boolean) ?? [];
-  const added   = chunk.words_added?.split(/\s+/).filter(Boolean)   ?? [];
+  const removed = _toWordList((chunk as unknown as Record<string, unknown>).words_removed);
+  const added   = _toWordList((chunk as unknown as Record<string, unknown>).words_added);
   if (removed.length === 0 && added.length === 0) return null;
 
-  const before = chunk.words_before?.split(/\s+/).filter(Boolean) ?? [];
-  const after  = chunk.words_after?.split(/\s+/).filter(Boolean)  ?? [];
+  const before = _toWordList((chunk as unknown as Record<string, unknown>).words_before);
+  const after  = _toWordList((chunk as unknown as Record<string, unknown>).words_after);
 
   const tokens: WordToken[] = [];
   before.forEach((w) => tokens.push({ type: "equal",  value: w }));
@@ -244,8 +214,8 @@ export function renderWordTokens(tokens: WordToken[], dark: boolean): React.Reac
         <span key={`d-${i}`} style={{
           backgroundColor: dark ? "rgba(244,63,94,0.30)"  : "#ffd7d5",
           color:           dark ? "#fda4af" : "#6e1c1a",
-          borderRadius: 2, padding: "0 1px",
-          textDecoration: "line-through",
+          borderRadius:    2, padding: "0 1px",
+          textDecoration:  "line-through",
         }}>{tok.value}</span>
       );
     }
@@ -254,7 +224,7 @@ export function renderWordTokens(tokens: WordToken[], dark: boolean): React.Reac
         <span key={`i-${i}`} style={{
           backgroundColor: dark ? "rgba(16,185,129,0.28)" : "#ccffd8",
           color:           dark ? "#6ee7b7" : "#1a4d2e",
-          borderRadius: 2, padding: "0 1px",
+          borderRadius:    2, padding: "0 1px",
         }}>{tok.value}</span>
       );
     }
@@ -267,6 +237,113 @@ export function renderWordTokens(tokens: WordToken[], dark: boolean): React.Reac
   }, []);
 }
 
+// ── Colour helper ─────────────────────────────────────────────────────────────
+
+export function tagToStyle(
+  cfg: TagConfig,
+  dark: boolean,
+  kind?: ChunkKind,
+  forceStrike?: boolean,
+): React.CSSProperties {
+  const s: React.CSSProperties = {};
+
+  const serverKind       = _serverPaletteKind(cfg.background);
+  const isInlineWordDiff = kind === "mod" && (serverKind === "del" || serverKind === "add");
+
+  const effectiveKind: ChunkKind | undefined =
+    isInlineWordDiff && serverKind ? (serverKind as ChunkKind) :
+    kind === "mod" && !cfg.background ? undefined :
+    kind;
+
+  if (cfg.font && !Array.isArray(cfg.font)) {
+    const fontStyle = cfg.font.style ?? "";
+    if (fontStyle.includes("bold"))   s.fontWeight = "bold";
+    if (fontStyle.includes("italic")) s.fontStyle  = "italic";
+  }
+
+  const isStrikeContent = effectiveKind === "strike";
+  const isEmpStrike = effectiveKind === "emp" && (cfg.overstrike || forceStrike);
+
+  const isModStrike = effectiveKind === "mod" && cfg.overstrike;
+
+  if (isStrikeContent || isModStrike) {
+    s.backgroundColor = dark ? "rgba(244,63,94,0.22)" : "#fecdd3";
+    s.color           = dark ? "#fda4af"               : "#881337";
+    s.textDecoration  = "line-through";
+  } else if (isEmpStrike) {
+    // EMP is text-only: no background fill, only emphasis-colour text.
+    s.color          = dark ? EMP_TEXT_COLORS.strike.dark : EMP_TEXT_COLORS.strike.light;
+    s.textDecoration = "line-through";
+  } else if (effectiveKind === "add") {
+    s.backgroundColor = dark ? "rgba(34,197,94,0.22)"  : "#ccffd8";
+    s.color           = dark ? "#86efac"                : "#14532d";
+  } else if (effectiveKind === "del") {
+    s.backgroundColor = dark ? "rgba(244,63,94,0.22)"  : "#fecdd3";
+    s.color           = dark ? "#fda4af"                : "#881337";
+    if (isInlineWordDiff) s.textDecoration = "line-through";
+  } else if (effectiveKind === "mod") {
+    s.backgroundColor = dark ? "rgba(249,115,22,0.22)" : "#fed7aa";
+    s.color           = dark ? "#fdba74"                : "#7c2d12";
+  } else if (effectiveKind === "emp") {
+    // EMP is text-only: prefer backend axis-specific token colours.
+    // This keeps highlight scoped to exact changed fragments, including
+    // "removed emphasis" cases where local font flags may be absent.
+    if (cfg.foreground) {
+      s.color = dark
+        ? (DARK_FG_MAP[cfg.foreground.toLowerCase()] ?? cfg.foreground)
+        : cfg.foreground;
+    } else {
+      const fontStyle = cfg.font?.style ?? "";
+      const hasBold = fontStyle.includes("bold");
+      const hasItalic = fontStyle.includes("italic");
+      if (cfg.underline) {
+        s.color = dark ? EMP_TEXT_COLORS.underline.dark : EMP_TEXT_COLORS.underline.light;
+      } else if (hasBold && hasItalic) {
+        s.color = dark ? EMP_TEXT_COLORS.boldItalic.dark : EMP_TEXT_COLORS.boldItalic.light;
+      } else if (hasBold) {
+        s.color = dark ? EMP_TEXT_COLORS.bold.dark : EMP_TEXT_COLORS.bold.light;
+      } else if (hasItalic) {
+        s.color = dark ? EMP_TEXT_COLORS.italic.dark : EMP_TEXT_COLORS.italic.light;
+      } else {
+        s.color = dark ? EMP_TEXT_COLORS.defaultEmp.dark : EMP_TEXT_COLORS.defaultEmp.light;
+      }
+    }
+  } else {
+    if (cfg.background) {
+      s.backgroundColor = dark
+        ? (DARK_BG_MAP[cfg.background.toLowerCase()] ?? cfg.background)
+        : cfg.background;
+    }
+    if (cfg.foreground) {
+      s.color = dark
+        ? (DARK_FG_MAP[cfg.foreground.toLowerCase()] ?? cfg.foreground)
+        : cfg.foreground;
+    }
+  }
+
+  const decorations: string[] = [];
+  // Show underline as an emphasis cue only for EMP chunks.
+  if (cfg.underline && effectiveKind === "emp") {
+    decorations.push("underline");
+  }
+  // Preserve line-through decoration for explicit overstrike wherever it
+  // appears, except branches that already set line-through above.
+  if (
+    cfg.overstrike &&
+    !isStrikeContent &&
+    !isModStrike &&
+    !isInlineWordDiff &&
+    !isEmpStrike
+  ) {
+    decorations.push("line-through");
+  }
+  if (decorations.length > 0 && !isStrikeContent && !isModStrike && !isInlineWordDiff && !isEmpStrike) {
+    s.textDecoration = decorations.join(" ");
+  }
+
+  return s;
+}
+
 // ── buildLines ────────────────────────────────────────────────────────────────
 
 export function buildLines(pane: PaneData): Line[] {
@@ -276,7 +353,7 @@ export function buildLines(pane: PaneData): Line[] {
     .map(([cid, start]) => ({
       id:  Number(cid),
       start,
-      end: offset_ends?.[cid] ?? start + 1_000_000,
+      end: offset_ends?.[cid] ?? start + 1,
     }))
     .sort((a, b) => a.start - b.start);
 
@@ -285,6 +362,7 @@ export function buildLines(pane: PaneData): Line[] {
   let ri  = 0;
 
   for (const [text, tagName] of segments) {
+    // Advance range pointer past any ranges that ended before current pos
     while (ri < ranges.length && ranges[ri].end <= pos) ri++;
 
     let chunkId: number | null = null;
@@ -309,12 +387,13 @@ export function buildLines(pane: PaneData): Line[] {
 function _lineCharStarts(lines: Line[]): number[] {
   const s: number[] = [0];
   for (const line of lines) {
-    const len = line.reduce((acc, seg) => acc + seg.text.length, 0) + 1;
+    const len = line.reduce((acc, seg) => acc + seg.text.length, 0) + 1; // +1 for \n
     s.push(s[s.length - 1] + len);
   }
   return s;
 }
 
+/** Binary search: find the last index i where arr[i] <= val */
 function _bsFloor(arr: number[], val: number): number {
   let lo = 0, hi = arr.length - 2, best = 0;
   while (lo <= hi) {
@@ -327,29 +406,20 @@ function _bsFloor(arr: number[], val: number): number {
 
 /**
  * buildAlignedLines — pairs every line from both panes so that
- *   linesA[i] and linesB[i] always occupy the same visual row.
+ * linesA[i] and linesB[i] always occupy the same visual row.
  *
- * Key invariant: outA.length === outB.length always.
+ * Invariant: outA.length === outB.length always.
  *
- * Bugs fixed vs the previous version
- * ────────────────────────────────────
- * 1. HIDDEN TEXT (blank left pane for ADD chunks)
- *    Root cause: for a one-sided chunk (ADD has firstA == -1), the context
- *    block set ctxA = 0, so curA never advanced past old content that sits
- *    *between* the previous chunk and the ADD.  Those old lines accumulated
- *    and were either orphaned or appeared far below the correct position.
- *    Fix: when one side has no anchor (firstX == -1), cap its context advance
- *    at Math.min(otherSideCtx, availableRawLines) so the cursor stays in sync.
- *
- * 2. NULL REPLACING REAL LINES (extraA/extraB offset trick)
- *    Root cause: the i-extraB offset made aIdx < 0 for the first extraB rows,
- *    so real rawA lines were emitted as null even though they existed.
- *    Fix: replaced with a simple per-side boundary check — no index offsets.
- *
- * 3. DOUBLE CURSOR ADVANCE
- *    Root cause: curA was set twice in the same loop iteration (once in the
- *    context block, once in the chunk block), causing it to skip real lines.
- *    Fix: each side advances exactly once per block by what it consumed.
+ * Algorithm:
+ *  1. Build raw lines from each pane's segments.
+ *  2. For each chunk, find its first/last line on each side using
+ *     server-provided line_offsets when available, falling back to
+ *     binary search on char starts.
+ *  3. Sort chunk ranges by document position and merge overlapping ones.
+ *  4. Walk the sorted ranges, emitting context lines (padded with null
+ *     on the shorter side) then chunk lines.
+ *  5. Emit trailing lines after the last chunk.
+ *  6. Final null-padding ensures equal length on both sides.
  */
 export function buildAlignedLines(
   paneA: PaneData,
@@ -359,7 +429,6 @@ export function buildAlignedLines(
   const rawA = buildLines(paneA);
   const rawB = buildLines(paneB);
 
-  // No chunks: pad the shorter side with nulls so lengths match.
   if (chunks.length === 0) {
     const len = Math.max(rawA.length, rawB.length);
     return {
@@ -377,8 +446,8 @@ export function buildAlignedLines(
   const leB = paneB.line_offset_ends;
 
   interface CRange {
-    firstA: number; lastA: number;   // -1 = this chunk has no content on side A
-    firstB: number; lastB: number;   // -1 = this chunk has no content on side B
+    firstA: number; lastA: number; // -1 = chunk absent on this side
+    firstB: number; lastB: number;
   }
 
   // ── Build chunk line ranges ───────────────────────────────────────────────
@@ -394,14 +463,13 @@ export function buildAlignedLines(
     if (!hasA && !hasB) continue;
 
     const firstA = hasA ? (loA?.[sid] ?? _bsFloor(csA, offA)) : -1;
-    const lastA  = hasA ? (leA?.[sid] ?? _bsFloor(csA, Math.max(offA, (endA ?? offA + 1) - 1))) : -1;
+    const lastA  = hasA ? (leA?.[sid] ?? _bsFloor(csA, Math.max(offA, endA - 1))) : -1;
     const firstB = hasB ? (loB?.[sid] ?? _bsFloor(csB, offB)) : -1;
-    const lastB  = hasB ? (leB?.[sid] ?? _bsFloor(csB, Math.max(offB, (endB ?? offB + 1) - 1))) : -1;
+    const lastB  = hasB ? (leB?.[sid] ?? _bsFloor(csB, Math.max(offB, endB - 1))) : -1;
 
     rawRanges.push({ firstA, lastA, firstB, lastB });
   }
 
-  // Sort by the leading position of each range (whichever side has an anchor)
   rawRanges.sort((a, b) => {
     const pa = a.firstA >= 0 ? a.firstA : a.firstB;
     const pb = b.firstA >= 0 ? b.firstA : b.firstB;
@@ -435,27 +503,15 @@ export function buildAlignedLines(
   // ── Build aligned output ──────────────────────────────────────────────────
   const outA: AlignedLine[] = [];
   const outB: AlignedLine[] = [];
-  let curA = 0, curB = 0;   // next unprocessed index in rawA / rawB
+  let curA = 0, curB = 0;
 
   for (const cr of ranges) {
-
-    // ── CONTEXT LINES BEFORE THIS CHUNK ────────────────────────────────────
-    //
-    // For a normal (two-sided) chunk firstA and firstB are both >= 0, so
-    // ctxA = cr.firstA - curA and ctxB = cr.firstB - curB are the natural
-    // counts of pending context lines on each side.
-    //
-    // For one-sided chunks (ADD: firstA == -1, DEL: firstB == -1) the absent
-    // side has no anchor. We still need to advance curA/curB so the cursors
-    // stay in sync and old content between this chunk and the previous one
-    // is not orphaned.  We allow the absent side to consume up to as many
-    // lines as the present side is skipping, capped by how many raw lines
-    // it actually has left.
+    // Context lines before this chunk.
+    // For one-sided chunks, allow the absent side to advance by at most
+    // as many lines as the present side, capped by available raw lines.
     const ctxA_native = cr.firstA >= 0 ? Math.max(0, cr.firstA - curA) : 0;
     const ctxB_native = cr.firstB >= 0 ? Math.max(0, cr.firstB - curB) : 0;
 
-    // FIX 1: for a one-sided chunk, allow the absent cursor to advance by
-    // the same amount as the present side (capped at available lines).
     const ctxA = cr.firstA >= 0
       ? ctxA_native
       : Math.min(ctxB_native, Math.max(0, rawA.length - curA));
@@ -464,44 +520,36 @@ export function buildAlignedLines(
       : Math.min(ctxA_native, Math.max(0, rawB.length - curB));
 
     const ctxLen = Math.max(ctxA, ctxB);
-
-    // FIX 2: simple per-side boundary check — no i-extraB offset that would
-    // turn real lines into nulls.
     for (let i = 0; i < ctxLen; i++) {
       outA.push(i < ctxA ? rawA[curA + i] : null);
       outB.push(i < ctxB ? rawB[curB + i] : null);
     }
-
-    // FIX 3: each side advances by what IT consumed, independently.
     curA += ctxA;
     curB += ctxB;
 
-    // ── CHUNK ROWS ──────────────────────────────────────────────────────────
+    // Chunk rows
     const countA   = cr.firstA >= 0 ? Math.max(1, cr.lastA - cr.firstA + 1) : 0;
     const countB   = cr.firstB >= 0 ? Math.max(1, cr.lastB - cr.firstB + 1) : 0;
     const chunkLen = Math.max(countA, countB, 1);
 
     for (let i = 0; i < chunkLen; i++) {
-      outA.push(i < countA ? rawA[curA + i] : null);
-      outB.push(i < countB ? rawB[curB + i] : null);
+      outA.push(i < countA ? (rawA[curA + i] ?? null) : null);
+      outB.push(i < countB ? (rawB[curB + i] ?? null) : null);
     }
-
-    // FIX 3 (continued): independent advance.
     curA += countA;
     curB += countB;
   }
 
-  // ── TRAILING LINES (after last chunk) ─────────────────────────────────────
+  // Trailing lines after the last chunk
   const tailA   = rawA.length - curA;
   const tailB   = rawB.length - curB;
   const tailLen = Math.max(tailA, tailB);
-
   for (let i = 0; i < tailLen; i++) {
     outA.push(i < tailA ? rawA[curA + i] : null);
     outB.push(i < tailB ? rawB[curB + i] : null);
   }
 
-  // Guarantee invariant: both arrays must have equal length.
+  // Guarantee invariant: equal length
   const maxLen = Math.max(outA.length, outB.length);
   while (outA.length < maxLen) outA.push(null);
   while (outB.length < maxLen) outB.push(null);
@@ -515,7 +563,7 @@ export function buildAlignedLines(
  * foldUnchangedLines — collapses runs of unchanged rows more than contextLines
  * rows away from any chunk row into fold placeholders.
  *
- * Now returns foldMap so DiffViewer can expand folds using the exact raw-array
+ * Returns foldMap so DiffViewer can expand folds using the exact raw-array
  * slice without fragile rawIdx reconstruction.
  */
 export function foldUnchangedLines(
@@ -532,7 +580,7 @@ export function foldUnchangedLines(
   }
 
   const n      = linesA.length;
-  const anchor = new Array<boolean>(n).fill(false);
+  const anchor = new Uint8Array(n); // 0 = foldable, 1 = anchor
 
   for (let i = 0; i < n; i++) {
     const a = linesA[i];
@@ -541,9 +589,9 @@ export function foldUnchangedLines(
       (Array.isArray(a) && a.some((s) => s.chunkId != null)) ||
       (Array.isArray(b) && b.some((s) => s.chunkId != null));
     if (isChunkRow) {
-      for (let d = Math.max(0, i - contextLines); d <= Math.min(n - 1, i + contextLines); d++) {
-        anchor[d] = true;
-      }
+      const lo = Math.max(0, i - contextLines);
+      const hi = Math.min(n - 1, i + contextLines);
+      for (let d = lo; d <= hi; d++) anchor[d] = 1;
     }
   }
 
@@ -554,14 +602,13 @@ export function foldUnchangedLines(
   let foldCount      = 0;
   let foldHasGap     = false;
   let foldKeyCounter = 0;
-  let foldRawStart   = 0;   // raw index where the current fold run began
+  let foldRawStart   = 0;
 
   const flushFold = () => {
     if (foldCount > 0) {
       const key = foldKeyCounter++;
       outA.push({ type: "fold", count: foldCount, key, hasGap: foldHasGap });
       outB.push({ type: "fold", count: foldCount, key, hasGap: foldHasGap });
-      // Store exact raw position so expansion can slice correctly.
       foldMap.set(key, { rawStart: foldRawStart, count: foldCount });
       foldCount  = 0;
       foldHasGap = false;
@@ -574,7 +621,7 @@ export function foldUnchangedLines(
       outA.push(linesA[i]);
       outB.push(linesB[i]);
     } else {
-      if (foldCount === 0) foldRawStart = i;   // start of a new fold run
+      if (foldCount === 0) foldRawStart = i;
       if (linesA[i] === null || linesB[i] === null) foldHasGap = true;
       foldCount++;
     }
@@ -587,6 +634,21 @@ export function foldUnchangedLines(
 
 // ── Inner virtualised renderer ────────────────────────────────────────────────
 
+interface InnerProps {
+  lines:          AlignedLine[];
+  allChunkTokens: Map<number, WordToken[]>;
+  pane:           PaneData;
+  kindMap:        Map<number, ChunkKind>;
+  activeChunkId:  number | null;
+  activeChunkCSS: string;
+  scrollRef:      React.RefObject<HTMLDivElement>;
+  dark:           boolean;
+  onChunkClick?:  (chunkId: number) => void;
+  onScroll:       () => void;
+  onVirtualizerReady: (v: ReturnType<typeof useVirtualizer<HTMLDivElement, Element>>) => void;
+  onUnfold:       (key: number) => void;
+}
+
 function DiffPaneInner({
   lines,
   allChunkTokens,
@@ -595,7 +657,6 @@ function DiffPaneInner({
   activeChunkId,
   activeChunkCSS,
   scrollRef,
-  wrapLines,
   dark,
   onChunkClick,
   onScroll,
@@ -608,26 +669,24 @@ function DiffPaneInner({
     count:            lines.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (i) => {
-      // Guard: i can be stale during a concurrent React re-render.
       if (i >= lines.length) return ROW_HEIGHT_PX;
       const l = lines[i];
       if (l && !Array.isArray(l) && "type" in l && l.type === "fold") return 20;
-      return wrapLines ? 48 : ROW_HEIGHT_PX;
+      return ROW_HEIGHT_PX;
     },
     measureElement: (el) => el?.getBoundingClientRect().height ?? ROW_HEIGHT_PX,
     getItemKey:     (index) => index,
-    overscan:       wrapLines ? 4 : 8,
+    overscan:       8,
   });
 
-  // Stable deps so this doesn't re-fire on every render.
   useEffect(() => { onVirtualizerReady(virtualizer); }, [virtualizer, onVirtualizerReady]);
 
+  // Re-measure on line count or wrap mode change
   useEffect(() => {
     const id = requestAnimationFrame(() => { virtualizer.measure(); });
     return () => cancelAnimationFrame(id);
-  }, [lines.length, wrapLines]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lines.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Stable measureElement callback — prevents double-measurement in React 18 strict mode.
   const measureRef = useCallback(
     (el: Element | null) => { if (el) virtualizer.measureElement(el); },
     [virtualizer],
@@ -658,15 +717,12 @@ function DiffPaneInner({
         style={{
           height:       virtualizer.getTotalSize(),
           lineHeight:   "1.6",
-          overflowWrap: wrapLines ? "break-word" : "normal",
-          wordBreak:    wrapLines ? "break-word" : "normal",
+          overflowWrap: "normal",
+          wordBreak:    "normal",
         }}
       >
         {virtualizer.getVirtualItems().map((vRow) => {
-          // ── Bounds guard ────────────────────────────────────────────────────
-          // The virtualizer can momentarily hold stale indices from the previous
-          // lines array during a concurrent React re-render.  Without this guard
-          // lines[vRow.index] is undefined and the .find() call below crashes.
+          // Bounds guard — virtualizer can hold stale indices during re-render
           if (vRow.index >= lines.length) {
             return (
               <div
@@ -685,7 +741,7 @@ function DiffPaneInner({
 
           const item = lines[vRow.index];
 
-          // ── Fold row ─────────────────────────────────────────────────────────
+          // ── Fold row ──────────────────────────────────────────────────────
           if (item && !Array.isArray(item) && "type" in item && item.type === "fold") {
             const isGapFold = !!item.hasGap;
             const label = isGapFold
@@ -701,7 +757,7 @@ function DiffPaneInner({
                   position:       "absolute",
                   top: 0, left: 0, right: 0,
                   transform:      `translateY(${vRow.start}px)`,
-                  height:         20,
+                  height:         ROW_HEIGHT_PX,
                   cursor:         "pointer",
                   userSelect:     "none",
                   display:        "flex",
@@ -709,8 +765,8 @@ function DiffPaneInner({
                   justifyContent: "center",
                   fontSize:       10,
                   fontFamily:     "monospace",
-                  color:     dark ? "rgba(148,163,184,0.7)" : "rgba(100,116,139,0.8)",
-                  background: isGapFold
+                  color:          dark ? "rgba(148,163,184,0.7)" : "rgba(100,116,139,0.8)",
+                  background:     isGapFold
                     ? (dark ? "rgba(30,15,60,0.85)"  : "rgba(220,210,255,0.55)")
                     : (dark ? "rgba(15,25,41,0.85)"   : "rgba(241,245,249,0.85)"),
                   borderTop:    `1px solid ${dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.08)"}`,
@@ -722,11 +778,11 @@ function DiffPaneInner({
             );
           }
 
-          // ── Gap placeholder row ──────────────────────────────────────────────
+          // ── Gap placeholder row ───────────────────────────────────────────
           if (item === null) {
             return (
               <div
-                key={vRow.index}
+                key={`gap-${vRow.index}`}
                 data-index={vRow.index}
                 ref={measureRef}
                 style={{
@@ -751,11 +807,19 @@ function DiffPaneInner({
             );
           }
 
-          // ── Normal line ──────────────────────────────────────────────────────
+          // ── Normal line ───────────────────────────────────────────────────
           const segs       = item as Line;
           const lineNodes: React.ReactNode[] = [];
 
-          const lineChunkId = segs.find((s) => s.chunkId != null)?.chunkId ?? null;
+          const lineChunkId = (() => {
+            for (const s of segs) {
+              if (s.chunkId == null) continue;
+              const kind = kindMap.get(s.chunkId);
+              const cfg = pane.tag_cfgs[s.tagName] ?? {};
+              if (_isVisualDiffSegment(cfg, kind)) return s.chunkId;
+            }
+            return null;
+          })();
           const lineKind    = lineChunkId != null ? kindMap.get(lineChunkId) : undefined;
           const isModLine   = lineKind === "mod";
 
@@ -763,15 +827,22 @@ function DiffPaneInner({
             ? allChunkTokens.get(lineChunkId) ?? null
             : null;
 
+          // Only show word tokens on the FIRST line of a mod chunk
           const prevLineHasThisChunk =
             vRow.index > 0 &&
             vRow.index - 1 < lines.length &&
             Array.isArray(lines[vRow.index - 1]) &&
-            (lines[vRow.index - 1] as Line).some((s) => s.chunkId === lineChunkId);
+            (lines[vRow.index - 1] as Line).some((s) => {
+              if (s.chunkId !== lineChunkId) return false;
+              const kind = s.chunkId != null ? kindMap.get(s.chunkId) : undefined;
+              const cfg = pane.tag_cfgs[s.tagName] ?? {};
+              return _isVisualDiffSegment(cfg, kind);
+            });
 
           const lineHasRichText = segs.some((s) => {
             const cfg = pane.tag_cfgs[s.tagName] ?? {};
-            return cfg.underline || cfg.overstrike;
+            const style = cfg.font && !Array.isArray(cfg.font) ? (cfg.font.style ?? "") : "";
+            return cfg.underline || cfg.overstrike || style.includes("bold") || style.includes("italic");
           });
 
           const lineHasInlineWordDiff = segs.some((s) => {
@@ -800,22 +871,24 @@ function DiffPaneInner({
               const style = tagToStyle(cfg, dark, kind);
 
               lineNodes.push(
-                seg.chunkId !== null
+                seg.chunkId !== null && _isVisualDiffSegment(cfg, kind)
                   ? <span
                       key={si}
                       style={style}
                       data-chunk-id={String(seg.chunkId)}
-                      data-changed={cfg.background ? "true" : undefined}
+                      data-changed-chunk-id={String(seg.chunkId)}
                     >{seg.text}</span>
                   : <span key={si} style={style}>{seg.text}</span>,
               );
             }
           }
 
+          // Active highlight: only rows that actually have a painted segment
           const lineHasPaintedSegment = lineChunkId != null && segs.some((s) => {
             if (s.chunkId == null) return false;
             const cfg = pane.tag_cfgs[s.tagName] ?? {};
-            return !!cfg.background;
+            const kind = kindMap.get(s.chunkId);
+            return _isVisualDiffSegment(cfg, kind);
           });
 
           const isActiveRow =
@@ -848,7 +921,7 @@ function DiffPaneInner({
                 <span className="sticky left-0 z-[1] select-none border-r border-slate-200 bg-white pr-2 text-right text-[10px] font-medium tabular-nums text-slate-400 dark:border-white/10 dark:bg-[#0a1020] dark:text-slate-500">
                   {vRow.index + 1}
                 </span>
-                <span className={wrapLines ? "whitespace-pre-wrap break-words" : "whitespace-pre"}>
+                <span className="whitespace-pre">
                   {lineNodes.length > 0 ? lineNodes : " "}
                 </span>
               </div>
@@ -860,6 +933,35 @@ function DiffPaneInner({
   );
 }
 
+// ── Props ─────────────────────────────────────────────────────────────────────
+
+interface HeaderStat {
+  label:      string;
+  count:      number;
+  colorClass: string;
+  title:      string;
+}
+
+interface Props {
+  pane:              PaneData;
+  chunks:            Chunk[];
+  activeChunkId:     number | null;
+  activeChunk?:      Chunk | null;
+  filename:          string;
+  side:              "a" | "b";
+  onChunkClick?:     (chunkId: number) => void;
+  onScrollFraction?: (scrollFraction: number) => void;
+  onScrollLeft?:     (scrollLeft: number) => void;
+  syncScrollLeft?:   number | null;
+  headerStats?:      HeaderStat[];
+  onJumpToFirst?:    () => void;
+  wrapLines?:        boolean;
+  alignedLines?:     AlignedLine[];
+  contextLines?:     number;
+  onUnfoldRow?:      (foldKey: number) => void;
+  isScrollSource?:   boolean;
+}
+
 // ── DiffPane (outer shell) ────────────────────────────────────────────────────
 
 const DiffPane = forwardRef<DiffPaneHandle, Props>(
@@ -868,6 +970,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       pane,
       chunks,
       activeChunkId,
+      activeChunk,
       filename,
       side,
       onChunkClick,
@@ -876,7 +979,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       syncScrollLeft,
       headerStats,
       onJumpToFirst,
-      wrapLines = false,
       alignedLines,
       onUnfoldRow,
       isScrollSource = false,
@@ -896,6 +998,22 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       () => alignedLines ?? buildLines(pane).map((l): AlignedLine => l),
       [alignedLines, pane],
     );
+
+    // O(1) chunk-id → first line-index lookup built once per lines change
+    const chunkLineMap = useMemo(() => {
+      const m = new Map<number, number>();
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
+        if (Array.isArray(line)) {
+          for (const s of line) {
+            if (s.chunkId != null && !m.has(s.chunkId)) {
+              m.set(s.chunkId, li);
+            }
+          }
+        }
+      }
+      return m;
+    }, [lines]);
 
     const kindMap = useMemo(() => {
       const m = new Map<number, ChunkKind>();
@@ -918,7 +1036,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       const kind = kindMap.get(activeChunkId);
       if (!kind) return "";
       const ahl = ACTIVE_HL[kind] ?? ACTIVE_HL.mod;
-      const sel = `[data-chunk-id="${activeChunkId}"]`;
+      const sel = `[data-changed-chunk-id="${activeChunkId}"]`;
       if (kind === "mod") {
         return `${sel} { border-radius: 2px; outline: 2px solid ${ahl.border}; outline-offset: 0px; }`;
       }
@@ -945,6 +1063,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
       requestAnimationFrame(() => { hSyncRef.current = false; });
     }, [syncScrollLeft]);
 
+    // ── Imperative handle ────────────────────────────────────────────────────
     useImperativeHandle(ref, () => ({
       scrollToChunk(chunkId: number, _orderedIds?: number[], scrollFraction?: number) {
         const container   = scrollRef.current;
@@ -955,14 +1074,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         const clearSync = () => { syncingRef.current = false; };
 
         if (virtualizer) {
-          let targetLine = -1;
-          for (let li = 0; li < lines.length; li++) {
-            const line = lines[li];
-            if (Array.isArray(line) && line.some((s) => s.chunkId === chunkId)) {
-              targetLine = li;
-              break;
-            }
-          }
+          const targetLine = chunkLineMap.get(chunkId) ?? -1;
           if (targetLine >= 0) {
             try {
               const r = virtualizer.scrollToIndex(targetLine, { align: "start", behavior: "auto" }) as unknown;
@@ -971,7 +1083,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
               }
             } catch { /* sync throw before first measure */ }
             if (syncClearTimerRef.current !== null) clearTimeout(syncClearTimerRef.current);
-            syncClearTimerRef.current = setTimeout(clearSync, 100);
+            syncClearTimerRef.current = setTimeout(clearSync, 120);
             return;
           }
         }
@@ -986,7 +1098,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
             }
             container.scrollTop = nextTop;
             if (syncClearTimerRef.current !== null) clearTimeout(syncClearTimerRef.current);
-            syncClearTimerRef.current = setTimeout(clearSync, 100);
+            syncClearTimerRef.current = setTimeout(clearSync, 120);
             return;
           }
         }
@@ -1013,11 +1125,11 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         syncClearTimerRef.current = setTimeout(() => {
           syncingRef.current        = false;
           syncClearTimerRef.current = null;
-        }, 150);
+        }, 160);
       },
-    }), [lines]);
+    }));
 
-    // RAF-throttled scroll handler
+    // RAF-throttled scroll handler — emits fraction and prevents sync echo
     const handleScroll = useCallback(() => {
       const container = scrollRef.current;
       if (!container) return;
@@ -1026,7 +1138,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         onScrollLeft(container.scrollLeft);
       }
 
-      if (syncingRef.current || wrapLines) return;
+      if (syncingRef.current) return;
       if (!onScrollFraction) return;
       if (scrollFrameRef.current !== null) return;
 
@@ -1039,7 +1151,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
 
         const emitFraction = container.scrollTop / maxScroll;
         const ROW_TOL =
-          (wrapLines ? 48 : ROW_HEIGHT_PX) /
+          ROW_HEIGHT_PX /
           Math.max(1, container.scrollHeight);
         if (Math.abs(emitFraction - lastReceivedFractionRef.current) <= ROW_TOL) {
           lastReceivedFractionRef.current = -1;
@@ -1048,7 +1160,7 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
         lastReceivedFractionRef.current = -1;
         onScrollFraction(emitFraction);
       });
-    }, [onScrollFraction, onScrollLeft, wrapLines]);
+    }, [onScrollFraction, onScrollLeft]);
 
     useEffect(() => {
       return () => {
@@ -1064,9 +1176,18 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
     const sideBadge     = side === "a" ? "bg-rose-500 text-white" : "bg-emerald-500 text-white";
     const hasStats      = headerStats && headerStats.length > 0;
     const realLineCount = lines.filter((l) => l !== null && Array.isArray(l)).length;
+    const headerWordTokens = useMemo(() => {
+      if (!activeChunk || activeChunk.kind !== "mod") return null;
+      return buildWordTokens(activeChunk, side);
+    }, [activeChunk, side]);
+    const headerWordLabel = side === "a" ? "removed" : "added";
+    const headerWordLabelClass = side === "a"
+      ? "text-rose-500"
+      : "text-emerald-600 dark:text-emerald-400";
 
     return (
       <div className="flex flex-col h-full min-h-0 overflow-hidden min-w-0">
+        {/* Header */}
         <div className="flex-shrink-0 border-b border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-[#0f1929]">
           <div className="flex items-center gap-2 px-3 py-2">
             <span className={`flex-shrink-0 text-[9px] font-black tracking-widest px-2 py-0.5 rounded ${sideBadge}${
@@ -1109,6 +1230,17 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
               {realLineCount.toLocaleString()} lines
             </span>
           </div>
+
+          {headerWordTokens && headerWordTokens.length > 0 && (
+            <div className="px-3 pb-2 text-[10px] font-mono leading-relaxed border-t border-slate-200/70 dark:border-white/8">
+              <span className={`mr-1.5 font-semibold ${headerWordLabelClass}`}>
+                {headerWordLabel}:
+              </span>
+              <span className="text-slate-600 dark:text-slate-300 break-words">
+                {renderWordTokens(headerWordTokens, dark)}
+              </span>
+            </div>
+          )}
         </div>
 
         <DiffPaneInner
@@ -1119,7 +1251,6 @@ const DiffPane = forwardRef<DiffPaneHandle, Props>(
           activeChunkId={activeChunkId}
           activeChunkCSS={activeChunkCSS}
           scrollRef={scrollRef}
-          wrapLines={wrapLines}
           dark={dark}
           onChunkClick={onChunkClick}
           onScroll={handleScroll}

@@ -65,18 +65,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const MAX_RETRIES = 5;
     const RETRY_DELAY_MS = 2000;
 
+    let cancelled = false;
+
     const init = async () => {
       if (!getToken()) {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
         return;
       }
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        if (cancelled) return;
         try {
           const { user } = await authApi.me();
-          setUser(normalizeUserRole(user as User));
+          if (!cancelled) setUser(normalizeUserRole(user as User));
           break; // success — exit loop
         } catch (error) {
+          if (cancelled) return;
           if (
             axios.isAxiosError(error) &&
             error.response &&
@@ -99,10 +103,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      setIsLoading(false);
+      if (!cancelled) setIsLoading(false);
     };
 
     init();
+    return () => { cancelled = true; };
   }, []);
 
   const login = async (userId: string, password: string) => {
